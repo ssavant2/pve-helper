@@ -101,11 +101,3 @@
     </section>
   {% endif %}
 {% endblock %}
-
-{% block taskbar %}
-  {% if latest_scan %}
-    <span>Scan {{ latest_scan.id }}: {{ latest_scan.progress_message|default:latest_scan.get_status_display }}</span>
-  {% else %}
-    <span class="muted">No scan history</span>
-  {% endif %}
-{% endblock %}

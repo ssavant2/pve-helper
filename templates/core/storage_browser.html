@@ -113,12 +113,3 @@
     </table>
   </section>
 {% endblock %}
-
-{% block taskbar %}
-  {% if latest_scan %}
-    <span>{{ storage.display_name }}: scan {{ latest_scan.id }}</span>
-    <span class="muted">{{ current_path|default:"/" }}</span>
-  {% else %}
-    <span class="muted">{{ storage.display_name }} has no inventory yet</span>
-  {% endif %}
-{% endblock %}

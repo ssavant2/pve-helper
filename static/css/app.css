@@ -134,7 +134,7 @@ select {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
-  grid-template-rows: 48px minmax(0, 1fr) 34px;
+  grid-template-rows: 48px minmax(0, 1fr) 166px;
   grid-template-areas:
     "topbar topbar"
     "sidebar content"
@@ -570,6 +570,11 @@ code {
   color: var(--amber);
 }
 
+.badge.warning {
+  background: var(--warning-bg);
+  color: var(--amber);
+}
+
 .badge.referenced {
   background: var(--success-bg);
   color: var(--green);
@@ -709,13 +714,85 @@ code {
 .taskbar {
   grid-area: taskbar;
   display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 0 12px;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
   background: var(--taskbar-bg);
   border-top: 1px solid var(--line);
   color: var(--taskbar-text);
   font-size: 12px;
+}
+
+.taskbar-tabs {
+  display: flex;
+  align-items: stretch;
+  min-height: 36px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-alt);
+}
+
+.taskbar-tab {
+  min-width: 118px;
+  padding: 0 14px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+}
+
+.taskbar-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 650;
+}
+
+.taskbar-tab:disabled {
+  cursor: default;
+}
+
+.task-table-wrap {
+  min-height: 0;
+  overflow: auto;
+}
+
+.task-table {
+  width: 100%;
+  min-width: 1180px;
+  border-collapse: collapse;
+  background: var(--taskbar-bg);
+}
+
+.task-table th,
+.task-table td {
+  max-width: 320px;
+  padding: 6px 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.task-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-alt);
+  color: var(--table-header-text);
+  font-weight: 650;
+}
+
+.task-table td:nth-child(4) {
+  max-width: 420px;
+}
+
+.task-table tr:hover td {
+  background: var(--table-hover);
 }
 
 .muted {
@@ -752,7 +829,7 @@ code {
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: 48px auto minmax(0, 1fr) 34px;
+    grid-template-rows: 48px auto minmax(0, 1fr) 206px;
     grid-template-areas:
       "topbar"
       "sidebar"

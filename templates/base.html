@@ -133,8 +133,46 @@
       </main>
 
       <footer class="taskbar">
-        <span>Recent tasks</span>
-        {% block taskbar %}<span class="muted">No task selected</span>{% endblock %}
+        <div class="taskbar-tabs" role="tablist" aria-label="Operations">
+          <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
+          <button class="taskbar-tab" type="button" role="tab" aria-selected="false" disabled>Alarms</button>
+        </div>
+        <div class="task-table-wrap">
+          <table class="task-table">
+            <thead>
+              <tr>
+                <th>Task Name</th>
+                <th>Target</th>
+                <th>Status</th>
+                <th>Details</th>
+                <th>Initiator</th>
+                <th>Queued For</th>
+                <th>Start Time</th>
+                <th>Completion Time</th>
+                <th>Server</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for task in app_recent_tasks %}
+                <tr>
+                  <td>{{ task.name }}</td>
+                  <td>{{ task.target }}</td>
+                  <td><span class="badge {{ task.status_class }}">{{ task.status }}</span></td>
+                  <td>{{ task.details }}</td>
+                  <td>{{ task.initiator }}</td>
+                  <td>{{ task.queued_for }}</td>
+                  <td>{{ task.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                  <td>{{ task.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                  <td>{{ task.server|default:"-" }}</td>
+                </tr>
+              {% empty %}
+                <tr>
+                  <td colspan="9" class="empty-state">No recent tasks.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
       </footer>
     </div>
 
