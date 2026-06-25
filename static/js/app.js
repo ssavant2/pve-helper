@@ -5,6 +5,7 @@
   const themeToggle = document.querySelector("[data-theme-toggle]");
   const themeLabels = document.querySelectorAll("[data-theme-label]");
   const taskbarToggle = document.querySelector("[data-taskbar-toggle]");
+  const autoSubmitForms = document.querySelectorAll("[data-auto-submit-form]");
   const menu = document.getElementById("context-menu");
   const recentTasks = document.querySelector("[data-recent-tasks]");
   let activeLabel = "";
@@ -85,6 +86,22 @@
       applyTaskbarState(collapsed);
     });
   }
+
+  autoSubmitForms.forEach((form) => {
+    form.querySelectorAll("[data-auto-submit-control]").forEach((control) => {
+      control.addEventListener("change", () => {
+        if (form.reportValidity && !form.reportValidity()) {
+          return;
+        }
+
+        if (form.requestSubmit) {
+          form.requestSubmit();
+          return;
+        }
+        form.submit();
+      });
+    });
+  });
 
   if (recentTasks) {
     const rows = recentTasks.querySelector("[data-task-rows]");

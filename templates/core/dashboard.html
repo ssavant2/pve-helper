@@ -9,15 +9,14 @@
       <p>Cluster and storage inventory status</p>
     </div>
     <div class="scan-controls">
-      <form class="scan-schedule-form" method="post" action="{% url 'core:update_scan_schedule' %}">
+      <form class="scan-schedule-form" method="post" action="{% url 'core:update_scan_schedule' %}" data-auto-submit-form>
         {% csrf_token %}
         <label class="checkbox-control">
-          <input type="checkbox" name="enabled" {% if scan_schedule.enabled %}checked{% endif %}>
+          <input type="checkbox" name="enabled" data-auto-submit-control {% if scan_schedule.enabled %}checked{% endif %}>
           <span>Automatically scan all datastores every</span>
         </label>
-        <input class="number-input" type="number" name="interval_minutes" min="1" max="9999" value="{{ scan_schedule.interval_minutes }}">
+        <input class="number-input" type="number" name="interval_minutes" min="1" max="9999" value="{{ scan_schedule.interval_minutes }}" data-auto-submit-control>
         <span>minutes</span>
-        <button class="secondary-action" type="submit">Save</button>
       </form>
       <form method="post" action="{% url 'core:start_scan' %}">
         {% csrf_token %}

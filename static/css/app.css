@@ -476,20 +476,6 @@ a.tree-node {
   color: var(--text);
 }
 
-.secondary-action {
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.secondary-action:hover {
-  background: var(--blue-soft);
-}
-
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(140px, 1fr));
