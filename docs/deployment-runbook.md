@@ -35,15 +35,61 @@
 
 ## NFS mounts
 
-For production, mount the NFS exports on the Docker host before starting the app:
+For production, mount the NFS exports on the Docker host before starting the app.
+Manual `mount` commands do not survive reboot, so use `/etc/fstab` or an equivalent
+systemd mount setup.
+
+Install the NFS client package on the Docker host:
+
+```bash
+sudo apt update
+sudo apt install nfs-common
+```
+
+Create the mount points:
 
 ```bash
 sudo mkdir -p /mnt/pve-helper/truenas-fs /mnt/pve-helper/truenas-vm
-sudo mount -t nfs4 203.0.113.10:/export/proxmox-fs /mnt/pve-helper/truenas-fs
-sudo mount -t nfs4 203.0.113.10:/export/proxmox-vm /mnt/pve-helper/truenas-vm
 ```
 
-Keep the bind mounts read-only in compose until write support is deliberately added.
+Recommended initial `/etc/fstab` entries:
+
+```fstab
+203.0.113.10:/export/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+203.0.113.10:/export/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+```
+
+For this environment, substitute:
+
+```fstab
+203.0.113.20:/mnt/Pool-FS/FS/Proxmox /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+203.0.113.20:/mnt/Pool-VMs/VM/Proxmox /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+```
+
+Apply and verify:
+
+```bash
+sudo systemctl daemon-reload
+sudo mount /mnt/pve-helper/truenas-fs
+sudo mount /mnt/pve-helper/truenas-vm
+findmnt -T /mnt/pve-helper/truenas-fs
+findmnt -T /mnt/pve-helper/truenas-vm
+```
+
+Then recreate the app containers so Docker binds the mounted NFS trees, not the empty
+underlying directories:
+
+```bash
+docker compose up -d --force-recreate web worker
+```
+
+Keep both the host NFS mounts and the Docker bind mounts read-only until write/trash
+support is deliberately enabled. When trash support is added later, the host mount and
+compose bind mount for the affected storage must be changed to read-write.
+
+`nconnect=4` is a good starting point on modern Ubuntu kernels. It lets one NFS mount
+use multiple TCP connections, which can help throughput and parallel directory walks
+without changing the app. Increase only if measurements show a benefit.
 
 ## Authentik
 
