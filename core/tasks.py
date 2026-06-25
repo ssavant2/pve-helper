@@ -6,8 +6,10 @@ from typing import Any
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
+from django_q.tasks import async_task
 
 from .models import (
+    AuditEvent,
     FileInventory,
     ProxmoxEndpoint,
     ProxmoxInventory,
@@ -18,6 +20,40 @@ from .services.classification import classify_entry
 from .services.config import sync_runtime_configuration
 from .services.proxmox import ProxmoxClient
 from .services.storage import StorageScanner
+
+
+def enqueue_scheduled_scan() -> int | None:
+    active_scan = ScanRun.objects.filter(
+        status__in=[
+            ScanRun.Status.QUEUED,
+            ScanRun.Status.RUNNING,
+        ]
+    ).order_by("-created_at").first()
+    if active_scan:
+        AuditEvent.objects.create(
+            username="system",
+            action="scan.schedule.skipped",
+            object_type="scan_run",
+            object_id=str(active_scan.id),
+            outcome="skipped",
+            details={"reason": "A scan is already queued or running."},
+        )
+        return None
+
+    scan = ScanRun.objects.create(progress_message="Queued from schedule")
+    task_id = async_task("core.tasks.run_scan", scan.id)
+    scan.queued_task_id = task_id
+    scan.save(update_fields=["queued_task_id", "updated_at"])
+
+    AuditEvent.objects.create(
+        username="system",
+        action="scan.queued",
+        object_type="scan_run",
+        object_id=str(scan.id),
+        outcome="success",
+        details={"task_id": task_id, "source": "schedule"},
+    )
+    return scan.id
 
 
 def run_scan(scan_run_id: int) -> None:

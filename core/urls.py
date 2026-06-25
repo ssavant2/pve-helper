@@ -11,6 +11,7 @@ urlpatterns = [
     path("orphans/", views.orphan_finder, name="orphan_finder"),
     path("audit/", views.audit_log, name="audit_log"),
     path("tasks/recent/", views.recent_tasks, name="recent_tasks"),
+    path("scans/schedule/", views.update_scan_schedule_view, name="update_scan_schedule"),
     path("scans/start/", views.start_scan, name="start_scan"),
     path("healthz/live", views.health_live, name="health_live"),
     path("healthz/ready", views.health_ready, name="health_ready"),

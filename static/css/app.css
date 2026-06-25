@@ -435,6 +435,61 @@ a.tree-node {
   background: var(--accent-strong);
 }
 
+.scan-controls,
+.scan-schedule-form,
+.checkbox-control {
+  display: flex;
+  align-items: center;
+}
+
+.scan-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.scan-schedule-form {
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.checkbox-control {
+  gap: 7px;
+  min-height: 34px;
+}
+
+.checkbox-control input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.number-input {
+  width: 82px;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.secondary-action {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.secondary-action:hover {
+  background: var(--blue-soft);
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(140px, 1fr));
@@ -946,6 +1001,15 @@ code {
   .metric-grid,
   .split-view {
     grid-template-columns: 1fr;
+  }
+
+  .page-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .scan-controls {
+    justify-content: flex-start;
   }
 
   .browser-toolbar {

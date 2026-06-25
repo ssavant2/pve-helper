@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from django.utils import timezone
+from django.db.models import Q
 
 from core.models import AuditEvent, ScanRun
 
 
 DEFAULT_TASK_LIMIT = 5
+RECENT_TASK_RETENTION_MINUTES = 60
 
 
 @dataclass(frozen=True)
@@ -40,8 +43,9 @@ def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTa
     page = max(0, page)
     limit = max(1, limit)
     offset = page * limit
-    total = ScanRun.objects.count()
-    scans = list(ScanRun.objects.order_by("-created_at")[offset : offset + limit])
+    scans_queryset = _visible_scan_tasks()
+    total = scans_queryset.count()
+    scans = list(scans_queryset.order_by("-created_at")[offset : offset + limit])
     scan_ids = [str(scan.id) for scan in scans]
     audit_events = AuditEvent.objects.filter(
         action="scan.queued",
@@ -54,6 +58,16 @@ def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTa
 
     tasks = [_scan_task(scan, initiators.get(str(scan.id), "system")) for scan in scans]
     return RecentTaskPage(tasks=tasks, page=page, limit=limit, total=total)
+
+
+def _visible_scan_tasks():
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    terminal_statuses = [
+        ScanRun.Status.COMPLETED,
+        ScanRun.Status.FAILED,
+        ScanRun.Status.CANCELLED,
+    ]
+    return ScanRun.objects.exclude(Q(status__in=terminal_statuses) & Q(finished_at__lte=cutoff))
 
 
 def serialize_task_page(task_page: RecentTaskPage) -> dict[str, object]:

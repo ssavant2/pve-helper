@@ -15,6 +15,7 @@ from django_q.tasks import async_task
 
 from .models import AuditEvent, FileInventory, ScanRun, StorageMount
 from .services.recent_tasks import recent_task_page, serialize_task_page
+from .services.scan_schedule import scan_schedule_state, update_scan_schedule
 
 
 def app_login_required(view_func):
@@ -39,6 +40,7 @@ def dashboard(request):
         "scan_count": ScanRun.objects.count(),
         "audit_count": AuditEvent.objects.count(),
         "classification_counts": classification_counts,
+        "scan_schedule": scan_schedule_state(),
     }
     return render(request, "core/dashboard.html", context)
 
@@ -158,6 +160,38 @@ def recent_tasks(request):
         page = 0
 
     return JsonResponse(serialize_task_page(recent_task_page(page=page)))
+
+
+@require_POST
+@app_login_required
+def update_scan_schedule_view(request):
+    enabled = request.POST.get("enabled") == "on"
+    try:
+        interval_minutes = int(request.POST.get("interval_minutes", "60"))
+        state = update_scan_schedule(enabled=enabled, interval_minutes=interval_minutes)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("core:dashboard")
+
+    AuditEvent.objects.create(
+        user=request.user if request.user.is_authenticated else None,
+        username=request.user.get_username() if request.user.is_authenticated else "",
+        action="scan.schedule.updated",
+        object_type="scan_schedule",
+        object_id="automatic-storage-scan",
+        outcome="success",
+        details={
+            "enabled": state.enabled,
+            "interval_minutes": state.interval_minutes,
+            "next_run": state.next_run.isoformat() if state.next_run else "",
+        },
+    )
+
+    if state.enabled:
+        messages.success(request, f"Automatic scans enabled every {state.interval_minutes} minute(s).")
+    else:
+        messages.success(request, "Automatic scans disabled.")
+    return redirect("core:dashboard")
 
 
 @require_POST

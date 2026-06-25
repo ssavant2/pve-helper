@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from django_q.models import Schedule
 
 from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
+from core.services.recent_tasks import recent_task_page
+from core.services.scan_schedule import SCAN_SCHEDULE_NAME
 from core.services.storage import StorageScanner
 
 
@@ -202,3 +207,42 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(len(payload["tasks"]), 1)
         self.assertFalse(payload["has_next"])
         self.assertTrue(payload["has_previous"])
+
+    def test_recent_tasks_hide_completed_scans_after_retention_window(self):
+        old_scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message="Old scan")
+        ScanRun.objects.filter(pk=old_scan.pk).update(
+            created_at=timezone.now() - timedelta(hours=2),
+            finished_at=timezone.now() - timedelta(minutes=61),
+        )
+        fresh_scan = ScanRun.objects.create(
+            status=ScanRun.Status.COMPLETED,
+            progress_message="Fresh scan",
+            finished_at=timezone.now() - timedelta(minutes=59),
+        )
+
+        task_page = recent_task_page()
+
+        self.assertEqual(task_page.total, 1)
+        self.assertIn("Fresh scan", task_page.tasks[0]["details"])
+
+    def test_dashboard_updates_scan_schedule(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse("core:update_scan_schedule"),
+            {"enabled": "on", "interval_minutes": "15"},
+        )
+        self.assertRedirects(response, reverse("core:dashboard"))
+
+        schedule = Schedule.objects.get(name=SCAN_SCHEDULE_NAME)
+        self.assertEqual(schedule.func, "core.tasks.enqueue_scheduled_scan")
+        self.assertEqual(schedule.schedule_type, Schedule.MINUTES)
+        self.assertEqual(schedule.minutes, 15)
+
+        response = self.client.post(
+            reverse("core:update_scan_schedule"),
+            {"interval_minutes": "15"},
+        )
+        self.assertRedirects(response, reverse("core:dashboard"))
+        self.assertFalse(Schedule.objects.filter(name=SCAN_SCHEDULE_NAME).exists())
