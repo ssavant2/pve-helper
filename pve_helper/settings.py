@@ -34,7 +34,7 @@ def env_list(name: str, default: str = "") -> list[str]:
 
 SECRET_KEY = env("APP_SECRET_KEY", "dev-insecure-change-me")
 DEBUG = env_bool("DEBUG", True)
-APP_REQUIRE_LOGIN = env_bool("APP_REQUIRE_LOGIN", False)
+APP_REQUIRE_LOGIN = env_bool("APP_REQUIRE_LOGIN", True)
 APP_BASE_URL = env("APP_BASE_URL", "https://pve-helper.example.com").rstrip("/")
 
 ALLOWED_HOSTS = env_list(
@@ -149,7 +149,14 @@ OIDC_OP_AUTHORIZATION_ENDPOINT = env("OIDC_OP_AUTHORIZATION_ENDPOINT", f"{_oidc_
 OIDC_OP_TOKEN_ENDPOINT = env("OIDC_OP_TOKEN_ENDPOINT", f"{_oidc_o_base}/token/")
 OIDC_OP_USER_ENDPOINT = env("OIDC_OP_USER_ENDPOINT", f"{_oidc_o_base}/userinfo/")
 OIDC_OP_JWKS_ENDPOINT = env("OIDC_OP_JWKS_ENDPOINT", f"{OIDC_ISSUER_URL}/jwks/")
+OIDC_OP_END_SESSION_ENDPOINT = env("OIDC_OP_END_SESSION_ENDPOINT", f"{OIDC_ISSUER_URL}/end-session/")
 OIDC_RP_SIGN_ALGO = "RS256"
+
+# RP-initiated logout: also end the Authentik SSO session, otherwise local logout is
+# immediately undone by silent re-authentication. Storing the id token lets us pass
+# id_token_hint so Authentik can log out without an extra confirmation prompt.
+OIDC_STORE_ID_TOKEN = True
+OIDC_OP_LOGOUT_URL_METHOD = "core.auth.provider_logout"
 
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG
