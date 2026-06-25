@@ -55,15 +55,15 @@ sudo mkdir -p /mnt/pve-helper/truenas-fs /mnt/pve-helper/truenas-vm
 Recommended initial `/etc/fstab` entries:
 
 ```fstab
-203.0.113.10:/export/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
-203.0.113.10:/export/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+203.0.113.10:/export/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+203.0.113.10:/export/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
 ```
 
 For this environment, substitute:
 
 ```fstab
-203.0.113.20:/mnt/Pool-FS/FS/Proxmox /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
-203.0.113.20:/mnt/Pool-VMs/VM/Proxmox /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.1,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+203.0.113.20:/mnt/Pool-FS/FS/Proxmox /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+203.0.113.20:/mnt/Pool-VMs/VM/Proxmox /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
 ```
 
 Apply and verify:
