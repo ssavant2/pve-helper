@@ -11,17 +11,32 @@ The app container runs as:
 uid=10001(app) gid=10001(app)
 ```
 
-TrueNAS must therefore know about UID/GID `10001` and the datasets must grant
-that identity read/traverse access.
+TrueNAS must therefore know about UID/GID `10001` and the Proxmox storage paths
+must grant that identity read/traverse access.
 
-## Datasets
+## Target Paths
 
-Apply this to both exported datasets:
+In this environment the NFS exports are existing vSphere-oriented datasets, and
+`Proxmox` is a plain directory inside each export, not its own dataset:
 
 ```text
 /mnt/Pool-FS/FS/Proxmox
 /mnt/Pool-VMs/VM/Proxmox
 ```
+
+Do **not** recursively change permissions on the parent datasets:
+
+```text
+/mnt/Pool-FS/FS
+/mnt/Pool-VMs/VM
+```
+
+Those parent datasets can contain non-Proxmox/vSphere data and should keep their
+existing ACLs.
+
+The clean long-term layout is to make each Proxmox storage root a child dataset.
+That gives it independent ACLs, snapshots, quotas, and rollback. For the current
+layout, apply ACLs only to the `Proxmox` directories.
 
 ## 1. Create the TrueNAS identity
 
@@ -59,67 +74,93 @@ uses it. Do not reuse another service account by accident.
 
 ## 2. Take a snapshot first
 
-Before applying recursive ACL changes, take a manual snapshot of each dataset:
+Before applying recursive ACL changes, take a manual snapshot of each parent
+dataset:
 
 ```text
-Pool-FS/FS/Proxmox
-Pool-VMs/VM/Proxmox
+Pool-FS/FS
+Pool-VMs/VM
 ```
 
 ACL mistakes are much less exciting when rollback exists.
 
-## 3. Add read ACL on each dataset
+## 3. Add read ACL to Proxmox directories
 
-Do this once for `Pool-FS/FS/Proxmox` and once for `Pool-VMs/VM/Proxmox`.
+Because `Proxmox` is a directory and not a dataset, avoid the dataset ACL editor
+for the parent dataset. Use the TrueNAS shell and target the exact directory.
 
-1. Go to `Datasets`.
-2. Select the dataset, for example `Pool-VMs` -> `VM` -> `Proxmox`.
-3. Find the `Permissions` widget.
-4. Look at what the widget says:
-   - `Unix Permissions` means POSIX/Unix permissions.
-   - NFSv4 entries such as `owner@`, `group@`, or `everyone@` mean NFSv4 ACL.
-5. Click `Edit`.
-6. Do **not** change owner or owner group.
-7. Do **not** use `Strip ACL`.
-8. Do **not** replace the ACL with a preset.
-9. Click `Add Item`.
+Before using shell ACL commands, confirm that the parent datasets show
+`Unix Permissions` in the TrueNAS `Datasets` -> `Permissions` widget. If they
+show NFSv4 ACL entries instead, stop and convert this guide first.
 
-If the screen is an **NFSv4 ACL** editor, set the new item to:
+Open `System` -> `Shell` in TrueNAS, or SSH to TrueNAS if SSH is enabled only
+for the maintenance window.
 
-```text
-Who: User
-User: pve-helper
-ACL Type: Allow
-Permissions: Basic -> Read
-Flags: Basic -> Inherit
+First verify the user exists:
+
+```bash
+id pve-helper
 ```
 
-Then enable:
+Expected:
 
 ```text
-Apply permissions recursively
+uid=10001(pve-helper) gid=10001(pve-helper)
 ```
 
-Click `Save Access Control List`.
+Then grant read/traverse on existing files and directories:
 
-If the screen is a **POSIX/Unix Permissions** editor instead:
+```bash
+setfacl -R -m u:pve-helper:rX /mnt/Pool-FS/FS/Proxmox
+setfacl -R -m u:pve-helper:rX /mnt/Pool-VMs/VM/Proxmox
+```
 
-1. Click `Add ACL` if the screen first shows only the basic Unix permissions.
-2. Choose `Create a custom ACL` if TrueNAS asks whether to use a preset.
-3. Add an ACL entry:
+If name lookup fails, use the numeric UID instead:
+
+```bash
+setfacl -R -m u:10001:rX /mnt/Pool-FS/FS/Proxmox
+setfacl -R -m u:10001:rX /mnt/Pool-VMs/VM/Proxmox
+```
+
+Then grant default inheritance on directories so new `images/<vmid>` directories
+created later also inherit read/traverse:
+
+```bash
+find /mnt/Pool-FS/FS/Proxmox -type d -exec setfacl -m d:u:pve-helper:rX {} +
+find /mnt/Pool-VMs/VM/Proxmox -type d -exec setfacl -m d:u:pve-helper:rX {} +
+```
+
+Numeric UID fallback:
+
+```bash
+find /mnt/Pool-FS/FS/Proxmox -type d -exec setfacl -m d:u:10001:rX {} +
+find /mnt/Pool-VMs/VM/Proxmox -type d -exec setfacl -m d:u:10001:rX {} +
+```
+
+Check the current failing directory:
+
+```bash
+getfacl /mnt/Pool-VMs/VM/Proxmox/images/500
+```
+
+You should see an entry similar to:
 
 ```text
-Who/Type: User
-User: pve-helper
-Permissions: Read + Execute
-Default/Inherit: enabled if shown
+user:pve-helper:r-x
 ```
 
-Then enable recursive apply and save.
+and, on directories, a default entry similar to:
 
-If TrueNAS shows both `Read` and `Execute` separately, keep both selected. `Execute`
-on directories is what lets the scanner enter `images/500`; `Read` lets it list
-the directory and read file metadata.
+```text
+default:user:pve-helper:r-x
+```
+
+The uppercase `X` is intentional. It adds execute/traverse to directories while
+not turning ordinary files into executable files.
+
+If the dataset uses NFSv4 ACLs instead of POSIX ACLs, stop here and convert this
+guide before applying shell ACL commands. The current NFS/Generic layout is
+expected to use POSIX/Unix ACLs.
 
 ## 4. Refresh NFS if needed
 
