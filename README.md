@@ -37,6 +37,20 @@ Other front-door auth patterns can be used, but the app has native OIDC support
 and should still enforce its own login and group authorization with
 `APP_REQUIRE_LOGIN=true`.
 
+## Storage Access
+
+The storage inventory features require direct read access to the shared storage
+that Proxmox uses. How that access is provided is deliberately deployment
+specific.
+
+In the reference homelab deployment, the Docker host has an extra NIC in the
+storage VLAN and mounts the TrueNAS NFS exports read-only on the host. Other
+setups can use a different network and mount design, as long as the container
+can read the same storage paths that Proxmox references.
+
+This project is meant for internal homelab / small ops use. It is not designed
+or supported as an enterprise storage-management product.
+
 ## Setup
 
 Start with `docs/deployment-runbook.md`. For Authentik, see
