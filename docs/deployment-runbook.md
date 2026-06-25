@@ -91,6 +91,10 @@ compose bind mount for the affected storage must be changed to read-write.
 use multiple TCP connections, which can help throughput and parallel directory walks
 without changing the app. Increase only if measurements show a benefit.
 
+If the app can see the NFS export but cannot enter Proxmox VM directories such as
+`images/500`, add a read/traverse ACL for the app identity. See
+`docs/truenas-acl-pve-helper.md`.
+
 ## Authentik
 
 Follow `docs/authentik-oidc-setup.md`.
