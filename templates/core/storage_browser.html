@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}{{ storage.display_name }} - pve-helper{% endblock %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>{{ storage.display_name }}</h1>
+      <p>
+        {% if latest_scan %}
+          Browsing scan {{ latest_scan.id }} from {{ latest_scan.filesystem_scan_at|default:latest_scan.finished_at|default:latest_scan.created_at }}
+        {% else %}
+          No storage inventory has been scanned yet
+        {% endif %}
+      </p>
+    </div>
+    <form method="post" action="{% url 'core:start_scan' %}">
+      {% csrf_token %}
+      <button class="primary-action" type="submit">Start scan</button>
+    </form>
+  </section>
+
+  <section class="browser-toolbar">
+    <nav class="breadcrumb" aria-label="Storage path">
+      {% for crumb in breadcrumbs %}
+        {% if not forloop.first %}
+          <span class="breadcrumb-separator">/</span>
+        {% endif %}
+        {% if forloop.last %}
+          <span>{{ crumb.label }}</span>
+        {% else %}
+          <a href="{% url 'core:storage_browser' storage.storage_id %}{% if crumb.path %}?path={{ crumb.path|urlencode }}{% endif %}">{{ crumb.label }}</a>
+        {% endif %}
+      {% endfor %}
+    </nav>
+    <div class="browser-path" data-context-label="{{ storage.storage_id }}:{% if current_path %}{{ current_path }}{% else %}/{% endif %}">
+      <code>{{ storage.storage_id }}:{% if current_path %}{{ current_path }}{% else %}/{% endif %}</code>
+    </div>
+  </section>
+
+  <section class="panel">
+    <table class="data-table browser-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Classification</th>
+          <th>Size</th>
+          <th>Modified</th>
+          <th>Category</th>
+          <th>Reference</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if current_path %}
+          <tr data-context-label="{{ storage.storage_id }}:{% if parent_path %}{{ parent_path }}{% else %}/{% endif %}">
+            <td class="browser-name">
+              <a href="{% url 'core:storage_browser' storage.storage_id %}{% if parent_path %}?path={{ parent_path|urlencode }}{% endif %}">
+                <span class="file-icon"><i data-lucide="corner-up-left" aria-hidden="true"></i></span>
+                <span>..</span>
+              </a>
+            </td>
+            <td>Directory</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+          </tr>
+        {% endif %}
+
+        {% for entry in entries %}
+          <tr data-context-label="{{ storage.storage_id }}:{{ entry.path }}">
+            <td class="browser-name">
+              {% if entry.entry_type == "directory" %}
+                <a href="{% url 'core:storage_browser' storage.storage_id %}?path={{ entry.path|urlencode }}">
+                  <span class="file-icon directory"><i data-lucide="folder" aria-hidden="true"></i></span>
+                  <span>{{ entry.name }}</span>
+                </a>
+              {% elif entry.entry_type == "symlink" %}
+                <span class="file-icon"><i data-lucide="file-symlink" aria-hidden="true"></i></span>
+                <span>{{ entry.name }}</span>
+              {% else %}
+                <span class="file-icon"><i data-lucide="file" aria-hidden="true"></i></span>
+                <span>{{ entry.name }}</span>
+              {% endif %}
+            </td>
+            <td>{{ entry.get_entry_type_display }}</td>
+            <td><span class="badge {{ entry.classification }}">{{ entry.get_classification_display }}</span></td>
+            <td>{% if entry.size_bytes != None %}{{ entry.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
+            <td>{{ entry.modified_at|default:"-" }}</td>
+            <td>{{ entry.content_category|default:"-" }}</td>
+            <td>
+              {% if entry.derived_volid %}
+                <code>{{ entry.derived_volid }}</code>
+              {% else %}
+                <span class="muted">{{ entry.classification_reason|default:"-" }}</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="7" class="empty-state">
+              {% if latest_scan %}
+                This directory is empty in the latest scan.
+              {% else %}
+                Start a scan before browsing storage contents.
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
+
+{% block taskbar %}
+  {% if latest_scan %}
+    <span>{{ storage.display_name }}: scan {{ latest_scan.id }}</span>
+    <span class="muted">{{ current_path|default:"/" }}</span>
+  {% else %}
+    <span class="muted">{{ storage.display_name }} has no inventory yet</span>
+  {% endif %}
+{% endblock %}

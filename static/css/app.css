@@ -308,8 +308,29 @@ a.tree-node {
   background: var(--tree-line);
 }
 
+.tree-subchildren {
+  position: relative;
+  margin-left: 34px;
+  padding-left: 10px;
+}
+
+.tree-subchildren::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  bottom: 5px;
+  left: 5px;
+  width: 1px;
+  background: var(--tree-line);
+}
+
 .tree-leaf {
   min-height: 31px;
+}
+
+.storage-leaf {
+  min-height: 29px;
+  padding-left: 7px;
 }
 
 .tree-caret {
@@ -549,6 +570,119 @@ code {
   color: var(--amber);
 }
 
+.badge.referenced {
+  background: var(--success-bg);
+  color: var(--green);
+}
+
+.badge.likely_orphan,
+.badge.classification_blocked {
+  background: var(--danger-bg);
+  color: var(--red);
+}
+
+.badge.unknown {
+  background: var(--badge-bg);
+  color: var(--badge-text);
+}
+
+.badge.trash {
+  background: var(--warning-bg);
+  color: var(--amber);
+}
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.breadcrumb a,
+.breadcrumb span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.breadcrumb-separator {
+  color: var(--muted);
+}
+
+.browser-path {
+  max-width: 46%;
+  min-width: 180px;
+  overflow: hidden;
+  text-align: right;
+}
+
+.browser-path code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-table th:first-child,
+.browser-table td:first-child {
+  min-width: 260px;
+}
+
+.browser-name a,
+.browser-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.browser-name a {
+  color: var(--text);
+}
+
+.browser-name span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--tree-icon-text);
+  flex: 0 0 auto;
+}
+
+.file-icon.directory {
+  color: var(--accent-strong);
+}
+
+.file-icon svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+
 .empty-state {
   padding: 18px;
   color: var(--muted);
@@ -639,6 +773,16 @@ code {
   .metric-grid,
   .split-view {
     grid-template-columns: 1fr;
+  }
+
+  .browser-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .browser-path {
+    max-width: none;
+    text-align: left;
   }
 
   .topbar-status {

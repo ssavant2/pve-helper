@@ -27,7 +27,7 @@
       <tbody>
         {% for storage in storages %}
           <tr data-context-label="{{ storage.path }}">
-            <td>{{ storage.display_name }}</td>
+            <td><a href="{% url 'core:storage_browser' storage.storage_id %}">{{ storage.display_name }}</a></td>
             <td><code>{{ storage.storage_id }}</code></td>
             <td><code>{{ storage.path }}</code></td>
             <td>{{ storage.expected_consumers|join:", " }}</td>

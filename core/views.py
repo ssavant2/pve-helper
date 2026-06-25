@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import connection
 from django.db.models import Count
-from django.shortcuts import redirect
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
+from django.shortcuts import get_object_or_404, redirect
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
 from django_q.tasks import async_task
@@ -20,8 +22,8 @@ def app_login_required(view_func):
     return login_required(view_func)
 
 
-def navigation_context(active: str) -> dict[str, str]:
-    return {"active_nav": active}
+def navigation_context(active: str, **extra: str) -> dict[str, str]:
+    return {"active_nav": active, **extra}
 
 
 @app_login_required
@@ -70,6 +72,53 @@ def datastores(request):
         "storages": storages,
     }
     return render(request, "core/datastores.html", context)
+
+
+@app_login_required
+def storage_browser(request, storage_id: str):
+    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    latest_scan = ScanRun.objects.order_by("-created_at").first()
+    current_path = _normalize_browser_path(request.GET.get("path", ""))
+    parent_path = _parent_path(current_path)
+    entries = []
+    current_entry = None
+
+    if latest_scan:
+        if current_path:
+            current_entry = FileInventory.objects.filter(
+                scan_run=latest_scan,
+                storage=storage,
+                path=current_path,
+                entry_type=FileInventory.EntryType.DIRECTORY,
+            ).first()
+            if current_entry is None:
+                raise Http404("Directory not found in latest scan.")
+
+        candidates = FileInventory.objects.filter(scan_run=latest_scan, storage=storage)
+        if current_path:
+            candidates = candidates.filter(path__startswith=f"{current_path}/")
+
+        prefix = f"{current_path}/" if current_path else ""
+        for entry in candidates:
+            remainder = entry.path[len(prefix) :] if prefix else entry.path
+            if not remainder or "/" in remainder:
+                continue
+            entry.name = remainder
+            entries.append(entry)
+
+    entries.sort(key=lambda item: (item.entry_type != FileInventory.EntryType.DIRECTORY, item.name.lower()))
+
+    context = {
+        **navigation_context("storage_browser", active_storage_id=storage.storage_id),
+        "storage": storage,
+        "latest_scan": latest_scan,
+        "current_path": current_path,
+        "parent_path": parent_path,
+        "breadcrumbs": _browser_breadcrumbs(current_path),
+        "entries": entries,
+        "current_entry": current_entry,
+    }
+    return render(request, "core/storage_browser.html", context)
 
 
 @app_login_required
@@ -143,3 +192,32 @@ def _classification_counts(queryset) -> dict[str, int]:
         item["classification"]: item["count"]
         for item in queryset.values("classification").order_by().annotate(count=Count("id"))
     }
+
+
+def _normalize_browser_path(raw_path: str) -> str:
+    path = (raw_path or "").strip().strip("/")
+    if not path:
+        return ""
+
+    parts = PurePosixPath(path).parts
+    if any(part in {"", ".", ".."} for part in parts):
+        raise Http404("Invalid storage path.")
+    return PurePosixPath(*parts).as_posix()
+
+
+def _parent_path(path: str) -> str:
+    if not path or "/" not in path:
+        return ""
+    return path.rsplit("/", 1)[0]
+
+
+def _browser_breadcrumbs(path: str) -> list[dict[str, str]]:
+    breadcrumbs = [{"label": "Root", "path": ""}]
+    if not path:
+        return breadcrumbs
+
+    current = []
+    for part in path.split("/"):
+        current.append(part)
+        breadcrumbs.append({"label": part, "path": "/".join(current)})
+    return breadcrumbs

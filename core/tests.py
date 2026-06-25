@@ -131,6 +131,22 @@ class ViewSmokeTests(TestCase):
         FileInventory.objects.create(
             scan_run=scan,
             storage=storage,
+            path="images",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/100",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
             path="images/100/vm-100-disk-0.qcow2",
             derived_volid="TrueNAS-VM:100/vm-100-disk-0.qcow2",
             content_category="vm_disk",
@@ -140,3 +156,11 @@ class ViewSmokeTests(TestCase):
         for name in ["core:dashboard", "core:datastores", "core:orphan_finder"]:
             response = self.client.get(reverse(name))
             self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "images")
+
+        response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]), {"path": "images/100"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "vm-100-disk-0.qcow2")
