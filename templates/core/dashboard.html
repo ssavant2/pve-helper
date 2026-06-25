@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - pve-helper{% endblock %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Dashboard</h1>
+      <p>Cluster and storage inventory status</p>
+    </div>
+    <form method="post" action="{% url 'core:start_scan' %}">
+      {% csrf_token %}
+      <button class="primary-action" type="submit">Start scan</button>
+    </form>
+  </section>
+
+  <section class="metric-grid">
+    <div class="metric">
+      <span class="metric-label">Storages</span>
+      <strong>{{ storage_count }}</strong>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Scans</span>
+      <strong>{{ scan_count }}</strong>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Audit events</span>
+      <strong>{{ audit_count }}</strong>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Likely orphans</span>
+      <strong>{{ classification_counts.likely_orphan|default:0 }}</strong>
+    </div>
+  </section>
+
+  <section class="split-view">
+    <div class="panel">
+      <div class="panel-heading">
+        <h2>Latest scan</h2>
+      </div>
+      {% if latest_scan %}
+        <dl class="details-list">
+          <dt>ID</dt><dd>{{ latest_scan.id }}</dd>
+          <dt>Status</dt><dd><span class="badge {{ latest_scan.status }}">{{ latest_scan.get_status_display }}</span></dd>
+          <dt>Progress</dt><dd>{{ latest_scan.progress_message|default:"-" }}</dd>
+          <dt>Created</dt><dd>{{ latest_scan.created_at }}</dd>
+          <dt>Task</dt><dd>{{ latest_scan.queued_task_id|default:"-" }}</dd>
+        </dl>
+      {% else %}
+        <div class="empty-state">No scan runs yet.</div>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading">
+        <h2>Classification</h2>
+      </div>
+      <table class="data-table compact">
+        <tbody>
+          <tr><th>Referenced</th><td>{{ classification_counts.referenced|default:0 }}</td></tr>
+          <tr><th>Likely orphan</th><td>{{ classification_counts.likely_orphan|default:0 }}</td></tr>
+          <tr><th>Unknown</th><td>{{ classification_counts.unknown|default:0 }}</td></tr>
+          <tr><th>Blocked</th><td>{{ classification_counts.classification_blocked|default:0 }}</td></tr>
+          <tr><th>Trash</th><td>{{ classification_counts.trash|default:0 }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}
+
+{% block taskbar %}
+  {% if latest_scan %}
+    <span>Scan {{ latest_scan.id }}: {{ latest_scan.progress_message|default:latest_scan.get_status_display }}</span>
+  {% else %}
+    <span class="muted">No scan history</span>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Orphan Finder - pve-helper{% endblock %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Orphan Finder</h1>
+      <p>Conservative read-only classification results</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Storage</th>
+          <th>Path</th>
+          <th>Size</th>
+          <th>Evidence</th>
+          <th>Scan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for file in files %}
+          <tr data-context-label="{{ file.path }}">
+            <td>{{ file.storage.display_name }}</td>
+            <td><code>{{ file.path }}</code></td>
+            <td>{{ file.size_bytes|default:"-" }}</td>
+            <td>{{ file.classification_reason|default:"-" }}</td>
+            <td>{{ file.scan_run_id }}</td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="5" class="empty-state">No likely orphan files in the current inventory.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

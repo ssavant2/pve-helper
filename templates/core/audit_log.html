@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Log - pve-helper{% endblock %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Audit Log</h1>
+      <p>Authentication, scan, and future file actions</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>User</th>
+          <th>Action</th>
+          <th>Object</th>
+          <th>Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in events %}
+          <tr data-context-label="{{ event.object_id }}">
+            <td>{{ event.timestamp }}</td>
+            <td>{{ event.username|default:"-" }}</td>
+            <td>{{ event.action }}</td>
+            <td>{{ event.object_type }} {{ event.object_id }}</td>
+            <td><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="5" class="empty-state">No audit events yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

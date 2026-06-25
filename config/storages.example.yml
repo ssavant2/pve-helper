@@ -1,0 +1,18 @@
+storages:
+  - id: replace-with-proxmox-storage-id-for-fs
+    display_name: nfs-fs
+    export: 203.0.113.10:/export/proxmox-fs
+    host_path: /mnt/pve-helper/truenas-fs
+    container_path: /storages/truenas-fs
+    trash_path: /storages/truenas-fs/.trash/pve-helper
+    expected_consumers:
+      - pve1
+
+  - id: replace-with-proxmox-storage-id-for-vm
+    display_name: nfs-vm
+    export: 203.0.113.10:/export/proxmox-vm
+    host_path: /mnt/pve-helper/truenas-vm
+    container_path: /storages/truenas-vm
+    trash_path: /storages/truenas-vm/.trash/pve-helper
+    expected_consumers:
+      - pve1

@@ -1,0 +1,30 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.sqlite3
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+staticfiles/
+media/
+logs/
+certs/
+dev-storage/
+
+# Local working notes with real environment values (never commit)
+.local/
+
+# Live compose with real values — commit docker-compose.example.yml instead
+docker-compose.yml
+
+# Specific architecture plan with real topology — keep local
+PLAN.md
+.venv/
+venv/
+dist/
+build/
+*.egg-info/

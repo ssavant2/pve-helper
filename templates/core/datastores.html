@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Datastores - pve-helper{% endblock %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Datastores</h1>
+      <p>Configured Proxmox storage roots</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Storage ID</th>
+          <th>Path</th>
+          <th>Expected consumers</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for storage in storages %}
+          <tr data-context-label="{{ storage.path }}">
+            <td>{{ storage.display_name }}</td>
+            <td><code>{{ storage.storage_id }}</code></td>
+            <td><code>{{ storage.path }}</code></td>
+            <td>{{ storage.expected_consumers|join:", " }}</td>
+            <td><span class="badge {% if storage.enabled %}completed{% else %}failed{% endif %}">{% if storage.enabled %}Enabled{% else %}Disabled{% endif %}</span></td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="5" class="empty-state">No datastores configured in the database yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

@@ -1,0 +1,136 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}pve-helper{% endblock %}</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("pve-helper-theme");
+          if (theme !== "light" && theme !== "dark") {
+            theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (error) {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
+    <script defer src="{% static 'js/app.js' %}"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">pve</span>
+          <span class="brand-name">pve-helper</span>
+        </div>
+        <div class="topbar-status">
+          <span class="status-dot"></span>
+          <span>{{ app_base_url }}</span>
+        </div>
+        <div class="user-area">
+          <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">
+            <span data-theme-label>Theme</span>
+          </button>
+          {% if request.user.is_authenticated %}
+            <span>{{ request.user.get_username }}</span>
+            <form class="inline-form" method="post" action="{% url 'logout' %}">
+              {% csrf_token %}
+              <button type="submit">Log out</button>
+            </form>
+          {% else %}
+            <a href="{% url 'oidc_authentication_init' %}">Log in</a>
+          {% endif %}
+        </div>
+      </header>
+
+      <aside class="sidebar">
+        <nav class="nav-tree" aria-label="Module navigation">
+          <div class="tree-root">
+            <span class="tree-icon root-icon"><i data-lucide="wrench" aria-hidden="true"></i></span>
+            <span class="tree-label">pve-helper</span>
+          </div>
+
+          <section class="tree-module" aria-label="Clusters module">
+            <div class="tree-node module-node disabled">
+              <span class="tree-caret">></span>
+              <span class="tree-icon"><i data-lucide="server" aria-hidden="true"></i></span>
+              <span class="tree-label">Clusters</span>
+            </div>
+          </section>
+
+          <section class="tree-module" aria-label="VMs module">
+            <div class="tree-node module-node disabled">
+              <span class="tree-caret">></span>
+              <span class="tree-icon"><i data-lucide="monitor" aria-hidden="true"></i></span>
+              <span class="tree-label">VMs</span>
+            </div>
+          </section>
+
+          <section class="tree-module expanded" aria-label="Storage module">
+            <div class="tree-node module-node active-module">
+              <span class="tree-caret">v</span>
+              <span class="tree-icon storage-icon"><i data-lucide="database" aria-hidden="true"></i></span>
+              <span class="tree-label">Storage</span>
+            </div>
+            <div class="tree-children">
+              <a class="tree-node tree-leaf {% if active_nav == 'dashboard' %}active{% endif %}" href="{% url 'core:dashboard' %}">
+                <span class="tree-icon"><i data-lucide="layout-dashboard" aria-hidden="true"></i></span>
+                <span class="tree-label">Overview</span>
+              </a>
+              <a class="tree-node tree-leaf {% if active_nav == 'datastores' %}active{% endif %}" href="{% url 'core:datastores' %}">
+                <span class="tree-icon"><i data-lucide="hard-drive" aria-hidden="true"></i></span>
+                <span class="tree-label">Datastores</span>
+              </a>
+              <a class="tree-node tree-leaf {% if active_nav == 'orphans' %}active{% endif %}" href="{% url 'core:orphan_finder' %}">
+                <span class="tree-icon"><i data-lucide="file-question" aria-hidden="true"></i></span>
+                <span class="tree-label">Orphan Finder</span>
+              </a>
+            </div>
+          </section>
+
+          <section class="tree-module" aria-label="Network module">
+            <div class="tree-node module-node disabled">
+              <span class="tree-caret">></span>
+              <span class="tree-icon"><i data-lucide="network" aria-hidden="true"></i></span>
+              <span class="tree-label">Network</span>
+            </div>
+          </section>
+
+          <a class="tree-node module-node {% if active_nav == 'audit' %}active{% endif %}" href="{% url 'core:audit_log' %}">
+            <span class="tree-caret"></span>
+            <span class="tree-icon"><i data-lucide="clipboard-list" aria-hidden="true"></i></span>
+            <span class="tree-label">Audit</span>
+          </a>
+        </nav>
+      </aside>
+
+      <main class="content">
+        {% if messages %}
+          <div class="messages">
+            {% for message in messages %}
+              <div class="message {{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+
+      <footer class="taskbar">
+        <span>Recent tasks</span>
+        {% block taskbar %}<span class="muted">No task selected</span>{% endblock %}
+      </footer>
+    </div>
+
+    <div id="context-menu" class="context-menu" hidden>
+      <button type="button" data-action="details">Details</button>
+      <button type="button" data-action="copy-path">Copy path</button>
+    </div>
+  </body>
+</html>

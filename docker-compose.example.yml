@@ -1,0 +1,162 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-pve_helper}
+      POSTGRES_USER: ${DB_USER:-pve_helper}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build: .
+    image: pve-helper:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
+      DEBUG: ${DEBUG:-true}
+      APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-false}
+      APP_BASE_URL: ${APP_BASE_URL:-https://pve-helper.example.com}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-pve-helper.example.com,dockerhost,localhost,127.0.0.1}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://pve-helper.example.com,http://dockerhost:21080,http://localhost:21080}
+      USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-true}
+      SECURE_PROXY_SSL_HEADER: ${SECURE_PROXY_SSL_HEADER:-true}
+      DB_NAME: ${DB_NAME:-pve_helper}
+      DB_USER: ${DB_USER:-pve_helper}
+      DB_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
+      DB_HOST: db
+      DB_PORT: "5432"
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-https://authentik.example.internal/application/o/pve-helper/}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-https://pve-helper.example.com/auth/oidc/callback}
+      OIDC_REQUIRED_GROUP: ${OIDC_REQUIRED_GROUP:-pve-helper-admins}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
+      PVE_ENDPOINTS: ${PVE_ENDPOINTS:-https://pve1.example.com:8006}
+      PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
+      PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
+      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-/etc/ssl/pve-helper-ca-bundle.pem}
+      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
+      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
+      Q_CLUSTER_WORKERS: ${Q_CLUSTER_WORKERS:-1}
+      Q_CLUSTER_TIMEOUT: ${Q_CLUSTER_TIMEOUT:-1800}
+      Q_CLUSTER_RETRY: ${Q_CLUSTER_RETRY:-2100}
+      TZ: ${TZ:-Europe/Stockholm}
+    ports:
+      - "${APP_PORT:-21080}:8000"
+    volumes:
+      - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
+      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
+      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 200
+    mem_limit: 512m
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz/live', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    image: pve-helper:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
+      DEBUG: ${DEBUG:-true}
+      APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-false}
+      APP_BASE_URL: ${APP_BASE_URL:-https://pve-helper.example.com}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-pve-helper.example.com,dockerhost,localhost,127.0.0.1}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://pve-helper.example.com,http://dockerhost:21080,http://localhost:21080}
+      USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-true}
+      SECURE_PROXY_SSL_HEADER: ${SECURE_PROXY_SSL_HEADER:-true}
+      DB_NAME: ${DB_NAME:-pve_helper}
+      DB_USER: ${DB_USER:-pve_helper}
+      DB_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
+      DB_HOST: db
+      DB_PORT: "5432"
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-https://authentik.example.internal/application/o/pve-helper/}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-https://pve-helper.example.com/auth/oidc/callback}
+      OIDC_REQUIRED_GROUP: ${OIDC_REQUIRED_GROUP:-pve-helper-admins}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
+      PVE_ENDPOINTS: ${PVE_ENDPOINTS:-https://pve1.example.com:8006}
+      PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
+      PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
+      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-/etc/ssl/pve-helper-ca-bundle.pem}
+      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
+      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
+      Q_CLUSTER_WORKERS: ${Q_CLUSTER_WORKERS:-1}
+      Q_CLUSTER_TIMEOUT: ${Q_CLUSTER_TIMEOUT:-1800}
+      Q_CLUSTER_RETRY: ${Q_CLUSTER_RETRY:-2100}
+      TZ: ${TZ:-Europe/Stockholm}
+    command: ["python", "manage.py", "qcluster"]
+    volumes:
+      - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
+      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
+      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 200
+    mem_limit: 512m
+    cpu_shares: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+
+networks:
+  backend:
