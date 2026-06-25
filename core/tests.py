@@ -7,7 +7,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 
-from core.models import FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
+from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
 from core.services.classification import classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
 from core.services.storage import StorageScanner
@@ -164,3 +164,35 @@ class ViewSmokeTests(TestCase):
         response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]), {"path": "images/100"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "vm-100-disk-0.qcow2")
+
+    def test_recent_tasks_endpoint_paginates_scans(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        scans = [
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message=f"Scan {index}")
+            for index in range(6)
+        ]
+        AuditEvent.objects.create(
+            user=user,
+            username="viewer",
+            action="scan.queued",
+            object_type="scan_run",
+            object_id=str(scans[-1].id),
+        )
+
+        response = self.client.get(reverse("core:recent_tasks"))
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["tasks"]), 5)
+        self.assertEqual(payload["total"], 6)
+        self.assertTrue(payload["has_next"])
+        self.assertFalse(payload["has_previous"])
+        self.assertEqual(payload["tasks"][0]["initiator"], "viewer")
+
+        response = self.client.get(reverse("core:recent_tasks"), {"page": "1"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["tasks"]), 1)
+        self.assertFalse(payload["has_next"])
+        self.assertTrue(payload["has_previous"])

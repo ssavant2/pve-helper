@@ -134,7 +134,7 @@ select {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
-  grid-template-rows: 48px minmax(0, 1fr) 166px;
+  grid-template-rows: 48px minmax(0, 1fr) 242px;
   grid-template-areas:
     "topbar topbar"
     "sidebar content"
@@ -724,12 +724,19 @@ code {
   font-size: 12px;
 }
 
-.taskbar-tabs {
+.taskbar-header {
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  justify-content: space-between;
   min-height: 36px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-alt);
+}
+
+.taskbar-tabs {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
 }
 
 .taskbar-tab {
@@ -753,9 +760,43 @@ code {
   cursor: default;
 }
 
+.taskbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+}
+
+.taskbar-page-button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.taskbar-page-button:hover:not(:disabled) {
+  background: var(--blue-soft);
+}
+
+.taskbar-page-button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.62;
+}
+
+.taskbar-page-label {
+  min-width: 76px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .task-table-wrap {
   min-height: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .task-table {
@@ -829,7 +870,7 @@ code {
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: 48px auto minmax(0, 1fr) 206px;
+    grid-template-rows: 48px auto minmax(0, 1fr) 274px;
     grid-template-areas:
       "topbar"
       "sidebar"
@@ -864,5 +905,15 @@ code {
 
   .topbar-status {
     display: none;
+  }
+
+  .taskbar-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .taskbar-controls {
+    justify-content: flex-start;
+    min-height: 36px;
   }
 }

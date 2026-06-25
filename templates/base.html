@@ -132,10 +132,23 @@
         {% block content %}{% endblock %}
       </main>
 
-      <footer class="taskbar">
-        <div class="taskbar-tabs" role="tablist" aria-label="Operations">
-          <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
-          <button class="taskbar-tab" type="button" role="tab" aria-selected="false" disabled>Alarms</button>
+      <footer class="taskbar" data-recent-tasks data-tasks-url="{% url 'core:recent_tasks' %}" data-task-page="0" data-task-poll-ms="10000">
+        <div class="taskbar-header">
+          <div class="taskbar-tabs" role="tablist" aria-label="Operations">
+            <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
+            <button class="taskbar-tab" type="button" role="tab" aria-selected="false" disabled>Alarms</button>
+          </div>
+          <div class="taskbar-controls">
+            <button class="taskbar-page-button" type="button" data-task-prev {% if not app_recent_tasks_page.has_previous %}disabled{% endif %}>Previous 5</button>
+            <span class="taskbar-page-label" data-task-page-label>
+              {% if app_recent_tasks_page.total %}
+                {{ app_recent_tasks_page.start_index }}-{{ app_recent_tasks_page.end_index }} of {{ app_recent_tasks_page.total }}
+              {% else %}
+                0 of 0
+              {% endif %}
+            </span>
+            <button class="taskbar-page-button" type="button" data-task-next {% if not app_recent_tasks_page.has_next %}disabled{% endif %}>Next 5</button>
+          </div>
         </div>
         <div class="task-table-wrap">
           <table class="task-table">
@@ -152,7 +165,7 @@
                 <th>Server</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody data-task-rows>
               {% for task in app_recent_tasks %}
                 <tr>
                   <td>{{ task.name }}</td>

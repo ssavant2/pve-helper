@@ -3,6 +3,7 @@
   const themeToggle = document.querySelector("[data-theme-toggle]");
   const themeLabels = document.querySelectorAll("[data-theme-label]");
   const menu = document.getElementById("context-menu");
+  const recentTasks = document.querySelector("[data-recent-tasks]");
   let activeLabel = "";
 
   const preferredTheme = () => {
@@ -50,6 +51,118 @@
       }
       applyTheme(nextTheme);
     });
+  }
+
+  if (recentTasks) {
+    const rows = recentTasks.querySelector("[data-task-rows]");
+    const previousButton = recentTasks.querySelector("[data-task-prev]");
+    const nextButton = recentTasks.querySelector("[data-task-next]");
+    const pageLabel = recentTasks.querySelector("[data-task-page-label]");
+    const tasksUrl = recentTasks.dataset.tasksUrl;
+    const pollMs = Number.parseInt(recentTasks.dataset.taskPollMs || "10000", 10);
+    let taskPage = Number.parseInt(recentTasks.dataset.taskPage || "0", 10);
+    let loadingTasks = false;
+
+    const escapeHtml = (value) =>
+      String(value ?? "").replace(/[&<>"']/g, (char) => {
+        const entities = {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        };
+        return entities[char];
+      });
+
+    const renderTaskRows = (tasks) => {
+      if (!rows) {
+        return;
+      }
+
+      if (!tasks.length) {
+        rows.innerHTML = '<tr><td colspan="9" class="empty-state">No recent tasks.</td></tr>';
+        return;
+      }
+
+      rows.innerHTML = tasks
+        .map(
+          (task) => `
+            <tr>
+              <td>${escapeHtml(task.name)}</td>
+              <td>${escapeHtml(task.target)}</td>
+              <td><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
+              <td>${escapeHtml(task.details)}</td>
+              <td>${escapeHtml(task.initiator)}</td>
+              <td>${escapeHtml(task.queued_for)}</td>
+              <td>${escapeHtml(task.started_at)}</td>
+              <td>${escapeHtml(task.finished_at)}</td>
+              <td>${escapeHtml(task.server)}</td>
+            </tr>
+          `
+        )
+        .join("");
+    };
+
+    const updateTaskControls = (data) => {
+      taskPage = data.page || 0;
+      recentTasks.dataset.taskPage = String(taskPage);
+
+      if (previousButton) {
+        previousButton.disabled = !data.has_previous;
+      }
+      if (nextButton) {
+        nextButton.disabled = !data.has_next;
+      }
+      if (pageLabel) {
+        pageLabel.textContent = data.total ? `${data.start_index}-${data.end_index} of ${data.total}` : "0 of 0";
+      }
+    };
+
+    const loadTaskPage = async (page) => {
+      if (!tasksUrl || loadingTasks) {
+        return;
+      }
+
+      loadingTasks = true;
+      try {
+        const url = new URL(tasksUrl, window.location.origin);
+        url.searchParams.set("page", String(Math.max(0, page)));
+        const response = await fetch(url, {
+          headers: {
+            Accept: "application/json",
+          },
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        renderTaskRows(data.tasks || []);
+        updateTaskControls(data);
+      } catch (error) {
+        // Recent task refresh is best effort; the server-rendered rows remain usable.
+      } finally {
+        loadingTasks = false;
+      }
+    };
+
+    if (previousButton) {
+      previousButton.addEventListener("click", () => {
+        loadTaskPage(taskPage - 1);
+      });
+    }
+
+    if (nextButton) {
+      nextButton.addEventListener("click", () => {
+        loadTaskPage(taskPage + 1);
+      });
+    }
+
+    window.setInterval(() => {
+      if (taskPage === 0 && document.visibilityState !== "hidden") {
+        loadTaskPage(0);
+      }
+    }, Number.isFinite(pollMs) ? pollMs : 10000);
   }
 
   if (menu) {

@@ -14,6 +14,7 @@ from django.views.decorators.http import require_POST
 from django_q.tasks import async_task
 
 from .models import AuditEvent, FileInventory, ScanRun, StorageMount
+from .services.recent_tasks import recent_task_page, serialize_task_page
 
 
 def app_login_required(view_func):
@@ -146,6 +147,16 @@ def audit_log(request):
         "events": AuditEvent.objects.order_by("-timestamp")[:200],
     }
     return render(request, "core/audit_log.html", context)
+
+
+@app_login_required
+def recent_tasks(request):
+    try:
+        page = int(request.GET.get("page", "0"))
+    except ValueError:
+        page = 0
+
+    return JsonResponse(serialize_task_page(recent_task_page(page=page)))
 
 
 @require_POST
