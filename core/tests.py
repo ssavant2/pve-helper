@@ -8,7 +8,7 @@ from django.urls import reverse
 from django.contrib.auth import get_user_model
 
 from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
-from core.services.classification import classify_entry, extract_disk_references
+from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
 from core.services.storage import StorageScanner
 
@@ -63,6 +63,10 @@ class ClassificationTests(SimpleTestCase):
         )
 
         self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
+
+    def test_categorizes_proxmox_image_directories(self):
+        self.assertEqual(categorize_proxmox_path("images"), "vm_images")
+        self.assertEqual(categorize_proxmox_path("images/500"), "vm_image_directory")
 
     def test_storage_scanner_records_permission_errors_without_raising(self):
         with TemporaryDirectory() as tmp:
@@ -160,6 +164,8 @@ class ViewSmokeTests(TestCase):
         response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "images")
+        self.assertContains(response, "VM images")
+        self.assertContains(response, "Not classified")
 
         response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]), {"path": "images/100"})
         self.assertEqual(response.status_code, 200)

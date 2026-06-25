@@ -134,6 +134,10 @@
 
       <footer class="taskbar" data-recent-tasks data-tasks-url="{% url 'core:recent_tasks' %}" data-task-page="0" data-task-poll-ms="10000">
         <div class="taskbar-header">
+          <button class="taskbar-toggle" type="button" data-taskbar-toggle aria-label="Hide recent tasks" aria-expanded="true">
+            <i data-lucide="chevron-down" data-taskbar-expanded-icon aria-hidden="true"></i>
+            <i data-lucide="chevron-up" data-taskbar-collapsed-icon aria-hidden="true"></i>
+          </button>
           <div class="taskbar-tabs" role="tablist" aria-label="Operations">
             <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
             <button class="taskbar-tab" type="button" role="tab" aria-selected="false" disabled>Alarms</button>

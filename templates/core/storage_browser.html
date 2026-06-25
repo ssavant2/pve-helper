@@ -86,10 +86,10 @@
               {% endif %}
             </td>
             <td>{{ entry.get_entry_type_display }}</td>
-            <td><span class="badge {{ entry.classification }}">{{ entry.get_classification_display }}</span></td>
+            <td><span class="badge {{ entry.classification_class }}">{{ entry.classification_label }}</span></td>
             <td>{% if entry.size_bytes != None %}{{ entry.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
             <td>{{ entry.modified_at|default:"-" }}</td>
-            <td>{{ entry.content_category|default:"-" }}</td>
+            <td>{{ entry.category_label }}</td>
             <td>
               {% if entry.derived_volid %}
                 <code>{{ entry.derived_volid }}</code>

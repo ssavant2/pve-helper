@@ -1,4 +1,5 @@
 :root {
+  --taskbar-height: 242px;
   --bg: #eef1f4;
   --surface: #ffffff;
   --surface-alt: #f7f8fa;
@@ -134,11 +135,15 @@ select {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
-  grid-template-rows: 48px minmax(0, 1fr) 242px;
+  grid-template-rows: 48px minmax(0, 1fr) var(--taskbar-height);
   grid-template-areas:
     "topbar topbar"
     "sidebar content"
     "taskbar taskbar";
+}
+
+.app-shell.tasks-collapsed {
+  --taskbar-height: 38px;
 }
 
 .topbar {
@@ -591,6 +596,12 @@ code {
   color: var(--badge-text);
 }
 
+.badge.not_classified {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
 .badge.trash {
   background: var(--warning-bg);
   color: var(--amber);
@@ -733,10 +744,44 @@ code {
   background: var(--surface-alt);
 }
 
+.taskbar-toggle {
+  display: inline-grid;
+  place-items: center;
+  align-self: stretch;
+  width: 44px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.taskbar-toggle:hover {
+  background: var(--blue-soft);
+}
+
+.taskbar-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.taskbar-toggle [data-taskbar-collapsed-icon] {
+  display: none;
+}
+
+.tasks-collapsed .taskbar-toggle [data-taskbar-expanded-icon] {
+  display: none;
+}
+
+.tasks-collapsed .taskbar-toggle [data-taskbar-collapsed-icon] {
+  display: block;
+}
+
 .taskbar-tabs {
   display: flex;
   align-items: stretch;
   align-self: stretch;
+  margin-right: auto;
 }
 
 .taskbar-tab {
@@ -797,6 +842,11 @@ code {
   min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+.tasks-collapsed .taskbar-controls,
+.tasks-collapsed .task-table-wrap {
+  display: none;
 }
 
 .task-table {
@@ -869,13 +919,18 @@ code {
 
 @media (max-width: 860px) {
   .app-shell {
+    --taskbar-height: 274px;
     grid-template-columns: 1fr;
-    grid-template-rows: 48px auto minmax(0, 1fr) 274px;
+    grid-template-rows: 48px auto minmax(0, 1fr) var(--taskbar-height);
     grid-template-areas:
       "topbar"
       "sidebar"
       "content"
       "taskbar";
+  }
+
+  .app-shell.tasks-collapsed {
+    --taskbar-height: 38px;
   }
 
   .sidebar {

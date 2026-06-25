@@ -1,7 +1,10 @@
 (() => {
   const themeKey = "pve-helper-theme";
+  const taskbarKey = "pve-helper-taskbar-collapsed";
+  const appShell = document.querySelector(".app-shell");
   const themeToggle = document.querySelector("[data-theme-toggle]");
   const themeLabels = document.querySelectorAll("[data-theme-label]");
+  const taskbarToggle = document.querySelector("[data-taskbar-toggle]");
   const menu = document.getElementById("context-menu");
   const recentTasks = document.querySelector("[data-recent-tasks]");
   let activeLabel = "";
@@ -30,7 +33,22 @@
     }
   };
 
+  const applyTaskbarState = (collapsed) => {
+    if (!appShell || !taskbarToggle) {
+      return;
+    }
+
+    appShell.classList.toggle("tasks-collapsed", collapsed);
+    taskbarToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    taskbarToggle.setAttribute("aria-label", collapsed ? "Show recent tasks" : "Hide recent tasks");
+  };
+
   applyTheme(preferredTheme());
+  try {
+    applyTaskbarState(localStorage.getItem(taskbarKey) === "true");
+  } catch (error) {
+    applyTaskbarState(false);
+  }
 
   if (window.lucide) {
     window.lucide.createIcons({
@@ -50,6 +68,21 @@
         // Theme persistence is optional; the UI still updates for this page.
       }
       applyTheme(nextTheme);
+    });
+  }
+
+  if (taskbarToggle) {
+    taskbarToggle.addEventListener("click", () => {
+      if (!appShell) {
+        return;
+      }
+      const collapsed = !appShell.classList.contains("tasks-collapsed");
+      try {
+        localStorage.setItem(taskbarKey, collapsed ? "true" : "false");
+      } catch (error) {
+        // The visual state still changes even when localStorage is unavailable.
+      }
+      applyTaskbarState(collapsed);
     });
   }
 

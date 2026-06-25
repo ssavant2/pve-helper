@@ -21,12 +21,18 @@ def categorize_proxmox_path(relative_path: str) -> str:
     parts = path.parts
     if parts[:1] == (".trash",):
         return "trash"
+    if parts == ("images",):
+        return "vm_images"
+    if len(parts) == 2 and parts[0] == "images":
+        return "vm_image_directory"
     if len(parts) >= 3 and parts[0] == "images" and parts[2].startswith("base-"):
         return "base_image"
     if len(parts) >= 3 and parts[0] == "images" and parts[2].startswith("vm-"):
         return "vm_disk"
     if parts[:1] == ("dump",):
         return "backup"
+    if parts == ("template",):
+        return "template_directory"
     if parts[:2] == ("template", "iso"):
         return "iso"
     if parts[:2] == ("template", "cache"):

@@ -105,6 +105,7 @@ def storage_browser(request, storage_id: str):
             if not remainder or "/" in remainder:
                 continue
             entry.name = remainder
+            _decorate_browser_entry(entry)
             entries.append(entry)
 
     entries.sort(key=lambda item: (item.entry_type != FileInventory.EntryType.DIRECTORY, item.name.lower()))
@@ -232,3 +233,46 @@ def _browser_breadcrumbs(path: str) -> list[dict[str, str]]:
         current.append(part)
         breadcrumbs.append({"label": part, "path": "/".join(current)})
     return breadcrumbs
+
+
+def _decorate_browser_entry(entry: FileInventory) -> None:
+    entry.classification_label = _classification_label(entry)
+    entry.classification_class = _classification_class(entry)
+    entry.category_label = _content_category_label(entry.content_category, entry.path)
+
+
+def _classification_label(entry: FileInventory) -> str:
+    if entry.entry_type != FileInventory.EntryType.FILE and entry.classification == FileInventory.Classification.UNKNOWN:
+        return "Not classified"
+    return entry.get_classification_display()
+
+
+def _classification_class(entry: FileInventory) -> str:
+    if entry.entry_type != FileInventory.EntryType.FILE and entry.classification == FileInventory.Classification.UNKNOWN:
+        return "not_classified"
+    return entry.classification
+
+
+def _content_category_label(category: str, path: str) -> str:
+    if category == "unknown":
+        if path == "images":
+            return "VM images"
+        if path.startswith("images/"):
+            return "VM image directory"
+        if path == "template":
+            return "Templates"
+
+    labels = {
+        "backup": "Backups",
+        "base_image": "Base image",
+        "ct_private": "CT private data",
+        "ct_template": "CT templates",
+        "iso": "ISO images",
+        "snippet": "Snippets",
+        "template_directory": "Templates",
+        "trash": "Trash",
+        "vm_disk": "VM disk",
+        "vm_image_directory": "VM image directory",
+        "vm_images": "VM images",
+    }
+    return labels.get(category, "Other / unknown")
