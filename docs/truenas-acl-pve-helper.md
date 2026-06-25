@@ -89,6 +89,12 @@ ACL mistakes are much less exciting when rollback exists.
 Because `Proxmox` is a directory and not a dataset, avoid the dataset ACL editor
 for the parent dataset. Use the TrueNAS shell and target the exact directory.
 
+Proxmox creates some storage paths, such as `images/<vmid>`, as `root:root` with
+restrictive modes like `750`. That ownership/mode is created by Proxmox, not by
+TrueNAS. The ACL below does not change Proxmox ownership or write permissions;
+it only adds an extra read/traverse rule for the `pve-helper` UID so the scanner
+can inspect the files.
+
 Before using shell ACL commands, confirm that the parent datasets show
 `Unix Permissions` in the TrueNAS `Datasets` -> `Permissions` widget. If they
 show NFSv4 ACL entries instead, stop and convert this guide first.
