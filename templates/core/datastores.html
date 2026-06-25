@@ -18,6 +18,9 @@
           <th>Storage ID</th>
           <th>Path</th>
           <th>Expected consumers</th>
+          <th>Gate</th>
+          <th>Latest files</th>
+          <th>Likely orphans</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -28,11 +31,22 @@
             <td><code>{{ storage.storage_id }}</code></td>
             <td><code>{{ storage.path }}</code></td>
             <td>{{ storage.expected_consumers|join:", " }}</td>
+            <td>
+              {% if storage.latest_gate_status %}
+                <span class="badge {% if storage.latest_gate_status.ok %}completed{% else %}failed{% endif %}">
+                  {{ storage.latest_gate_status.status }}
+                </span>
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>{{ storage.latest_file_count }}</td>
+            <td>{{ storage.latest_counts.likely_orphan|default:0 }}</td>
             <td><span class="badge {% if storage.enabled %}completed{% else %}failed{% endif %}">{% if storage.enabled %}Enabled{% else %}Disabled{% endif %}</span></td>
           </tr>
         {% empty %}
           <tr>
-            <td colspan="5" class="empty-state">No datastores configured in the database yet.</td>
+            <td colspan="8" class="empty-state">No datastores configured in the database yet.</td>
           </tr>
         {% endfor %}
       </tbody>

@@ -6,7 +6,10 @@
   <section class="page-header">
     <div>
       <h1>Orphan Finder</h1>
-      <p>Conservative read-only classification results</p>
+      <p>
+        Conservative read-only classification results
+        {% if latest_scan %}from scan {{ latest_scan.id }}{% endif %}
+      </p>
     </div>
   </section>
 

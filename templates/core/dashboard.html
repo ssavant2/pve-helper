@@ -44,7 +44,9 @@
           <dt>Status</dt><dd><span class="badge {{ latest_scan.status }}">{{ latest_scan.get_status_display }}</span></dd>
           <dt>Progress</dt><dd>{{ latest_scan.progress_message|default:"-" }}</dd>
           <dt>Created</dt><dd>{{ latest_scan.created_at }}</dd>
+          <dt>Finished</dt><dd>{{ latest_scan.finished_at|default:"-" }}</dd>
           <dt>Task</dt><dd>{{ latest_scan.queued_task_id|default:"-" }}</dd>
+          <dt>Endpoints</dt><dd>{{ latest_scan.endpoints_succeeded|join:", "|default:"-" }}</dd>
         </dl>
       {% else %}
         <div class="empty-state">No scan runs yet.</div>
@@ -66,6 +68,38 @@
       </table>
     </div>
   </section>
+
+  {% if latest_scan %}
+    <section class="panel">
+      <div class="panel-heading">
+        <h2>Storage gate</h2>
+      </div>
+      <table class="data-table compact">
+        <thead>
+          <tr>
+            <th>Storage</th>
+            <th>Status</th>
+            <th>Expected consumers</th>
+            <th>Missing</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for storage_id, gate in latest_scan.storage_gate_status.items %}
+            <tr data-context-label="{{ storage_id }}">
+              <td><code>{{ storage_id }}</code></td>
+              <td><span class="badge {% if gate.ok %}completed{% else %}failed{% endif %}">{{ gate.status }}</span></td>
+              <td>{{ gate.expected_consumers|join:", "|default:"-" }}</td>
+              <td>{{ gate.missing_consumers|join:", "|default:"-" }}</td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="4" class="empty-state">No storage gate data for this scan.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
 {% endblock %}
 
 {% block taskbar %}

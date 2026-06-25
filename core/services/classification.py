@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+import re
+from typing import Any
+
+from core.models import FileInventory
 
 
 @dataclass(frozen=True)
@@ -15,6 +19,8 @@ class DerivedVolume:
 def categorize_proxmox_path(relative_path: str) -> str:
     path = PurePosixPath(relative_path)
     parts = path.parts
+    if parts[:1] == (".trash",):
+        return "trash"
     if len(parts) >= 3 and parts[0] == "images" and parts[2].startswith("base-"):
         return "base_image"
     if len(parts) >= 3 and parts[0] == "images" and parts[2].startswith("vm-"):
@@ -43,3 +49,148 @@ def derive_volid(storage_id: str, relative_path: str) -> DerivedVolume | None:
             content_category=category,
         )
     return None
+
+
+def extract_vmid_from_image_path(relative_path: str) -> int | None:
+    path = PurePosixPath(relative_path)
+    parts = path.parts
+    if len(parts) < 3 or parts[0] != "images":
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+DISK_CONFIG_KEYS = re.compile(
+    r"^(?:"
+    r"ide|sata|scsi|virtio|efidisk|tpmstate|unused|"
+    r"rootfs|mp"
+    r")\d*$"
+)
+
+
+def extract_disk_references(config: dict[str, Any]) -> list[str]:
+    references: list[str] = []
+
+    def visit(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key))
+            return
+        if isinstance(value, list):
+            for child_value in value:
+                visit(child_value, key)
+            return
+        if not isinstance(value, str):
+            return
+        if not DISK_CONFIG_KEYS.match(key):
+            return
+
+        volid = parse_config_value_volid(value)
+        if volid:
+            references.append(volid)
+
+    visit(config)
+    return sorted(set(references))
+
+
+def parse_config_value_volid(value: str) -> str:
+    first_value = value.split(",", 1)[0].strip()
+    if not first_value or first_value == "none":
+        return ""
+    if first_value.startswith(("http://", "https://")):
+        return ""
+    if ":" not in first_value:
+        return ""
+    return first_value
+
+
+@dataclass(frozen=True)
+class ClassificationResult:
+    classification: str
+    reason: str
+    matched_object: dict[str, Any]
+    evidence: dict[str, Any]
+
+
+def classify_entry(
+    *,
+    relative_path: str,
+    entry_type: str,
+    content_category: str,
+    derived_volid: str,
+    referenced_volids: set[str],
+    template_vmids: set[int],
+    gate_ok: bool,
+    missing_consumers: list[str],
+) -> ClassificationResult:
+    evidence = {
+        "derived_volid": derived_volid,
+        "content_category": content_category,
+        "gate_ok": gate_ok,
+        "missing_consumers": missing_consumers,
+    }
+
+    if content_category == "trash" or relative_path.startswith(".trash/"):
+        return ClassificationResult(
+            classification=FileInventory.Classification.TRASH,
+            reason="File is already under the storage trash path.",
+            matched_object={},
+            evidence=evidence,
+        )
+
+    if derived_volid and derived_volid in referenced_volids:
+        return ClassificationResult(
+            classification=FileInventory.Classification.REFERENCED,
+            reason="Exact Proxmox volid is referenced by current VM/CT configuration.",
+            matched_object={"volid": derived_volid},
+            evidence=evidence,
+        )
+
+    if content_category == "base_image":
+        vmid = extract_vmid_from_image_path(relative_path)
+        evidence["vmid"] = vmid
+        if vmid in template_vmids:
+            return ClassificationResult(
+                classification=FileInventory.Classification.REFERENCED,
+                reason="Base image belongs to an inventoried Proxmox template.",
+                matched_object={"vmid": vmid, "object_type": "template"},
+                evidence=evidence,
+            )
+        return ClassificationResult(
+            classification=FileInventory.Classification.UNKNOWN,
+            reason="Base images are never marked orphan in V1; backing-chain analysis is deferred.",
+            matched_object={},
+            evidence=evidence,
+        )
+
+    if entry_type != FileInventory.EntryType.FILE:
+        return ClassificationResult(
+            classification=FileInventory.Classification.UNKNOWN,
+            reason="Only regular files are classified as orphan candidates in V1.",
+            matched_object={},
+            evidence=evidence,
+        )
+
+    if content_category == "vm_disk":
+        if not gate_ok:
+            return ClassificationResult(
+                classification=FileInventory.Classification.CLASSIFICATION_BLOCKED,
+                reason="Not all expected storage consumers were inventoried in this scan-run.",
+                matched_object={},
+                evidence=evidence,
+            )
+        return ClassificationResult(
+            classification=FileInventory.Classification.LIKELY_ORPHAN,
+            reason="VM disk file has no exact volid reference in the same scan-run.",
+            matched_object={},
+            evidence=evidence,
+        )
+
+    return ClassificationResult(
+        classification=FileInventory.Classification.UNKNOWN,
+        reason="This Proxmox content type is not an orphan candidate in V1.",
+        matched_object={},
+        evidence=evidence,
+    )

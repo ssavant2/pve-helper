@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from .classification import categorize_proxmox_path, derive_volid
 
@@ -9,11 +10,13 @@ from .classification import categorize_proxmox_path, derive_volid
 @dataclass(frozen=True)
 class StorageEntry:
     path: str
+    full_path: str
     relative_path: str
     entry_type: str
     content_category: str
     derived_volid: str
     size_bytes: int | None
+    modified_at: float | None
 
 
 class StorageScanner:
@@ -22,6 +25,34 @@ class StorageScanner:
     def __init__(self, storage_id: str, root: str):
         self.storage_id = storage_id
         self.root = Path(root)
+
+    def iter_entries(self) -> Iterator[StorageEntry]:
+        if not self.root.exists():
+            return
+
+        stack = [self.root]
+        while stack:
+            current = stack.pop()
+            children = sorted(current.iterdir(), key=lambda path: path.name.lower(), reverse=True)
+            for item in children:
+                stat = item.lstat()
+                relative = item.relative_to(self.root).as_posix()
+                entry_type = self._entry_type(item)
+                derived = derive_volid(self.storage_id, relative)
+
+                if entry_type == "directory":
+                    stack.append(item)
+
+                yield StorageEntry(
+                    path=relative,
+                    full_path=item.as_posix(),
+                    relative_path=relative,
+                    entry_type=entry_type,
+                    content_category=derived.content_category if derived else categorize_proxmox_path(relative),
+                    derived_volid=derived.volid if derived else "",
+                    size_bytes=stat.st_size if entry_type == "file" else None,
+                    modified_at=stat.st_mtime,
+                )
 
     def iter_top_level(self) -> list[StorageEntry]:
         if not self.root.exists():
@@ -33,12 +64,14 @@ class StorageScanner:
             derived = derive_volid(self.storage_id, relative)
             entries.append(
                 StorageEntry(
-                    path=item.as_posix(),
+                    path=relative,
+                    full_path=item.as_posix(),
                     relative_path=relative,
                     entry_type=self._entry_type(item),
                     content_category=derived.content_category if derived else categorize_proxmox_path(relative),
                     derived_volid=derived.volid if derived else "",
                     size_bytes=item.stat().st_size if item.is_file() else None,
+                    modified_at=item.stat().st_mtime,
                 )
             )
         return entries

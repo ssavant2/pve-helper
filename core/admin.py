@@ -29,7 +29,7 @@ class ProxmoxEndpointAdmin(admin.ModelAdmin):
 
 @admin.register(StorageMount)
 class StorageMountAdmin(admin.ModelAdmin):
-    list_display = ("display_name", "storage_id", "path", "enabled")
+    list_display = ("display_name", "storage_id", "path", "expected_consumers", "enabled")
     list_filter = ("enabled",)
     search_fields = ("display_name", "storage_id", "path", "export")
 
@@ -39,7 +39,7 @@ class ScanRunAdmin(admin.ModelAdmin):
     list_display = ("id", "status", "progress_message", "created_at", "started_at", "finished_at")
     list_filter = ("status",)
     search_fields = ("queued_task_id", "progress_message")
-    readonly_fields = ("created_at", "updated_at")
+    readonly_fields = ("created_at", "updated_at", "summary_counts", "error_details", "storage_gate_status")
 
 
 @admin.register(FileInventory)
@@ -52,10 +52,14 @@ class FileInventoryAdmin(admin.ModelAdmin):
 
 @admin.register(ProxmoxInventory)
 class ProxmoxInventoryAdmin(admin.ModelAdmin):
-    list_display = ("scan_run", "node", "object_type", "vmid", "name", "status")
+    list_display = ("scan_run", "node", "object_type", "vmid", "name", "status", "disk_reference_count")
     list_filter = ("node", "object_type", "status")
-    search_fields = ("node", "name", "vmid")
+    search_fields = ("node", "name", "vmid", "disk_references")
     readonly_fields = ("created_at", "updated_at")
+
+    @admin.display(description="Disk refs")
+    def disk_reference_count(self, obj):
+        return len(obj.disk_references or [])
 
 
 @admin.register(ProxmoxStorageConsumer)

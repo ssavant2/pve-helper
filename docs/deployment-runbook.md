@@ -93,6 +93,8 @@ committed.
 Create a dedicated read-only API token. The intended starting role is `PVEAuditor` on the
 required paths.
 
+For the full UI walkthrough, see `docs/proxmox-api-token.md`.
+
 Set:
 
 ```env

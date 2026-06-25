@@ -40,6 +40,7 @@ and should still enforce its own login and group authorization with
 ## Setup
 
 Start with `docs/deployment-runbook.md`. For Authentik, see
-`docs/authentik-oidc-setup.md`.
+`docs/authentik-oidc-setup.md`. For Proxmox API credentials, see
+`docs/proxmox-api-token.md`.
 
 The compose defaults are for local skeleton verification. Before real internal use, create `.env`, set real secrets, configure Authentik OIDC, and keep `APP_REQUIRE_LOGIN=true`.

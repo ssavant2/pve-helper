@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
+from django.contrib.auth import get_user_model
+
+from core.models import FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
+from core.services.classification import classify_entry, extract_disk_references
+from core.services.config import sync_runtime_configuration
+
+
+class ClassificationTests(SimpleTestCase):
+    def test_extracts_disk_references_from_nested_snapshot_config(self):
+        config = {
+            "scsi0": "TrueNAS-VM:100/vm-100-disk-0.qcow2,size=32G",
+            "ide2": "none,media=cdrom",
+            "snapshots": {
+                "before-upgrade": {
+                    "scsi0": "TrueNAS-VM:100/vm-100-disk-0.qcow2,size=32G",
+                    "unused0": "TrueNAS-VM:100/vm-100-disk-1.qcow2",
+                }
+            },
+        }
+
+        references = extract_disk_references(config)
+
+        self.assertEqual(
+            references,
+            [
+                "TrueNAS-VM:100/vm-100-disk-0.qcow2",
+                "TrueNAS-VM:100/vm-100-disk-1.qcow2",
+            ],
+        )
+
+    def test_unreferenced_vm_disk_is_blocked_when_gate_is_not_ok(self):
+        result = classify_entry(
+            relative_path="images/100/vm-100-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_disk",
+            derived_volid="TrueNAS-VM:100/vm-100-disk-0.qcow2",
+            referenced_volids=set(),
+            template_vmids=set(),
+            gate_ok=False,
+            missing_consumers=["pve3"],
+        )
+
+        self.assertEqual(result.classification, FileInventory.Classification.CLASSIFICATION_BLOCKED)
+
+    def test_base_image_is_never_likely_orphan_in_v1(self):
+        result = classify_entry(
+            relative_path="images/900/base-900-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="base_image",
+            derived_volid="TrueNAS-VM:900/base-900-disk-0.qcow2",
+            referenced_volids=set(),
+            template_vmids=set(),
+            gate_ok=True,
+            missing_consumers=[],
+        )
+
+        self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
+
+
+class RuntimeConfigurationTests(TestCase):
+    @override_settings(
+        PVE_ENDPOINTS=["https://pve-node-1.example.com:8006"],
+        PVE_EXPECTED_CONSUMERS=["pve3"],
+        TRUENAS_FS_STORAGE_ID="TrueNAS-FS",
+        TRUENAS_VM_STORAGE_ID="TrueNAS-VM",
+        TRUENAS_FS_EXPORT="203.0.113.20:/mnt/Pool-FS/FS/Proxmox",
+        TRUENAS_VM_EXPORT="203.0.113.20:/mnt/Pool-VMs/VM/Proxmox",
+        TRUENAS_FS_CONTAINER_PATH="/storages/truenas-fs",
+        TRUENAS_VM_CONTAINER_PATH="/storages/truenas-vm",
+    )
+    def test_sync_runtime_configuration_from_settings(self):
+        endpoints, storages = sync_runtime_configuration()
+
+        self.assertEqual([endpoint.name for endpoint in endpoints], ["pve3"])
+        self.assertEqual(ProxmoxEndpoint.objects.get(name="pve3").url, "https://pve-node-1.example.com:8006")
+        self.assertEqual({storage.storage_id for storage in storages}, {"TrueNAS-FS", "TrueNAS-VM"})
+        self.assertEqual(StorageMount.objects.get(storage_id="TrueNAS-VM").expected_consumers, ["pve3"])
+
+
+@override_settings(APP_REQUIRE_LOGIN=False)
+class ViewSmokeTests(TestCase):
+    def test_storage_views_render(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="TrueNAS-VM",
+            display_name="TrueNAS-VM",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve3"],
+        )
+        scan = ScanRun.objects.create(
+            status=ScanRun.Status.COMPLETED,
+            progress_message="Smoke scan",
+            storage_gate_status={
+                "TrueNAS-VM": {
+                    "ok": False,
+                    "status": "blocked",
+                    "expected_consumers": ["pve3"],
+                    "missing_consumers": ["pve3"],
+                }
+            },
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/100/vm-100-disk-0.qcow2",
+            derived_volid="TrueNAS-VM:100/vm-100-disk-0.qcow2",
+            content_category="vm_disk",
+            classification=FileInventory.Classification.CLASSIFICATION_BLOCKED,
+        )
+
+        for name in ["core:dashboard", "core:datastores", "core:orphan_finder"]:
+            response = self.client.get(reverse(name))
+            self.assertEqual(response.status_code, 200)

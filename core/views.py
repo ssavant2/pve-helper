@@ -27,10 +27,8 @@ def navigation_context(active: str) -> dict[str, str]:
 @app_login_required
 def dashboard(request):
     latest_scan = ScanRun.objects.order_by("-created_at").first()
-    classification_counts = {
-        item["classification"]: item["count"]
-        for item in FileInventory.objects.values("classification").order_by().annotate(count=Count("id"))
-    }
+    latest_files = FileInventory.objects.filter(scan_run=latest_scan) if latest_scan else FileInventory.objects.none()
+    classification_counts = _classification_counts(latest_files)
     context = {
         **navigation_context("dashboard"),
         "latest_scan": latest_scan,
@@ -44,22 +42,49 @@ def dashboard(request):
 
 @app_login_required
 def datastores(request):
+    latest_scan = ScanRun.objects.order_by("-created_at").first()
+    storages = list(StorageMount.objects.order_by("display_name"))
+    if latest_scan:
+        counts = (
+            FileInventory.objects.filter(scan_run=latest_scan)
+            .values("storage_id", "classification")
+            .order_by()
+            .annotate(count=Count("id"))
+        )
+        by_storage: dict[int, dict[str, int]] = {}
+        for row in counts:
+            by_storage.setdefault(row["storage_id"], {})[row["classification"]] = row["count"]
+        for storage in storages:
+            storage.latest_counts = by_storage.get(storage.id, {})
+            storage.latest_file_count = sum(storage.latest_counts.values())
+            storage.latest_gate_status = (latest_scan.storage_gate_status or {}).get(storage.storage_id, {})
+    else:
+        for storage in storages:
+            storage.latest_counts = {}
+            storage.latest_file_count = 0
+            storage.latest_gate_status = {}
+
     context = {
         **navigation_context("datastores"),
-        "storages": StorageMount.objects.order_by("display_name"),
+        "latest_scan": latest_scan,
+        "storages": storages,
     }
     return render(request, "core/datastores.html", context)
 
 
 @app_login_required
 def orphan_finder(request):
+    latest_scan = ScanRun.objects.order_by("-created_at").first()
     files = (
         FileInventory.objects.select_related("storage", "scan_run")
-        .filter(classification=FileInventory.Classification.LIKELY_ORPHAN)
+        .filter(scan_run=latest_scan, classification=FileInventory.Classification.LIKELY_ORPHAN)
         .order_by("storage__display_name", "path")[:200]
+        if latest_scan
+        else FileInventory.objects.none()
     )
     context = {
         **navigation_context("orphans"),
+        "latest_scan": latest_scan,
         "files": files,
     }
     return render(request, "core/orphan_finder.html", context)
@@ -111,3 +136,10 @@ def health_ready(_request):
         status = 503
 
     return JsonResponse({"status": "ok" if status == 200 else "error", "checks": checks}, status=status)
+
+
+def _classification_counts(queryset) -> dict[str, int]:
+    return {
+        item["classification"]: item["count"]
+        for item in queryset.values("classification").order_by().annotate(count=Count("id"))
+    }
