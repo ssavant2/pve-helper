@@ -187,10 +187,6 @@ def update_scan_schedule_view(request):
         },
     )
 
-    if state.enabled:
-        messages.success(request, f"Automatic scans enabled every {state.interval_minutes} minute(s).")
-    else:
-        messages.success(request, "Automatic scans disabled.")
     return redirect("core:dashboard")
 
 

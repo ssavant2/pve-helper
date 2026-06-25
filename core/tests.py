@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
+from django.contrib.messages import get_messages
 from django.utils import timezone
 from django_q.models import Schedule
 
@@ -238,6 +239,7 @@ class ViewSmokeTests(TestCase):
             {"enabled": "on", "interval_minutes": "15"},
         )
         self.assertRedirects(response, reverse("core:dashboard"))
+        self.assertEqual(list(get_messages(response.wsgi_request)), [])
 
         schedule = Schedule.objects.get(name=SCAN_SCHEDULE_NAME)
         self.assertEqual(schedule.func, "core.tasks.enqueue_scheduled_scan")
