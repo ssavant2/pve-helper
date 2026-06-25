@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
@@ -7,6 +10,7 @@ from django.contrib.auth import get_user_model
 from core.models import FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
 from core.services.classification import classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
+from core.services.storage import StorageScanner
 
 
 class ClassificationTests(SimpleTestCase):
@@ -59,6 +63,25 @@ class ClassificationTests(SimpleTestCase):
         )
 
         self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
+
+    def test_storage_scanner_records_permission_errors_without_raising(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            readable = root / "dump"
+            blocked = root / "images" / "500"
+            readable.mkdir()
+            blocked.mkdir(parents=True)
+            blocked.chmod(0)
+
+            try:
+                scanner = StorageScanner("TrueNAS-VM", root.as_posix())
+                entries = list(scanner.iter_entries())
+            finally:
+                blocked.chmod(0o700)
+
+        self.assertIn("images/500", {entry.relative_path for entry in entries})
+        self.assertEqual(scanner.errors[0]["path"], "images/500")
+        self.assertEqual(scanner.errors[0]["error"], "PermissionError")
 
 
 class RuntimeConfigurationTests(TestCase):

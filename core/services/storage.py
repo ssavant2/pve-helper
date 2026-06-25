@@ -25,6 +25,7 @@ class StorageScanner:
     def __init__(self, storage_id: str, root: str):
         self.storage_id = storage_id
         self.root = Path(root)
+        self.errors: list[dict[str, str]] = []
 
     def iter_entries(self) -> Iterator[StorageEntry]:
         if not self.root.exists():
@@ -33,9 +34,19 @@ class StorageScanner:
         stack = [self.root]
         while stack:
             current = stack.pop()
-            children = sorted(current.iterdir(), key=lambda path: path.name.lower(), reverse=True)
+            try:
+                children = sorted(current.iterdir(), key=lambda path: path.name.lower(), reverse=True)
+            except OSError as exc:
+                self.errors.append(self._error(current, exc))
+                continue
+
             for item in children:
-                stat = item.lstat()
+                try:
+                    stat = item.lstat()
+                except OSError as exc:
+                    self.errors.append(self._error(item, exc))
+                    continue
+
                 relative = item.relative_to(self.root).as_posix()
                 entry_type = self._entry_type(item)
                 derived = derive_volid(self.storage_id, relative)
@@ -84,3 +95,14 @@ class StorageScanner:
         if path.is_file():
             return "file"
         return "other"
+
+    def _error(self, path: Path, exc: OSError) -> dict[str, str]:
+        try:
+            relative = path.relative_to(self.root).as_posix()
+        except ValueError:
+            relative = path.as_posix()
+        return {
+            "path": relative or ".",
+            "error": exc.__class__.__name__,
+            "message": str(exc),
+        }

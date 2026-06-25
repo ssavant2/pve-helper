@@ -119,13 +119,8 @@ def _run_scan(scan: ScanRun) -> None:
         gate_ok = bool(status.get("ok"))
         missing_consumers = list(status.get("missing_consumers") or [])
 
-        try:
-            entries = list(StorageScanner(storage.storage_id, storage.path).iter_entries())
-        except OSError as exc:
-            storage_errors[storage.storage_id] = {"error": exc.__class__.__name__, "message": str(exc)}
-            continue
-
-        for entry in entries:
+        scanner = StorageScanner(storage.storage_id, storage.path)
+        for entry in scanner.iter_entries():
             classification = classify_entry(
                 relative_path=entry.relative_path,
                 entry_type=entry.entry_type,
@@ -155,6 +150,8 @@ def _run_scan(scan: ScanRun) -> None:
                     },
                 )
             )
+        if scanner.errors:
+            storage_errors[storage.storage_id] = {"errors": scanner.errors}
 
     with transaction.atomic():
         FileInventory.objects.bulk_create(file_rows, batch_size=1000)
