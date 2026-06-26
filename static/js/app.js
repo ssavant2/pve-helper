@@ -15,7 +15,7 @@
       if (storedTheme === "light" || storedTheme === "dark") {
         return storedTheme;
       }
-    } catch (error) {
+    } catch (_error) {
       return "light";
     }
 
@@ -63,7 +63,9 @@
   };
 
   const runPageCleanup = () => {
-    pageCleanup.forEach((cleanup) => cleanup());
+    pageCleanup.forEach((cleanup) => {
+      cleanup();
+    });
     pageCleanup = [];
   };
 
@@ -95,7 +97,7 @@
       const nextTheme = currentTheme === "dark" ? "light" : "dark";
       try {
         localStorage.setItem(themeKey, nextTheme);
-      } catch (error) {
+      } catch (_error) {
         // Theme persistence is optional; the UI still updates for this page.
       }
       applyTheme(nextTheme);
@@ -114,7 +116,7 @@
       const collapsed = !appShell.classList.contains("tasks-collapsed");
       try {
         localStorage.setItem(taskbarKey, collapsed ? "true" : "false");
-      } catch (error) {
+      } catch (_error) {
         // The visual state still changes even when localStorage is unavailable.
       }
       applyTaskbarState(collapsed);
@@ -131,7 +133,7 @@
 
       try {
         applyTreeModuleState(module, localStorage.getItem(treeStateKey(moduleName)) === "true");
-      } catch (error) {
+      } catch (_error) {
         applyTreeModuleState(module, false);
       }
 
@@ -144,7 +146,7 @@
         const collapsed = !module.classList.contains("collapsed");
         try {
           localStorage.setItem(treeStateKey(moduleName), collapsed ? "true" : "false");
-        } catch (error) {
+        } catch (_error) {
           // The tree still expands/collapses even when persistence is unavailable.
         }
         applyTreeModuleState(module, collapsed);
@@ -223,7 +225,7 @@
           }
           scanWasActive = Boolean(data.active);
           setScanButtonState(data.active, data.button_label);
-        } catch (error) {
+        } catch (_error) {
           // The current button state remains usable if the status poll fails.
         }
       };
@@ -233,11 +235,14 @@
         setScanButtonState(true, "Scan queued");
       });
 
-      const intervalId = window.setInterval(() => {
-        if (document.visibilityState !== "hidden") {
-          loadScanStatus();
-        }
-      }, Number.isFinite(scanPollMs) ? scanPollMs : 5000);
+      const intervalId = window.setInterval(
+        () => {
+          if (document.visibilityState !== "hidden") {
+            loadScanStatus();
+          }
+        },
+        Number.isFinite(scanPollMs) ? scanPollMs : 5000
+      );
       registerPageCleanup(() => window.clearInterval(intervalId));
     });
   };
@@ -334,7 +339,7 @@
         const data = await response.json();
         renderTaskRows(data.tasks || []);
         updateTaskControls(data);
-      } catch (error) {
+      } catch (_error) {
         // Recent task refresh is best effort; the server-rendered rows remain usable.
       } finally {
         loadingTasks = false;
@@ -353,11 +358,14 @@
       });
     }
 
-    window.setInterval(() => {
-      if (taskPage === 0 && document.visibilityState !== "hidden") {
-        loadTaskPage(0);
-      }
-    }, Number.isFinite(pollMs) ? pollMs : 10000);
+    window.setInterval(
+      () => {
+        if (taskPage === 0 && document.visibilityState !== "hidden") {
+          loadTaskPage(0);
+        }
+      },
+      Number.isFinite(pollMs) ? pollMs : 10000
+    );
   };
 
   const initAuditLogs = (root = document) => {
@@ -604,7 +612,7 @@
     applyTheme(preferredTheme());
     try {
       applyTaskbarState(localStorage.getItem(taskbarKey) === "true");
-    } catch (error) {
+    } catch (_error) {
       applyTaskbarState(false);
     }
 

@@ -1,0 +1,12 @@
+{
+  "name": "pve-helper",
+  "private": true,
+  "scripts": {
+    "check": "biome check static/js",
+    "format": "biome format --write static/js",
+    "lint": "biome lint static/js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.1"
+  }
+}
