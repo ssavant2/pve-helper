@@ -120,6 +120,12 @@ body {
   font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+html.soft-navigation-loading,
+html.soft-navigation-loading a,
+html.soft-navigation-loading button {
+  cursor: progress;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;

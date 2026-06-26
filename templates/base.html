@@ -31,7 +31,7 @@
           <span class="brand-mark">pve</span>
           <span class="brand-name">pve-helper</span>
         </div>
-        <div class="topbar-status">
+        <div class="topbar-status" data-soft-nav-status>
           <span class="status-dot"></span>
           <span>{{ app_display_url }}</span>
         </div>
@@ -52,7 +52,7 @@
       </header>
 
       <aside class="sidebar">
-        <nav class="nav-tree" aria-label="Module navigation">
+        <nav class="nav-tree" aria-label="Module navigation" data-soft-nav-tree>
           <div class="tree-root">
             <span class="tree-icon root-icon"><i data-lucide="wrench" aria-hidden="true"></i></span>
             <span class="tree-label">pve-helper</span>
@@ -122,7 +122,7 @@
         </nav>
       </aside>
 
-      <main class="content">
+      <main class="content" data-soft-nav-content tabindex="-1">
         {% if messages %}
           <div class="messages">
             {% for message in messages %}

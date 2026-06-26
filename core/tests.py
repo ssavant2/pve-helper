@@ -176,6 +176,9 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, 'rel="icon"')
         self.assertContains(response, "http://testserver")
         self.assertNotContains(response, "pve-helper.example.com")
+        self.assertContains(response, "data-soft-nav-content")
+        self.assertContains(response, "data-soft-nav-tree")
+        self.assertContains(response, "data-soft-nav-status")
 
         response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]))
         self.assertEqual(response.status_code, 200)
