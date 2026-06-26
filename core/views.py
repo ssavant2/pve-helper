@@ -19,6 +19,7 @@ from .models import AuditEvent, FileInventory, ScanRun, StorageMount
 from .services.filesystem import storage_space_info
 from .services.recent_tasks import recent_task_page, serialize_task_page
 from .services.scan_schedule import scan_schedule_state, update_scan_schedule
+from .services.storage_details import storage_details
 
 
 def app_login_required(view_func):
@@ -80,6 +81,7 @@ def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan
         storage.latest_scan = storage_result_scan
         storage.latest_scan_at = _scan_timestamp(storage_result_scan)
         storage.space_info = storage_space_info(storage.path)
+        storage.details = storage_details(storage, storage_result_scan, storage.space_info)
 
 
 @app_login_required
@@ -498,6 +500,7 @@ def _active_scan() -> ScanRun | None:
 
 def _decorate_storage_with_space_info(storage: StorageMount) -> None:
     storage.space_info = storage_space_info(storage.path)
+    storage.details = storage_details(storage, _latest_storage_result_scan(storage), storage.space_info)
 
 
 def _scan_button_label(active_scan: ScanRun | None) -> str:

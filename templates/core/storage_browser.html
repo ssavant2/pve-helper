@@ -63,9 +63,40 @@
       </strong>
     </div>
     <div class="storage-summary-item">
+      <span class="metric-label">Type</span>
+      <strong>{{ storage.details.storage_type|default:"-" }}</strong>
+    </div>
+    <div class="storage-summary-item">
+      <span class="metric-label">Server</span>
+      <strong>{{ storage.details.server|default:"-" }}</strong>
+    </div>
+    <div class="storage-summary-item">
       <span class="metric-label">Filesystem</span>
       <strong>{{ storage.space_info.filesystem_type|default:"-" }}</strong>
       <span class="storage-summary-subtext">{{ storage.space_info.source|default:storage.space_info.mount_point|default:"-" }}</span>
+    </div>
+  </section>
+
+  <section class="storage-metadata-strip" aria-label="Storage paths">
+    <div>
+      <span>Export</span>
+      <code title="{{ storage.details.export_path|default:'-' }}">{{ storage.details.export_path|default:"-" }}</code>
+    </div>
+    <div>
+      <span>PVE path</span>
+      <code title="{{ storage.details.proxmox_path|default:'-' }}">{{ storage.details.proxmox_path|default:"-" }}</code>
+    </div>
+    <div>
+      <span>App path</span>
+      <code title="{{ storage.details.app_path }}">{{ storage.details.app_path }}</code>
+    </div>
+    <div>
+      <span>Options</span>
+      <code title="{{ storage.details.options|default:'-' }}">{{ storage.details.options|default:"-" }}</code>
+    </div>
+    <div>
+      <span>Preallocation</span>
+      <code>{{ storage.details.preallocation|default:"default" }}</code>
     </div>
   </section>
 

@@ -12,7 +12,7 @@ from django.contrib.messages import get_messages
 from django.utils import timezone
 from django_q.models import Schedule
 
-from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
+from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ProxmoxInventory, ScanRun, StorageMount
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
 from core.services.filesystem import StorageSpaceInfo, storage_space_info
@@ -362,6 +362,25 @@ class ViewSmokeTests(TestCase):
             path="images",
             entry_type=FileInventory.EntryType.DIRECTORY,
         )
+        ProxmoxInventory.objects.create(
+            scan_run=completed_scan,
+            node="pve3",
+            object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="TrueNAS-FS",
+            status="1",
+            config={
+                "storage": "TrueNAS-FS",
+                "type": "nfs",
+                "server": "203.0.113.20",
+                "export": "/mnt/Pool-FS/FS/Proxmox",
+                "path": "/mnt/pve/TrueNAS-FS",
+                "options": "vers=4.2,nconnect=4",
+                "preallocation": "default",
+                "content": "rootdir,images",
+                "shared": 1,
+                "active": 1,
+            },
+        )
         ScanRun.objects.create(status=ScanRun.Status.QUEUED, progress_message="Queued scan")
         ScanRun.objects.filter(pk=completed_scan.pk).update(
             filesystem_scan_at=datetime(2026, 6, 26, 8, 15, 30, tzinfo=timezone.get_current_timezone()),
@@ -389,6 +408,8 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Free / Total")
         self.assertContains(response, "4.0")
         self.assertContains(response, "10.0")
+        self.assertContains(response, "203.0.113.20")
+        self.assertContains(response, "vers=4.2,nconnect=4")
         self.assertContains(response, "nfs4")
         self.assertContains(response, "Latest Scan")
         self.assertContains(response, "2026-06-26 08:15:30")
@@ -411,6 +432,10 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Latest Scan")
         self.assertContains(response, "Filesystem")
         self.assertContains(response, "60.0%")
+        self.assertContains(response, "/mnt/Pool-FS/FS/Proxmox")
+        self.assertContains(response, "/mnt/pve/TrueNAS-FS")
+        self.assertContains(response, "/storages/truenas-fs")
+        self.assertContains(response, "default")
         self.assertContains(response, "2026-06-26 08:15:30")
 
     def test_recent_tasks_endpoint_paginates_scans(self):

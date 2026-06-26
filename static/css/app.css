@@ -581,7 +581,7 @@ button.tree-node {
 
 .storage-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  grid-template-columns: repeat(6, minmax(130px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -614,6 +614,56 @@ button.tree-node {
   overflow: hidden;
   color: var(--muted);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-metadata-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 1px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.storage-metadata-strip div {
+  min-width: 0;
+  padding: 9px 10px;
+  background: var(--surface);
+}
+
+.storage-metadata-strip span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.storage-metadata-strip code {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subline {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.truncate-cell {
+  max-width: 220px;
+}
+
+.truncate-cell,
+.truncate-cell code {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1188,6 +1238,7 @@ code {
 
   .metric-grid,
   .storage-summary-grid,
+  .storage-metadata-strip,
   .split-view {
     grid-template-columns: 1fr;
   }

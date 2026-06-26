@@ -99,9 +99,12 @@
         <thead>
           <tr>
             <th>Storage</th>
+            <th>Type</th>
+            <th>Server</th>
             <th>Status</th>
             <th>Free / Total</th>
             <th>FS</th>
+            <th>Options</th>
             <th>Latest Scan</th>
             <th>Expected consumers</th>
             <th>Missing</th>
@@ -112,6 +115,8 @@
             {% with gate=row.gate storage=row.storage %}
             <tr data-context-label="{{ storage.storage_id }}">
               <td><code>{{ storage.storage_id }}</code></td>
+              <td>{{ storage.details.storage_type|default:"-" }}</td>
+              <td>{{ storage.details.server|default:"-" }}</td>
               <td>
                 {% if gate %}
                   <span class="badge {% if gate.ok %}completed{% else %}failed{% endif %}">{{ gate.status }}</span>
@@ -127,6 +132,7 @@
                 {% endif %}
               </td>
               <td>{{ storage.space_info.filesystem_type|default:"-" }}</td>
+              <td class="truncate-cell" title="{{ storage.details.options|default:'-' }}">{{ storage.details.options|default:"-" }}</td>
               <td>{{ row.latest_scan_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
               <td>{{ gate.expected_consumers|join:", "|default:"-" }}</td>
               <td>{{ gate.missing_consumers|join:", "|default:"-" }}</td>
@@ -134,7 +140,7 @@
             {% endwith %}
           {% empty %}
             <tr>
-              <td colspan="7" class="empty-state">No storage gate data for this scan.</td>
+              <td colspan="10" class="empty-state">No storage gate data for this scan.</td>
             </tr>
           {% endfor %}
         </tbody>

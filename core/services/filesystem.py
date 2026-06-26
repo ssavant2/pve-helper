@@ -11,6 +11,8 @@ class MountInfo:
     mount_point: str = ""
     filesystem_type: str = ""
     source: str = ""
+    mount_options: str = ""
+    super_options: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,8 +91,10 @@ def _parse_mountinfo_line(line: str) -> MountInfo:
 
     return MountInfo(
         mount_point=_decode_mountinfo_field(before_fields[4]),
+        mount_options=_decode_mountinfo_field(before_fields[5]) if len(before_fields) > 5 else "",
         filesystem_type=after_fields[0],
         source=_decode_mountinfo_field(after_fields[1]),
+        super_options=_decode_mountinfo_field(after_fields[2]) if len(after_fields) > 2 else "",
     )
 
 

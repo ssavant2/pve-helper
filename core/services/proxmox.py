@@ -84,6 +84,7 @@ class ProxmoxClient:
     def inventory(self, node: str) -> InventoryResult:
         objects: list[ProxmoxObject] = []
         errors: list[dict[str, Any]] = []
+        storage_configs = self._storage_config_map()
 
         qemu_vms = self._get_list(f"nodes/{quote(node)}/qemu", errors, "qemu.list")
         for vm in qemu_vms:
@@ -130,6 +131,12 @@ class ProxmoxClient:
             storage_id = str(storage.get("storage") or "")
             if not storage_id:
                 continue
+            config = {
+                **storage_configs.get(storage_id, {}),
+                "node_status": storage,
+            }
+            for key, value in storage.items():
+                config.setdefault(key, value)
             objects.append(
                 ProxmoxObject(
                     node=node,
@@ -137,7 +144,7 @@ class ProxmoxClient:
                     vmid=None,
                     name=storage_id,
                     status=str(storage.get("active") or ""),
-                    config=storage,
+                    config=config,
                     disk_references=[],
                 )
             )
@@ -178,6 +185,19 @@ class ProxmoxClient:
             errors.append({"action": action, "path": path, "error": str(exc)})
             return []
         return data if isinstance(data, list) else []
+
+    def _storage_config_map(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = self.get("storage")
+        except ProxmoxAPIError:
+            return {}
+
+        storages = data if isinstance(data, list) else []
+        return {
+            str(storage.get("storage") or ""): storage
+            for storage in storages
+            if storage.get("storage")
+        }
 
     def _get_config(
         self,
