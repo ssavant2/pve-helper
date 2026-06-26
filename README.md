@@ -55,7 +55,8 @@ or supported as an enterprise storage-management product.
 
 Start with `docs/deployment-runbook.md`. For Authentik, see
 `docs/authentik-oidc-setup.md`. For Proxmox API credentials, see
-`docs/proxmox-api-token.md`.
+`docs/proxmox-api-token.md`. For PostgreSQL major upgrades, see
+`docs/postgres-major-upgrade.md`.
 
 The compose defaults are for local skeleton verification. Before real internal use, create `.env`, set real secrets, configure Authentik OIDC, and keep `APP_REQUIRE_LOGIN=true`. `APP_BASE_URL` should be the canonical URL that Authentik redirects back to; the URL shown in the app header is taken from the current request.
 
