@@ -73,12 +73,12 @@
             </div>
           </section>
 
-          <section class="tree-module expanded" aria-label="Storage module">
-            <div class="tree-node module-node active-module">
-              <span class="tree-caret">v</span>
+          <section class="tree-module expanded" data-tree-module="storage" aria-label="Storage module">
+            <button class="tree-node module-node active-module" type="button" data-tree-toggle aria-expanded="true">
+              <span class="tree-caret" data-tree-caret>v</span>
               <span class="tree-icon storage-icon"><i data-lucide="database" aria-hidden="true"></i></span>
               <span class="tree-label">Storage</span>
-            </div>
+            </button>
             <div class="tree-children">
               <a class="tree-node tree-leaf {% if active_nav == 'dashboard' %}active{% endif %}" href="{% url 'core:dashboard' %}">
                 <span class="tree-icon"><i data-lucide="layout-dashboard" aria-hidden="true"></i></span>

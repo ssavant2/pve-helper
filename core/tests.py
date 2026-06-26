@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -15,8 +16,9 @@ from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ScanRun, Sto
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
 from core.services.recent_tasks import recent_task_page
-from core.services.scan_schedule import SCAN_SCHEDULE_NAME
+from core.services.scan_schedule import SCAN_SCHEDULE_NAME, update_scan_schedule
 from core.services.storage import StorageScanner
+from core.tasks import enqueue_scheduled_scan
 
 
 class ClassificationTests(SimpleTestCase):
@@ -194,6 +196,25 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2026-06-26 07:49:05")
         self.assertNotContains(response, "June 26, 2026")
+
+    def test_scheduled_scan_audit_shows_interval_and_readable_labels(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        update_scan_schedule(enabled=True, interval_minutes=180)
+
+        with patch("core.tasks.async_task", return_value="scheduled-task-id"):
+            scan_id = enqueue_scheduled_scan()
+
+        event = AuditEvent.objects.get(action="scan.queued")
+        self.assertEqual(event.details["source"], "schedule")
+        self.assertEqual(event.details["interval_minutes"], 180)
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Scheduled full scan (180 min)")
+        self.assertContains(response, f"Scan {scan_id}")
+        self.assertNotContains(response, "scan_run")
 
     def test_dashboard_keeps_last_completed_gate_while_new_scan_is_queued(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

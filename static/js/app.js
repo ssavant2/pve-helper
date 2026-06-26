@@ -5,6 +5,7 @@
   const themeToggle = document.querySelector("[data-theme-toggle]");
   const themeLabels = document.querySelectorAll("[data-theme-label]");
   const taskbarToggle = document.querySelector("[data-taskbar-toggle]");
+  const treeModules = document.querySelectorAll("[data-tree-module]");
   const autoSubmitForms = document.querySelectorAll("[data-auto-submit-form]");
   const scanActionForm = document.querySelector("[data-scan-action]");
   const menu = document.getElementById("context-menu");
@@ -43,6 +44,22 @@
     appShell.classList.toggle("tasks-collapsed", collapsed);
     taskbarToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
     taskbarToggle.setAttribute("aria-label", collapsed ? "Show recent tasks" : "Hide recent tasks");
+  };
+
+  const treeStateKey = (moduleName) => `pve-helper-tree-${moduleName}-collapsed`;
+
+  const applyTreeModuleState = (module, collapsed) => {
+    const toggle = module.querySelector("[data-tree-toggle]");
+    const caret = module.querySelector("[data-tree-caret]");
+    module.classList.toggle("collapsed", collapsed);
+    module.classList.toggle("expanded", !collapsed);
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      toggle.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${module.dataset.treeModule}`);
+    }
+    if (caret) {
+      caret.textContent = collapsed ? ">" : "v";
+    }
   };
 
   applyTheme(preferredTheme());
@@ -87,6 +104,30 @@
       applyTaskbarState(collapsed);
     });
   }
+
+  treeModules.forEach((module) => {
+    const moduleName = module.dataset.treeModule;
+    const toggle = module.querySelector("[data-tree-toggle]");
+    if (!moduleName || !toggle) {
+      return;
+    }
+
+    try {
+      applyTreeModuleState(module, localStorage.getItem(treeStateKey(moduleName)) === "true");
+    } catch (error) {
+      applyTreeModuleState(module, false);
+    }
+
+    toggle.addEventListener("click", () => {
+      const collapsed = !module.classList.contains("collapsed");
+      try {
+        localStorage.setItem(treeStateKey(moduleName), collapsed ? "true" : "false");
+      } catch (error) {
+        // The tree still expands/collapses even when persistence is unavailable.
+      }
+      applyTreeModuleState(module, collapsed);
+    });
+  });
 
   autoSubmitForms.forEach((form) => {
     form.querySelectorAll("[data-auto-submit-control]").forEach((control) => {

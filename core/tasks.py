@@ -19,10 +19,12 @@ from .models import (
 from .services.classification import classify_entry
 from .services.config import sync_runtime_configuration
 from .services.proxmox import ProxmoxClient
+from .services.scan_schedule import scan_schedule_state
 from .services.storage import StorageScanner
 
 
 def enqueue_scheduled_scan() -> int | None:
+    schedule_state = scan_schedule_state()
     active_scan = ScanRun.objects.filter(
         status__in=[
             ScanRun.Status.QUEUED,
@@ -51,7 +53,12 @@ def enqueue_scheduled_scan() -> int | None:
         object_type="scan_run",
         object_id=str(scan.id),
         outcome="success",
-        details={"task_id": task_id, "source": "schedule"},
+        details={
+            "task_id": task_id,
+            "source": "schedule",
+            "interval_minutes": schedule_state.interval_minutes,
+            "target_label": "All storages",
+        },
     )
     return scan.id
 

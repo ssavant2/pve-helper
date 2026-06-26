@@ -282,8 +282,20 @@ select {
   width: 100%;
 }
 
+a.tree-node,
+button.tree-node {
+  font: inherit;
+}
+
 a.tree-node {
   text-decoration: none;
+}
+
+button.tree-node {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
 
 .tree-node.active,
@@ -301,6 +313,10 @@ a.tree-node {
   position: relative;
   margin-left: 20px;
   padding-left: 10px;
+}
+
+.tree-module.collapsed .tree-children {
+  display: none;
 }
 
 .tree-children::before {

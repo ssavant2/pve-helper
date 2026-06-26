@@ -26,8 +26,8 @@
           <tr data-context-label="{{ event.object_id }}">
             <td>{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
             <td>{{ event.username|default:"-" }}</td>
-            <td>{{ event.action }}</td>
-            <td>{{ event.object_type }} {{ event.object_id }}</td>
+            <td>{{ event.display_action }}</td>
+            <td>{{ event.display_object }}</td>
             <td><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
           </tr>
         {% empty %}

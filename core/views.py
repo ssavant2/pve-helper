@@ -143,9 +143,11 @@ def orphan_finder(request):
 
 @app_login_required
 def audit_log(request):
+    events = list(AuditEvent.objects.order_by("-timestamp")[:200])
+    _decorate_audit_events(events)
     context = {
         **navigation_context("audit"),
-        "events": AuditEvent.objects.order_by("-timestamp")[:200],
+        "events": events,
     }
     return render(request, "core/audit_log.html", context)
 
@@ -317,6 +319,41 @@ def _storage_gate_rows(storages: list[StorageMount], result_scan: ScanRun | None
             }
         )
     return rows
+
+
+def _decorate_audit_events(events: list[AuditEvent]) -> None:
+    for event in events:
+        event.display_action = _audit_action_label(event)
+        event.display_object = _audit_object_label(event)
+
+
+def _audit_action_label(event: AuditEvent) -> str:
+    details = event.details if isinstance(event.details, dict) else {}
+    if event.action == "scan.queued" and details.get("source") == "schedule":
+        interval = details.get("interval_minutes")
+        if interval:
+            return f"Scheduled full scan ({interval} min)"
+        return "Scheduled full scan"
+    if event.action == "scan.queued":
+        target = details.get("target_label")
+        if target and target != "All storages":
+            return f"Manual storage scan ({target})"
+        return "Manual full scan"
+    if event.action == "scan.schedule.skipped":
+        return "Scheduled scan skipped"
+    if event.action == "scan.schedule.updated":
+        return "Scan schedule updated"
+    if event.action == "scan.manual.skipped":
+        return "Manual scan skipped"
+    return event.action
+
+
+def _audit_object_label(event: AuditEvent) -> str:
+    if event.object_type == "scan_run" and event.object_id:
+        return f"Scan {event.object_id}"
+    if event.object_type == "scan_schedule":
+        return "Automatic scan schedule"
+    return f"{event.object_type} {event.object_id}".strip() or "-"
 
 
 def _scan_timestamp(scan: ScanRun | None):
