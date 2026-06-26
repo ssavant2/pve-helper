@@ -77,7 +77,7 @@
     </div>
   </section>
 
-  <section class="storage-metadata-strip" aria-label="Storage paths">
+  <section class="storage-metadata-strip" aria-label="Proxmox storage settings">
     <div>
       <span>Export</span>
       <code title="{{ storage.details.export_path|default:'-' }}">{{ storage.details.export_path|default:"-" }}</code>
@@ -87,11 +87,7 @@
       <code title="{{ storage.details.proxmox_path|default:'-' }}">{{ storage.details.proxmox_path|default:"-" }}</code>
     </div>
     <div>
-      <span>App path</span>
-      <code title="{{ storage.details.app_path }}">{{ storage.details.app_path }}</code>
-    </div>
-    <div>
-      <span>Options</span>
+      <span>PVE options</span>
       <code title="{{ storage.details.options|default:'-' }}">{{ storage.details.options|default:"-" }}</code>
     </div>
     <div>

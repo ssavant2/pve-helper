@@ -17,11 +17,10 @@
           <th>Server</th>
           <th>Export</th>
           <th>PVE path</th>
-          <th>App path</th>
           <th>Free / Total</th>
           <th>Used</th>
           <th>Filesystem</th>
-          <th>Options</th>
+          <th>PVE options</th>
           <th>Prealloc</th>
           <th>Expected consumers</th>
           <th>Gate</th>
@@ -32,7 +31,7 @@
       </thead>
       <tbody>
         {% for storage in storages %}
-          <tr data-context-label="{{ storage.path }}">
+          <tr data-context-label="{{ storage.storage_id }}">
             <td>
               <a href="{% url 'core:storage_browser' storage.storage_id %}">{{ storage.display_name }}</a>
               <span class="subline"><code>{{ storage.storage_id }}</code></span>
@@ -41,7 +40,6 @@
             <td>{{ storage.details.server|default:"-" }}</td>
             <td class="truncate-cell" title="{{ storage.details.export_path|default:'-' }}"><code>{{ storage.details.export_path|default:"-" }}</code></td>
             <td class="truncate-cell" title="{{ storage.details.proxmox_path|default:'-' }}"><code>{{ storage.details.proxmox_path|default:"-" }}</code></td>
-            <td class="truncate-cell" title="{{ storage.details.app_path }}"><code>{{ storage.details.app_path }}</code></td>
             <td>
               {% if storage.space_info.ok %}
                 {{ storage.space_info.available_bytes|filesizeformat }} / {{ storage.space_info.total_bytes|filesizeformat }}
@@ -81,7 +79,7 @@
           </tr>
         {% empty %}
           <tr>
-            <td colspan="15" class="empty-state">No datastores configured in the database yet.</td>
+            <td colspan="14" class="empty-state">No datastores configured in the database yet.</td>
           </tr>
         {% endfor %}
       </tbody>

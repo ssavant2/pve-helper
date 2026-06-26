@@ -434,7 +434,8 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "60.0%")
         self.assertContains(response, "/mnt/Pool-FS/FS/Proxmox")
         self.assertContains(response, "/mnt/pve/TrueNAS-FS")
-        self.assertContains(response, "/storages/truenas-fs")
+        self.assertNotContains(response, "/storages/truenas-fs")
+        self.assertContains(response, "PVE options")
         self.assertContains(response, "default")
         self.assertContains(response, "2026-06-26 08:15:30")
 
