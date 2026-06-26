@@ -223,13 +223,25 @@ class ViewSmokeTests(TestCase):
             entry_type=FileInventory.EntryType.DIRECTORY,
         )
         ScanRun.objects.create(status=ScanRun.Status.QUEUED, progress_message="Queued scan")
+        ScanRun.objects.filter(pk=completed_scan.pk).update(
+            filesystem_scan_at=datetime(2026, 6, 26, 8, 15, 30, tzinfo=timezone.get_current_timezone()),
+            finished_at=datetime(2026, 6, 26, 8, 15, 31, tzinfo=timezone.get_current_timezone()),
+        )
 
         response = self.client.get(reverse("core:dashboard"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "TrueNAS-FS")
         self.assertContains(response, "ok")
+        self.assertContains(response, "Latest Scan")
+        self.assertContains(response, "2026-06-26 08:15:30")
         self.assertContains(response, "Queued scan")
+
+        response = self.client.get(reverse("core:datastores"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Latest Scan")
+        self.assertContains(response, "2026-06-26 08:15:30")
 
     def test_recent_tasks_endpoint_paginates_scans(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

@@ -35,6 +35,7 @@ def dashboard(request):
     latest_scan = ScanRun.objects.order_by("-created_at").first()
     result_scan = _latest_result_scan()
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
+    _decorate_storages_with_scan_state(storages, result_scan)
     classification_counts = _current_classification_counts(storages)
     context = {
         **navigation_context("dashboard"),
@@ -44,6 +45,7 @@ def dashboard(request):
         "scan_count": ScanRun.objects.count(),
         "audit_count": AuditEvent.objects.count(),
         "classification_counts": classification_counts,
+        "storage_gate_rows": _storage_gate_rows(storages, result_scan),
         "scan_schedule": scan_schedule_state(),
         "active_scan": _active_scan(),
     }
@@ -54,6 +56,17 @@ def dashboard(request):
 def datastores(request):
     result_scan = _latest_result_scan()
     storages = list(StorageMount.objects.order_by("display_name"))
+    _decorate_storages_with_scan_state(storages, result_scan)
+
+    context = {
+        **navigation_context("datastores"),
+        "latest_scan": result_scan,
+        "storages": storages,
+    }
+    return render(request, "core/datastores.html", context)
+
+
+def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan: ScanRun | None) -> None:
     for storage in storages:
         storage_result_scan = _latest_storage_result_scan(storage)
         storage.latest_counts = _classification_counts(
@@ -63,13 +76,8 @@ def datastores(request):
         )
         storage.latest_file_count = sum(storage.latest_counts.values())
         storage.latest_gate_status = (result_scan.storage_gate_status or {}).get(storage.storage_id, {}) if result_scan else {}
-
-    context = {
-        **navigation_context("datastores"),
-        "latest_scan": result_scan,
-        "storages": storages,
-    }
-    return render(request, "core/datastores.html", context)
+        storage.latest_scan = storage_result_scan
+        storage.latest_scan_at = _scan_timestamp(storage_result_scan)
 
 
 @app_login_required
@@ -292,6 +300,29 @@ def _current_orphan_files() -> list[FileInventory]:
             .order_by("storage__display_name", "path")[:200]
         )
     return sorted(files, key=lambda item: (item.storage.display_name, item.path))[:200]
+
+
+def _storage_gate_rows(storages: list[StorageMount], result_scan: ScanRun | None) -> list[dict[str, object]]:
+    if not result_scan:
+        return []
+
+    rows = []
+    gate_status = result_scan.storage_gate_status or {}
+    for storage in storages:
+        rows.append(
+            {
+                "storage": storage,
+                "gate": gate_status.get(storage.storage_id, {}),
+                "latest_scan_at": storage.latest_scan_at,
+            }
+        )
+    return rows
+
+
+def _scan_timestamp(scan: ScanRun | None):
+    if not scan:
+        return None
+    return scan.filesystem_scan_at or scan.finished_at or scan.created_at
 
 
 def _latest_result_scan() -> ScanRun | None:

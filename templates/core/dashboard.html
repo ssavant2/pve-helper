@@ -102,21 +102,31 @@
           <tr>
             <th>Storage</th>
             <th>Status</th>
+            <th>Latest Scan</th>
             <th>Expected consumers</th>
             <th>Missing</th>
           </tr>
         </thead>
         <tbody>
-          {% for storage_id, gate in result_scan.storage_gate_status.items %}
-            <tr data-context-label="{{ storage_id }}">
-              <td><code>{{ storage_id }}</code></td>
-              <td><span class="badge {% if gate.ok %}completed{% else %}failed{% endif %}">{{ gate.status }}</span></td>
+          {% for row in storage_gate_rows %}
+            {% with gate=row.gate storage=row.storage %}
+            <tr data-context-label="{{ storage.storage_id }}">
+              <td><code>{{ storage.storage_id }}</code></td>
+              <td>
+                {% if gate %}
+                  <span class="badge {% if gate.ok %}completed{% else %}failed{% endif %}">{{ gate.status }}</span>
+                {% else %}
+                  -
+                {% endif %}
+              </td>
+              <td>{{ row.latest_scan_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
               <td>{{ gate.expected_consumers|join:", "|default:"-" }}</td>
               <td>{{ gate.missing_consumers|join:", "|default:"-" }}</td>
             </tr>
+            {% endwith %}
           {% empty %}
             <tr>
-              <td colspan="4" class="empty-state">No storage gate data for this scan.</td>
+              <td colspan="5" class="empty-state">No storage gate data for this scan.</td>
             </tr>
           {% endfor %}
         </tbody>
