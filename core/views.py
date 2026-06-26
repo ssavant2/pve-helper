@@ -41,6 +41,7 @@ def dashboard(request):
         "audit_count": AuditEvent.objects.count(),
         "classification_counts": classification_counts,
         "scan_schedule": scan_schedule_state(),
+        "active_scan": _active_scan(),
     }
     return render(request, "core/dashboard.html", context)
 
@@ -162,6 +163,21 @@ def recent_tasks(request):
     return JsonResponse(serialize_task_page(recent_task_page(page=page)))
 
 
+@app_login_required
+def scan_status(request):
+    active_scan = _active_scan()
+    latest_scan = active_scan or ScanRun.objects.order_by("-created_at").first()
+    return JsonResponse(
+        {
+            "active": active_scan is not None,
+            "status": latest_scan.status if latest_scan else "",
+            "status_label": latest_scan.get_status_display() if latest_scan else "",
+            "button_label": _scan_button_label(active_scan),
+            "progress": latest_scan.progress_message if latest_scan else "",
+        }
+    )
+
+
 @require_POST
 @app_login_required
 def update_scan_schedule_view(request):
@@ -193,6 +209,19 @@ def update_scan_schedule_view(request):
 @require_POST
 @app_login_required
 def start_scan(request):
+    active_scan = _active_scan()
+    if active_scan:
+        AuditEvent.objects.create(
+            user=request.user if request.user.is_authenticated else None,
+            username=request.user.get_username() if request.user.is_authenticated else "",
+            action="scan.manual.skipped",
+            object_type="scan_run",
+            object_id=str(active_scan.id),
+            outcome="skipped",
+            details={"reason": "A scan is already queued or running."},
+        )
+        return redirect("core:dashboard")
+
     scan = ScanRun.objects.create(progress_message="Queued from UI")
     task_id = async_task("core.tasks.run_scan", scan.id)
     scan.queued_task_id = task_id
@@ -207,7 +236,6 @@ def start_scan(request):
         outcome="success",
         details={"task_id": task_id},
     )
-    messages.success(request, f"Scan {scan.id} queued.")
     return redirect("core:dashboard")
 
 
@@ -234,6 +262,22 @@ def _classification_counts(queryset) -> dict[str, int]:
         item["classification"]: item["count"]
         for item in queryset.values("classification").order_by().annotate(count=Count("id"))
     }
+
+
+def _active_scan() -> ScanRun | None:
+    return (
+        ScanRun.objects.filter(status__in=[ScanRun.Status.QUEUED, ScanRun.Status.RUNNING])
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def _scan_button_label(active_scan: ScanRun | None) -> str:
+    if not active_scan:
+        return "Start scan"
+    if active_scan.status == ScanRun.Status.QUEUED:
+        return "Scan queued"
+    return "Scanning"
 
 
 def _normalize_browser_path(raw_path: str) -> str:

@@ -435,6 +435,40 @@ a.tree-node {
   background: var(--accent-strong);
 }
 
+.primary-action:disabled {
+  cursor: default;
+  opacity: 0.9;
+}
+
+.scan-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  min-width: 112px;
+}
+
+.scan-action-button.loading {
+  background: var(--accent-strong);
+}
+
+.scan-spinner {
+  display: inline-grid;
+  place-items: center;
+}
+
+.scan-spinner svg {
+  width: 16px;
+  height: 16px;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .scan-controls,
 .scan-schedule-form,
 .checkbox-control {

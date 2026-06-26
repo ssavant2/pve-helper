@@ -252,3 +252,31 @@ class ViewSmokeTests(TestCase):
         )
         self.assertRedirects(response, reverse("core:dashboard"))
         self.assertFalse(Schedule.objects.filter(name=SCAN_SCHEDULE_NAME).exists())
+
+    def test_start_scan_is_silent_and_scan_status_updates_button_state(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        response = self.client.post(reverse("core:start_scan"))
+        self.assertRedirects(response, reverse("core:dashboard"))
+        self.assertEqual(list(get_messages(response.wsgi_request)), [])
+
+        scan = ScanRun.objects.latest("created_at")
+        self.assertEqual(scan.status, ScanRun.Status.QUEUED)
+
+        response = self.client.get(reverse("core:scan_status"))
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["active"])
+        self.assertEqual(payload["button_label"], "Scan queued")
+
+        scan.status = ScanRun.Status.RUNNING
+        scan.save(update_fields=["status", "updated_at"])
+        response = self.client.get(reverse("core:scan_status"))
+        self.assertEqual(response.json()["button_label"], "Scanning")
+
+        scan.status = ScanRun.Status.COMPLETED
+        scan.save(update_fields=["status", "updated_at"])
+        response = self.client.get(reverse("core:scan_status"))
+        self.assertFalse(response.json()["active"])
+        self.assertEqual(response.json()["button_label"], "Start scan")

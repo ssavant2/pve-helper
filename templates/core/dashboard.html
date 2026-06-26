@@ -18,9 +18,20 @@
         <input class="number-input" type="number" name="interval_minutes" min="1" max="9999" value="{{ scan_schedule.interval_minutes }}" data-auto-submit-control>
         <span>minutes</span>
       </form>
-      <form method="post" action="{% url 'core:start_scan' %}">
+      <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
         {% csrf_token %}
-        <button class="primary-action" type="submit">Start scan</button>
+        <button class="primary-action scan-action-button {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
+          <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
+            <i data-lucide="loader-circle" aria-hidden="true"></i>
+          </span>
+          <span data-scan-button-label>
+            {% if active_scan %}
+              {% if active_scan.status == "queued" %}Scan queued{% else %}Scanning{% endif %}
+            {% else %}
+              Start scan
+            {% endif %}
+          </span>
+        </button>
       </form>
     </div>
   </section>

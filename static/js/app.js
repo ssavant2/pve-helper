@@ -6,6 +6,7 @@
   const themeLabels = document.querySelectorAll("[data-theme-label]");
   const taskbarToggle = document.querySelector("[data-taskbar-toggle]");
   const autoSubmitForms = document.querySelectorAll("[data-auto-submit-form]");
+  const scanActionForm = document.querySelector("[data-scan-action]");
   const menu = document.getElementById("context-menu");
   const recentTasks = document.querySelector("[data-recent-tasks]");
   let activeLabel = "";
@@ -102,6 +103,58 @@
       });
     });
   });
+
+  if (scanActionForm) {
+    const scanButton = scanActionForm.querySelector("[data-scan-button]");
+    const scanButtonLabel = scanActionForm.querySelector("[data-scan-button-label]");
+    const scanSpinner = scanActionForm.querySelector("[data-scan-spinner]");
+    const scanStatusUrl = scanActionForm.dataset.scanStatusUrl;
+    const scanPollMs = Number.parseInt(scanActionForm.dataset.scanPollMs || "5000", 10);
+
+    const setScanButtonState = (active, label) => {
+      if (!scanButton || !scanButtonLabel) {
+        return;
+      }
+
+      scanButton.disabled = Boolean(active);
+      scanButton.classList.toggle("loading", Boolean(active));
+      scanButtonLabel.textContent = label || (active ? "Scanning" : "Start scan");
+      if (scanSpinner) {
+        scanSpinner.hidden = !active;
+      }
+    };
+
+    const loadScanStatus = async () => {
+      if (!scanStatusUrl) {
+        return;
+      }
+
+      try {
+        const response = await fetch(scanStatusUrl, {
+          headers: {
+            Accept: "application/json",
+          },
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        setScanButtonState(data.active, data.button_label);
+      } catch (error) {
+        // The current button state remains usable if the status poll fails.
+      }
+    };
+
+    scanActionForm.addEventListener("submit", () => {
+      setScanButtonState(true, "Scan queued");
+    });
+
+    window.setInterval(() => {
+      if (document.visibilityState !== "hidden") {
+        loadScanStatus();
+      }
+    }, Number.isFinite(scanPollMs) ? scanPollMs : 5000);
+  }
 
   if (recentTasks) {
     const rows = recentTasks.querySelector("[data-task-rows]");
