@@ -445,7 +445,7 @@ a.tree-node {
   align-items: center;
   gap: 8px;
   justify-content: center;
-  min-width: 112px;
+  width: 138px;
 }
 
 .scan-action-button.loading {
@@ -455,6 +455,10 @@ a.tree-node {
 .scan-spinner {
   display: inline-grid;
   place-items: center;
+}
+
+.scan-spinner[hidden] {
+  display: none;
 }
 
 .scan-spinner svg {
