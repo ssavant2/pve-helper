@@ -181,6 +181,42 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "vm-100-disk-0.qcow2")
 
+    def test_dashboard_keeps_last_completed_gate_while_new_scan_is_queued(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        storage = StorageMount.objects.create(
+            storage_id="TrueNAS-FS",
+            display_name="TrueNAS-FS",
+            path="/storages/truenas-fs",
+            expected_consumers=["pve3"],
+        )
+        completed_scan = ScanRun.objects.create(
+            status=ScanRun.Status.COMPLETED,
+            progress_message="Completed scan",
+            storage_gate_status={
+                "TrueNAS-FS": {
+                    "ok": True,
+                    "status": "ok",
+                    "expected_consumers": ["pve3"],
+                    "missing_consumers": [],
+                }
+            },
+        )
+        FileInventory.objects.create(
+            scan_run=completed_scan,
+            storage=storage,
+            path="images",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+        )
+        ScanRun.objects.create(status=ScanRun.Status.QUEUED, progress_message="Queued scan")
+
+        response = self.client.get(reverse("core:dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "TrueNAS-FS")
+        self.assertContains(response, "ok")
+        self.assertContains(response, "Queued scan")
+
     def test_recent_tasks_endpoint_paginates_scans(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -280,3 +316,29 @@ class ViewSmokeTests(TestCase):
         response = self.client.get(reverse("core:scan_status"))
         self.assertFalse(response.json()["active"])
         self.assertEqual(response.json()["button_label"], "Start scan")
+
+    def test_storage_browser_scan_targets_selected_storage_and_returns_to_page(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        storage = StorageMount.objects.create(
+            storage_id="TrueNAS-FS",
+            display_name="TrueNAS-FS",
+            path="/storages/truenas-fs",
+            expected_consumers=["pve3"],
+        )
+
+        response = self.client.post(
+            reverse("core:start_scan"),
+            {
+                "storage_id": storage.storage_id,
+                "next": reverse("core:storage_browser", args=[storage.storage_id]),
+            },
+        )
+
+        self.assertRedirects(response, reverse("core:storage_browser", args=[storage.storage_id]))
+        scan = ScanRun.objects.latest("created_at")
+        self.assertEqual(scan.target_storage, storage)
+        self.assertEqual(scan.target_label, "TrueNAS-FS")
+
+        task_page = recent_task_page()
+        self.assertEqual(task_page.tasks[0]["target"], "TrueNAS-FS")

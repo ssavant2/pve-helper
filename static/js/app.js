@@ -110,6 +110,7 @@
     const scanSpinner = scanActionForm.querySelector("[data-scan-spinner]");
     const scanStatusUrl = scanActionForm.dataset.scanStatusUrl;
     const scanPollMs = Number.parseInt(scanActionForm.dataset.scanPollMs || "5000", 10);
+    let scanWasActive = scanButton ? scanButton.disabled : false;
 
     const setScanButtonState = (active, label) => {
       if (!scanButton || !scanButtonLabel) {
@@ -139,6 +140,11 @@
           return;
         }
         const data = await response.json();
+        if (scanWasActive && !data.active) {
+          window.location.reload();
+          return;
+        }
+        scanWasActive = Boolean(data.active);
         setScanButtonState(data.active, data.button_label);
       } catch (error) {
         // The current button state remains usable if the status poll fails.
@@ -146,6 +152,7 @@
     };
 
     scanActionForm.addEventListener("submit", () => {
+      scanWasActive = true;
       setScanButtonState(true, "Scan queued");
     });
 

@@ -14,9 +14,22 @@
         {% endif %}
       </p>
     </div>
-    <form method="post" action="{% url 'core:start_scan' %}">
+    <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
       {% csrf_token %}
-      <button class="primary-action" type="submit">Start scan</button>
+      <input type="hidden" name="storage_id" value="{{ storage.storage_id }}">
+      <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      <button class="primary-action scan-action-button {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
+        <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
+          <i data-lucide="loader-circle" aria-hidden="true"></i>
+        </span>
+        <span data-scan-button-label>
+          {% if active_scan %}
+            {% if active_scan.status == "queued" %}Scan queued{% else %}Scanning{% endif %}
+          {% else %}
+            Start scan
+          {% endif %}
+        </span>
+      </button>
     </form>
   </section>
 

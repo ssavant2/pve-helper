@@ -36,8 +36,8 @@ class StorageMountAdmin(admin.ModelAdmin):
 
 @admin.register(ScanRun)
 class ScanRunAdmin(admin.ModelAdmin):
-    list_display = ("id", "status", "progress_message", "created_at", "started_at", "finished_at")
-    list_filter = ("status",)
+    list_display = ("id", "status", "target_label", "progress_message", "created_at", "started_at", "finished_at")
+    list_filter = ("status", "target_storage")
     search_fields = ("queued_task_id", "progress_message")
     readonly_fields = ("created_at", "updated_at", "summary_counts", "error_details", "storage_gate_status")
 

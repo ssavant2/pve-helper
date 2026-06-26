@@ -79,6 +79,12 @@ def _run_scan(scan: ScanRun) -> None:
     sync_runtime_configuration()
     endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True).order_by("name"))
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
+    scan_target = scan.target_storage
+    if scan_target is not None:
+        scan_target = StorageMount.objects.filter(pk=scan_target.pk, enabled=True).first()
+        if scan_target is None:
+            raise ValueError("Target storage is no longer enabled or available.")
+    storages_to_scan = [scan_target] if scan_target is not None else storages
 
     scan.progress_message = "Reading Proxmox inventory."
     scan.save(update_fields=["progress_message", "updated_at"])
@@ -134,7 +140,11 @@ def _run_scan(scan: ScanRun) -> None:
     scan.proxmox_inventory_at = inventory_at
     scan.storage_gate_status = gate_status
     scan.error_details = {"proxmox": endpoint_errors} if endpoint_errors else {}
-    scan.progress_message = "Scanning storage roots."
+    scan.progress_message = (
+        f"Scanning {scan_target.display_name}."
+        if scan_target is not None
+        else "Scanning storage roots."
+    )
     scan.save(
         update_fields=[
             "endpoints_attempted",
@@ -150,7 +160,7 @@ def _run_scan(scan: ScanRun) -> None:
     file_rows: list[FileInventory] = []
     storage_errors: dict[str, Any] = {}
 
-    for storage in storages:
+    for storage in storages_to_scan:
         status = gate_status.get(storage.storage_id, {})
         gate_ok = bool(status.get("ok"))
         missing_consumers = list(status.get("missing_consumers") or [])

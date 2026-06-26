@@ -6,10 +6,12 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import connection
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.shortcuts import render
+from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 from django_q.tasks import async_task
 
@@ -31,11 +33,13 @@ def navigation_context(active: str, **extra: str) -> dict[str, str]:
 @app_login_required
 def dashboard(request):
     latest_scan = ScanRun.objects.order_by("-created_at").first()
-    latest_files = FileInventory.objects.filter(scan_run=latest_scan) if latest_scan else FileInventory.objects.none()
-    classification_counts = _classification_counts(latest_files)
+    result_scan = _latest_result_scan()
+    storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
+    classification_counts = _current_classification_counts(storages)
     context = {
         **navigation_context("dashboard"),
         "latest_scan": latest_scan,
+        "result_scan": result_scan,
         "storage_count": StorageMount.objects.count(),
         "scan_count": ScanRun.objects.count(),
         "audit_count": AuditEvent.objects.count(),
@@ -48,31 +52,21 @@ def dashboard(request):
 
 @app_login_required
 def datastores(request):
-    latest_scan = ScanRun.objects.order_by("-created_at").first()
+    result_scan = _latest_result_scan()
     storages = list(StorageMount.objects.order_by("display_name"))
-    if latest_scan:
-        counts = (
-            FileInventory.objects.filter(scan_run=latest_scan)
-            .values("storage_id", "classification")
-            .order_by()
-            .annotate(count=Count("id"))
+    for storage in storages:
+        storage_result_scan = _latest_storage_result_scan(storage)
+        storage.latest_counts = _classification_counts(
+            FileInventory.objects.filter(scan_run=storage_result_scan, storage=storage)
+            if storage_result_scan
+            else FileInventory.objects.none()
         )
-        by_storage: dict[int, dict[str, int]] = {}
-        for row in counts:
-            by_storage.setdefault(row["storage_id"], {})[row["classification"]] = row["count"]
-        for storage in storages:
-            storage.latest_counts = by_storage.get(storage.id, {})
-            storage.latest_file_count = sum(storage.latest_counts.values())
-            storage.latest_gate_status = (latest_scan.storage_gate_status or {}).get(storage.storage_id, {})
-    else:
-        for storage in storages:
-            storage.latest_counts = {}
-            storage.latest_file_count = 0
-            storage.latest_gate_status = {}
+        storage.latest_file_count = sum(storage.latest_counts.values())
+        storage.latest_gate_status = (result_scan.storage_gate_status or {}).get(storage.storage_id, {}) if result_scan else {}
 
     context = {
         **navigation_context("datastores"),
-        "latest_scan": latest_scan,
+        "latest_scan": result_scan,
         "storages": storages,
     }
     return render(request, "core/datastores.html", context)
@@ -81,7 +75,7 @@ def datastores(request):
 @app_login_required
 def storage_browser(request, storage_id: str):
     storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
-    latest_scan = ScanRun.objects.order_by("-created_at").first()
+    latest_scan = _latest_storage_result_scan(storage)
     current_path = _normalize_browser_path(request.GET.get("path", ""))
     parent_path = _parent_path(current_path)
     entries = []
@@ -122,20 +116,15 @@ def storage_browser(request, storage_id: str):
         "breadcrumbs": _browser_breadcrumbs(current_path),
         "entries": entries,
         "current_entry": current_entry,
+        "active_scan": _active_scan(),
     }
     return render(request, "core/storage_browser.html", context)
 
 
 @app_login_required
 def orphan_finder(request):
-    latest_scan = ScanRun.objects.order_by("-created_at").first()
-    files = (
-        FileInventory.objects.select_related("storage", "scan_run")
-        .filter(scan_run=latest_scan, classification=FileInventory.Classification.LIKELY_ORPHAN)
-        .order_by("storage__display_name", "path")[:200]
-        if latest_scan
-        else FileInventory.objects.none()
-    )
+    latest_scan = _latest_result_scan()
+    files = _current_orphan_files()
     context = {
         **navigation_context("orphans"),
         "latest_scan": latest_scan,
@@ -209,6 +198,7 @@ def update_scan_schedule_view(request):
 @require_POST
 @app_login_required
 def start_scan(request):
+    redirect_to = _safe_next_url(request)
     active_scan = _active_scan()
     if active_scan:
         AuditEvent.objects.create(
@@ -220,9 +210,14 @@ def start_scan(request):
             outcome="skipped",
             details={"reason": "A scan is already queued or running."},
         )
-        return redirect("core:dashboard")
+        return redirect(redirect_to)
 
-    scan = ScanRun.objects.create(progress_message="Queued from UI")
+    target_storage = _requested_scan_storage(request)
+    scan = ScanRun.objects.create(
+        progress_message="Queued from UI",
+        target_storage=target_storage,
+        target_label=target_storage.display_name if target_storage else "",
+    )
     task_id = async_task("core.tasks.run_scan", scan.id)
     scan.queued_task_id = task_id
     scan.save(update_fields=["queued_task_id", "updated_at"])
@@ -234,9 +229,13 @@ def start_scan(request):
         object_type="scan_run",
         object_id=str(scan.id),
         outcome="success",
-        details={"task_id": task_id},
+        details={
+            "task_id": task_id,
+            "target_storage": target_storage.storage_id if target_storage else "",
+            "target_label": target_storage.display_name if target_storage else "All storages",
+        },
     )
-    return redirect("core:dashboard")
+    return redirect(redirect_to)
 
 
 def health_live(_request):
@@ -264,6 +263,55 @@ def _classification_counts(queryset) -> dict[str, int]:
     }
 
 
+def _current_classification_counts(storages: list[StorageMount]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for storage in storages:
+        scan = _latest_storage_result_scan(storage)
+        if not scan:
+            continue
+        for classification, count in _classification_counts(
+            FileInventory.objects.filter(scan_run=scan, storage=storage)
+        ).items():
+            totals[classification] = totals.get(classification, 0) + count
+    return totals
+
+
+def _current_orphan_files() -> list[FileInventory]:
+    files = []
+    for storage in StorageMount.objects.filter(enabled=True).order_by("display_name"):
+        scan = _latest_storage_result_scan(storage)
+        if not scan:
+            continue
+        files.extend(
+            FileInventory.objects.select_related("storage", "scan_run")
+            .filter(
+                scan_run=scan,
+                storage=storage,
+                classification=FileInventory.Classification.LIKELY_ORPHAN,
+            )
+            .order_by("storage__display_name", "path")[:200]
+        )
+    return sorted(files, key=lambda item: (item.storage.display_name, item.path))[:200]
+
+
+def _latest_result_scan() -> ScanRun | None:
+    return (
+        ScanRun.objects.filter(status=ScanRun.Status.COMPLETED)
+        .exclude(storage_gate_status={})
+        .order_by("-finished_at", "-created_at")
+        .first()
+    )
+
+
+def _latest_storage_result_scan(storage: StorageMount) -> ScanRun | None:
+    return (
+        ScanRun.objects.filter(status=ScanRun.Status.COMPLETED)
+        .filter(Q(target_storage=storage) | Q(target_storage__isnull=True))
+        .order_by("-filesystem_scan_at", "-finished_at", "-created_at")
+        .first()
+    )
+
+
 def _active_scan() -> ScanRun | None:
     return (
         ScanRun.objects.filter(status__in=[ScanRun.Status.QUEUED, ScanRun.Status.RUNNING])
@@ -278,6 +326,24 @@ def _scan_button_label(active_scan: ScanRun | None) -> str:
     if active_scan.status == ScanRun.Status.QUEUED:
         return "Scan queued"
     return "Scanning"
+
+
+def _requested_scan_storage(request) -> StorageMount | None:
+    storage_id = request.POST.get("storage_id", "").strip()
+    if not storage_id:
+        return None
+    return get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+
+
+def _safe_next_url(request) -> str:
+    next_url = request.POST.get("next", "").strip()
+    if next_url and url_has_allowed_host_and_scheme(
+        next_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return next_url
+    return reverse("core:dashboard")
 
 
 def _normalize_browser_path(raw_path: str) -> str:

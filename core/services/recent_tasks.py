@@ -107,7 +107,7 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
 
     return {
         "name": "Storage scan",
-        "target": "All storages",
+        "target": scan.target_label or (scan.target_storage.display_name if scan.target_storage else "All storages"),
         "status": status_label,
         "status_class": status_class,
         "details": _scan_details(scan),

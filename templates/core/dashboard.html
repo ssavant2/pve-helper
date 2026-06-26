@@ -20,6 +20,7 @@
       </form>
       <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
         {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
         <button class="primary-action scan-action-button {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
           <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
             <i data-lucide="loader-circle" aria-hidden="true"></i>
@@ -91,7 +92,7 @@
     </div>
   </section>
 
-  {% if latest_scan %}
+  {% if result_scan %}
     <section class="panel">
       <div class="panel-heading">
         <h2>Storage gate</h2>
@@ -106,7 +107,7 @@
           </tr>
         </thead>
         <tbody>
-          {% for storage_id, gate in latest_scan.storage_gate_status.items %}
+          {% for storage_id, gate in result_scan.storage_gate_status.items %}
             <tr data-context-label="{{ storage_id }}">
               <td><code>{{ storage_id }}</code></td>
               <td><span class="badge {% if gate.ok %}completed{% else %}failed{% endif %}">{{ gate.status }}</span></td>

@@ -91,6 +91,14 @@ class ScanRun(TimestampedModel):
     storage_gate_status = models.JSONField(default=dict, blank=True)
     filesystem_scan_at = models.DateTimeField(null=True, blank=True)
     proxmox_inventory_at = models.DateTimeField(null=True, blank=True)
+    target_storage = models.ForeignKey(
+        StorageMount,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="scan_runs",
+    )
+    target_label = models.CharField(max_length=160, blank=True)
 
     class Meta:
         ordering = ["-created_at"]
