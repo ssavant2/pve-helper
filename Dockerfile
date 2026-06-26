@@ -23,4 +23,4 @@ RUN APP_SECRET_KEY=build-time-placeholder DEBUG=true python manage.py collectsta
 
 EXPOSE 8000
 
-CMD ["gunicorn", "pve_helper.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-"]
+CMD ["gunicorn", "pve_helper.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-", "--no-control-socket"]

@@ -1,8 +1,8 @@
-Django>=5.2,<6.0
+Django>=6.0,<7.0
 django-q2>=1.7,<2.0
-gunicorn>=23,<24
+gunicorn>=26,<27
 httpx>=0.27,<1.0
-mozilla-django-oidc>=4.0,<5.0
+mozilla-django-oidc>=5.0,<6.0
 psycopg[binary]>=3.2,<4.0
 PyYAML>=6.0,<7.0
 whitenoise>=6.7,<7.0
