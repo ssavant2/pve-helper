@@ -36,6 +36,8 @@ users must be created again if needed.
 
    ```yaml
    image: postgres:18-alpine
+   volumes:
+     - postgres_data:/var/lib/postgresql
    ```
 
 4. Start PostgreSQL 18 and recreate the schema.
@@ -106,6 +108,8 @@ users must be created again if needed.
 
    ```yaml
    image: postgres:18-alpine
+   volumes:
+     - postgres_data:/var/lib/postgresql
    ```
 
 7. Start PostgreSQL 18 and restore the dump.

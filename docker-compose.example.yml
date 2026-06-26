@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: ${DB_USER:-pve_helper}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     networks:
       - backend
     healthcheck:
