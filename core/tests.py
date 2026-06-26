@@ -19,6 +19,7 @@ from core.services.filesystem import StorageSpaceInfo, storage_space_info
 from core.services.recent_tasks import recent_task_page
 from core.services.scan_schedule import SCAN_SCHEDULE_NAME, update_scan_schedule
 from core.services.storage import StorageScanner
+from core.services.storage_details import storage_details
 from core.tasks import enqueue_scheduled_scan
 
 
@@ -123,6 +124,26 @@ class RuntimeConfigurationTests(TestCase):
         self.assertEqual(ProxmoxEndpoint.objects.get(name="pve3").url, "https://pve-node-1.example.com:8006")
         self.assertEqual({storage.storage_id for storage in storages}, {"TrueNAS-FS", "TrueNAS-VM"})
         self.assertEqual(StorageMount.objects.get(storage_id="TrueNAS-VM").expected_consumers, ["pve3"])
+
+    def test_storage_details_normalizes_pve_options_order(self):
+        storage = StorageMount.objects.create(
+            storage_id="TrueNAS-VM",
+            display_name="TrueNAS-VM",
+            export="203.0.113.20:/mnt/Pool-VMs/VM/Proxmox",
+            path="/storages/truenas-vm",
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve3",
+            object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="TrueNAS-VM",
+            config={"storage": "TrueNAS-VM", "options": "nconnect=4,vers=4.2"},
+        )
+
+        details = storage_details(storage, scan, StorageSpaceInfo(ok=False))
+
+        self.assertEqual(details.options, "vers=4.2,nconnect=4")
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)

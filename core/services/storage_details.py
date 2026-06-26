@@ -35,7 +35,7 @@ def storage_details(storage: StorageMount, scan: ScanRun | None, space_info: Sto
         proxmox_path=str(config.get("path") or ""),
         app_filesystem_type=space_info.filesystem_type,
         app_source=space_info.source,
-        options=str(config.get("options") or ""),
+        options=_normalize_options(str(config.get("options") or "")),
         preallocation=str(config.get("preallocation") or "default"),
         content=str(config.get("content") or ""),
         shared=_boolish_label(config.get("shared")),
@@ -64,6 +64,24 @@ def _split_export(export: str) -> tuple[str, str]:
         return "", export
     server, path = export.split(":", 1)
     return server, path
+
+
+def _normalize_options(options: str) -> str:
+    parts = [part.strip() for part in options.split(",") if part.strip()]
+    if not parts:
+        return ""
+
+    priority = {
+        "vers": 10,
+        "nfsvers": 10,
+        "nconnect": 20,
+    }
+
+    def sort_key(option: str) -> tuple[int, str]:
+        key = option.split("=", 1)[0]
+        return priority.get(key, 100), key
+
+    return ",".join(sorted(parts, key=sort_key))
 
 
 def _boolish_label(value) -> str:
