@@ -24,7 +24,7 @@
       <tbody>
         {% for event in events %}
           <tr data-context-label="{{ event.object_id }}">
-            <td>{{ event.timestamp }}</td>
+            <td>{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
             <td>{{ event.username|default:"-" }}</td>
             <td>{{ event.action }}</td>
             <td>{{ event.object_type }} {{ event.object_id }}</td>

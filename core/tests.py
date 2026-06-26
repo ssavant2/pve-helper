@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -180,6 +180,20 @@ class ViewSmokeTests(TestCase):
         response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]), {"path": "images/100"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "vm-100-disk-0.qcow2")
+
+    def test_audit_log_uses_task_timestamp_format(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        event = AuditEvent.objects.create(username="viewer", action="scan.queued")
+        AuditEvent.objects.filter(pk=event.pk).update(
+            timestamp=datetime(2026, 6, 26, 7, 49, 5, tzinfo=timezone.get_current_timezone())
+        )
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "2026-06-26 07:49:05")
+        self.assertNotContains(response, "June 26, 2026")
 
     def test_dashboard_keeps_last_completed_gate_while_new_scan_is_queued(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
