@@ -10,6 +10,7 @@
   const scanActionForm = document.querySelector("[data-scan-action]");
   const menu = document.getElementById("context-menu");
   const recentTasks = document.querySelector("[data-recent-tasks]");
+  const auditLog = document.querySelector("[data-audit-log]");
   let activeLabel = "";
 
   const preferredTheme = () => {
@@ -314,6 +315,53 @@
         loadTaskPage(0);
       }
     }, Number.isFinite(pollMs) ? pollMs : 10000);
+  }
+
+  if (auditLog) {
+    const filterButtons = auditLog.querySelectorAll("[data-audit-filter]");
+    const searchInput = auditLog.querySelector("[data-audit-search]");
+    const rows = auditLog.querySelectorAll("[data-audit-row]");
+    const emptyRow = auditLog.querySelector("[data-audit-empty]");
+    const countLabel = auditLog.querySelector("[data-audit-count]");
+    let activeFilter = "all";
+
+    const applyAuditFilters = () => {
+      const query = (searchInput?.value || "").trim().toLowerCase();
+      let visibleCount = 0;
+
+      rows.forEach((row) => {
+        const moduleMatches = activeFilter === "all" || row.dataset.auditModule === activeFilter;
+        const searchMatches = !query || (row.dataset.auditSearch || "").includes(query);
+        const visible = moduleMatches && searchMatches;
+        row.hidden = !visible;
+        if (visible) {
+          visibleCount += 1;
+        }
+      });
+
+      if (emptyRow) {
+        emptyRow.hidden = visibleCount > 0;
+      }
+      if (countLabel) {
+        countLabel.textContent = `${visibleCount} event${visibleCount === 1 ? "" : "s"}`;
+      }
+    };
+
+    filterButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        activeFilter = button.dataset.auditFilter || "all";
+        filterButtons.forEach((item) => {
+          const active = item === button;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+        applyAuditFilters();
+      });
+    });
+
+    if (searchInput) {
+      searchInput.addEventListener("input", applyAuditFilters);
+    }
   }
 
   if (menu) {

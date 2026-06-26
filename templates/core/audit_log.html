@@ -6,15 +6,30 @@
   <section class="page-header">
     <div>
       <h1>Audit Log</h1>
-      <p>Authentication, scan, and future file actions</p>
+      <p>Authentication, storage scans, and file actions</p>
     </div>
   </section>
 
-  <section class="panel">
+  <section class="audit-panel panel" data-audit-log>
+    <div class="audit-toolbar">
+      <div class="segmented-control" aria-label="Audit module filter">
+        {% for filter in audit_filters %}
+          <button class="segmented-button {% if filter.key == 'all' %}active{% endif %}" type="button" data-audit-filter="{{ filter.key }}" aria-pressed="{% if filter.key == 'all' %}true{% else %}false{% endif %}">
+            {{ filter.label }}
+          </button>
+        {% endfor %}
+      </div>
+      <label class="search-control">
+        <span class="sr-only">Search audit log</span>
+        <input type="search" placeholder="Search for anything" data-audit-search autocomplete="off">
+      </label>
+      <span class="audit-count" data-audit-count>{{ events|length }} event{{ events|length|pluralize }}</span>
+    </div>
     <table class="data-table">
       <thead>
         <tr>
           <th>Time</th>
+          <th>Module</th>
           <th>User</th>
           <th>Action</th>
           <th>Object</th>
@@ -23,18 +38,18 @@
       </thead>
       <tbody>
         {% for event in events %}
-          <tr data-context-label="{{ event.object_id }}">
+          <tr data-context-label="{{ event.object_id }}" data-audit-row data-audit-module="{{ event.display_module_key }}" data-audit-search="{{ event.search_text|lower }}">
             <td>{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
+            <td>{{ event.display_module }}</td>
             <td>{{ event.username|default:"-" }}</td>
             <td>{{ event.display_action }}</td>
             <td>{{ event.display_object }}</td>
             <td><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
           </tr>
-        {% empty %}
-          <tr>
-            <td colspan="5" class="empty-state">No audit events yet.</td>
-          </tr>
         {% endfor %}
+        <tr data-audit-empty {% if events %}hidden{% endif %}>
+          <td colspan="6" class="empty-state">{% if events %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+        </tr>
       </tbody>
     </table>
   </section>

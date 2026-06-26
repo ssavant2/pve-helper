@@ -148,6 +148,14 @@ def audit_log(request):
     context = {
         **navigation_context("audit"),
         "events": events,
+        "audit_filters": [
+            {"key": "all", "label": "All"},
+            {"key": "auth", "label": "Auth"},
+            {"key": "clusters", "label": "Clusters"},
+            {"key": "vms", "label": "VMs"},
+            {"key": "storage", "label": "Storage"},
+            {"key": "network", "label": "Network"},
+        ],
     }
     return render(request, "core/audit_log.html", context)
 
@@ -323,12 +331,65 @@ def _storage_gate_rows(storages: list[StorageMount], result_scan: ScanRun | None
 
 def _decorate_audit_events(events: list[AuditEvent]) -> None:
     for event in events:
+        event.display_module_key = _audit_module_key(event)
+        event.display_module = _audit_module_label(event.display_module_key)
         event.display_action = _audit_action_label(event)
         event.display_object = _audit_object_label(event)
+        event.search_text = " ".join(
+            [
+                event.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                event.username or "",
+                event.display_module,
+                event.display_action,
+                event.display_object,
+                event.outcome or "",
+            ]
+        )
+
+
+def _audit_module_key(event: AuditEvent) -> str:
+    details = event.details if isinstance(event.details, dict) else {}
+    action = event.action or ""
+    object_type = event.object_type or ""
+
+    if action.startswith("auth."):
+        return "auth"
+    if action.startswith("network.") or object_type.startswith("network"):
+        return "network"
+    if action.startswith("vm.") or object_type in {"vm", "ct", "guest"}:
+        return "vms"
+    if action.startswith("cluster.") or object_type.startswith("cluster"):
+        return "clusters"
+    if (
+        action.startswith("scan.")
+        or action.startswith("file.")
+        or action.startswith("trash.")
+        or object_type in {"scan_run", "scan_schedule", "storage", "file"}
+        or details.get("target_storage")
+    ):
+        return "storage"
+    return "system"
+
+
+def _audit_module_label(module_key: str) -> str:
+    return {
+        "auth": "Auth",
+        "clusters": "Clusters",
+        "network": "Network",
+        "storage": "Storage",
+        "system": "System",
+        "vms": "VMs",
+    }.get(module_key, "System")
 
 
 def _audit_action_label(event: AuditEvent) -> str:
     details = event.details if isinstance(event.details, dict) else {}
+    if event.action == "auth.login":
+        return "Login"
+    if event.action == "auth.logout":
+        return "Logout"
+    if event.action == "auth.login_failed":
+        return "Login failed"
     if event.action == "scan.queued" and details.get("source") == "schedule":
         interval = details.get("interval_minutes")
         if interval:

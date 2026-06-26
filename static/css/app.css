@@ -131,6 +131,18 @@ select {
   font: inherit;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -580,6 +592,67 @@ button.tree-node {
   margin: 0;
   font-size: 15px;
   font-weight: 650;
+}
+
+.audit-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-alt);
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.segmented-button {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.segmented-button:last-child {
+  border-right: 0;
+}
+
+.segmented-button.active {
+  background: var(--tree-active-bg);
+  color: var(--tree-active-text);
+  font-weight: 650;
+}
+
+.search-control {
+  display: block;
+  flex: 1 1 220px;
+  min-width: 160px;
+}
+
+.search-control input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.audit-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .details-list {
@@ -1074,5 +1147,18 @@ code {
   .taskbar-controls {
     justify-content: flex-start;
     min-height: 36px;
+  }
+
+  .audit-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .segmented-control {
+    overflow-x: auto;
+  }
+
+  .audit-count {
+    align-self: flex-start;
   }
 }

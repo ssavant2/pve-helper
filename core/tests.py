@@ -197,6 +197,24 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "2026-06-26 07:49:05")
         self.assertNotContains(response, "June 26, 2026")
 
+    def test_audit_log_records_authentication_events(self):
+        get_user_model().objects.create_user(username="viewer", password="secret")
+
+        self.assertTrue(self.client.login(username="viewer", password="secret"))
+        event = AuditEvent.objects.filter(action="auth.login").latest("timestamp")
+        self.assertEqual(event.username, "viewer")
+        self.assertEqual(event.object_type, "user")
+        self.assertEqual(event.outcome, "success")
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Authentication, storage scans, and file actions")
+        self.assertContains(response, "Login")
+        self.assertContains(response, "Auth")
+        self.assertContains(response, 'data-audit-filter="storage"')
+        self.assertContains(response, 'data-audit-search')
+
     def test_scheduled_scan_audit_shows_interval_and_readable_labels(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
