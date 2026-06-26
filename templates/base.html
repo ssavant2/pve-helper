@@ -4,7 +4,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}pve-helper{% endblock %}</title>
+    <title>pve-helper</title>
     <script>
       (function () {
         try {
@@ -20,6 +20,7 @@
       })();
     </script>
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    <link rel="icon" href="{% static 'img/favicon.svg' %}" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
     <script defer src="{% static 'js/app.js' %}"></script>
   </head>
@@ -32,7 +33,7 @@
         </div>
         <div class="topbar-status">
           <span class="status-dot"></span>
-          <span>{{ app_base_url }}</span>
+          <span>{{ app_display_url }}</span>
         </div>
         <div class="user-area">
           <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">
