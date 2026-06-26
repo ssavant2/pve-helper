@@ -16,6 +16,7 @@ from django.views.decorators.http import require_POST
 from django_q.tasks import async_task
 
 from .models import AuditEvent, FileInventory, ScanRun, StorageMount
+from .services.filesystem import storage_space_info
 from .services.recent_tasks import recent_task_page, serialize_task_page
 from .services.scan_schedule import scan_schedule_state, update_scan_schedule
 
@@ -78,11 +79,13 @@ def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan
         storage.latest_gate_status = (result_scan.storage_gate_status or {}).get(storage.storage_id, {}) if result_scan else {}
         storage.latest_scan = storage_result_scan
         storage.latest_scan_at = _scan_timestamp(storage_result_scan)
+        storage.space_info = storage_space_info(storage.path)
 
 
 @app_login_required
 def storage_browser(request, storage_id: str):
     storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     current_path = _normalize_browser_path(request.GET.get("path", ""))
     parent_path = _parent_path(current_path)
@@ -491,6 +494,10 @@ def _active_scan() -> ScanRun | None:
         .order_by("-created_at")
         .first()
     )
+
+
+def _decorate_storage_with_space_info(storage: StorageMount) -> None:
+    storage.space_info = storage_space_info(storage.path)
 
 
 def _scan_button_label(active_scan: ScanRun | None) -> str:

@@ -100,6 +100,8 @@
           <tr>
             <th>Storage</th>
             <th>Status</th>
+            <th>Free / Total</th>
+            <th>FS</th>
             <th>Latest Scan</th>
             <th>Expected consumers</th>
             <th>Missing</th>
@@ -117,6 +119,14 @@
                   -
                 {% endif %}
               </td>
+              <td>
+                {% if storage.space_info.ok %}
+                  {{ storage.space_info.available_bytes|filesizeformat }} / {{ storage.space_info.total_bytes|filesizeformat }}
+                {% else %}
+                  <span class="muted">{{ storage.space_info.error|default:"unavailable" }}</span>
+                {% endif %}
+              </td>
+              <td>{{ storage.space_info.filesystem_type|default:"-" }}</td>
               <td>{{ row.latest_scan_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
               <td>{{ gate.expected_consumers|join:", "|default:"-" }}</td>
               <td>{{ gate.missing_consumers|join:", "|default:"-" }}</td>
@@ -124,7 +134,7 @@
             {% endwith %}
           {% empty %}
             <tr>
-              <td colspan="5" class="empty-state">No storage gate data for this scan.</td>
+              <td colspan="7" class="empty-state">No storage gate data for this scan.</td>
             </tr>
           {% endfor %}
         </tbody>

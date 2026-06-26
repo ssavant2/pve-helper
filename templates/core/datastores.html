@@ -15,6 +15,9 @@
           <th>Name</th>
           <th>Storage ID</th>
           <th>Path</th>
+          <th>Free / Total</th>
+          <th>Used</th>
+          <th>Filesystem</th>
           <th>Expected consumers</th>
           <th>Gate</th>
           <th>Latest Scan</th>
@@ -29,6 +32,27 @@
             <td><a href="{% url 'core:storage_browser' storage.storage_id %}">{{ storage.display_name }}</a></td>
             <td><code>{{ storage.storage_id }}</code></td>
             <td><code>{{ storage.path }}</code></td>
+            <td>
+              {% if storage.space_info.ok %}
+                {{ storage.space_info.available_bytes|filesizeformat }} / {{ storage.space_info.total_bytes|filesizeformat }}
+              {% else %}
+                <span class="muted">{{ storage.space_info.error|default:"unavailable" }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if storage.space_info.ok %}
+                {{ storage.space_info.used_percent|floatformat:1 }}%
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>
+              {% if storage.space_info.filesystem_type %}
+                <code>{{ storage.space_info.filesystem_type }}</code>
+              {% else %}
+                -
+              {% endif %}
+            </td>
             <td>{{ storage.expected_consumers|join:", " }}</td>
             <td>
               {% if storage.latest_gate_status %}
@@ -46,7 +70,7 @@
           </tr>
         {% empty %}
           <tr>
-            <td colspan="9" class="empty-state">No datastores configured in the database yet.</td>
+            <td colspan="12" class="empty-state">No datastores configured in the database yet.</td>
           </tr>
         {% endfor %}
       </tbody>

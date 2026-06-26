@@ -15,6 +15,7 @@ from django_q.models import Schedule
 from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ScanRun, StorageMount
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
+from core.services.filesystem import StorageSpaceInfo, storage_space_info
 from core.services.recent_tasks import recent_task_page
 from core.services.scan_schedule import SCAN_SCHEDULE_NAME, update_scan_schedule
 from core.services.storage import StorageScanner
@@ -94,6 +95,14 @@ class ClassificationTests(SimpleTestCase):
         self.assertIn("images/500", {entry.relative_path for entry in entries})
         self.assertEqual(scanner.errors[0]["path"], "images/500")
         self.assertEqual(scanner.errors[0]["error"], "PermissionError")
+
+    def test_storage_space_info_reads_capacity_for_existing_path(self):
+        with TemporaryDirectory() as tmp:
+            info = storage_space_info(tmp)
+
+        self.assertTrue(info.ok)
+        self.assertGreater(info.total_bytes or 0, 0)
+        self.assertGreaterEqual(info.available_bytes or 0, 0)
 
 
 class RuntimeConfigurationTests(TestCase):
@@ -292,6 +301,9 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(event.object_id, "TrueNAS-VM:dump/vzdump-qemu-100.vma.zst")
 
     def test_storage_file_download_rejects_directories_and_path_traversal(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "dump").mkdir()
@@ -356,19 +368,49 @@ class ViewSmokeTests(TestCase):
             finished_at=datetime(2026, 6, 26, 8, 15, 31, tzinfo=timezone.get_current_timezone()),
         )
 
-        response = self.client.get(reverse("core:dashboard"))
+        with patch(
+            "core.views.storage_space_info",
+            return_value=StorageSpaceInfo(
+                ok=True,
+                total_bytes=10 * 1024**4,
+                available_bytes=4 * 1024**4,
+                used_bytes=6 * 1024**4,
+                used_percent=60.0,
+                filesystem_type="nfs4",
+                source="203.0.113.20:/mnt/Pool-FS/FS/Proxmox",
+                mount_point="/storages/truenas-fs",
+            ),
+        ):
+            response = self.client.get(reverse("core:dashboard"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "TrueNAS-FS")
         self.assertContains(response, "ok")
+        self.assertContains(response, "Free / Total")
+        self.assertContains(response, "4.0")
+        self.assertContains(response, "10.0")
+        self.assertContains(response, "nfs4")
         self.assertContains(response, "Latest Scan")
         self.assertContains(response, "2026-06-26 08:15:30")
         self.assertContains(response, "Queued scan")
 
-        response = self.client.get(reverse("core:datastores"))
+        with patch(
+            "core.views.storage_space_info",
+            return_value=StorageSpaceInfo(
+                ok=True,
+                total_bytes=10 * 1024**4,
+                available_bytes=4 * 1024**4,
+                used_bytes=6 * 1024**4,
+                used_percent=60.0,
+                filesystem_type="nfs4",
+            ),
+        ):
+            response = self.client.get(reverse("core:datastores"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Latest Scan")
+        self.assertContains(response, "Filesystem")
+        self.assertContains(response, "60.0%")
         self.assertContains(response, "2026-06-26 08:15:30")
 
     def test_recent_tasks_endpoint_paginates_scans(self):
