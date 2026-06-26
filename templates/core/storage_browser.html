@@ -60,6 +60,7 @@
           <th>Modified</th>
           <th>Category</th>
           <th>Reference</th>
+          <th aria-label="Actions"></th>
         </tr>
       </thead>
       <tbody>
@@ -77,6 +78,7 @@
             <td>-</td>
             <td>-</td>
             <td>-</td>
+            <td></td>
           </tr>
         {% endif %}
 
@@ -108,10 +110,23 @@
                 <span class="muted">{{ entry.classification_reason|default:"-" }}</span>
               {% endif %}
             </td>
+            <td class="row-actions">
+              {% if entry.entry_type == "file" %}
+                <a
+                  class="icon-link"
+                  href="{% url 'core:storage_download' storage.storage_id %}?path={{ entry.path|urlencode }}"
+                  download
+                  aria-label="Download {{ entry.name }}"
+                  title="Download"
+                >
+                  <i data-lucide="download" aria-hidden="true"></i>
+                </a>
+              {% endif %}
+            </td>
           </tr>
         {% empty %}
           <tr>
-            <td colspan="7" class="empty-state">
+            <td colspan="8" class="empty-state">
               {% if latest_scan %}
                 This directory is empty in the latest scan.
               {% else %}

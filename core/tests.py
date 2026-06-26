@@ -241,6 +241,88 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, f"Scan {scan_id}")
         self.assertNotContains(response, "scan_run")
 
+    def test_storage_file_download_uses_latest_inventory_and_audits_action(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump_dir = root / "dump"
+            dump_dir.mkdir()
+            backup_file = dump_dir / "vzdump-qemu-100.vma.zst"
+            backup_file.write_bytes(b"backup data")
+
+            storage = StorageMount.objects.create(
+                storage_id="TrueNAS-VM",
+                display_name="TrueNAS-VM",
+                path=root.as_posix(),
+                expected_consumers=["pve3"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="backup",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump/vzdump-qemu-100.vma.zst",
+                entry_type=FileInventory.EntryType.FILE,
+                size_bytes=backup_file.stat().st_size,
+                content_category="backup",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+
+            response = self.client.get(
+                reverse("core:storage_download", args=["TrueNAS-VM"]),
+                {"path": "dump/vzdump-qemu-100.vma.zst"},
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(b"".join(response.streaming_content), b"backup data")
+            self.assertIn("attachment", response["Content-Disposition"])
+            self.assertIn("vzdump-qemu-100.vma.zst", response["Content-Disposition"])
+
+        event = AuditEvent.objects.get(action="file.downloaded")
+        self.assertEqual(event.username, "viewer")
+        self.assertEqual(event.object_id, "TrueNAS-VM:dump/vzdump-qemu-100.vma.zst")
+
+    def test_storage_file_download_rejects_directories_and_path_traversal(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "dump").mkdir()
+            storage = StorageMount.objects.create(
+                storage_id="TrueNAS-VM",
+                display_name="TrueNAS-VM",
+                path=root.as_posix(),
+                expected_consumers=["pve3"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="backup",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+
+            directory_response = self.client.get(
+                reverse("core:storage_download", args=["TrueNAS-VM"]),
+                {"path": "dump"},
+            )
+            traversal_response = self.client.get(
+                reverse("core:storage_download", args=["TrueNAS-VM"]),
+                {"path": "../secret.txt"},
+            )
+
+        self.assertEqual(directory_response.status_code, 404)
+        self.assertEqual(traversal_response.status_code, 404)
+
     def test_dashboard_keeps_last_completed_gate_while_new_scan_is_queued(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)

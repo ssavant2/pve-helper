@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import connection
 from django.db.models import Count, Q
-from django.http import Http404, JsonResponse
+from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.shortcuts import render
 from django.urls import reverse
@@ -127,6 +127,50 @@ def storage_browser(request, storage_id: str):
         "active_scan": _active_scan(),
     }
     return render(request, "core/storage_browser.html", context)
+
+
+@app_login_required
+def download_storage_file(request, storage_id: str):
+    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    latest_scan = _latest_storage_result_scan(storage)
+    if latest_scan is None:
+        raise Http404("No storage inventory has been scanned yet.")
+
+    requested_path = _normalize_browser_path(request.GET.get("path", ""))
+    if not requested_path:
+        raise Http404("No file path requested.")
+
+    entry = get_object_or_404(
+        FileInventory,
+        scan_run=latest_scan,
+        storage=storage,
+        path=requested_path,
+        entry_type=FileInventory.EntryType.FILE,
+    )
+    absolute_path = _resolve_storage_file(storage, entry.path)
+
+    AuditEvent.objects.create(
+        user=request.user if request.user.is_authenticated else None,
+        username=request.user.get_username() if request.user.is_authenticated else "",
+        source_ip=_client_ip(request),
+        action="file.downloaded",
+        object_type="file",
+        object_id=f"{storage.storage_id}:{entry.path}",
+        outcome="success",
+        details={
+            "storage_id": storage.storage_id,
+            "storage_name": storage.display_name,
+            "path": entry.path,
+            "size_bytes": entry.size_bytes,
+            "scan_run": latest_scan.id,
+        },
+    )
+
+    return FileResponse(
+        absolute_path.open("rb"),
+        as_attachment=True,
+        filename=absolute_path.name,
+    )
 
 
 @app_login_required
@@ -475,6 +519,15 @@ def _safe_next_url(request) -> str:
     return reverse("core:dashboard")
 
 
+def _resolve_storage_file(storage: StorageMount, relative_path: str) -> Path:
+    root = Path(storage.path).resolve(strict=True)
+    candidate = root.joinpath(*PurePosixPath(relative_path).parts).resolve(strict=True)
+
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        raise Http404("File not found.")
+    return candidate
+
+
 def _normalize_browser_path(raw_path: str) -> str:
     path = (raw_path or "").strip().strip("/")
     if not path:
@@ -484,6 +537,13 @@ def _normalize_browser_path(raw_path: str) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise Http404("Invalid storage path.")
     return PurePosixPath(*parts).as_posix()
+
+
+def _client_ip(request) -> str | None:
+    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip() or None
+    return request.META.get("REMOTE_ADDR") or None
 
 
 def _parent_path(path: str) -> str:

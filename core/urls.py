@@ -8,6 +8,7 @@ urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("datastores/", views.datastores, name="datastores"),
     path("storage/<str:storage_id>/browser/", views.storage_browser, name="storage_browser"),
+    path("storage/<str:storage_id>/download/", views.download_storage_file, name="storage_download"),
     path("orphans/", views.orphan_finder, name="orphan_finder"),
     path("audit/", views.audit_log, name="audit_log"),
     path("tasks/recent/", views.recent_tasks, name="recent_tasks"),

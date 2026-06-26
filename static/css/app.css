@@ -834,6 +834,11 @@ code {
   min-width: 260px;
 }
 
+.browser-table th:last-child,
+.browser-table td:last-child {
+  width: 44px;
+}
+
 .browser-name a,
 .browser-name {
   display: flex;
@@ -865,6 +870,31 @@ code {
 
 .file-icon.directory {
   color: var(--accent-strong);
+}
+
+.row-actions {
+  text-align: right;
+}
+
+.icon-link {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.icon-link:hover {
+  border-color: var(--line-strong);
+  background: var(--blue-soft);
+  color: var(--accent-strong);
+}
+
+.icon-link svg {
+  width: 16px;
+  height: 16px;
 }
 
 .file-icon svg {
