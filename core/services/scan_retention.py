@@ -77,7 +77,7 @@ def _current_file_inventory_pairs() -> set[tuple[int, int]]:
 
 
 def _stale_file_inventory(kept_file_pairs: set[tuple[int, int]]):
-    queryset = FileInventory.objects.filter(scan_run__status=ScanRun.Status.COMPLETED)
+    queryset = FileInventory.objects.all()
     if not kept_file_pairs:
         return queryset
 

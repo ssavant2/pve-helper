@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from mozilla_django_oidc.auth import OIDCAuthenticationBackend
 
@@ -121,7 +122,8 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
             defaults={"user": user},
         )
         if identity.user_id != user.id:
-            raise ValueError("OIDC subject is already linked to a different user.")
+            logger.warning("OIDC login denied; subject is already linked to another user")
+            raise PermissionDenied("OIDC subject is already linked to a different user.")
         return identity
 
 

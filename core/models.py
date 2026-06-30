@@ -264,6 +264,7 @@ class TrashItem(TimestampedModel):
 
     original_path = models.CharField(max_length=1024)
     trash_path = models.CharField(max_length=1024)
+    storage_id = models.CharField(max_length=120, blank=True)
     moved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -281,9 +282,17 @@ class TrashItem(TimestampedModel):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["storage_id", "restore_status", "moved_at"], name="core_trash_store_status_idx"),
+        ]
 
     def __str__(self) -> str:
         return self.original_path
+
+    def save(self, *args, **kwargs):
+        if not self.storage_id and isinstance(self.metadata, dict):
+            self.storage_id = _details_text(self.metadata, "storage_id", 120)
+        super().save(*args, **kwargs)
 
 
 class StorageSpaceSnapshot(TimestampedModel):

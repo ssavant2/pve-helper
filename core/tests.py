@@ -9,7 +9,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.apps import apps
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
@@ -20,6 +22,7 @@ from django_q.models import Schedule
 from core.auth import PveHelperOIDCBackend
 from core.checks import production_startup_errors
 from core.models import AuditEvent, FileInventory, OidcIdentity, ProxmoxEndpoint, ProxmoxInventory, ScanRun, StorageMount, StorageSpaceSnapshot, TrashItem
+from core.signals import ensure_always_on_schedules
 from core.services.audit_retention_schedule import AUDIT_RETENTION_SCHEDULE_NAME, audit_retention_schedule_state
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
@@ -252,6 +255,24 @@ class OidcBackendTests(TestCase):
         self.assertEqual(new_user.username, "alex-2")
         self.assertTrue(OidcIdentity.objects.filter(user=new_user, subject="new-subject").exists())
 
+    def test_subject_collision_denies_access_cleanly(self):
+        User = get_user_model()
+        old_user = User.objects.create_user(username="alex", email="old@example.test")
+        new_user = User.objects.create_user(username="alice", email="new@example.test")
+        OidcIdentity.objects.create(
+            user=old_user,
+            issuer="https://issuer.example/application/o/pve-helper",
+            subject="subject-1",
+        )
+        claims = {
+            "sub": "subject-1",
+            "preferred_username": "alice",
+            "email": "new@example.test",
+        }
+
+        with self.assertRaises(PermissionDenied):
+            self.backend.update_user(new_user, claims)
+
 
 class ScanRetentionTests(TestCase):
     def test_prunes_stale_inventory_per_storage_and_old_scan_metadata(self):
@@ -269,6 +290,7 @@ class ScanRetentionTests(TestCase):
         self._file(old_global, fs_storage, "template/iso/old-global.iso")
         self._file(old_global, vm_storage, "images/501/vm-501-disk-0.qcow2")
         self._file(old_fs, fs_storage, "template/iso/old-target.iso")
+        self._file(old_failed, fs_storage, "template/iso/failed-leftover.iso")
         self._file(latest_fs, fs_storage, "template/iso/current-target.iso")
         self._proxmox_object(old_global, "old-global")
         self._proxmox_object(old_fs, "old-fs")
@@ -280,6 +302,7 @@ class ScanRetentionTests(TestCase):
         self.assertFalse(FileInventory.objects.filter(scan_run=old_global, storage=fs_storage).exists())
         self.assertTrue(FileInventory.objects.filter(scan_run=old_global, storage=vm_storage).exists())
         self.assertFalse(FileInventory.objects.filter(scan_run=old_fs).exists())
+        self.assertFalse(FileInventory.objects.filter(scan_run=old_failed).exists())
         self.assertTrue(FileInventory.objects.filter(scan_run=latest_fs, storage=fs_storage).exists())
         self.assertTrue(ProxmoxInventory.objects.filter(scan_run=old_global).exists())
         self.assertFalse(ProxmoxInventory.objects.filter(scan_run=old_fs).exists())
@@ -547,6 +570,7 @@ class ViewSmokeTests(TestCase):
             )
             AuditEvent.objects.filter(pk=recent_event.pk).update(timestamp=now - timedelta(days=1))
             AuditEvent.objects.filter(pk=old_event.pk).update(timestamp=now - timedelta(days=9))
+            Schedule.objects.filter(name=SPACE_SNAPSHOT_SCHEDULE_NAME).delete()
 
             monitor_url = reverse("core:storage_monitor", args=[storage.storage_id])
             response = self.client.get(monitor_url)
@@ -561,6 +585,7 @@ class ViewSmokeTests(TestCase):
         self.assertGreater(len(chart_data), 0)
         self.assertContains(response, "File Actions (last 7 days)")
         self.assertContains(response, "Recent Scans (last 7 days)")
+        self.assertContains(response, "Proxmox does not expose per-datastore performance metrics here")
         self.assertLess(response.content.decode().index("File Actions (last 7 days)"), response.content.decode().index("Recent Scans (last 7 days)"))
         self.assertContains(response, "Normalize uploaded disk metadata")
         self.assertNotContains(response, "file.upload_normalized")
@@ -571,6 +596,11 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(invalid_page_response.context["scan_page"], 0)
         self.assertEqual(invalid_page_response.context["event_page"], 0)
         self.assertContains(invalid_page_response, "Recent scan")
+        self.assertFalse(Schedule.objects.filter(name=SPACE_SNAPSHOT_SCHEDULE_NAME).exists())
+
+    def test_post_migrate_bootstraps_space_snapshot_schedule(self):
+        ensure_always_on_schedules(sender=None, app_config=apps.get_app_config("core"))
+
         schedule = Schedule.objects.get(name=SPACE_SNAPSHOT_SCHEDULE_NAME)
         self.assertEqual(schedule.func, "core.tasks.record_storage_space_snapshots")
         self.assertEqual(schedule.schedule_type, Schedule.MINUTES)

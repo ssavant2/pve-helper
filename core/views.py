@@ -30,7 +30,6 @@ from .services.permissions import storage_permissions as get_permissions
 from .services.proxmox import LIVE_GUEST_STATUS_CACHE_SECONDS, fetch_live_guest_status
 from .services.recent_tasks import recent_task_page, serialize_task_page
 from .services.scan_schedule import scan_schedule_state, update_scan_schedule
-from .services.space_snapshot_schedule import ensure_space_snapshot_schedule
 from .services.storage_actions import (
     INFLATE_PREALLOCATION_FULL,
     INFLATE_PREALLOCATION_METADATA,
@@ -85,7 +84,6 @@ def _storage_tab_context(storage: StorageMount, latest_scan, active_tab: str) ->
 
 @app_login_required
 def dashboard(request):
-    ensure_space_snapshot_schedule()
     latest_scan = ScanRun.objects.order_by("-created_at").first()
     result_scan = _latest_result_scan()
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
@@ -432,7 +430,7 @@ def storage_trash(request, storage_id: str):
             pass
     items = list(
         TrashItem.objects.filter(
-            metadata__storage_id=storage.storage_id,
+            storage_id=storage.storage_id,
             restore_status=TrashItem.RestoreStatus.TRASHED,
         )
         .select_related("moved_by")
@@ -486,7 +484,6 @@ def storage_monitor(request, storage_id: str):
     MONITOR_PAGE_SIZE = 10
     ACTIVITY_RETENTION_DAYS = 7
 
-    ensure_space_snapshot_schedule()
     storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)

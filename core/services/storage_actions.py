@@ -291,7 +291,7 @@ def adopt_discovered_trash_items(*, storage: StorageMount, scan) -> int:
     discovered = 0
     known_trash_paths = set(
         TrashItem.objects.filter(
-            metadata__storage_id=storage.storage_id,
+            storage_id=storage.storage_id,
         ).values_list("trash_path", flat=True)
     )
     entries = FileInventory.objects.filter(
@@ -312,6 +312,7 @@ def adopt_discovered_trash_items(*, storage: StorageMount, scan) -> int:
         TrashItem.objects.create(
             original_path=original_path,
             trash_path=entry.path,
+            storage_id=storage.storage_id,
             moved_at=entry.modified_at,
             metadata={
                 "storage_id": storage.storage_id,
@@ -339,7 +340,7 @@ def cleanup_empty_app_trash_directories(*, storage: StorageMount) -> int:
     protected_paths = {
         _storage_child_path(item.trash_path, root=root)
         for item in TrashItem.objects.filter(
-            metadata__storage_id=storage.storage_id,
+            storage_id=storage.storage_id,
             restore_status=TrashItem.RestoreStatus.TRASHED,
         )
         if item.trash_path
@@ -395,6 +396,7 @@ def move_file_to_trash(
     return TrashItem.objects.create(
         original_path=entry.path,
         trash_path=trash_relative,
+        storage_id=storage.storage_id,
         moved_by=user if getattr(user, "is_authenticated", False) else None,
         moved_at=timezone.now(),
         metadata={
@@ -1000,7 +1002,7 @@ def _original_path_from_trash_path(trash_path: str, trash_root_relative: str) ->
 
 
 def _storage_for_trash_item(item: TrashItem) -> StorageMount:
-    storage_id = (item.metadata or {}).get("storage_id", "")
+    storage_id = item.storage_id or (item.metadata or {}).get("storage_id", "")
     if not storage_id:
         raise StorageActionError("Trash item is missing storage metadata.")
     try:

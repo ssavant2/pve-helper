@@ -5,6 +5,7 @@
 
     <div class="panel">
       <div class="panel-heading">Disk Space (7 days)</div>
+      <p class="panel-meta">Proxmox does not expose per-datastore performance metrics here; this view tracks capacity and recent storage activity.</p>
       {% if space_chart_data_json != "[]" %}
         <div class="space-chart-container">
           <svg data-space-chart data-chart-data='{{ space_chart_data_json }}' width="100%" height="200" preserveAspectRatio="none"></svg>

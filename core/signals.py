@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from django.contrib.auth.signals import user_logged_in, user_logged_out, user_login_failed
+from django.db.models.signals import post_migrate
 from django.dispatch import receiver
 
 from .models import AuditEvent
+from .services.space_snapshot_schedule import ensure_space_snapshot_schedule
+
+
+@receiver(post_migrate)
+def ensure_always_on_schedules(sender, app_config, **kwargs):
+    if app_config.name != "core":
+        return
+    ensure_space_snapshot_schedule()
 
 
 @receiver(user_logged_in)
