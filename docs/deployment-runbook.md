@@ -230,8 +230,12 @@ committed.
 
 ## Proxmox
 
-Create a dedicated read-only API token. The intended starting role is `PVEAuditor` on the
-required paths.
+Create a dedicated API token. The intended baseline role is `PVEAuditor` on `/`, which is
+enough for inventory, storage visibility, and orphan classification.
+
+If Scheduled Tasks power actions are enabled, add the custom `HelperPower` role with
+`VM.PowerMgmt` on `/vms` to both the user and the privilege-separated token. Proxmox
+reserves the `PVE*` role namespace, so do not name the custom role `PVE...`.
 
 For the full UI walkthrough, see `docs/proxmox-api-token.md`.
 

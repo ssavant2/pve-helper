@@ -1,7 +1,11 @@
 # Proxmox API token setup
 
-`pve-helper` only needs read access for the current inventory phase. Use a
-dedicated API token with the built-in `PVEAuditor` role.
+`pve-helper` needs read access for inventory and storage/orphan classification.
+Use a dedicated API token with the built-in `PVEAuditor` role as the baseline.
+
+Scheduled VM/CT power actions are optional and require an extra role with
+`VM.PowerMgmt` on `/vms`. Keep privilege separation enabled and grant the same
+extra role to both the user and the token.
 
 ## Values
 
@@ -12,8 +16,10 @@ Suggested values:
 | User | `pve-helper@pve` |
 | Token ID | `pve-helper` |
 | Full token id | `pve-helper@pve!pve-helper` |
-| Role | `PVEAuditor` |
-| Path | `/` |
+| Baseline role | `PVEAuditor` |
+| Baseline path | `/` |
+| Optional power role | `HelperPower` |
+| Optional power path | `/vms` |
 
 For a single-node install, create this on that node. If the nodes are later
 clustered, the user/token and permissions live in the cluster configuration. If
@@ -68,7 +74,40 @@ inventory.
    - Role: `PVEAuditor`
    - Propagate: enabled.
 
-6. Add the values to `.env`:
+6. Optional: grant VM/CT power permissions for Scheduled Tasks:
+
+   Proxmox reserves the `PVE*` role namespace for built-in roles, so use a
+   project role name such as `HelperPower`.
+
+   CLI:
+
+   ```bash
+   pveum role add HelperPower --privs "VM.PowerMgmt"
+   pveum acl modify /vms -user pve-helper@pve -role HelperPower -propagate 1
+   pveum acl modify /vms -token 'pve-helper@pve!pve-helper' -role HelperPower -propagate 1
+   ```
+
+   GUI:
+
+   - Go to `Datacenter` -> `Permissions` -> `Roles`.
+   - Click `Add`.
+   - Role name: `HelperPower`.
+   - Privileges: `VM.PowerMgmt`.
+   - Go to `Datacenter` -> `Permissions`.
+   - Add a `User Permission` on `/vms` for `pve-helper@pve` with role
+     `HelperPower`, with propagation enabled.
+   - Add an `API Token Permission` on `/vms` for
+     `pve-helper@pve!pve-helper` with role `HelperPower`, with propagation
+     enabled.
+
+   Verify:
+
+   ```bash
+   pveum user permissions pve-helper@pve | grep -E 'VM.PowerMgmt|/vms'
+   pveum user token permissions pve-helper@pve pve-helper | grep -E 'VM.PowerMgmt|/vms'
+   ```
+
+7. Add the values to `.env`:
 
    ```env
    PVE_API_TOKEN_ID=pve-helper@pve!pve-helper
@@ -77,13 +116,13 @@ inventory.
    PVE_VERIFY_TLS=true
    ```
 
-7. Restart the app containers:
+8. Restart the app containers:
 
    ```bash
    docker compose up -d
    ```
 
-8. Test from the Docker host:
+9. Test from the Docker host:
 
    ```bash
    curl -fsS \
@@ -107,6 +146,9 @@ The current read-only scanner uses these API areas:
 
 `PVEAuditor` is the intended starting role because it includes the audit-style
 read permissions needed for VM, node, and datastore inventory.
+
+The optional Scheduled Tasks power actions require `VM.PowerMgmt` on `/vms` for
+the same user and token. That is intentionally narrower than `PVEVMAdmin`.
 
 ## References
 
