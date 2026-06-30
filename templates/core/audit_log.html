@@ -6,6 +6,18 @@
       <h1>Audit Log</h1>
       <p>Authentication, storage scans, and file actions</p>
     </div>
+    <div class="scan-controls">
+      <form class="scan-schedule-form" method="post" action="{% url 'core:update_audit_retention_schedule' %}" data-auto-submit-form>
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <label class="checkbox-control">
+          <input type="checkbox" name="enabled" data-auto-submit-control {% if audit_retention_schedule.enabled %}checked{% endif %}>
+          <span>Keep audit logs for</span>
+        </label>
+        <input class="number-input" type="number" name="retention_days" min="1" max="999" value="{{ audit_retention_schedule.retention_days }}" data-auto-submit-control>
+        <span>days</span>
+      </form>
+    </div>
   </section>
 
   <section class="audit-panel panel" data-audit-log>
@@ -22,6 +34,11 @@
         <input type="search" placeholder="Search for anything" data-audit-search autocomplete="off">
       </label>
       <span class="audit-count" data-audit-count>{{ events|length }} event{{ events|length|pluralize }}</span>
+      <span class="panel-heading-controls">
+        <a class="page-button{% if not audit_has_prev %} disabled{% endif %}" href="?page={{ audit_page|add:"-1" }}">Previous 200</a>
+        <span class="page-label">{{ audit_start }}-{{ audit_end }} of {{ audit_total }}</span>
+        <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}">Next 200</a>
+      </span>
     </div>
     <table class="data-table">
       <thead>

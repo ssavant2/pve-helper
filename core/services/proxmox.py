@@ -6,8 +6,13 @@ from urllib.parse import quote
 
 import httpx
 from django.conf import settings
+from django.core.cache import cache
 
 from .classification import extract_disk_references
+
+
+LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
+LIVE_GUEST_STATUS_CACHE_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,19 @@ class ProxmoxClient:
 
         return InventoryResult(node=node, ok=not errors, objects=objects, errors=errors)
 
+    def guest_status(self, *, node: str, object_type: str, vmid: int) -> str:
+        if object_type == "vm":
+            guest_kind = "qemu"
+        elif object_type == "ct":
+            guest_kind = "lxc"
+        else:
+            raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
+
+        data = self.get(f"nodes/{quote(node)}/{guest_kind}/{vmid}/status/current")
+        if not isinstance(data, dict):
+            raise ProxmoxAPIError(f"Unexpected guest status response for {object_type} {vmid}")
+        return str(data.get("status") or "")
+
     def get(self, path: str) -> Any:
         verify: bool | str = settings.PVE_VERIFY_TLS
         if settings.PVE_CA_BUNDLE:
@@ -222,3 +240,43 @@ class ProxmoxClient:
 
 def configured_clients() -> list[ProxmoxClient]:
     return [ProxmoxClient(endpoint) for endpoint in settings.PVE_ENDPOINTS]
+
+
+def fetch_live_guest_status() -> dict[tuple[str, int], str]:
+    cached = cache.get(LIVE_GUEST_STATUS_CACHE_KEY)
+    if isinstance(cached, dict):
+        return cached
+
+    result = _fetch_live_guest_status_uncached()
+    cache.set(LIVE_GUEST_STATUS_CACHE_KEY, result, LIVE_GUEST_STATUS_CACHE_SECONDS)
+    return result
+
+
+def _fetch_live_guest_status_uncached() -> dict[tuple[str, int], str]:
+    """Return {(object_type, vmid): status} for all guests across all endpoints."""
+    result: dict[tuple[str, int], str] = {}
+    for client in configured_clients():
+        try:
+            nodes = client.get("nodes")
+        except ProxmoxAPIError:
+            continue
+        if not isinstance(nodes, list):
+            continue
+        for node_info in nodes:
+            node = str(node_info.get("node") or "")
+            if not node:
+                continue
+            for resource_type in ("qemu", "lxc"):
+                object_type = "vm" if resource_type == "qemu" else "ct"
+                try:
+                    guests = client.get(f"nodes/{quote(node)}/{resource_type}")
+                except ProxmoxAPIError:
+                    continue
+                if not isinstance(guests, list):
+                    continue
+                for guest in guests:
+                    vmid = guest.get("vmid")
+                    status = guest.get("status")
+                    if vmid is not None and status:
+                        result[(object_type, int(vmid))] = str(status)
+    return result

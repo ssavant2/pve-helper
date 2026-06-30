@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="storage-object-view">
+    <section class="vs-object-header">
+      <div class="vs-title-row">
+        <div class="vs-title">
+          <span class="vs-title-icon"><i data-lucide="database" aria-hidden="true"></i></span>
+          <div>
+            <h1>{{ storage.display_name }}</h1>
+            <p>
+              {% if latest_scan %}
+                Inventory updated {{ latest_scan.filesystem_scan_at|default:latest_scan.finished_at|default:latest_scan.created_at|date:"Y-m-d H:i:s" }}
+              {% else %}
+                No storage inventory has been scanned yet
+              {% endif %}
+            </p>
+          </div>
+          <span class="vs-divider"></span>
+          <span class="vs-access">
+            <span class="vs-access-label">PVE-helper access</span>
+            <span class="badge {{ storage.space_info.access_class }}" title="Effective access from the pve-helper web container">
+              {{ storage.space_info.access_label }}
+            </span>
+          </span>
+        </div>
+        <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
+          {% csrf_token %}
+          <input type="hidden" name="storage_id" value="{{ storage.storage_id }}">
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          <button class="vs-header-action {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
+            <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
+              <i data-lucide="loader-circle" aria-hidden="true"></i>
+            </span>
+            <span data-scan-button-label>
+              {% if active_scan %}
+                {% if active_scan.status == "queued" %}Scan queued{% else %}Scanning{% endif %}
+              {% else %}
+                Start scan
+              {% endif %}
+            </span>
+          </button>
+        </form>
+      </div>
+      <nav class="vs-tabs" aria-label="Datastore views">
+        <a href="{% url 'core:storage_summary' storage.storage_id %}" {% if active_storage_tab == 'summary' %}class="active"{% endif %}>Summary</a>
+        <a href="{% url 'core:storage_monitor' storage.storage_id %}" {% if active_storage_tab == 'monitor' %}class="active"{% endif %}>Monitor</a>
+        <a href="{% url 'core:storage_configure' storage.storage_id %}" {% if active_storage_tab == 'configure' %}class="active"{% endif %}>Configuration</a>
+        <a href="{% url 'core:storage_permissions' storage.storage_id %}" {% if active_storage_tab == 'permissions' %}class="active"{% endif %}>Permissions</a>
+        <a href="{% url 'core:storage_browser' storage.storage_id %}" {% if active_storage_tab == 'files' %}class="active"{% endif %}>Files</a>
+        <a href="{% url 'core:storage_hosts' storage.storage_id %}" {% if active_storage_tab == 'hosts' %}class="active"{% endif %}>Nodes</a>
+        <a href="{% url 'core:storage_vms' storage.storage_id %}" {% if active_storage_tab == 'vms' %}class="active"{% endif %}>VMs/CTs</a>
+      </nav>
+    </section>
+
+    {% block storage_content %}{% endblock %}
+  </div>
+{% endblock %}

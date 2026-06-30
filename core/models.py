@@ -12,6 +12,29 @@ class TimestampedModel(models.Model):
         abstract = True
 
 
+class OidcIdentity(TimestampedModel):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="pve_helper_oidc_identities",
+    )
+    issuer = models.CharField(max_length=512)
+    subject = models.CharField(max_length=255)
+
+    class Meta:
+        ordering = ["issuer", "subject"]
+        constraints = [
+            models.UniqueConstraint(fields=["issuer", "subject"], name="unique_oidc_identity_subject"),
+        ]
+        indexes = [
+            models.Index(fields=["user"], name="core_oidcid_user_id_idx"),
+            models.Index(fields=["issuer", "subject"], name="core_oidcid_issuer_subject_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.issuer}:{self.subject}"
+
+
 class AuditEvent(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
     user = models.ForeignKey(
@@ -27,6 +50,9 @@ class AuditEvent(models.Model):
     object_type = models.CharField(max_length=120, blank=True)
     object_id = models.CharField(max_length=512, blank=True)
     outcome = models.CharField(max_length=60, default="success")
+    storage_id = models.CharField(max_length=120, blank=True)
+    path = models.CharField(max_length=1024, blank=True)
+    target_preallocation = models.CharField(max_length=40, blank=True)
     details = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -34,10 +60,29 @@ class AuditEvent(models.Model):
         indexes = [
             models.Index(fields=["action", "outcome"]),
             models.Index(fields=["object_type", "object_id"]),
+            models.Index(fields=["storage_id", "timestamp"], name="core_audit_store_time_idx"),
+            models.Index(fields=["storage_id", "path", "target_preallocation"], name="core_audit_store_path_pre_idx"),
         ]
+
+    def save(self, *args, **kwargs):
+        self.populate_filter_fields_from_details()
+        super().save(*args, **kwargs)
+
+    def populate_filter_fields_from_details(self) -> None:
+        details = self.details if isinstance(self.details, dict) else {}
+        self.storage_id = _details_text(details, "storage_id", 120)
+        self.path = _details_text(details, "path", 1024)
+        self.target_preallocation = _details_text(details, "target_preallocation", 40)
 
     def __str__(self) -> str:
         return f"{self.timestamp:%Y-%m-%d %H:%M:%S} {self.action} {self.outcome}"
+
+
+def _details_text(details: dict, key: str, max_length: int) -> str:
+    value = details.get(key, "")
+    if value is None or isinstance(value, (dict, list, tuple)):
+        return ""
+    return str(value)[:max_length]
 
 
 class ProxmoxEndpoint(TimestampedModel):
@@ -120,6 +165,8 @@ class FileInventory(TimestampedModel):
         UNKNOWN = "unknown", "Unknown"
         CLASSIFICATION_BLOCKED = "classification_blocked", "Classification blocked"
         TRASH = "trash", "Trash"
+        INFRASTRUCTURE = "infrastructure", "Infrastructure"
+        PROXMOX_CONTENT = "proxmox_content", "Proxmox content"
 
     scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="files")
     storage = models.ForeignKey(StorageMount, on_delete=models.CASCADE, related_name="files")
@@ -237,3 +284,27 @@ class TrashItem(TimestampedModel):
 
     def __str__(self) -> str:
         return self.original_path
+
+
+class StorageSpaceSnapshot(TimestampedModel):
+    storage = models.ForeignKey(StorageMount, on_delete=models.CASCADE, related_name="space_snapshots")
+    scan_run = models.ForeignKey(
+        ScanRun,
+        on_delete=models.CASCADE,
+        related_name="space_snapshots",
+        null=True,
+        blank=True,
+    )
+    recorded_at = models.DateTimeField()
+    total_bytes = models.BigIntegerField()
+    available_bytes = models.BigIntegerField()
+    used_bytes = models.BigIntegerField()
+
+    class Meta:
+        ordering = ["-recorded_at"]
+        indexes = [
+            models.Index(fields=["storage", "recorded_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.storage.storage_id} @ {self.recorded_at:%Y-%m-%d %H:%M}"

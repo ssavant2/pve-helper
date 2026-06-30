@@ -139,6 +139,13 @@ def classify_entry(
     }
 
     if content_category == "trash" or relative_path.startswith(".trash/"):
+        if entry_type != FileInventory.EntryType.FILE:
+            return ClassificationResult(
+                classification=FileInventory.Classification.INFRASTRUCTURE,
+                reason="Trash directory structure.",
+                matched_object={},
+                evidence=evidence,
+            )
         return ClassificationResult(
             classification=FileInventory.Classification.TRASH,
             reason="File is already under the storage trash path.",
@@ -171,10 +178,22 @@ def classify_entry(
             evidence=evidence,
         )
 
+    KNOWN_DIRECTORY_CATEGORIES = {
+        "vm_images", "vm_image_directory", "backup", "iso",
+        "ct_template", "ct_private", "snippet", "template_directory",
+    }
+
     if entry_type != FileInventory.EntryType.FILE:
+        if content_category in KNOWN_DIRECTORY_CATEGORIES:
+            return ClassificationResult(
+                classification=FileInventory.Classification.INFRASTRUCTURE,
+                reason="Standard Proxmox storage directory structure.",
+                matched_object={},
+                evidence=evidence,
+            )
         return ClassificationResult(
             classification=FileInventory.Classification.UNKNOWN,
-            reason="Only regular files are classified as orphan candidates in V1.",
+            reason="Directory with unrecognized content category.",
             matched_object={},
             evidence=evidence,
         )
@@ -194,9 +213,20 @@ def classify_entry(
             evidence=evidence,
         )
 
+    KNOWN_CONTENT_CATEGORIES = {
+        "backup", "iso", "ct_template", "ct_private", "snippet",
+    }
+    if content_category in KNOWN_CONTENT_CATEGORIES:
+        return ClassificationResult(
+            classification=FileInventory.Classification.PROXMOX_CONTENT,
+            reason="File belongs to a recognized Proxmox content type.",
+            matched_object={},
+            evidence=evidence,
+        )
+
     return ClassificationResult(
         classification=FileInventory.Classification.UNKNOWN,
-        reason="This Proxmox content type is not an orphan candidate in V1.",
+        reason="Unrecognized content type; cannot classify.",
         matched_object={},
         evidence=evidence,
     )

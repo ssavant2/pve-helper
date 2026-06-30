@@ -6,7 +6,10 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from mozilla_django_oidc.auth import OIDCAuthenticationBackend
+
+from .models import OidcIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +19,10 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
 
     def verify_claims(self, claims: dict[str, Any]) -> bool:
         if not super().verify_claims(claims):
+            return False
+
+        if not claims.get("sub"):
+            logger.warning("OIDC login denied; missing subject claim")
             return False
 
         required_group = settings.OIDC_REQUIRED_GROUP
@@ -30,25 +37,37 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
         return True
 
     def filter_users_by_claims(self, claims: dict[str, Any]):
-        subject = claims.get("sub")
-        username = self._username_from_claims(claims)
+        subject = self._subject_from_claims(claims)
         User = get_user_model()
 
         if subject:
-            users = User.objects.filter(username=username)
+            users = User.objects.filter(
+                pve_helper_oidc_identities__issuer=self._issuer(),
+                pve_helper_oidc_identities__subject=subject,
+            )
             if users.exists():
                 return users
 
+            username = self._username_from_claims(claims)
+            return User.objects.filter(
+                username=username,
+                pve_helper_oidc_identities__isnull=True,
+            )
+
         return User.objects.none()
 
+    @transaction.atomic
     def create_user(self, claims: dict[str, Any]):
         User = get_user_model()
-        username = self._username_from_claims(claims)
+        username = self._available_username(self._username_from_claims(claims))
         email = claims.get("email", "")
         user = User.objects.create_user(username=username, email=email)
         return self.update_user(user, claims)
 
+    @transaction.atomic
     def update_user(self, user, claims: dict[str, Any]):
+        self._ensure_identity(user, claims)
+        self._update_username(user, claims)
         user.email = claims.get("email", user.email)
         user.first_name = claims.get("given_name", user.first_name)
         user.last_name = claims.get("family_name", user.last_name)
@@ -66,6 +85,44 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
             or "oidc-user"
         )
         return str(username)[:150]
+
+    def _subject_from_claims(self, claims: dict[str, Any]) -> str:
+        return str(claims.get("sub") or "")[:255]
+
+    def _issuer(self) -> str:
+        return settings.OIDC_ISSUER_URL
+
+    def _available_username(self, username: str) -> str:
+        User = get_user_model()
+        base = username[:145] or "oidc-user"
+        candidate = base[:150]
+        counter = 2
+        while User.objects.filter(username=candidate).exists():
+            suffix = f"-{counter}"
+            candidate = f"{base[:150 - len(suffix)]}{suffix}"
+            counter += 1
+        return candidate
+
+    def _update_username(self, user, claims: dict[str, Any]) -> None:
+        username = self._username_from_claims(claims)
+        if username == user.username:
+            return
+        User = get_user_model()
+        if not User.objects.exclude(pk=user.pk).filter(username=username).exists():
+            user.username = username
+
+    def _ensure_identity(self, user, claims: dict[str, Any]) -> OidcIdentity:
+        subject = self._subject_from_claims(claims)
+        if not subject:
+            raise ValueError("OIDC subject claim is required.")
+        identity, _created = OidcIdentity.objects.get_or_create(
+            issuer=self._issuer(),
+            subject=subject,
+            defaults={"user": user},
+        )
+        if identity.user_id != user.id:
+            raise ValueError("OIDC subject is already linked to a different user.")
+        return identity
 
 
 def provider_logout(request) -> str:

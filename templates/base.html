@@ -19,10 +19,10 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260629-1">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script defer src="{% static 'js/app.js' %}"></script>
+    <script defer src="{% static 'js/app.js' %}?v=20260630-2"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -92,7 +92,7 @@
               {% if app_nav_storages %}
                 <div class="tree-subchildren">
                   {% for nav_storage in app_nav_storages %}
-                    <a class="tree-node tree-leaf storage-leaf {% if active_storage_id == nav_storage.storage_id %}active{% endif %}" href="{% url 'core:storage_browser' nav_storage.storage_id %}">
+                    <a class="tree-node tree-leaf storage-leaf {% if active_storage_id == nav_storage.storage_id %}active{% endif %}" href="{% url 'core:storage_summary' nav_storage.storage_id %}">
                       <span class="tree-icon"><i data-lucide="database" aria-hidden="true"></i></span>
                       <span class="tree-label">{{ nav_storage.display_name }}</span>
                     </a>
@@ -133,7 +133,14 @@
         {% block content %}{% endblock %}
       </main>
 
-      <footer class="taskbar" data-recent-tasks data-tasks-url="{% url 'core:recent_tasks' %}" data-task-page="0" data-task-poll-ms="10000">
+      <footer
+        class="taskbar"
+        data-recent-tasks
+        data-tasks-url="{% url 'core:recent_tasks' %}"
+        data-task-page="0"
+        data-task-poll-ms="10000"
+        data-task-rendered-at="{{ app_recent_tasks_rendered_at|date:'c' }}"
+      >
         <div class="taskbar-header">
           <button class="taskbar-toggle" type="button" data-taskbar-toggle aria-label="Hide recent tasks" aria-expanded="true">
             <i data-lucide="chevron-down" data-taskbar-expanded-icon aria-hidden="true"></i>

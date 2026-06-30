@@ -15,10 +15,10 @@ Suggested values:
 | Role | `PVEAuditor` |
 | Path | `/` |
 
-For a single-node install, create this on `pve3`. If the nodes are later
-clustered, the user/token and permissions live in the cluster configuration.
-If the nodes are separate, repeat the setup on every node that `pve-helper`
-will inventory.
+For a single-node install, create this on that node. If the nodes are later
+clustered, the user/token and permissions live in the cluster configuration. If
+the nodes are separate, repeat the setup on every node that `pve-helper` will
+inventory.
 
 ## Steps
 

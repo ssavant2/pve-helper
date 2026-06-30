@@ -7,4 +7,5 @@ class CoreConfig(AppConfig):
     verbose_name = "pve-helper core"
 
     def ready(self):
+        import core.checks  # noqa: F401
         import core.signals  # noqa: F401

@@ -8,6 +8,7 @@
   let activeLabel = "";
   let pageCleanup = [];
   let navigationController = null;
+  const activeUploads = new Map();
 
   const preferredTheme = () => {
     try {
@@ -56,6 +57,19 @@
         },
       });
     }
+  };
+
+  const addPendingRecentTask = (task) => {
+    window.dispatchEvent(new CustomEvent("pve-helper:pending-task", { detail: task }));
+  };
+
+  const updatePendingRecentTask = (task) => {
+    window.dispatchEvent(new CustomEvent("pve-helper:update-pending-task", { detail: task }));
+  };
+
+  const taskDateLabel = (date) => {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
   };
 
   const registerPageCleanup = (cleanup) => {
@@ -247,6 +261,640 @@
     });
   };
 
+  const completeConfirmedFileAction = (form, { requiresRiskConfirmation, riskMessage }) => {
+    const basicInput = form.querySelector('input[name="confirm_basic"]');
+    const riskInput = form.querySelector('input[name="confirm_risk"]');
+    if (requiresRiskConfirmation && riskMessage && !window.confirm(`${riskMessage}\n\nAre you completely sure?`)) {
+      return;
+    }
+    if (basicInput) {
+      basicInput.value = "yes";
+    }
+    if (riskInput && requiresRiskConfirmation) {
+      riskInput.value = "yes";
+    }
+    form.dataset.confirmed = "true";
+    form.submit();
+  };
+
+  const openMovePicker = (form, options) => {
+    const manager = form.closest("[data-storage-file-manager]");
+    const dialog = manager?.querySelector("[data-move-picker]");
+    const moveInput = form.querySelector("[data-move-input]");
+    if (!dialog || !moveInput || typeof dialog.showModal !== "function") {
+      return false;
+    }
+
+    const targetButtons = Array.from(dialog.querySelectorAll("[data-move-target]"));
+    const moveNodes = Array.from(dialog.querySelectorAll("[data-move-node]"));
+    const moveToggles = Array.from(dialog.querySelectorAll("[data-move-toggle]"));
+    const submitButton = dialog.querySelector("[data-move-picker-submit]");
+    const cancelButton = dialog.querySelector("[data-move-picker-cancel]");
+    const selectionLabel = dialog.querySelector("[data-move-picker-selection]");
+    let selectedTarget = "";
+    let selectedLabel = "";
+
+    const moveNodePath = (node) => node.dataset.movePath || "";
+    const moveNodeDepth = (node) => Number.parseInt(node.dataset.moveDepth || "0", 10);
+    const moveNodeExpanded = (node) => node.dataset.moveExpanded === "true";
+    const moveChildPrefix = (path) => (path ? `${path}/` : "");
+    const isMoveNodeVisibleByTreeState = (node) => {
+      const path = moveNodePath(node);
+      const ancestors = moveNodes.filter((candidate) => {
+        const candidatePath = moveNodePath(candidate);
+        if (candidate === node || moveNodeDepth(candidate) >= moveNodeDepth(node)) {
+          return false;
+        }
+        if (!candidatePath) {
+          return true;
+        }
+        return path.startsWith(moveChildPrefix(candidatePath));
+      });
+      return ancestors.every((ancestor) => moveNodeExpanded(ancestor));
+    };
+
+    const updateMoveTree = () => {
+      moveNodes.forEach((node) => {
+        node.hidden = !isMoveNodeVisibleByTreeState(node);
+        const toggle = node.querySelector("[data-move-toggle]");
+        if (toggle) {
+          const expanded = moveNodeExpanded(node);
+          toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+          const icon = toggle.querySelector("svg");
+          if (icon) {
+            icon.outerHTML = `<i data-lucide="${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></i>`;
+          }
+        }
+      });
+      createIcons();
+    };
+
+    const setTarget = (button) => {
+      selectedTarget = button.dataset.moveTarget || "";
+      selectedLabel = button.dataset.moveTargetLabel || selectedTarget || "Root";
+      targetButtons.forEach((targetButton) => {
+        targetButton.classList.toggle("selected", targetButton === button);
+      });
+      if (selectionLabel) {
+        selectionLabel.textContent = selectedLabel;
+      }
+      if (submitButton) {
+        submitButton.disabled = !selectedTarget;
+      }
+    };
+
+    targetButtons.forEach((button) => {
+      button.onclick = () => setTarget(button);
+      button.classList.remove("selected");
+    });
+    moveToggles.forEach((toggle) => {
+      toggle.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const node = toggle.closest("[data-move-node]");
+        if (!node) {
+          return;
+        }
+        node.dataset.moveExpanded = moveNodeExpanded(node) ? "false" : "true";
+        updateMoveTree();
+      };
+    });
+    if (selectionLabel) {
+      selectionLabel.textContent = "-";
+    }
+    if (submitButton) {
+      submitButton.disabled = true;
+      submitButton.onclick = () => {
+        if (!selectedTarget) {
+          return;
+        }
+        const subject = options.selectedCount > 1 ? `${options.selectedCount} files` : options.currentPath;
+        if (!window.confirm(`Move ${subject} to ${selectedLabel}?`)) {
+          return;
+        }
+        moveInput.value = selectedTarget;
+        dialog.close();
+        completeConfirmedFileAction(form, options);
+      };
+    }
+    if (cancelButton) {
+      cancelButton.onclick = () => dialog.close();
+    }
+    updateMoveTree();
+    dialog.showModal();
+    return true;
+  };
+
+  const initConfirmedFileActions = (root = document) => {
+    root.querySelectorAll("[data-confirm-file-action]").forEach((form) => {
+      if (form.dataset.initialized === "true") {
+        return;
+      }
+
+      form.dataset.initialized = "true";
+      form.addEventListener("submit", (event) => {
+        if (form.dataset.confirmed === "true") {
+          return;
+        }
+
+        event.preventDefault();
+        let actionKind = form.dataset.actionKind || "file-action";
+        if (form.querySelector("[data-move-input]")) {
+          actionKind = "move";
+        } else if (form.querySelector("[data-rename-input]")) {
+          actionKind = "rename";
+        }
+        const fileName = form.dataset.fileName || "this file";
+        const currentPath = form.dataset.currentPath || fileName;
+        const selectedCount = Number.parseInt(form.dataset.selectedCount || "1", 10);
+        const riskMessage = form.dataset.riskMessage || "";
+        const requiresRiskConfirmation = form.dataset.requiresRiskConfirmation === "true";
+        const confirmationOptions = {
+          currentPath,
+          riskMessage,
+          requiresRiskConfirmation,
+          selectedCount,
+        };
+
+        if (actionKind === "new-folder") {
+          const folderInput = form.querySelector("[data-new-folder-input]");
+          const folderName = window.prompt("New folder name");
+          if (!folderName) {
+            return;
+          }
+          if (folderName.includes("/") || folderName.includes("\\")) {
+            window.alert("The folder name must not contain path separators.");
+            return;
+          }
+          folderInput.value = folderName;
+          if (!window.confirm(`Create folder ${folderName}?`)) {
+            return;
+          }
+        } else if (actionKind === "rename") {
+          const renameInput = form.querySelector("[data-rename-input]");
+          const nextName = window.prompt(`New name for ${fileName}`, fileName);
+          if (!nextName || nextName === fileName) {
+            return;
+          }
+          if (nextName.includes("/") || nextName.includes("\\")) {
+            window.alert("The new name must not contain path separators.");
+            return;
+          }
+          renameInput.value = nextName;
+          if (!window.confirm(`Rename ${fileName} to ${nextName}?`)) {
+            return;
+          }
+        } else if (actionKind === "move") {
+          if (openMovePicker(form, confirmationOptions)) {
+            return;
+          }
+          window.alert("No folder picker is available on this page.");
+          return;
+        } else if (actionKind === "inflate") {
+          const inflateMode = form.dataset.inflateMode || "full";
+          const targetLabel = inflateMode === "metadata" ? "metadata preallocation" : "full preallocation";
+          const modeDescription =
+            inflateMode === "metadata"
+              ? "Metadata preallocation allocates the QCOW2 map without zero-filling the whole virtual disk."
+              : "Full preallocation writes out the whole virtual disk.";
+          if (
+            !window.confirm(
+              `Inflate ${currentPath} to ${targetLabel}?\n\n${modeDescription}\n\nThe related VM/CT must be stopped. This can take a long time and requires enough free storage space.`
+            )
+          ) {
+            return;
+          }
+        } else if (actionKind === "purge") {
+          if (!window.confirm(`Permanently delete ${fileName}?\n\nThis cannot be undone.`)) {
+            return;
+          }
+        } else {
+          const subject = selectedCount > 1 ? `${selectedCount} files` : fileName;
+          if (!window.confirm(`Move ${subject} to the Recycle Bin?`)) {
+            return;
+          }
+        }
+
+        completeConfirmedFileAction(form, confirmationOptions);
+      });
+    });
+  };
+
+  const initStorageFileManagers = (root = document) => {
+    root.querySelectorAll("[data-storage-file-manager]").forEach((manager) => {
+      if (manager.dataset.initialized === "true") {
+        return;
+      }
+
+      manager.dataset.initialized = "true";
+      const selectedActionForms = Array.from(manager.querySelectorAll("[data-selected-file-action]"));
+      const downloadAction = manager.querySelector("[data-file-download-action]");
+      const fileFilter = manager.querySelector("[data-file-filter]");
+      const folderFilter = manager.querySelector("[data-folder-filter]");
+      const folderNodes = Array.from(manager.querySelectorAll("[data-folder-node]"));
+      const uploadForms = Array.from(manager.querySelectorAll("[data-upload-on-file-select], [data-upload-folder-on-file-select]"));
+      const selectedRows = new Set();
+      const currentRows = () => Array.from(manager.querySelectorAll("[data-file-row]"));
+
+      if (downloadAction) {
+        downloadAction.addEventListener("click", (event) => {
+          if (downloadAction.getAttribute("aria-disabled") === "true" || downloadAction.href.endsWith("#")) {
+            event.preventDefault();
+            return;
+          }
+          if (downloadAction.dataset.downloadPending === "true") {
+            event.preventDefault();
+            return;
+          }
+          downloadAction.dataset.downloadPending = "true";
+          window.setTimeout(() => {
+            delete downloadAction.dataset.downloadPending;
+          }, 5000);
+        });
+      }
+
+      const nodePath = (node) => node.dataset.folderPath || "";
+      const nodeDepth = (node) => Number.parseInt(node.dataset.folderDepth || "0", 10);
+      const nodeExpanded = (node) => node.dataset.folderExpanded === "true";
+      const childPrefix = (path) => (path ? `${path}/` : "");
+
+      const isVisibleByTreeState = (node) => {
+        const path = nodePath(node);
+        const ancestors = folderNodes.filter((candidate) => {
+          const candidatePath = nodePath(candidate);
+          if (candidate === node || nodeDepth(candidate) >= nodeDepth(node)) {
+            return false;
+          }
+          if (!candidatePath) {
+            return true;
+          }
+          return path.startsWith(childPrefix(candidatePath));
+        });
+        return ancestors.every((ancestor) => nodeExpanded(ancestor));
+      };
+
+      const updateFolderTree = () => {
+        const query = (folderFilter?.value || "").trim().toLowerCase();
+        folderNodes.forEach((node) => {
+          const matchesFilter = !query || (node.dataset.folderName || "").includes(query);
+          node.hidden = !matchesFilter || !isVisibleByTreeState(node);
+          const toggle = node.querySelector("[data-folder-toggle]");
+          if (toggle) {
+            const expanded = nodeExpanded(node);
+            toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+            const icon = toggle.querySelector("svg");
+            if (icon) {
+              icon.outerHTML = `<i data-lucide="${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></i>`;
+            }
+          }
+        });
+        createIcons();
+      };
+
+      const setDownloadState = (row) => {
+        if (!downloadAction) {
+          return;
+        }
+
+        const downloadUrl = row?.dataset.downloadUrl || "";
+        const enabled = Boolean(downloadUrl);
+        downloadAction.classList.toggle("disabled", !enabled);
+        downloadAction.setAttribute("aria-disabled", enabled ? "false" : "true");
+        downloadAction.href = enabled ? downloadUrl : "#";
+      };
+
+      const setSelectedPaths = (form, paths) => {
+        form.querySelectorAll("[data-selected-path-extra]").forEach((input) => input.remove());
+        const primaryInput = form.querySelector("[data-selected-path-input]");
+        if (!primaryInput) {
+          return;
+        }
+        primaryInput.value = paths[0] || "";
+        let insertAfter = primaryInput;
+        paths.slice(1).forEach((path) => {
+          const input = document.createElement("input");
+          input.type = "hidden";
+          input.name = "path";
+          input.value = path;
+          input.dataset.selectedPathExtra = "true";
+          insertAfter.insertAdjacentElement("afterend", input);
+          insertAfter = input;
+        });
+      };
+
+      const selectedList = () => currentRows().filter((row) => selectedRows.has(row));
+
+      const setActionState = () => {
+        const storageActionsEnabled = manager.dataset.storageActionsEnabled === "true";
+        const selected = selectedList();
+        const selectedPaths = selected.map((row) => row.dataset.filePath || "").filter(Boolean);
+        const selectedNames = selected.map((row) => row.dataset.fileName || row.dataset.filePath || "this file");
+        const selectedPath = selectedPaths[0] || "";
+        const selectedName = selected.length === 1 ? selectedNames[0] : `${selected.length} files`;
+
+        selectedActionForms.forEach((form) => {
+          const actionKind = form.dataset.actionKind || "";
+          const allowMultiple = form.dataset.allowMultiple === "true";
+          const inflateMode = form.dataset.inflateMode || "full";
+          const riskMessageKey = actionKind === "inflate" ? "inflateRiskMessage" : "riskMessage";
+          const riskConfirmationKey =
+            actionKind === "inflate" ? "inflateRequiresRiskConfirmation" : "requiresRiskConfirmation";
+          const riskMessages = Array.from(
+            new Set(
+              selected
+                .filter((row) => row.dataset[riskConfirmationKey] === "true")
+                .map((row) => row.dataset[riskMessageKey] || "")
+                .filter(Boolean)
+            )
+          );
+          const needsSingleSelection = !allowMultiple || actionKind === "rename" || actionKind === "inflate";
+          const isActionableForForm = (row) => {
+            if (actionKind === "trash") {
+              return row.dataset.canTrash === "true";
+            }
+            if (actionKind === "rename") {
+              return row.dataset.entryType === "file" && row.dataset.canRename === "true";
+            }
+            if (actionKind === "move") {
+              return row.dataset.entryType === "file" && row.dataset.canAction === "true";
+            }
+            return row.dataset.entryType === "file" && row.dataset.canAction === "true";
+          };
+          const selectedActionable = selected.length > 0 && selected.every(isActionableForForm);
+          const hasValidSelection = needsSingleSelection
+            ? selected.length === 1 && selectedActionable
+            : selected.length > 0 && selectedActionable;
+          const canInflate =
+            selected.length === 1 &&
+            (inflateMode === "metadata"
+              ? selected[0]?.dataset.canInflateMetadata === "true"
+              : selected[0]?.dataset.canInflateFull === "true");
+          const enabled = actionKind === "inflate" ? Boolean(storageActionsEnabled && canInflate) : Boolean(storageActionsEnabled && hasValidSelection);
+          const button = form.querySelector("[data-selected-file-button], [data-inflate-file-button]");
+          if (button) {
+            button.disabled = !enabled;
+          }
+          form.dataset.fileName = selectedName;
+          form.dataset.currentPath = selectedPath;
+          form.dataset.selectedCount = String(selected.length);
+          form.dataset.riskMessage = riskMessages.join("\n");
+          form.dataset.requiresRiskConfirmation = riskMessages.length ? "true" : "false";
+          setSelectedPaths(form, selectedPaths);
+        });
+      };
+
+      const syncSelectionState = () => {
+        currentRows().forEach((item) => {
+          const selected = selectedRows.has(item);
+          item.classList.toggle("selected", selected);
+          const checkbox = item.querySelector("[data-file-select]");
+          if (checkbox) {
+            checkbox.checked = selected;
+          }
+        });
+        const selected = selectedList();
+        setDownloadState(selected.length === 1 ? selected[0] : null);
+        setActionState();
+      };
+
+      const selectOnlyRow = (row) => {
+        selectedRows.clear();
+        selectedRows.add(row);
+        syncSelectionState();
+      };
+
+      const toggleRow = (row, forceSelected = null) => {
+        const shouldSelect = forceSelected ?? !selectedRows.has(row);
+        if (shouldSelect) {
+          selectedRows.add(row);
+        } else {
+          selectedRows.delete(row);
+        }
+        syncSelectionState();
+      };
+
+      const clearSelection = () => {
+        selectedRows.clear();
+        syncSelectionState();
+      };
+
+      const loadNextFiles = async (link) => {
+        const loadRow = link.closest("[data-file-load-more-row]");
+        if (!loadRow || link.dataset.loading === "true") {
+          return;
+        }
+        const originalText = link.textContent;
+        link.dataset.loading = "true";
+        link.textContent = "Loading...";
+        const url = new URL(link.href, window.location.href);
+        url.searchParams.set("file_partial", "1");
+        try {
+          const response = await fetch(url.href, {
+            headers: {
+              Accept: "application/json",
+              "X-Requested-With": "fetch",
+            },
+          });
+          if (!response.ok) {
+            throw new Error("Unable to load more files.");
+          }
+          const data = await response.json();
+          loadRow.insertAdjacentHTML("beforebegin", data.rows_html || "");
+          loadRow.remove();
+          createIcons();
+          syncSelectionState();
+        } catch (_error) {
+          link.dataset.loading = "false";
+          link.textContent = originalText;
+          window.alert("Could not load more files.");
+        }
+      };
+
+      manager.addEventListener("click", (event) => {
+        const loadMore = event.target.closest("[data-file-load-more]");
+        if (loadMore && manager.contains(loadMore)) {
+          event.preventDefault();
+          loadNextFiles(loadMore);
+          return;
+        }
+
+        const row = event.target.closest("[data-file-row]");
+        if (!row || !manager.contains(row) || event.target.closest("a, button, input, label")) {
+          return;
+        }
+        if (event.ctrlKey || event.metaKey) {
+          toggleRow(row);
+          return;
+        }
+        selectOnlyRow(row);
+      });
+
+      manager.addEventListener("change", (event) => {
+        const checkbox = event.target.closest("[data-file-select]");
+        if (!checkbox || !manager.contains(checkbox)) {
+          return;
+        }
+        const row = checkbox.closest("[data-file-row]");
+        if (row) {
+          toggleRow(row, checkbox.checked);
+        }
+      });
+
+      if (fileFilter) {
+        let searchTimer = null;
+        fileFilter.addEventListener("input", () => {
+          window.clearTimeout(searchTimer);
+          searchTimer = window.setTimeout(() => {
+            const query = fileFilter.value.trim();
+            const url = new URL(window.location.href);
+            url.searchParams.delete("file_offset");
+            url.searchParams.delete("file_partial");
+            if (query) {
+              url.searchParams.set("q", query);
+            } else {
+              url.searchParams.delete("q");
+            }
+            loadSoftNavigation(url);
+          }, 350);
+        });
+        registerPageCleanup(() => window.clearTimeout(searchTimer));
+      }
+
+      if (folderFilter) {
+        folderFilter.addEventListener("input", () => {
+          updateFolderTree();
+        });
+      }
+
+      folderNodes.forEach((node) => {
+        const toggle = node.querySelector("[data-folder-toggle]");
+        if (!toggle) {
+          return;
+        }
+        toggle.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          node.dataset.folderExpanded = nodeExpanded(node) ? "false" : "true";
+          updateFolderTree();
+        });
+      });
+
+      uploadForms.forEach((form) => {
+        const input = form.querySelector('input[type="file"]');
+        if (!input) {
+          return;
+        }
+        input.addEventListener("change", () => {
+          if (!input.files.length) {
+            return;
+          }
+          form.querySelectorAll("[data-folder-upload-relative-path]").forEach((item) => item.remove());
+          if (form.hasAttribute("data-upload-folder-on-file-select")) {
+            Array.from(input.files).forEach((file) => {
+              const relativePath = file.webkitRelativePath || file.name;
+              const hidden = document.createElement("input");
+              hidden.type = "hidden";
+              hidden.name = "relative_path";
+              hidden.value = relativePath;
+              hidden.dataset.folderUploadRelativePath = "true";
+              form.appendChild(hidden);
+            });
+          }
+          const uploadId = `pending-upload-${Date.now()}`;
+          const pendingTask = {
+            id: uploadId,
+            name: form.hasAttribute("data-upload-folder-on-file-select") ? "Upload folder" : "Upload file",
+            target: manager.dataset.storageId || "-",
+            status: "Sending",
+            status_class: "queued",
+            details: form.hasAttribute("data-upload-folder-on-file-select")
+              ? `${input.files.length} files`
+              : input.files[0]?.name || "-",
+            initiator: "-",
+            queued_for: "-",
+            started_at: taskDateLabel(new Date()),
+            finished_at: "-",
+            server: manager.dataset.storageId || "-",
+            created_at_ms: Date.now(),
+            cancel_upload_id: uploadId,
+            pending: true,
+          };
+          addPendingRecentTask(pendingTask);
+          const formData = new FormData(form);
+          const xhr = new XMLHttpRequest();
+          activeUploads.set(uploadId, xhr);
+          xhr.upload.addEventListener("progress", (event) => {
+            if (!event.lengthComputable) {
+              return;
+            }
+            const percent = Math.max(0, Math.min(100, Math.round((event.loaded * 100) / event.total)));
+            updatePendingRecentTask({
+              id: uploadId,
+              status: percent >= 100 ? "Processing" : "Uploading",
+              status_class: percent >= 100 ? "running" : "queued",
+              details: percent >= 100 ? "Finalizing upload" : `${percent}%`,
+            });
+          });
+          xhr.addEventListener("load", () => {
+            activeUploads.delete(uploadId);
+            let payload = {};
+            try {
+              payload = JSON.parse(xhr.responseText || "{}");
+            } catch (_error) {
+              payload = {};
+            }
+            if (xhr.status >= 200 && xhr.status < 300 && payload.ok) {
+              updatePendingRecentTask({
+                id: uploadId,
+                status: "Completed",
+                status_class: "completed",
+                details: "Upload complete",
+                cancel_upload_id: "",
+              });
+              window.location.href = payload.redirect || window.location.href;
+              return;
+            }
+            updatePendingRecentTask({
+              id: uploadId,
+              status: "Failed",
+              status_class: "failed",
+              details: payload.error || "Upload failed",
+              cancel_upload_id: "",
+            });
+            window.alert(payload.error || "Upload failed.");
+          });
+          xhr.addEventListener("abort", () => {
+            activeUploads.delete(uploadId);
+            updatePendingRecentTask({
+              id: uploadId,
+              status: "Cancelled",
+              status_class: "cancelled",
+              details: "Upload cancelled",
+              cancel_upload_id: "",
+            });
+          });
+          xhr.addEventListener("error", () => {
+            activeUploads.delete(uploadId);
+            updatePendingRecentTask({
+              id: uploadId,
+              status: "Failed",
+              status_class: "failed",
+              details: "Network error",
+              cancel_upload_id: "",
+            });
+          });
+          xhr.open("POST", form.action);
+          xhr.setRequestHeader("X-PVE-Helper-Async-Upload", "1");
+          xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+          xhr.send(formData);
+        });
+      });
+
+      clearSelection();
+      updateFolderTree();
+    });
+  };
+
   const initRecentTasks = () => {
     const recentTasks = document.querySelector("[data-recent-tasks]");
     if (!recentTasks || recentTasks.dataset.initialized === "true") {
@@ -260,8 +908,21 @@
     const pageLabel = recentTasks.querySelector("[data-task-page-label]");
     const tasksUrl = recentTasks.dataset.tasksUrl;
     const pollMs = Number.parseInt(recentTasks.dataset.taskPollMs || "10000", 10);
+    const parsedRenderedAtMs = Date.parse(recentTasks.dataset.taskRenderedAt || "");
+    const renderedAtMs = Number.isFinite(parsedRenderedAtMs) ? parsedRenderedAtMs : Date.now();
     let taskPage = Number.parseInt(recentTasks.dataset.taskPage || "0", 10);
     let loadingTasks = false;
+    let storageReloadPending = false;
+    let pendingTasks = [];
+    let lastLoadedTasks = [];
+    let lastTaskPageData = {
+      page: taskPage,
+      total: 0,
+      start_index: 0,
+      end_index: 0,
+      has_previous: false,
+      has_next: false,
+    };
 
     const escapeHtml = (value) =>
       String(value ?? "").replace(/[&<>"']/g, (char) => {
@@ -275,33 +936,99 @@
         return entities[char];
       });
 
+    const taskSeenKey = (task) => `pve-helper-reloaded-task-${task.id || `${task.action}:${task.storage_id}:${task.path}`}`;
+
+    const taskWasReloaded = (task) => {
+      try {
+        return sessionStorage.getItem(taskSeenKey(task)) === "true";
+      } catch (_error) {
+        return false;
+      }
+    };
+
+    const rememberTaskReload = (task) => {
+      try {
+        sessionStorage.setItem(taskSeenKey(task), "true");
+      } catch (_error) {
+        // Reloading is still safe without session storage; the timestamp gate prevents old events.
+      }
+    };
+
+    const maybeReloadCurrentStorageBrowser = (tasks) => {
+      if (storageReloadPending) {
+        return true;
+      }
+
+      const manager = document.querySelector("[data-storage-file-manager]");
+      if (!manager) {
+        return false;
+      }
+
+      const storageId = manager.dataset.storageId || "";
+      const currentPath = manager.dataset.currentPath || "";
+      const completedInflate = tasks.find((task) => {
+        if (task.action !== "file.inflated" || task.storage_id !== storageId) {
+          return false;
+        }
+        if ((task.path_parent || "") !== currentPath) {
+          return false;
+        }
+        if (Number(task.finished_at_ms || 0) <= renderedAtMs) {
+          return false;
+        }
+        return !taskWasReloaded(task);
+      });
+
+      if (!completedInflate) {
+        return false;
+      }
+
+      storageReloadPending = true;
+      rememberTaskReload(completedInflate);
+      window.location.reload();
+      return true;
+    };
+
+    const taskDetailsHtml = (task) => {
+      if (task.pending && task.cancel_upload_id) {
+        return `
+          ${escapeHtml(task.details)}
+          <button class="taskbar-page-button" type="button" data-cancel-upload="${escapeHtml(task.cancel_upload_id)}">Cancel</button>
+        `;
+      }
+      return escapeHtml(task.details);
+    };
+
+    const taskRowHtml = (task) => `
+      <tr>
+        <td>${escapeHtml(task.name)}</td>
+        <td>${escapeHtml(task.target)}</td>
+        <td><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
+        <td>${taskDetailsHtml(task)}</td>
+        <td>${escapeHtml(task.initiator)}</td>
+        <td>${escapeHtml(task.queued_for)}</td>
+        <td>${escapeHtml(task.started_at)}</td>
+        <td>${escapeHtml(task.finished_at)}</td>
+        <td>${escapeHtml(task.server)}</td>
+      </tr>
+    `;
+
     const renderTaskRows = (tasks) => {
       if (!rows) {
         return;
       }
 
+      const mergedTasks = taskPage === 0 ? [...pendingTasks, ...tasks] : tasks;
       if (!tasks.length) {
+        if (mergedTasks.length) {
+          rows.innerHTML = mergedTasks.map(taskRowHtml).join("");
+          return;
+        }
         rows.innerHTML = '<tr><td colspan="9" class="empty-state">No recent tasks.</td></tr>';
         return;
       }
 
-      rows.innerHTML = tasks
-        .map(
-          (task) => `
-            <tr>
-              <td>${escapeHtml(task.name)}</td>
-              <td>${escapeHtml(task.target)}</td>
-              <td><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
-              <td>${escapeHtml(task.details)}</td>
-              <td>${escapeHtml(task.initiator)}</td>
-              <td>${escapeHtml(task.queued_for)}</td>
-              <td>${escapeHtml(task.started_at)}</td>
-              <td>${escapeHtml(task.finished_at)}</td>
-              <td>${escapeHtml(task.server)}</td>
-            </tr>
-          `
-        )
-        .join("");
+      rows.innerHTML = mergedTasks.map(taskRowHtml).join("");
     };
 
     const updateTaskControls = (data) => {
@@ -315,9 +1042,54 @@
         nextButton.disabled = !data.has_next;
       }
       if (pageLabel) {
-        pageLabel.textContent = data.total ? `${data.start_index}-${data.end_index} of ${data.total}` : "0 of 0";
+        const pendingCount = taskPage === 0 ? pendingTasks.length : 0;
+        const total = (data.total || 0) + pendingCount;
+        const startIndex = data.start_index || (total ? 1 : 0);
+        const endIndex = Math.min(total, (data.end_index || 0) + pendingCount);
+        pageLabel.textContent = total ? `${startIndex}-${endIndex} of ${total}` : "0 of 0";
       }
     };
+
+    const addPendingTask = (event) => {
+      const task = event.detail || {};
+      pendingTasks = [task, ...pendingTasks].slice(0, 3);
+      if (taskPage === 0) {
+        renderTaskRows(lastLoadedTasks);
+        updateTaskControls(lastTaskPageData);
+      }
+    };
+
+    const updatePendingTask = (event) => {
+      const patch = event.detail || {};
+      pendingTasks = pendingTasks.map((task) => (task.id === patch.id ? { ...task, ...patch } : task));
+      if (taskPage === 0) {
+        renderTaskRows(lastLoadedTasks);
+        updateTaskControls(lastTaskPageData);
+      }
+    };
+
+    const cancelUpload = (event) => {
+      const button = event.target.closest("[data-cancel-upload]");
+      if (!button) {
+        return;
+      }
+      const uploadId = button.dataset.cancelUpload || "";
+      const xhr = activeUploads.get(uploadId);
+      if (xhr) {
+        xhr.abort();
+      }
+    };
+
+    window.addEventListener("pve-helper:pending-task", addPendingTask);
+    window.addEventListener("pve-helper:update-pending-task", updatePendingTask);
+    if (rows) {
+      rows.addEventListener("click", cancelUpload);
+    }
+    registerPageCleanup(() => window.removeEventListener("pve-helper:pending-task", addPendingTask));
+    registerPageCleanup(() => window.removeEventListener("pve-helper:update-pending-task", updatePendingTask));
+    if (rows) {
+      registerPageCleanup(() => rows.removeEventListener("click", cancelUpload));
+    }
 
     const loadTaskPage = async (page) => {
       if (!tasksUrl || loadingTasks) {
@@ -337,7 +1109,24 @@
           return;
         }
         const data = await response.json();
-        renderTaskRows(data.tasks || []);
+        const loadedTasks = data.tasks || [];
+        if (pendingTasks.length) {
+          pendingTasks = pendingTasks.filter(
+            (pendingTask) =>
+              !loadedTasks.some(
+                (task) =>
+                  (task.action === "file.uploaded" || task.action === "file.folder_uploaded") &&
+                  task.storage_id === pendingTask.target &&
+                  Number(task.finished_at_ms || 0) >= Number(pendingTask.created_at_ms || 0) - 5000
+              )
+          );
+        }
+        if (maybeReloadCurrentStorageBrowser(loadedTasks)) {
+          return;
+        }
+        lastLoadedTasks = loadedTasks;
+        lastTaskPageData = data;
+        renderTaskRows(loadedTasks);
         updateTaskControls(data);
       } catch (_error) {
         // Recent task refresh is best effort; the server-rendered rows remain usable.
@@ -357,6 +1146,8 @@
         loadTaskPage(taskPage + 1);
       });
     }
+
+    loadTaskPage(taskPage);
 
     window.setInterval(
       () => {
@@ -484,6 +1275,9 @@
     if (url.pathname.startsWith("/auth/")) {
       return false;
     }
+    if (url.pathname.includes("/download/")) {
+      return false;
+    }
     if (url.pathname === window.location.pathname && url.search === window.location.search && url.hash) {
       return false;
     }
@@ -601,10 +1395,193 @@
     });
   };
 
+  const initSpaceCharts = (root) => {
+    root.querySelectorAll("[data-space-chart]").forEach((svg) => {
+      if (svg.dataset.chartRendered) return;
+      svg.dataset.chartRendered = "1";
+
+      let raw;
+      try { raw = JSON.parse(svg.dataset.chartData || "[]"); } catch (_) { return; }
+      if (!raw.length) return;
+
+      const rect = svg.getBoundingClientRect();
+      const W = rect.width || 600;
+      const H = 220;
+      const PL = 98, PR = 18, PT = 34, PB = 48;
+      const pW = W - PL - PR;
+      const pH = H - PT - PB;
+      svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+      let maxB = 0;
+      raw.forEach((d) => { if (d.total_bytes > maxB) maxB = d.total_bytes; });
+      if (!maxB) return;
+
+      const ts = raw.map((d) => new Date(d.timestamp).getTime());
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+      const chartEnd = ts[ts.length - 1];
+      const chartStart = Math.min(ts[0], chartEnd - sevenDaysMs);
+      const chartRange = (chartEnd - chartStart) || 1;
+      const xOf = (t) => PL + ((t - chartStart) / chartRange) * pW;
+      const yOf = (b) => PT + pH - (b / maxB) * pH;
+      const colors = {
+        used: "#2f8de4",
+        free: "#7c4d9e",
+        total: "#35d04f",
+        grid: "rgba(179, 202, 219, 0.28)",
+        label: "#cfe7ff",
+      };
+      const fmt = (b) => {
+        if (b >= 549755813888) return (b / 1099511627776).toFixed(1) + " TB";
+        if (b >= 1073741824) return (b / 1073741824).toFixed(1) + " GB";
+        if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+        return (b / 1024).toFixed(1) + " KB";
+      };
+      const pad2 = (n) => String(n).padStart(2, "0");
+      const fmtTime = (d) => (
+        `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+      );
+      const fmtDate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const fmtClock = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      const ns = "http://www.w3.org/2000/svg";
+      const el = (tag, a) => {
+        const e = document.createElementNS(ns, tag);
+        const styleProps = ["fill", "stroke", "opacity"];
+        let styleStr = "";
+        for (const k in a) {
+          if (styleProps.includes(k) || k === "font-size" || k === "font-weight") {
+            styleStr += `${k}:${a[k]};`;
+          } else {
+            e.setAttribute(k, a[k]);
+          }
+        }
+        if (styleStr) e.setAttribute("style", styleStr);
+        return e;
+      };
+      const tx = (tag, a, t) => { const e = el(tag, a); e.textContent = t; return e; };
+
+      svg.appendChild(el("rect", { x: PL, y: PT, width: pW, height: pH, fill: "rgba(10, 20, 30, 0.18)" }));
+
+      for (let i = 0; i <= 5; i++) {
+        const percent = 100 - (i * 20);
+        const yP = PT + (pH / 5) * i;
+        const v = maxB * (percent / 100);
+        svg.appendChild(el("line", { x1: PL, y1: yP, x2: W - PR, y2: yP, stroke: colors.grid, "stroke-width": "1" }));
+        svg.appendChild(tx("text", { x: PL - 42, y: yP + 4, "text-anchor": "end", fill: colors.label, "font-size": "11" }, fmt(v)));
+        svg.appendChild(tx("text", { x: PL - 6, y: yP + 4, "text-anchor": "end", fill: "var(--muted)", "font-size": "10" }, `${percent}%`));
+      }
+
+      const series = raw.length === 1
+        ? [
+            { ...raw[0], chart_ts: chartStart },
+            { ...raw[0], chart_ts: chartEnd },
+          ]
+        : raw.map((d) => ({ ...d, chart_ts: new Date(d.timestamp).getTime() }));
+      const seriesTs = series.map((d) => d.chart_ts);
+      const linePath = (key) => {
+        let path = `M ${xOf(seriesTs[0])} ${yOf(series[0][key])}`;
+        series.forEach((d, i) => { path += ` L ${xOf(seriesTs[i])} ${yOf(d[key])}`; });
+        return path;
+      };
+      const areaToBottom = (key) => {
+        let path = linePath(key);
+        path += ` L ${xOf(seriesTs[seriesTs.length - 1])} ${PT + pH} L ${xOf(seriesTs[0])} ${PT + pH} Z`;
+        return path;
+      };
+      const areaBetween = (upperKey, lowerKey) => {
+        let path = linePath(upperKey);
+        for (let i = series.length - 1; i >= 0; i--) {
+          path += ` L ${xOf(seriesTs[i])} ${yOf(series[i][lowerKey])}`;
+        }
+        return `${path} Z`;
+      };
+
+      svg.appendChild(el("path", { d: areaToBottom("used_bytes"), fill: colors.used, opacity: "0.72" }));
+      svg.appendChild(el("path", { d: areaBetween("total_bytes", "used_bytes"), fill: colors.free, opacity: "0.62" }));
+      svg.appendChild(el("path", { d: linePath("used_bytes"), fill: "none", stroke: colors.used, "stroke-width": "2.5" }));
+      svg.appendChild(el("path", { d: linePath("total_bytes"), fill: "none", stroke: colors.total, "stroke-width": "2.5" }));
+
+      // Data points
+      raw.forEach((d, i) => {
+        svg.appendChild(el("circle", { cx: xOf(ts[i]), cy: yOf(d.used_bytes), r: "3.5", fill: colors.used, stroke: "var(--surface)", "stroke-width": "1" }));
+      });
+
+      // Time labels
+      [
+        [chartStart, "start"],
+        [chartStart + (chartRange / 2), "middle"],
+        [chartEnd, "end"],
+      ].forEach(([labelTs, anchor]) => {
+        const dt = new Date(labelTs);
+        const textAnchor = anchor === "start" ? "start" : anchor === "end" ? "end" : "middle";
+        const x = anchor === "start" ? PL : anchor === "end" ? W - PR : xOf(labelTs);
+        svg.appendChild(tx("text", { x, y: H - 20, "text-anchor": textAnchor, fill: "var(--muted)", "font-size": "10" }, fmtDate(dt)));
+        svg.appendChild(tx("text", { x, y: H - 7, "text-anchor": textAnchor, fill: "var(--muted)", "font-size": "10" }, fmtClock(dt)));
+      });
+
+      // Legend
+      const legend = [
+        ["Used", colors.used, PL + 8],
+        ["Free", colors.free, PL + 78],
+        ["Total", colors.total, PL + 142],
+      ];
+      legend.forEach(([label, color, x]) => {
+        svg.appendChild(el("rect", { x, y: PT - 24, width: "10", height: "10", fill: color }));
+        svg.appendChild(tx("text", { x: x + 16, y: PT - 15, fill: "var(--muted)", "font-size": "11" }, label));
+      });
+
+      // Now value label
+      const last = raw[raw.length - 1];
+      const lastX = xOf(ts[ts.length - 1]);
+      const lastLabelNearRight = lastX > W - PR - 72;
+      svg.appendChild(tx(
+        "text",
+        {
+          x: lastLabelNearRight ? W - PR : Math.max(PL, lastX),
+          y: Math.max(PT + 11, yOf(last.used_bytes) - 8),
+          "text-anchor": lastLabelNearRight ? "end" : "middle",
+          fill: "#d7ecff",
+          "font-size": "10",
+          "font-weight": "600",
+        },
+        `${fmt(last.used_bytes)} used`
+      ));
+    });
+  };
+
+  const initTableFilters = (root) => {
+    root.querySelectorAll("[data-table-filter]").forEach((input) => {
+      if (input.dataset.filterBound) return;
+      input.dataset.filterBound = "1";
+      const table = input.closest(".panel")?.querySelector("[data-filterable-table]");
+      if (!table) return;
+      input.addEventListener("input", () => {
+        const q = input.value.toLowerCase().trim();
+        table.querySelectorAll("tbody tr[data-filter-text]").forEach((row) => {
+          row.hidden = q && !row.dataset.filterText.includes(q);
+        });
+      });
+    });
+  };
+
+  const initConfirmForms = (root) => {
+    root.querySelectorAll("form[data-confirm]").forEach((form) => {
+      if (form.dataset.confirmBound) return;
+      form.dataset.confirmBound = "1";
+      form.addEventListener("submit", (e) => {
+        if (!confirm(form.dataset.confirm)) e.preventDefault();
+      });
+    });
+  };
+
   const initPage = (root = document) => {
     initAutoSubmitForms(root);
     initScanActions(root);
+    initStorageFileManagers(root);
+    initConfirmedFileActions(root);
+    initConfirmForms(root);
     initAuditLogs(root);
+    initSpaceCharts(root);
+    initTableFilters(root);
     createIcons();
   };
 

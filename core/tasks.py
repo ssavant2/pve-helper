@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.utils import timezone
 from django_q.tasks import async_task
 
@@ -15,12 +16,30 @@ from .models import (
     ProxmoxInventory,
     ScanRun,
     StorageMount,
+    StorageSpaceSnapshot,
+    TrashItem,
 )
 from .services.classification import classify_entry
 from .services.config import sync_runtime_configuration
+from .services.filesystem import storage_space_info
+from .services.image_info import probe_qemu_image_info
+from .services.partial_scan import refresh_storage_directory
 from .services.proxmox import ProxmoxClient
 from .services.scan_schedule import scan_schedule_state
+from .services.scan_retention import prune_scan_history
 from .services.storage import StorageScanner
+from .services.storage_actions import (
+    StorageActionError,
+    inflate_storage_file,
+    normalize_uploaded_proxmox_image_paths,
+    purge_trash_item,
+)
+from .services.storage_visibility import ignored_relative_paths_for_storage
+
+
+SPACE_SNAPSHOT_RETENTION_DAYS = 8
+
+logger = logging.getLogger(__name__)
 
 
 def enqueue_scheduled_scan() -> int | None:
@@ -63,6 +82,102 @@ def enqueue_scheduled_scan() -> int | None:
     return scan.id
 
 
+def purge_expired_trash(max_age_days: int = 30) -> None:
+    cutoff = timezone.now() - timedelta(days=max_age_days)
+    expired = TrashItem.objects.filter(
+        restore_status=TrashItem.RestoreStatus.TRASHED,
+        moved_at__lte=cutoff,
+    )
+    purged = 0
+    errors = []
+    for item in expired:
+        try:
+            purge_trash_item(item=item)
+        except StorageActionError as exc:
+            errors.append({"item_id": item.id, "error": str(exc)})
+            continue
+        purged += 1
+
+    AuditEvent.objects.create(
+        username="system",
+        action="trash.purge",
+        object_type="trash",
+        outcome="success" if not errors else "partial",
+        details={
+            "max_age_days": max_age_days,
+            "purged": purged,
+            "errors": errors[:10],
+        },
+    )
+
+
+def purge_expired_audit_events(retention_days: int = 90) -> None:
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    deleted_count, _deleted_by_model = AuditEvent.objects.filter(timestamp__lt=cutoff).delete()
+
+    AuditEvent.objects.create(
+        username="system",
+        action="audit.retention.purge",
+        object_type="audit_retention",
+        object_id="automatic-audit-retention",
+        outcome="success",
+        details={
+            "retention_days": retention_days,
+            "purged": deleted_count,
+        },
+    )
+
+
+def record_storage_space_snapshots(retention_days: int = SPACE_SNAPSHOT_RETENTION_DAYS) -> int:
+    recorded_at = timezone.now()
+    storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
+    created = _record_space_snapshots(None, storages, recorded_at)
+    cutoff = recorded_at - timedelta(days=retention_days)
+    StorageSpaceSnapshot.objects.filter(recorded_at__lt=cutoff).delete()
+    return created
+
+
+def normalize_uploaded_proxmox_image_paths_task(
+    storage_id: int,
+    paths: list[str],
+    username: str = "",
+) -> None:
+    storage = StorageMount.objects.get(pk=storage_id)
+    try:
+        result = normalize_uploaded_proxmox_image_paths(storage=storage, paths=paths)
+        normalized = result["normalized"]
+        AuditEvent.objects.create(
+            username=username,
+            action="file.upload_normalized",
+            object_type="file",
+            object_id=f"{storage.storage_id}:{', '.join(normalized) if normalized else '-'}",
+            outcome="success" if normalized else "skipped",
+            details={
+                "storage_id": storage.storage_id,
+                "storage_name": storage.display_name,
+                "paths": paths,
+                "normalized": normalized,
+                "skipped": result["skipped"],
+            },
+        )
+    except Exception as exc:
+        AuditEvent.objects.create(
+            username=username,
+            action="file.upload_normalize_failed",
+            object_type="file",
+            object_id=f"{storage.storage_id}:{', '.join(paths)}",
+            outcome="failed",
+            details={
+                "storage_id": storage.storage_id,
+                "storage_name": storage.display_name,
+                "paths": paths,
+                "error": exc.__class__.__name__,
+                "message": str(exc),
+            },
+        )
+        raise
+
+
 def run_scan(scan_run_id: int) -> None:
     scan = ScanRun.objects.get(pk=scan_run_id)
     try:
@@ -74,6 +189,65 @@ def run_scan(scan_run_id: int) -> None:
         scan.error_details = {"error": exc.__class__.__name__, "message": str(exc)}
         scan.save(update_fields=["status", "finished_at", "progress_message", "error_details", "updated_at"])
         raise
+
+
+def inflate_storage_file_task(
+    storage_id: int,
+    entry_id: int,
+    username: str = "",
+    target_preallocation: str = "full",
+) -> None:
+    storage = StorageMount.objects.get(pk=storage_id)
+    entry = FileInventory.objects.select_related("scan_run", "storage").get(pk=entry_id)
+    try:
+        result = inflate_storage_file(
+            storage=storage,
+            entry=entry,
+            target_preallocation=target_preallocation,
+        )
+        refresh_scan = _latest_storage_result_scan(storage)
+        if refresh_scan is None and entry.scan_run.status == ScanRun.Status.COMPLETED:
+            refresh_scan = entry.scan_run
+        if refresh_scan:
+            refresh_storage_directory(
+                storage=storage,
+                scan=refresh_scan,
+                directory_path=str(result["directory_path"]),
+            )
+        AuditEvent.objects.create(
+            username=username,
+            action="file.inflated",
+            object_type="file",
+            object_id=f"{storage.storage_id}:{result['path']}",
+            outcome="success",
+            details={
+                "storage_id": storage.storage_id,
+                "storage_name": storage.display_name,
+                "path": result["path"],
+                "target_preallocation": result["target_preallocation"],
+                "refreshed_scan_id": refresh_scan.id if refresh_scan else None,
+                "before": result["before"],
+                "after": result["after"],
+            },
+        )
+    except Exception as exc:
+        AuditEvent.objects.create(
+            username=username,
+            action="file.inflate_failed",
+            object_type="file",
+            object_id=f"{storage.storage_id}:{entry.path}",
+            outcome="failed",
+            details={
+                "storage_id": storage.storage_id,
+                "storage_name": storage.display_name,
+                "path": entry.path,
+                "target_preallocation": target_preallocation,
+                "error": str(exc),
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        if not isinstance(exc, StorageActionError):
+            raise
 
 
 def _run_scan(scan: ScanRun) -> None:
@@ -172,7 +346,11 @@ def _run_scan(scan: ScanRun) -> None:
         gate_ok = bool(status.get("ok"))
         missing_consumers = list(status.get("missing_consumers") or [])
 
-        scanner = StorageScanner(storage.storage_id, storage.path)
+        scanner = StorageScanner(
+            storage.storage_id,
+            storage.path,
+            ignored_paths=ignored_relative_paths_for_storage(storage),
+        )
         for entry in scanner.iter_entries():
             classification = classify_entry(
                 relative_path=entry.relative_path,
@@ -183,6 +361,11 @@ def _run_scan(scan: ScanRun) -> None:
                 template_vmids=template_vmids,
                 gate_ok=gate_ok,
                 missing_consumers=missing_consumers,
+            )
+            image_info = probe_qemu_image_info(
+                path=entry.full_path,
+                entry_type=entry.entry_type,
+                content_category=entry.content_category,
             )
             file_rows.append(
                 FileInventory(
@@ -200,6 +383,7 @@ def _run_scan(scan: ScanRun) -> None:
                     evidence={
                         **classification.evidence,
                         "full_path": entry.full_path,
+                        "image_info": image_info,
                     },
                 )
             )
@@ -235,6 +419,62 @@ def _run_scan(scan: ScanRun) -> None:
             "updated_at",
         ]
     )
+    _prune_scan_history_after_success()
+
+
+def _prune_scan_history_after_success() -> None:
+    try:
+        result = prune_scan_history()
+    except Exception as exc:
+        logger.exception("Failed to prune old scan history")
+        AuditEvent.objects.create(
+            username="system",
+            action="scan.retention.purge_failed",
+            object_type="scan_retention",
+            object_id="automatic-scan-retention",
+            outcome="failed",
+            details={
+                "error": exc.__class__.__name__,
+                "message": str(exc),
+            },
+        )
+        return
+
+    if not result.deleted_anything:
+        return
+
+    AuditEvent.objects.create(
+        username="system",
+        action="scan.retention.purge",
+        object_type="scan_retention",
+        object_id="automatic-scan-retention",
+        outcome="success",
+        details={
+            "kept_scan_ids": sorted(result.kept_scan_ids),
+            "deleted_files": result.deleted_files,
+            "deleted_proxmox_objects": result.deleted_proxmox_objects,
+            "deleted_scan_runs": result.deleted_scan_runs,
+        },
+    )
+
+
+def _record_space_snapshots(
+    scan: ScanRun | None, storages: list[StorageMount], recorded_at: datetime
+) -> int:
+    created = 0
+    for storage in storages:
+        space = storage_space_info(storage.path)
+        if space.ok:
+            StorageSpaceSnapshot.objects.create(
+                storage=storage,
+                scan_run=scan,
+                recorded_at=recorded_at,
+                total_bytes=space.total_bytes,
+                available_bytes=space.available_bytes,
+                used_bytes=space.used_bytes,
+            )
+            created += 1
+    return created
 
 
 def _storage_gate_status(
@@ -286,3 +526,12 @@ def _from_timestamp(value: float | None):
     if value is None:
         return None
     return datetime.fromtimestamp(value, tz=timezone.get_current_timezone())
+
+
+def _latest_storage_result_scan(storage: StorageMount) -> ScanRun | None:
+    return (
+        ScanRun.objects.filter(status=ScanRun.Status.COMPLETED)
+        .filter(Q(target_storage=storage) | Q(target_storage__isnull=True))
+        .order_by("-filesystem_scan_at", "-finished_at", "-created_at")
+        .first()
+    )

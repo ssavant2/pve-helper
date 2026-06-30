@@ -19,6 +19,8 @@ npm-debug.log*
 
 # Local working notes with real environment values (never commit)
 .local/
+docs/*.local.md
+docs/local/
 
 # Live compose with real values — commit docker-compose.example.yml instead
 docker-compose.yml

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
@@ -12,26 +17,46 @@ from django.contrib.messages import get_messages
 from django.utils import timezone
 from django_q.models import Schedule
 
-from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, ProxmoxInventory, ScanRun, StorageMount
+from core.auth import PveHelperOIDCBackend
+from core.checks import production_startup_errors
+from core.models import AuditEvent, FileInventory, OidcIdentity, ProxmoxEndpoint, ProxmoxInventory, ScanRun, StorageMount, StorageSpaceSnapshot, TrashItem
+from core.services.audit_retention_schedule import AUDIT_RETENTION_SCHEDULE_NAME, audit_retention_schedule_state
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
-from core.services.filesystem import StorageSpaceInfo, storage_space_info
+from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
+from core.services.proxmox import LIVE_GUEST_STATUS_CACHE_SECONDS
 from core.services.recent_tasks import recent_task_page
+from core.services.scan_retention import prune_scan_history
 from core.services.scan_schedule import SCAN_SCHEDULE_NAME, update_scan_schedule
+from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
 from core.services.storage import StorageScanner
+from core.services.storage_actions import (
+    StorageActionError,
+    inflate_storage_file,
+    normalize_uploaded_proxmox_image_paths,
+    validate_inflate_storage_file,
+)
 from core.services.storage_details import storage_details
-from core.tasks import enqueue_scheduled_scan
+from core.services.trash_schedule import TRASH_PURGE_SCHEDULE_NAME, trash_purge_schedule_state
+from core.tasks import (
+    enqueue_scheduled_scan,
+    inflate_storage_file_task,
+    normalize_uploaded_proxmox_image_paths_task,
+    purge_expired_audit_events,
+    purge_expired_trash,
+    record_storage_space_snapshots,
+)
 
 
 class ClassificationTests(SimpleTestCase):
     def test_extracts_disk_references_from_nested_snapshot_config(self):
         config = {
-            "scsi0": "TrueNAS-VM:100/vm-100-disk-0.qcow2,size=32G",
+            "scsi0": "nfs-vm:100/vm-100-disk-0.qcow2,size=32G",
             "ide2": "none,media=cdrom",
             "snapshots": {
                 "before-upgrade": {
-                    "scsi0": "TrueNAS-VM:100/vm-100-disk-0.qcow2,size=32G",
-                    "unused0": "TrueNAS-VM:100/vm-100-disk-1.qcow2",
+                    "scsi0": "nfs-vm:100/vm-100-disk-0.qcow2,size=32G",
+                    "unused0": "nfs-vm:100/vm-100-disk-1.qcow2",
                 }
             },
         }
@@ -41,8 +66,8 @@ class ClassificationTests(SimpleTestCase):
         self.assertEqual(
             references,
             [
-                "TrueNAS-VM:100/vm-100-disk-0.qcow2",
-                "TrueNAS-VM:100/vm-100-disk-1.qcow2",
+                "nfs-vm:100/vm-100-disk-0.qcow2",
+                "nfs-vm:100/vm-100-disk-1.qcow2",
             ],
         )
 
@@ -51,11 +76,11 @@ class ClassificationTests(SimpleTestCase):
             relative_path="images/100/vm-100-disk-0.qcow2",
             entry_type=FileInventory.EntryType.FILE,
             content_category="vm_disk",
-            derived_volid="TrueNAS-VM:100/vm-100-disk-0.qcow2",
+            derived_volid="nfs-vm:100/vm-100-disk-0.qcow2",
             referenced_volids=set(),
             template_vmids=set(),
             gate_ok=False,
-            missing_consumers=["pve3"],
+            missing_consumers=["pve-node-1"],
         )
 
         self.assertEqual(result.classification, FileInventory.Classification.CLASSIFICATION_BLOCKED)
@@ -65,7 +90,7 @@ class ClassificationTests(SimpleTestCase):
             relative_path="images/900/base-900-disk-0.qcow2",
             entry_type=FileInventory.EntryType.FILE,
             content_category="base_image",
-            derived_volid="TrueNAS-VM:900/base-900-disk-0.qcow2",
+            derived_volid="nfs-vm:900/base-900-disk-0.qcow2",
             referenced_volids=set(),
             template_vmids=set(),
             gate_ok=True,
@@ -88,7 +113,7 @@ class ClassificationTests(SimpleTestCase):
             blocked.chmod(0)
 
             try:
-                scanner = StorageScanner("TrueNAS-VM", root.as_posix())
+                scanner = StorageScanner("nfs-vm", root.as_posix())
                 entries = list(scanner.iter_entries())
             finally:
                 blocked.chmod(0o700)
@@ -105,40 +130,45 @@ class ClassificationTests(SimpleTestCase):
         self.assertGreater(info.total_bytes or 0, 0)
         self.assertGreaterEqual(info.available_bytes or 0, 0)
 
+    def test_mount_access_mode_prefers_read_only_when_present(self):
+        mount = MountInfo(mount_options="rw,noatime", super_options="ro,vers=4.2")
+
+        self.assertEqual(mount_access_mode(mount), "read_only")
+
 
 class RuntimeConfigurationTests(TestCase):
     @override_settings(
         PVE_ENDPOINTS=["https://pve-node-1.example.com:8006"],
-        PVE_EXPECTED_CONSUMERS=["pve3"],
-        TRUENAS_FS_STORAGE_ID="TrueNAS-FS",
-        TRUENAS_VM_STORAGE_ID="TrueNAS-VM",
-        TRUENAS_FS_EXPORT="203.0.113.20:/mnt/Pool-FS/FS/Proxmox",
-        TRUENAS_VM_EXPORT="203.0.113.20:/mnt/Pool-VMs/VM/Proxmox",
+        PVE_EXPECTED_CONSUMERS=["pve-node-1"],
+        TRUENAS_FS_STORAGE_ID="nfs-fs",
+        TRUENAS_VM_STORAGE_ID="nfs-vm",
+        TRUENAS_FS_EXPORT="truenas.example.com:/mnt/tank/proxmox-fs",
+        TRUENAS_VM_EXPORT="truenas.example.com:/mnt/tank/proxmox-vm",
         TRUENAS_FS_CONTAINER_PATH="/storages/truenas-fs",
         TRUENAS_VM_CONTAINER_PATH="/storages/truenas-vm",
     )
     def test_sync_runtime_configuration_from_settings(self):
         endpoints, storages = sync_runtime_configuration()
 
-        self.assertEqual([endpoint.name for endpoint in endpoints], ["pve3"])
-        self.assertEqual(ProxmoxEndpoint.objects.get(name="pve3").url, "https://pve-node-1.example.com:8006")
-        self.assertEqual({storage.storage_id for storage in storages}, {"TrueNAS-FS", "TrueNAS-VM"})
-        self.assertEqual(StorageMount.objects.get(storage_id="TrueNAS-VM").expected_consumers, ["pve3"])
+        self.assertEqual([endpoint.name for endpoint in endpoints], ["pve-node-1"])
+        self.assertEqual(ProxmoxEndpoint.objects.get(name="pve-node-1").url, "https://pve-node-1.example.com:8006")
+        self.assertEqual({storage.storage_id for storage in storages}, {"nfs-fs", "nfs-vm"})
+        self.assertEqual(StorageMount.objects.get(storage_id="nfs-vm").expected_consumers, ["pve-node-1"])
 
     def test_storage_details_normalizes_pve_options_order(self):
         storage = StorageMount.objects.create(
-            storage_id="TrueNAS-VM",
-            display_name="TrueNAS-VM",
-            export="203.0.113.20:/mnt/Pool-VMs/VM/Proxmox",
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            export="truenas.example.com:/mnt/tank/proxmox-vm",
             path="/storages/truenas-vm",
         )
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
             scan_run=scan,
-            node="pve3",
+            node="pve-node-1",
             object_type=ProxmoxInventory.ObjectType.STORAGE,
-            name="TrueNAS-VM",
-            config={"storage": "TrueNAS-VM", "options": "nconnect=4,vers=4.2"},
+            name="nfs-vm",
+            config={"storage": "nfs-vm", "options": "nconnect=4,vers=4.2"},
         )
 
         details = storage_details(storage, scan, StorageSpaceInfo(ok=False))
@@ -146,27 +176,256 @@ class RuntimeConfigurationTests(TestCase):
         self.assertEqual(details.options, "vers=4.2,nconnect=4")
 
 
+@override_settings(OIDC_ISSUER_URL="https://issuer.example/application/o/pve-helper")
+class OidcBackendTests(TestCase):
+    def setUp(self):
+        self.backend = PveHelperOIDCBackend()
+
+    def test_links_and_finds_user_by_subject_after_username_change(self):
+        claims = {
+            "sub": "subject-1",
+            "preferred_username": "alice",
+            "email": "alice@example.test",
+            "given_name": "Stefan",
+            "family_name": "Nilsson",
+        }
+
+        user = self.backend.create_user(claims)
+
+        self.assertEqual(user.username, "alice")
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(
+            OidcIdentity.objects.filter(
+                user=user,
+                issuer="https://issuer.example/application/o/pve-helper",
+                subject="subject-1",
+            ).exists()
+        )
+
+        renamed_claims = {
+            **claims,
+            "preferred_username": "alice.renamed",
+            "email": "new@example.test",
+        }
+
+        self.assertEqual(list(self.backend.filter_users_by_claims(renamed_claims)), [user])
+        updated = self.backend.update_user(user, renamed_claims)
+
+        self.assertEqual(updated.username, "alice.renamed")
+        self.assertEqual(updated.email, "new@example.test")
+
+    def test_links_existing_username_once_when_identity_missing(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="alice", email="old@example.test")
+        claims = {
+            "sub": "subject-1",
+            "preferred_username": "alice",
+            "email": "new@example.test",
+        }
+
+        self.assertEqual(list(self.backend.filter_users_by_claims(claims)), [user])
+
+        updated = self.backend.update_user(user, claims)
+
+        self.assertEqual(updated.pk, user.pk)
+        self.assertEqual(updated.email, "new@example.test")
+        self.assertTrue(OidcIdentity.objects.filter(user=user, subject="subject-1").exists())
+
+    def test_reused_username_does_not_match_different_subject_identity(self):
+        User = get_user_model()
+        old_user = User.objects.create_user(username="alex", email="old@example.test")
+        OidcIdentity.objects.create(
+            user=old_user,
+            issuer="https://issuer.example/application/o/pve-helper",
+            subject="old-subject",
+        )
+        claims = {
+            "sub": "new-subject",
+            "preferred_username": "alex",
+            "email": "new@example.test",
+        }
+
+        self.assertEqual(list(self.backend.filter_users_by_claims(claims)), [])
+        new_user = self.backend.create_user(claims)
+
+        self.assertNotEqual(new_user.pk, old_user.pk)
+        self.assertEqual(new_user.username, "alex-2")
+        self.assertTrue(OidcIdentity.objects.filter(user=new_user, subject="new-subject").exists())
+
+
+class ScanRetentionTests(TestCase):
+    def test_prunes_stale_inventory_per_storage_and_old_scan_metadata(self):
+        now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.get_current_timezone())
+        fs_storage = StorageMount.objects.create(storage_id="nfs-fs", display_name="nfs-fs", path="/fs")
+        vm_storage = StorageMount.objects.create(storage_id="nfs-vm", display_name="nfs-vm", path="/vm")
+
+        old_global = self._completed_scan(now - timedelta(days=10))
+        old_fs = self._completed_scan(now - timedelta(days=9), target_storage=fs_storage)
+        latest_fs = self._completed_scan(now - timedelta(hours=1), target_storage=fs_storage)
+        old_failed = ScanRun.objects.create(status=ScanRun.Status.FAILED, finished_at=now - timedelta(days=9))
+        old_metadata_only = self._completed_scan(now - timedelta(days=9), target_storage=fs_storage)
+        ScanRun.objects.filter(pk=old_failed.pk).update(created_at=now - timedelta(days=9))
+
+        self._file(old_global, fs_storage, "template/iso/old-global.iso")
+        self._file(old_global, vm_storage, "images/501/vm-501-disk-0.qcow2")
+        self._file(old_fs, fs_storage, "template/iso/old-target.iso")
+        self._file(latest_fs, fs_storage, "template/iso/current-target.iso")
+        self._proxmox_object(old_global, "old-global")
+        self._proxmox_object(old_fs, "old-fs")
+        self._proxmox_object(latest_fs, "latest-fs")
+
+        result = prune_scan_history(now=now)
+
+        self.assertTrue(result.deleted_anything)
+        self.assertFalse(FileInventory.objects.filter(scan_run=old_global, storage=fs_storage).exists())
+        self.assertTrue(FileInventory.objects.filter(scan_run=old_global, storage=vm_storage).exists())
+        self.assertFalse(FileInventory.objects.filter(scan_run=old_fs).exists())
+        self.assertTrue(FileInventory.objects.filter(scan_run=latest_fs, storage=fs_storage).exists())
+        self.assertTrue(ProxmoxInventory.objects.filter(scan_run=old_global).exists())
+        self.assertFalse(ProxmoxInventory.objects.filter(scan_run=old_fs).exists())
+        self.assertTrue(ProxmoxInventory.objects.filter(scan_run=latest_fs).exists())
+        self.assertTrue(ScanRun.objects.filter(pk=old_global.pk).exists())
+        self.assertTrue(ScanRun.objects.filter(pk=latest_fs.pk).exists())
+        self.assertFalse(ScanRun.objects.filter(pk=old_fs.pk).exists())
+        self.assertFalse(ScanRun.objects.filter(pk=old_failed.pk).exists())
+        self.assertFalse(ScanRun.objects.filter(pk=old_metadata_only.pk).exists())
+
+    def _completed_scan(self, when, *, target_storage=None) -> ScanRun:
+        scan = ScanRun.objects.create(
+            status=ScanRun.Status.COMPLETED,
+            target_storage=target_storage,
+            finished_at=when,
+            filesystem_scan_at=when,
+            progress_message="Scan completed.",
+        )
+        ScanRun.objects.filter(pk=scan.pk).update(created_at=when, updated_at=when)
+        scan.refresh_from_db()
+        return scan
+
+    def _file(self, scan: ScanRun, storage: StorageMount, path: str) -> FileInventory:
+        return FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path=path,
+            entry_type=FileInventory.EntryType.FILE,
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+
+    def _proxmox_object(self, scan: ScanRun, name: str) -> ProxmoxInventory:
+        return ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve-node-1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=100,
+            name=name,
+        )
+
+
+class AuditEventTests(TestCase):
+    def test_populates_filter_columns_from_details(self):
+        event = AuditEvent.objects.create(
+            username="viewer",
+            action="file.inflated",
+            object_type="file",
+            object_id="nfs-vm:images/501/vm-501-disk-0.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "path": "images/501/vm-501-disk-0.qcow2",
+                "target_preallocation": "full",
+            },
+        )
+
+        self.assertEqual(event.storage_id, "nfs-vm")
+        self.assertEqual(event.path, "images/501/vm-501-disk-0.qcow2")
+        self.assertEqual(event.target_preallocation, "full")
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                storage_id="nfs-vm",
+                path="images/501/vm-501-disk-0.qcow2",
+                target_preallocation="full",
+            ).exists()
+        )
+
+
+class StartupCheckTests(SimpleTestCase):
+    def test_production_startup_checks_are_silent_in_debug(self):
+        with override_settings(DEBUG=True, SECRET_KEY="dev-insecure-change-me"):
+            self.assertEqual(production_startup_errors(), [])
+
+    def test_production_startup_checks_reject_insecure_defaults(self):
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="dev-insecure-change-me",
+            ALLOWED_HOSTS=["*"],
+            APP_BASE_URL="http://localhost:21080",
+            APP_REQUIRE_LOGIN=True,
+            OIDC_RP_CLIENT_ID="",
+            OIDC_RP_CLIENT_SECRET="",
+        ):
+            errors = production_startup_errors()
+
+        self.assertEqual(
+            {error.id for error in errors},
+            {
+                "pve_helper.E001",
+                "pve_helper.E003",
+                "pve_helper.E004",
+                "pve_helper.E005",
+                "pve_helper.E006",
+                "pve_helper.E007",
+            },
+        )
+
+    def test_production_startup_checks_accept_configured_deploy(self):
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="not-the-dev-secret",
+            ALLOWED_HOSTS=["pve-helper.example.net"],
+            APP_BASE_URL="https://pve-helper.example.net",
+            APP_REQUIRE_LOGIN=True,
+            OIDC_RP_CLIENT_ID="pve-helper",
+            OIDC_RP_CLIENT_SECRET="secret",
+        ):
+            self.assertEqual(production_startup_errors(), [])
+
+
 @override_settings(APP_REQUIRE_LOGIN=False)
 class ViewSmokeTests(TestCase):
+    def _folder_node_tag(self, response, path: str) -> str:
+        html = response.content.decode()
+        marker = f'data-folder-path="{path}"'
+        marker_index = html.index(marker)
+        tag_start = html.rfind("<div", 0, marker_index)
+        tag_end = html.index(">", marker_index)
+        return html[tag_start:tag_end]
+
+    def _move_node_tag(self, response, path: str) -> str:
+        html = response.content.decode()
+        marker = f'data-move-path="{path}"'
+        marker_index = html.index(marker)
+        tag_start = html.rfind("<div", 0, marker_index)
+        tag_end = html.index(">", marker_index)
+        return html[tag_start:tag_end]
+
     def test_storage_views_render(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
 
         storage = StorageMount.objects.create(
-            storage_id="TrueNAS-VM",
-            display_name="TrueNAS-VM",
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
             path="/storages/truenas-vm",
-            expected_consumers=["pve3"],
+            expected_consumers=["pve-node-1"],
         )
         scan = ScanRun.objects.create(
             status=ScanRun.Status.COMPLETED,
             progress_message="Smoke scan",
             storage_gate_status={
-                "TrueNAS-VM": {
+                "nfs-vm": {
                     "ok": False,
                     "status": "blocked",
-                    "expected_consumers": ["pve3"],
-                    "missing_consumers": ["pve3"],
+                    "expected_consumers": ["pve-node-1"],
+                    "missing_consumers": ["pve-node-1"],
                 }
             },
         )
@@ -190,7 +449,7 @@ class ViewSmokeTests(TestCase):
             scan_run=scan,
             storage=storage,
             path="images/100/vm-100-disk-0.qcow2",
-            derived_volid="TrueNAS-VM:100/vm-100-disk-0.qcow2",
+            derived_volid="nfs-vm:100/vm-100-disk-0.qcow2",
             content_category="vm_disk",
             classification=FileInventory.Classification.CLASSIFICATION_BLOCKED,
         )
@@ -209,16 +468,1191 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "data-soft-nav-content")
         self.assertContains(response, "data-soft-nav-tree")
         self.assertContains(response, "data-soft-nav-status")
+        self.assertContains(response, "Classification legend")
+        self.assertContains(response, "Storage gate")
+        self.assertContains(response, "blocks orphan classification")
 
-        response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]))
+        response = self.client.get(reverse("core:orphan_finder"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Classification legend")
+        self.assertContains(response, "Likely orphan")
+        self.assertContains(response, "all expected consumers were scanned")
+
+        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "images")
         self.assertContains(response, "VM images")
-        self.assertContains(response, "Not classified")
+        self.assertContains(response, "Unknown")
+        self.assertContains(response, "Start scan")
+        self.assertContains(response, "Classification is conservative")
 
-        response = self.client.get(reverse("core:storage_browser", args=["TrueNAS-VM"]), {"path": "images/100"})
+        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/100"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "vm-100-disk-0.qcow2")
+
+        response = self.client.get(reverse("core:storage_hosts", args=["nfs-vm"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, ">Nodes<")
+        self.assertContains(response, "Expected Proxmox Nodes")
+
+    def test_storage_monitor_uses_scheduled_space_points_and_recent_activity(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        with TemporaryDirectory() as tmp:
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=tmp,
+            )
+            now = timezone.now()
+            for index in range(18):
+                StorageSpaceSnapshot.objects.create(
+                    storage=storage,
+                    recorded_at=now - timedelta(hours=12 * index),
+                    total_bytes=1000,
+                    available_bytes=500 + index,
+                    used_bytes=500 - index,
+                )
+
+            recent_scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                started_at=now,
+                finished_at=now,
+                progress_message="Recent scan",
+                target_storage=storage,
+            )
+            old_scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                started_at=now - timedelta(days=9),
+                finished_at=now - timedelta(days=9),
+                progress_message="Old scan",
+                target_storage=storage,
+            )
+            ScanRun.objects.filter(pk=old_scan.pk).update(created_at=now - timedelta(days=9))
+            ScanRun.objects.filter(pk=recent_scan.pk).update(created_at=now - timedelta(days=1))
+
+            recent_event = AuditEvent.objects.create(
+                username="viewer",
+                action="file.upload_normalized",
+                object_type="file",
+                object_id="nfs-fs:images/100/vm-100-disk-0.qcow2",
+                details={"storage_id": storage.storage_id, "path": "images/100/vm-100-disk-0.qcow2"},
+            )
+            old_event = AuditEvent.objects.create(
+                username="viewer",
+                action="file.downloaded",
+                object_type="file",
+                object_id="nfs-fs:old.iso",
+                details={"storage_id": storage.storage_id, "path": "old.iso"},
+            )
+            AuditEvent.objects.filter(pk=recent_event.pk).update(timestamp=now - timedelta(days=1))
+            AuditEvent.objects.filter(pk=old_event.pk).update(timestamp=now - timedelta(days=9))
+
+            monitor_url = reverse("core:storage_monitor", args=[storage.storage_id])
+            response = self.client.get(monitor_url)
+            invalid_page_response = self.client.get(
+                monitor_url,
+                {"scan_page": "abc", "event_page": "abc"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        chart_data = json.loads(response.context["space_chart_data_json"])
+        self.assertLessEqual(len(chart_data), 14)
+        self.assertGreater(len(chart_data), 0)
+        self.assertContains(response, "File Actions (last 7 days)")
+        self.assertContains(response, "Recent Scans (last 7 days)")
+        self.assertLess(response.content.decode().index("File Actions (last 7 days)"), response.content.decode().index("Recent Scans (last 7 days)"))
+        self.assertContains(response, "Normalize uploaded disk metadata")
+        self.assertNotContains(response, "file.upload_normalized")
+        self.assertContains(response, "Recent scan")
+        self.assertNotContains(response, "Old scan")
+        self.assertNotContains(response, "old.iso")
+        self.assertEqual(invalid_page_response.status_code, 200)
+        self.assertEqual(invalid_page_response.context["scan_page"], 0)
+        self.assertEqual(invalid_page_response.context["event_page"], 0)
+        self.assertContains(invalid_page_response, "Recent scan")
+        schedule = Schedule.objects.get(name=SPACE_SNAPSHOT_SCHEDULE_NAME)
+        self.assertEqual(schedule.func, "core.tasks.record_storage_space_snapshots")
+        self.assertEqual(schedule.schedule_type, Schedule.MINUTES)
+        self.assertEqual(schedule.minutes, SPACE_SNAPSHOT_INTERVAL_MINUTES)
+
+    def test_storage_vms_uses_short_live_status_cache(self):
+        cache.clear()
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve-node-1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=100,
+            name="Test VM",
+            status="stopped",
+            disk_references=["nfs-vm:images/100/vm-100-disk-0.qcow2"],
+        )
+
+        with patch("core.services.proxmox._fetch_live_guest_status_uncached", return_value={("vm", 100): "running"}) as fetch:
+            response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
+            second_response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(LIVE_GUEST_STATUS_CACHE_SECONDS, 30)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertContains(response, "Guest status is live data cached for up to 30 seconds.")
+        self.assertContains(response, "Disk references are from inventory scanned")
+        self.assertContains(response, "running")
+        self.assertContains(second_response, "running")
+        cache.clear()
+
+    def test_storage_browser_shows_virtual_and_disk_size_when_image_info_exists(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/501",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/501/vm-501-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+            size_bytes=10 * 1024**3,
+            evidence={
+                "image_info": {
+                    "format": "qcow2",
+                    "virtual_size_bytes": 10 * 1024**3,
+                    "disk_size_bytes": 1024**3,
+                    "qcow2_allocated_clusters": 100,
+                    "qcow2_total_clusters": 1000,
+                    "qcow2_allocation_percent": 10.0,
+                }
+            },
+        )
+
+        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/501"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Virtual Size")
+        self.assertContains(response, "Backend Used")
+        self.assertContains(response, "QCOW2 Map")
+        self.assertContains(response, "10.0\xa0GB")
+        self.assertContains(response, "1.0\xa0GB")
+        self.assertContains(response, "10%")
+        self.assertContains(response, 'data-can-inflate="true"')
+        self.assertContains(response, 'data-can-inflate-metadata="true"')
+        self.assertContains(response, 'data-can-inflate-full="true"')
+        self.assertContains(response, "Inflate Metadata")
+        self.assertContains(response, "Inflate Full")
+        self.assertContains(response, "Metadata preallocation allocates the QCOW2 map")
+        self.assertContains(response, "Full preallocation writes out the whole virtual disk")
+
+    def test_storage_browser_allows_full_inflate_for_metadata_mapped_qcow2(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/501",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/501/vm-501-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+            evidence={
+                "image_info": {
+                    "format": "qcow2",
+                    "virtual_size_bytes": 10 * 1024**3,
+                    "disk_size_bytes": 1024**3,
+                    "qcow2_allocated_clusters": 1000,
+                    "qcow2_total_clusters": 1000,
+                    "qcow2_allocation_percent": 100.0,
+                }
+            },
+        )
+
+        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/501"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-can-inflate-metadata="false"')
+        self.assertContains(response, 'data-can-inflate-full="true"')
+
+    def test_storage_browser_blocks_repeated_full_inflate(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/501",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/501/vm-501-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+            evidence={
+                "image_info": {
+                    "format": "qcow2",
+                    "virtual_size_bytes": 10 * 1024**3,
+                    "disk_size_bytes": 1024**3,
+                    "qcow2_allocated_clusters": 1000,
+                    "qcow2_total_clusters": 1000,
+                    "qcow2_allocation_percent": 100.0,
+                }
+            },
+        )
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.inflated",
+            object_type="file",
+            object_id="nfs-vm:images/501/vm-501-disk-0.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "path": "images/501/vm-501-disk-0.qcow2",
+                "target_preallocation": "full",
+            },
+        )
+
+        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/501"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-can-inflate-metadata="false"')
+        self.assertContains(response, 'data-can-inflate-full="false"')
+
+    def test_storage_browser_allows_inflate_when_scan_status_is_stale_running(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve-node-1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=505,
+            name="stale-running-test",
+            status="running",
+            disk_references=["nfs-vm:505/vm-505-disk-0.qcow2"],
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/505",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/505/vm-505-disk-0.qcow2",
+            derived_volid="nfs-vm:505/vm-505-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+            evidence={
+                "image_info": {
+                    "format": "qcow2",
+                    "virtual_size_bytes": 40 * 1024**3,
+                    "disk_size_bytes": 2 * 1024**3,
+                    "qcow2_allocated_clusters": 55000,
+                    "qcow2_total_clusters": 655360,
+                    "qcow2_allocation_percent": 8.4,
+                }
+            },
+        )
+
+        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/505"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-can-action="false"')
+        self.assertContains(response, 'data-can-inflate-metadata="true"')
+        self.assertContains(response, 'data-can-inflate-full="true"')
+        self.assertContains(response, 'data-inflate-requires-risk-confirmation="true"')
+
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_qcow2_disk_can_be_inflated(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "16M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=501,
+                name="inflate-test",
+                status="stopped",
+                disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                derived_volid="nfs-vm:501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+
+            original_stat = disk.stat()
+            with (
+                patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"),
+                patch("core.services.storage_actions.os.chown") as chown_mock,
+                patch("core.services.storage_actions.os.chmod") as chmod_mock,
+            ):
+                result = inflate_storage_file(storage=storage, entry=entry)
+
+            self.assertTrue(disk.exists())
+            self.assertEqual(result["path"], "images/501/vm-501-disk-0.qcow2")
+            self.assertEqual(result["target_preallocation"], "full")
+            self.assertGreater(result["after"]["disk_size_bytes"], result["before"]["disk_size_bytes"])
+            chown_mock.assert_called_once()
+            self.assertEqual(chown_mock.call_args.args[1:], (original_stat.st_uid, original_stat.st_gid))
+            chmod_mock.assert_called_once()
+            self.assertFalse(list(image_dir.glob("*.pve-helper-backup-*")))
+            self.assertFalse(list(image_dir.glob(".pve-helper-inflate-*")))
+
+    def test_uploaded_proxmox_image_paths_are_normalized_for_proxmox(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "700"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-700-disk-0.qcow2"
+            disk.write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+
+            with (
+                patch("core.services.storage_actions.os.chown") as chown_mock,
+                patch("core.services.storage_actions.os.chmod") as chmod_mock,
+            ):
+                result = normalize_uploaded_proxmox_image_paths(
+                    storage=storage,
+                    paths=["images/700/vm-700-disk-0.qcow2", "template/iso/test.iso"],
+                )
+
+            self.assertEqual(result["normalized"], ["images/700/vm-700-disk-0.qcow2"])
+            self.assertEqual(result["skipped"], ["template/iso/test.iso"])
+            self.assertEqual(chown_mock.call_count, 2)
+            self.assertEqual(chmod_mock.call_count, 2)
+            self.assertEqual(chown_mock.call_args_list[0].args[1:], (0, 0))
+            self.assertEqual(chmod_mock.call_args_list[0].args[1], 0o775)
+            self.assertEqual(chmod_mock.call_args_list[1].args[1], 0o664)
+
+    def test_uploaded_proxmox_image_normalization_task_audits_result(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "701"
+            image_dir.mkdir(parents=True)
+            (image_dir / "vm-701-disk-0.qcow2").write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+
+            with (
+                patch("core.services.storage_actions.os.chown"),
+                patch("core.services.storage_actions.os.chmod"),
+            ):
+                normalize_uploaded_proxmox_image_paths_task(
+                    storage.id,
+                    ["images/701/vm-701-disk-0.qcow2"],
+                    "viewer",
+                )
+
+            event = AuditEvent.objects.get(action="file.upload_normalized")
+            self.assertEqual(event.outcome, "success")
+            self.assertEqual(event.details["normalized"], ["images/701/vm-701-disk-0.qcow2"])
+
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_qcow2_disk_can_be_inflated_to_metadata(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "16M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=501,
+                name="inflate-test",
+                status="stopped",
+                disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                derived_volid="nfs-vm:501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+
+            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+                result = inflate_storage_file(storage=storage, entry=entry, target_preallocation="metadata")
+
+            self.assertTrue(disk.exists())
+            self.assertEqual(result["target_preallocation"], "metadata")
+            self.assertGreaterEqual(result["after"]["qcow2_allocation_percent"], 95)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_INFLATE_WORKER_PRESERVES_OWNER=True)
+    def test_inflate_action_queues_worker_task_when_live_guest_is_stopped(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "16M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=501,
+                name="inflate-test",
+                status="running",
+                disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="vm_images",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="vm_image_directory",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                derived_volid="nfs-vm:501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=images%2F501"
+
+            with (
+                patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"),
+                patch("core.services.storage_actions.os.geteuid", return_value=999999),
+                patch("core.services.storage_actions.os.getegid", return_value=999999),
+                patch("core.views.async_task", return_value="inflate-task-1") as async_task_mock,
+            ):
+                response = self.client.post(
+                    reverse("core:storage_inflate_file", args=[storage.storage_id]),
+                    {
+                        "path": "images/501/vm-501-disk-0.qcow2",
+                        "confirm_basic": "yes",
+                        "confirm_risk": "yes",
+                        "target_preallocation": "metadata",
+                        "next": browser_url,
+                    },
+                )
+
+            self.assertRedirects(response, browser_url)
+            async_task_mock.assert_called_once_with(
+                "core.tasks.inflate_storage_file_task",
+                storage.id,
+                FileInventory.objects.get(path="images/501/vm-501-disk-0.qcow2").id,
+                "viewer",
+                "metadata",
+            )
+            event = AuditEvent.objects.get(action="file.inflate_queued")
+            self.assertEqual(event.details["task_id"], "inflate-task-1")
+            self.assertEqual(event.details["target_preallocation"], "metadata")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_inflate_task_refreshes_directory_inventory_after_completion(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "16M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            stale_scan_at = timezone.now() - timedelta(days=1)
+            stale_scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                target_storage=storage,
+                filesystem_scan_at=stale_scan_at,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            FileInventory.objects.create(
+                scan_run=stale_scan,
+                storage=storage,
+                path="images",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="vm_images",
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                filesystem_scan_at=timezone.now(),
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=501,
+                name="inflate-test",
+                status="stopped",
+                disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="vm_images",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="vm_image_directory",
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                derived_volid="nfs-vm:501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+                evidence={
+                    "image_info": {
+                        "format": "qcow2",
+                        "virtual_size_bytes": 16 * 1024**2,
+                        "disk_size_bytes": 128 * 1024,
+                        "qcow2_allocation_percent": 1.0,
+                    }
+                },
+            )
+
+            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+                inflate_storage_file_task(storage.id, entry.id, "viewer", "metadata")
+
+            refreshed = FileInventory.objects.get(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+            )
+            image_info = refreshed.evidence["image_info"]
+            self.assertNotEqual(refreshed.id, entry.id)
+            self.assertTrue(refreshed.evidence["partial_refresh"])
+            self.assertEqual(refreshed.evidence["partial_refresh_directory"], "images/501")
+            self.assertEqual(image_info["format"], "qcow2")
+            self.assertGreaterEqual(image_info["qcow2_allocation_percent"], 95)
+            self.assertEqual(refreshed.size_bytes, disk.stat().st_size)
+            stale_scan.refresh_from_db()
+            self.assertEqual(stale_scan.filesystem_scan_at, stale_scan_at)
+            self.assertFalse(
+                FileInventory.objects.filter(
+                    scan_run=stale_scan,
+                    storage=storage,
+                    path="images/501/vm-501-disk-0.qcow2",
+                ).exists()
+            )
+            event = AuditEvent.objects.get(action="file.inflated", outcome="success")
+            self.assertEqual(event.details["refreshed_scan_id"], scan.id)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_inflate_blocks_when_live_guest_is_running_even_if_scan_is_stopped(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "500"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-500-disk-0.qcow2"
+            disk.write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=500,
+                name="stale-scan-test",
+                status="stopped",
+                disk_references=["nfs-vm:500/vm-500-disk-0.qcow2"],
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/500/vm-500-disk-0.qcow2",
+                derived_volid="nfs-vm:500/vm-500-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+
+            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="running"):
+                with self.assertRaisesMessage(StorageActionError, "Stop it manually in Proxmox"):
+                    validate_inflate_storage_file(storage=storage, entry=entry)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_inflate_blocks_when_file_owner_cannot_be_preserved(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            disk.write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+
+            with patch("core.services.storage_actions.os.geteuid", return_value=999999):
+                with self.assertRaisesMessage(StorageActionError, "Cannot safely inflate this disk"):
+                    validate_inflate_storage_file(storage=storage, entry=entry)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_inflate_blocks_repeated_full_preallocation(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "16M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+            AuditEvent.objects.create(
+                username="viewer",
+                action="file.inflated",
+                object_type="file",
+                object_id="nfs-vm:images/501/vm-501-disk-0.qcow2",
+                details={
+                    "storage_id": "nfs-vm",
+                    "path": "images/501/vm-501-disk-0.qcow2",
+                    "target_preallocation": "full",
+                },
+            )
+
+            with self.assertRaisesMessage(StorageActionError, "already been full-inflated"):
+                validate_inflate_storage_file(storage=storage, entry=entry)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_inflate_allows_repeated_full_after_virtual_disk_growth(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "32M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=501,
+                name="inflate-growth-test",
+                status="stopped",
+                disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                derived_volid="nfs-vm:501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+            AuditEvent.objects.create(
+                username="viewer",
+                action="file.inflated",
+                object_type="file",
+                object_id="nfs-vm:images/501/vm-501-disk-0.qcow2",
+                details={
+                    "storage_id": "nfs-vm",
+                    "path": "images/501/vm-501-disk-0.qcow2",
+                    "target_preallocation": "full",
+                    "after": {"virtual_size_bytes": 16 * 1024**2},
+                },
+            )
+
+            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+                result = validate_inflate_storage_file(storage=storage, entry=entry)
+
+            self.assertEqual(result["virtual_size_bytes"], 32 * 1024**2)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_inflate_blocks_repeated_full_even_when_inventory_mtime_is_newer(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "16M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.UNKNOWN,
+                modified_at=timezone.now() + timedelta(minutes=5),
+            )
+            AuditEvent.objects.create(
+                username="viewer",
+                action="file.inflated",
+                object_type="file",
+                object_id="nfs-vm:images/501/vm-501-disk-0.qcow2",
+                details={
+                    "storage_id": "nfs-vm",
+                    "path": "images/501/vm-501-disk-0.qcow2",
+                    "target_preallocation": "full",
+                    "after": {"virtual_size_bytes": 16 * 1024**2},
+                },
+            )
+
+            with self.assertRaisesMessage(StorageActionError, "already been full-inflated"):
+                validate_inflate_storage_file(storage=storage, entry=entry)
+
+    def test_storage_folder_tree_collapses_inactive_branches_by_default(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        for path in ["images", "images/100", "template", "template/iso"]:
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path=path,
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="unknown",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+
+        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            'data-folder-expanded="false"',
+            self._folder_node_tag(response, "images"),
+        )
+        self.assertNotIn("hidden", self._folder_node_tag(response, "images"))
+        self.assertIn("hidden", self._folder_node_tag(response, "images/100"))
+        self.assertIn("hidden", self._folder_node_tag(response, "template/iso"))
+
+        self.assertContains(response, 'data-move-toggle')
+        self.assertIn(
+            'data-move-expanded="false"',
+            self._move_node_tag(response, "images"),
+        )
+        self.assertNotIn("hidden", self._move_node_tag(response, "images"))
+        self.assertIn("hidden", self._move_node_tag(response, "images/100"))
+        self.assertIn("hidden", self._move_node_tag(response, "template/iso"))
+
+        response = self.client.get(
+            reverse("core:storage_browser", args=["nfs-vm"]),
+            {"path": "template/iso"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            'data-folder-expanded="true"',
+            self._folder_node_tag(response, "template"),
+        )
+        self.assertNotIn("hidden", self._folder_node_tag(response, "template"))
+        self.assertIn(
+            'data-folder-expanded="true"',
+            self._folder_node_tag(response, "template/iso"),
+        )
+        self.assertNotIn("hidden", self._folder_node_tag(response, "template/iso"))
+        self.assertIn("hidden", self._folder_node_tag(response, "images/100"))
+        self.assertIn(
+            'data-move-expanded="true"',
+            self._move_node_tag(response, "template"),
+        )
+        self.assertNotIn("hidden", self._move_node_tag(response, "template/iso"))
+        self.assertIn("hidden", self._move_node_tag(response, "images/100"))
+
+    def test_storage_browser_hides_app_managed_internal_directories(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            upload_tmp = root / ".pve-helper-upload-tmp"
+            upload_tmp.mkdir()
+            trash_dir = root / ".trash" / "pve-helper"
+            trash_dir.mkdir(parents=True)
+            visible = root / "template"
+            visible.mkdir()
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            for path in [".pve-helper-upload-tmp", ".trash", ".trash/pve-helper", "template"]:
+                FileInventory.objects.create(
+                    scan_run=scan,
+                    storage=storage,
+                    path=path,
+                    entry_type=FileInventory.EntryType.DIRECTORY,
+                    content_category="unknown",
+                    classification=FileInventory.Classification.UNKNOWN,
+                )
+
+            with self.settings(FILE_UPLOAD_TEMP_DIR=upload_tmp.as_posix()):
+                response = self.client.get(reverse("core:storage_browser", args=["nfs-fs"]))
+
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, ".pve-helper-upload-tmp")
+            self.assertNotContains(response, ".trash")
+            self.assertContains(response, "template")
+
+    def test_storage_browser_batches_large_directories_and_searches_server_side(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-fs",
+            display_name="nfs-fs",
+            path="/storages/truenas-fs",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        FileInventory.objects.bulk_create(
+            [
+                FileInventory(
+                    scan_run=scan,
+                    storage=storage,
+                    path=f"file-{index:03d}.iso",
+                    entry_type=FileInventory.EntryType.FILE,
+                    content_category="iso",
+                    classification=FileInventory.Classification.PROXMOX_CONTENT,
+                )
+                for index in range(205)
+            ]
+        )
+
+        response = self.client.get(reverse("core:storage_browser", args=[storage.storage_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "file-000.iso")
+        self.assertContains(response, "file-199.iso")
+        self.assertNotContains(response, "file-200.iso")
+        self.assertContains(response, "Load next 200")
+        self.assertContains(response, "200 of 205")
+
+        response = self.client.get(
+            reverse("core:storage_browser", args=[storage.storage_id]),
+            {"file_offset": "200", "file_partial": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("file-200.iso", payload["rows_html"])
+        self.assertIn("file-204.iso", payload["rows_html"])
+        self.assertFalse(payload["has_next"])
+
+        response = self.client.get(
+            reverse("core:storage_browser", args=[storage.storage_id]),
+            {"q": "file-204"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "file-204.iso")
+        self.assertNotContains(response, "file-000.iso")
+        self.assertNotContains(response, "Load next 200")
 
     def test_audit_log_uses_task_timestamp_format(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -233,6 +1667,37 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2026-06-26 07:49:05")
         self.assertNotContains(response, "June 26, 2026")
+
+    def test_audit_log_paginates_events(self):
+        base_time = datetime(2026, 6, 26, 7, 0, 0, tzinfo=timezone.get_current_timezone())
+        for index in range(205):
+            event = AuditEvent.objects.create(
+                username="viewer",
+                action="scan.completed",
+                object_type="scan",
+                object_id=f"event-{index:03d}",
+            )
+            AuditEvent.objects.filter(pk=event.pk).update(timestamp=base_time + timedelta(seconds=index))
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "1-200 of 205")
+        self.assertContains(response, "event-204")
+        self.assertContains(response, "?page=1")
+        self.assertNotContains(response, "event-004")
+
+        response = self.client.get(reverse("core:audit_log"), {"page": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "201-205 of 205")
+        self.assertContains(response, "event-004")
+        self.assertNotContains(response, "event-204")
+
+        response = self.client.get(reverse("core:audit_log"), {"page": "abc"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "1-200 of 205")
 
     def test_audit_log_records_authentication_events(self):
         get_user_model().objects.create_user(username="viewer", password="secret")
@@ -268,9 +1733,106 @@ class ViewSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Scheduled full scan (180 min)")
-        self.assertContains(response, f"Scan {scan_id}")
+        self.assertContains(response, "Storage inventory scan")
+        self.assertNotContains(response, f"Scan {scan_id}")
         self.assertNotContains(response, "scan_run")
 
+    def test_audit_log_uses_readable_storage_action_labels(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.folder_created",
+            object_type="file",
+            object_id="nfs-fs:template/iso/new-folder",
+            details={"storage_id": "nfs-fs", "path": "template/iso/new-folder"},
+        )
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.inflate_queued",
+            object_type="file",
+            object_id="nfs-vm:images/502/vm-502-disk-0.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "path": "images/502/vm-502-disk-0.qcow2",
+                "target_preallocation": "full",
+            },
+        )
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.inflated",
+            object_type="file",
+            object_id="nfs-vm:images/502/vm-502-disk-0.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "path": "images/502/vm-502-disk-0.qcow2",
+                "target_preallocation": "metadata",
+            },
+        )
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.folder_uploaded",
+            object_type="file",
+            object_id="nfs-fs:/",
+            details={"storage_id": "nfs-fs", "path": "/", "file_count": 2},
+        )
+        AuditEvent.objects.create(
+            username="system",
+            action="file.upload_normalized",
+            object_type="file",
+            object_id="nfs-vm:images/501/vm-501-disk-0.qcow2",
+            details={"storage_id": "nfs-vm", "path": "images/501/vm-501-disk-0.qcow2"},
+        )
+        AuditEvent.objects.create(
+            username="system",
+            action="trash.purge",
+            object_type="trash",
+            object_id="",
+            details={"purged": 3},
+        )
+        AuditEvent.objects.create(
+            username="viewer",
+            action="trash.purge.schedule.updated",
+            object_type="trash_purge_schedule",
+            object_id="automatic-trash-purge",
+        )
+        AuditEvent.objects.create(
+            username="viewer",
+            action="audit.retention.schedule.updated",
+            object_type="audit_retention_schedule",
+            object_id="automatic-audit-retention",
+        )
+        AuditEvent.objects.create(
+            username="system",
+            action="scan.retention.purge",
+            object_type="scan_retention",
+            object_id="automatic-scan-retention",
+        )
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Create folder")
+        self.assertContains(response, "Disk inflate queued (full)")
+        self.assertContains(response, "Inflate disk (metadata)")
+        self.assertContains(response, "Upload folder")
+        self.assertContains(response, "Normalize uploaded disk metadata")
+        self.assertContains(response, "Recycle Bin purge")
+        self.assertContains(response, "Recycle Bin purge schedule updated")
+        self.assertContains(response, "Audit retention schedule updated")
+        self.assertContains(response, "Scan retention purge")
+        self.assertContains(response, "Recycle Bin")
+        self.assertContains(response, "Audit retention schedule")
+        self.assertContains(response, "Scan retention")
+        self.assertNotContains(response, "file.folder_created")
+        self.assertNotContains(response, "file.inflate_queued")
+        self.assertNotContains(response, "file.inflated")
+        self.assertNotContains(response, "file.upload_normalized")
+        self.assertNotContains(response, "trash.purge.schedule.updated")
+        self.assertNotContains(response, "scan.retention.purge")
+
+    @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=False)
     def test_storage_file_download_uses_latest_inventory_and_audits_action(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -283,10 +1845,10 @@ class ViewSmokeTests(TestCase):
             backup_file.write_bytes(b"backup data")
 
             storage = StorageMount.objects.create(
-                storage_id="TrueNAS-VM",
-                display_name="TrueNAS-VM",
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
                 path=root.as_posix(),
-                expected_consumers=["pve3"],
+                expected_consumers=["pve-node-1"],
             )
             scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
             FileInventory.objects.create(
@@ -308,7 +1870,7 @@ class ViewSmokeTests(TestCase):
             )
 
             response = self.client.get(
-                reverse("core:storage_download", args=["TrueNAS-VM"]),
+                reverse("core:storage_download", args=["nfs-vm"]),
                 {"path": "dump/vzdump-qemu-100.vma.zst"},
             )
 
@@ -319,7 +1881,125 @@ class ViewSmokeTests(TestCase):
 
         event = AuditEvent.objects.get(action="file.downloaded")
         self.assertEqual(event.username, "viewer")
-        self.assertEqual(event.object_id, "TrueNAS-VM:dump/vzdump-qemu-100.vma.zst")
+        self.assertEqual(event.object_id, "nfs-vm:dump/vzdump-qemu-100.vma.zst")
+
+    @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=False)
+    def test_storage_file_download_supports_http_ranges(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump_dir = root / "dump"
+            dump_dir.mkdir()
+            backup_file = dump_dir / "vzdump-qemu-100.vma.zst"
+            backup_file.write_bytes(b"backup data")
+
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump/vzdump-qemu-100.vma.zst",
+                entry_type=FileInventory.EntryType.FILE,
+                size_bytes=backup_file.stat().st_size,
+                content_category="backup",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+
+            response = self.client.get(
+                reverse("core:storage_download", args=["nfs-vm"]),
+                {"path": "dump/vzdump-qemu-100.vma.zst"},
+                HTTP_RANGE="bytes=7-10",
+            )
+
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(b"".join(response.streaming_content), b"data")
+            self.assertEqual(response["Content-Range"], "bytes 7-10/11")
+            self.assertEqual(response["Accept-Ranges"], "bytes")
+            self.assertEqual(response["X-Accel-Buffering"], "no")
+
+    @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=True)
+    def test_storage_file_download_can_use_nginx_internal_redirect(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump_dir = root / "dump"
+            dump_dir.mkdir()
+            backup_file = dump_dir / "backup with space.vma.zst"
+            backup_file.write_bytes(b"backup data")
+
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump/backup with space.vma.zst",
+                entry_type=FileInventory.EntryType.FILE,
+                size_bytes=backup_file.stat().st_size,
+                content_category="backup",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+
+            response = self.client.get(
+                reverse("core:storage_download", args=["nfs-vm"]),
+                {"path": "dump/backup with space.vma.zst"},
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response["X-Accel-Redirect"], "/_pve_helper_download/nfs-vm/dump/backup%20with%20space.vma.zst")
+            self.assertEqual(response["Accept-Ranges"], "bytes")
+            self.assertIn("attachment", response["Content-Disposition"])
+            self.assertIn("backup with space.vma.zst", response["Content-Disposition"])
+            self.assertEqual(response.content, b"")
+
+    def test_storage_file_download_action_is_excluded_from_soft_navigation(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "dump").mkdir()
+            backup_file = root / "dump" / "backup.vma.zst"
+            backup_file.write_bytes(b"backup data")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump/backup.vma.zst",
+                entry_type=FileInventory.EntryType.FILE,
+                size_bytes=backup_file.stat().st_size,
+            )
+
+            response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "dump"})
+
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "data-file-download-action")
+            self.assertContains(response, "data-no-soft-navigation")
 
     def test_storage_file_download_rejects_directories_and_path_traversal(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -329,10 +2009,10 @@ class ViewSmokeTests(TestCase):
             root = Path(tmp)
             (root / "dump").mkdir()
             storage = StorageMount.objects.create(
-                storage_id="TrueNAS-VM",
-                display_name="TrueNAS-VM",
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
                 path=root.as_posix(),
-                expected_consumers=["pve3"],
+                expected_consumers=["pve-node-1"],
             )
             scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
             FileInventory.objects.create(
@@ -345,34 +2025,1097 @@ class ViewSmokeTests(TestCase):
             )
 
             directory_response = self.client.get(
-                reverse("core:storage_download", args=["TrueNAS-VM"]),
+                reverse("core:storage_download", args=["nfs-vm"]),
                 {"path": "dump"},
             )
             traversal_response = self.client.get(
-                reverse("core:storage_download", args=["TrueNAS-VM"]),
+                reverse("core:storage_download", args=["nfs-vm"]),
                 {"path": "../secret.txt"},
             )
 
         self.assertEqual(directory_response.status_code, 404)
         self.assertEqual(traversal_response.status_code, 404)
 
+    @override_settings(STORAGE_WRITE_ENABLED=False)
+    def test_storage_write_actions_are_hidden_and_blocked_by_global_flag(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=tmp,
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+
+            response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]))
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, "Upload")
+            self.assertNotContains(response, "Move to Recycle Bin")
+
+            response = self.client.post(
+                reverse("core:storage_upload", args=[storage.storage_id]),
+                {"file": SimpleUploadedFile("test.txt", b"blocked")},
+            )
+
+        self.assertEqual(response.status_code, 403)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_storage_write_actions_are_hidden_when_app_mount_is_read_only(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=tmp,
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            read_only_info = StorageSpaceInfo(
+                ok=True,
+                access_mode="read_only",
+                access_label="Read-only",
+                access_class="warning",
+                can_write=False,
+            )
+
+            with patch("core.views.storage_space_info", return_value=read_only_info):
+                response = self.client.get(browser_url)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "PVE-helper access")
+            self.assertContains(response, "Read-only")
+            self.assertContains(response, "Upload Files")
+
+            with patch("core.services.storage_actions.storage_space_info", return_value=read_only_info):
+                response = self.client.post(
+                    reverse("core:storage_upload", args=[storage.storage_id]),
+                    {
+                        "next": browser_url,
+                        "file": SimpleUploadedFile("test.txt", b"blocked"),
+                    },
+                )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse((Path(tmp) / "test.txt").exists())
+            self.assertFalse(AuditEvent.objects.filter(action="file.uploaded").exists())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_UPLOAD_MAX_SIZE_MB=1)
+    def test_storage_upload_writes_file_and_refuses_overwrite(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.get(browser_url)
+            self.assertContains(response, "Upload")
+            self.assertNotContains(response, "Register VM")
+            self.assertContains(response, "Inflate")
+            self.assertContains(response, "Upload Folder")
+
+            response = self.client.post(
+                reverse("core:storage_upload", args=[storage.storage_id]),
+                {
+                    "path": "",
+                    "next": browser_url,
+                    "file": SimpleUploadedFile("upload.txt", b"hello"),
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertEqual((root / "upload.txt").read_bytes(), b"hello")
+            self.assertTrue(FileInventory.objects.filter(scan_run__status=ScanRun.Status.COMPLETED, path="upload.txt").exists())
+            event = AuditEvent.objects.get(action="file.uploaded")
+            self.assertEqual(event.object_id, "nfs-vm:upload.txt")
+            self.assertIn("Upload file", [task["name"] for task in recent_task_page(limit=10).tasks])
+
+            response = self.client.post(
+                reverse("core:storage_upload", args=[storage.storage_id]),
+                {
+                    "path": "",
+                    "next": browser_url,
+                    "file": SimpleUploadedFile("upload.txt", b"overwrite"),
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertEqual((root / "upload.txt").read_bytes(), b"hello")
+            self.assertEqual(AuditEvent.objects.filter(action="file.uploaded").count(), 1)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_UPLOAD_MAX_SIZE_MB=0)
+    def test_storage_folder_upload_creates_tree_and_refreshes_directories(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_upload_folder", args=[storage.storage_id]),
+                {
+                    "path": "",
+                    "next": browser_url,
+                    "relative_path": ["folder/a.txt", "folder/nested/b.txt"],
+                    "files": [
+                        SimpleUploadedFile("a.txt", b"a"),
+                        SimpleUploadedFile("b.txt", b"b"),
+                    ],
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertEqual((root / "folder" / "a.txt").read_bytes(), b"a")
+            self.assertEqual((root / "folder" / "nested" / "b.txt").read_bytes(), b"b")
+            self.assertTrue(
+                FileInventory.objects.filter(
+                    scan_run__status=ScanRun.Status.COMPLETED,
+                    storage=storage,
+                    path="folder/nested",
+                    entry_type=FileInventory.EntryType.DIRECTORY,
+                ).exists()
+            )
+            event = AuditEvent.objects.get(action="file.folder_uploaded")
+            self.assertEqual(event.details["file_count"], 2)
+            self.assertIn("Upload folder", [task["name"] for task in recent_task_page(limit=10).tasks])
+
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_UPLOAD_MAX_SIZE_MB=0)
+    def test_async_storage_folder_upload_returns_json_redirect(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_upload_folder", args=[storage.storage_id]),
+                {
+                    "path": "",
+                    "next": browser_url,
+                    "relative_path": ["folder/a.txt"],
+                    "files": [SimpleUploadedFile("a.txt", b"a")],
+                },
+                HTTP_X_PVE_HELPER_ASYNC_UPLOAD="1",
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"ok": True, "redirect": browser_url})
+            self.assertEqual((root / "folder" / "a.txt").read_bytes(), b"a")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_storage_folder_upload_rejects_unsafe_paths_and_rolls_back(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_upload_folder", args=[storage.storage_id]),
+                {
+                    "path": "",
+                    "next": browser_url,
+                    "relative_path": ["folder/a.txt", "../outside.txt"],
+                    "files": [
+                        SimpleUploadedFile("a.txt", b"a"),
+                        SimpleUploadedFile("outside.txt", b"bad"),
+                    ],
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse((root / "folder" / "a.txt").exists())
+            self.assertFalse((root.parent / "outside.txt").exists())
+            self.assertFalse(AuditEvent.objects.filter(action="file.folder_uploaded").exists())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_storage_create_folder_writes_directory(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_create_folder", args=[storage.storage_id]),
+                {
+                    "path": "",
+                    "folder_name": "iso-imports",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertEqual(list(get_messages(response.wsgi_request)), [])
+            self.assertTrue((root / "iso-imports").is_dir())
+            self.assertTrue(
+                FileInventory.objects.filter(
+                    scan_run__status=ScanRun.Status.COMPLETED,
+                    storage=storage,
+                    path="iso-imports",
+                    entry_type=FileInventory.EntryType.DIRECTORY,
+                ).exists()
+            )
+            event = AuditEvent.objects.get(action="file.folder_created")
+            self.assertEqual(event.object_id, "nfs-vm:iso-imports")
+            self.assertIn("Create folder", [task["name"] for task in recent_task_page(limit=10).tasks])
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_storage_trash_adopts_discovered_app_trash_files(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trash_file = root / ".trash" / "pve-helper" / "20260627T184314806419Z" / "template" / "iso" / "junk.txt"
+            trash_file.parent.mkdir(parents=True)
+            trash_file.write_bytes(b"trash")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path=".trash/pve-helper/20260627T184314806419Z/template/iso/junk.txt",
+                entry_type=FileInventory.EntryType.FILE,
+                size_bytes=trash_file.stat().st_size,
+                classification=FileInventory.Classification.TRASH,
+                content_category="trash",
+            )
+
+            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            response = self.client.get(trash_url)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "template/iso/junk.txt")
+            trash_item = TrashItem.objects.get()
+            self.assertEqual(trash_item.original_path, "template/iso/junk.txt")
+            self.assertTrue(trash_item.metadata["discovered_from_trash_scan"])
+
+            response = self.client.post(
+                reverse("core:storage_restore_file", args=[trash_item.id]),
+                {"next": trash_url},
+            )
+
+            self.assertRedirects(response, trash_url)
+            self.assertTrue((root / "template" / "iso" / "junk.txt").exists())
+            self.assertFalse(trash_file.exists())
+            self.assertFalse(TrashItem.objects.filter(restore_status=TrashItem.RestoreStatus.TRASHED).exists())
+
+            response = self.client.get(trash_url)
+
+            self.assertContains(response, "No restorable files in the Recycle Bin.")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_storage_trash_ignores_nfs_silly_rename_files(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nfs_file = root / ".trash" / "pve-helper" / "20260629T203814393614Z" / "images" / "505" / ".nfs000000000001d51f00000001"
+            nfs_file.parent.mkdir(parents=True)
+            nfs_file.write_bytes(b"temporary")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path=".trash/pve-helper/20260629T203814393614Z/images/505/.nfs000000000001d51f00000001",
+                entry_type=FileInventory.EntryType.FILE,
+                size_bytes=nfs_file.stat().st_size,
+                classification=FileInventory.Classification.TRASH,
+                content_category="trash",
+            )
+
+            response = self.client.get(reverse("core:storage_trash", args=[storage.storage_id]))
+
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "No restorable files in the Recycle Bin.")
+            self.assertFalse(TrashItem.objects.exists())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_storage_trash_cleans_empty_app_trash_directories(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty_leaf = root / ".trash" / "pve-helper" / "20260628T180936830007Z" / "template" / "iso"
+            empty_leaf.mkdir(parents=True)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+
+            response = self.client.get(reverse("core:storage_trash", args=[storage.storage_id]))
+
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "No restorable files in the Recycle Bin.")
+            self.assertFalse((root / ".trash" / "pve-helper" / "20260628T180936830007Z").exists())
+            self.assertTrue((root / ".trash" / "pve-helper").exists())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_trash_item_can_be_purged_permanently(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trash_file = root / ".trash" / "pve-helper" / "20260629T100000000000Z" / "dump" / "old.vma.zst"
+            trash_file.parent.mkdir(parents=True)
+            trash_file.write_bytes(b"trash")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            trash_item = TrashItem.objects.create(
+                original_path="dump/old.vma.zst",
+                trash_path=".trash/pve-helper/20260629T100000000000Z/dump/old.vma.zst",
+                moved_by=user,
+                moved_at=timezone.now(),
+                metadata={"storage_id": storage.storage_id},
+            )
+            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:purge_trash_item", args=[trash_item.id]),
+                {"next": trash_url},
+            )
+
+            self.assertRedirects(response, trash_url)
+            trash_item.refresh_from_db()
+            self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.PURGED)
+            self.assertFalse(trash_file.exists())
+            self.assertEqual(AuditEvent.objects.get(action="file.purged").object_id, "nfs-vm:dump/old.vma.zst")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_trash_item_purge_rejects_path_outside_storage_root(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "storage"
+            root.mkdir()
+            outside = base / "outside.txt"
+            outside.write_bytes(b"keep")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            trash_item = TrashItem.objects.create(
+                original_path="dump/old.vma.zst",
+                trash_path="../outside.txt",
+                moved_by=user,
+                moved_at=timezone.now(),
+                metadata={"storage_id": storage.storage_id},
+            )
+            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:purge_trash_item", args=[trash_item.id]),
+                {"next": trash_url},
+            )
+
+            self.assertRedirects(response, trash_url)
+            trash_item.refresh_from_db()
+            self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.TRASHED)
+            self.assertTrue(outside.exists())
+            self.assertEqual(outside.read_bytes(), b"keep")
+            messages = [str(message) for message in get_messages(response.wsgi_request)]
+            self.assertIn("Invalid storage path.", messages)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_scheduled_trash_purge_uses_safe_storage_path(self):
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "storage"
+            root.mkdir()
+            outside = base / "outside.txt"
+            outside.write_bytes(b"keep")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            TrashItem.objects.create(
+                original_path="dump/old.vma.zst",
+                trash_path="../outside.txt",
+                moved_at=timezone.now() - timedelta(days=10),
+                metadata={"storage_id": storage.storage_id},
+            )
+
+            purge_expired_trash(max_age_days=1)
+
+            trash_item = TrashItem.objects.get()
+            self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.TRASHED)
+            self.assertTrue(outside.exists())
+            self.assertEqual(outside.read_bytes(), b"keep")
+            event = AuditEvent.objects.get(action="trash.purge")
+            self.assertEqual(event.outcome, "partial")
+            self.assertEqual(event.details["errors"][0]["error"], "Invalid storage path.")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_likely_orphan_can_be_moved_to_trash_and_restored(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump_dir = root / "dump"
+            dump_dir.mkdir()
+            original = dump_dir / "orphan.vma.zst"
+            original.write_bytes(b"orphan")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="dump/orphan.vma.zst",
+                entry_type=FileInventory.EntryType.FILE,
+                size_bytes=original.stat().st_size,
+                classification=FileInventory.Classification.LIKELY_ORPHAN,
+                classification_reason="No matching Proxmox disk reference.",
+            )
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                {"path": "dump/orphan.vma.zst", "confirm_basic": "yes", "next": browser_url},
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(original.exists())
+            trash_item = TrashItem.objects.get()
+            trash_path = root / trash_item.trash_path
+            self.assertTrue(trash_path.exists())
+            self.assertEqual(trash_path.read_bytes(), b"orphan")
+            self.assertEqual(AuditEvent.objects.get(action="file.trashed").object_id, "nfs-vm:dump/orphan.vma.zst")
+
+            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            response = self.client.get(trash_url)
+            self.assertContains(response, "dump/orphan.vma.zst")
+
+            response = self.client.post(
+                reverse("core:storage_restore_file", args=[trash_item.id]),
+                {"next": trash_url},
+            )
+
+            self.assertRedirects(response, trash_url)
+            trash_item.refresh_from_db()
+            self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.RESTORED)
+            self.assertTrue(original.exists())
+            self.assertEqual(original.read_bytes(), b"orphan")
+            self.assertFalse(trash_path.exists())
+            self.assertEqual(AuditEvent.objects.get(action="file.restored").object_id, "nfs-vm:dump/orphan.vma.zst")
+            task_names = [task["name"] for task in recent_task_page(limit=10).tasks]
+            self.assertIn("Move file to trash", task_names)
+            self.assertIn("Restore file", task_names)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_directory_can_be_moved_to_trash_and_restored(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "template" / "iso" / "upload-folder"
+            folder.mkdir(parents=True)
+            child = folder / "disk.qcow2"
+            child.write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="template/iso/upload-folder",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                classification=FileInventory.Classification.UNKNOWN,
+                content_category="unknown",
+            )
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                {
+                    "path": "template/iso/upload-folder",
+                    "confirm_basic": "yes",
+                    "confirm_risk": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(folder.exists())
+            trash_item = TrashItem.objects.get()
+            trash_path = root / trash_item.trash_path
+            self.assertTrue((trash_path / "disk.qcow2").exists())
+            self.assertEqual(trash_item.metadata["original_entry_type"], FileInventory.EntryType.DIRECTORY)
+
+            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            response = self.client.post(
+                reverse("core:storage_restore_file", args=[trash_item.id]),
+                {"next": trash_url},
+            )
+
+            self.assertRedirects(response, trash_url)
+            trash_item.refresh_from_db()
+            self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.RESTORED)
+            self.assertTrue(child.exists())
+            self.assertFalse(trash_path.exists())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_empty_guest_image_directory_can_be_moved_to_trash(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "images" / "505"
+            folder.mkdir(parents=True)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/505",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                classification=FileInventory.Classification.UNKNOWN,
+                content_category="vm_image_directory",
+            )
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                {
+                    "path": "images/505",
+                    "confirm_basic": "yes",
+                    "confirm_risk": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(folder.exists())
+            trash_item = TrashItem.objects.get()
+            self.assertTrue((root / trash_item.trash_path).is_dir())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_non_empty_guest_image_directory_cannot_be_moved_to_trash(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "images" / "505"
+            folder.mkdir(parents=True)
+            disk = folder / "vm-505-disk-0.qcow2"
+            disk.write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/505",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                classification=FileInventory.Classification.UNKNOWN,
+                content_category="vm_image_directory",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/505/vm-505-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                classification=FileInventory.Classification.UNKNOWN,
+                content_category="vm_disk",
+            )
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                {
+                    "path": "images/505",
+                    "confirm_basic": "yes",
+                    "confirm_risk": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertTrue(folder.exists())
+            self.assertFalse(TrashItem.objects.exists())
+            messages = [str(message) for message in get_messages(response.wsgi_request)]
+            self.assertIn("Guest image/private directories must be empty before they can be moved to trash.", messages)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_multiple_files_can_be_moved_to_trash(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump_dir = root / "dump"
+            dump_dir.mkdir()
+            first = dump_dir / "first.vma.zst"
+            second = dump_dir / "second.vma.zst"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            for path in ["dump/first.vma.zst", "dump/second.vma.zst"]:
+                FileInventory.objects.create(
+                    scan_run=scan,
+                    storage=storage,
+                    path=path,
+                    entry_type=FileInventory.EntryType.FILE,
+                    classification=FileInventory.Classification.LIKELY_ORPHAN,
+                )
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                {
+                    "path": ["dump/first.vma.zst", "dump/second.vma.zst"],
+                    "confirm_basic": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertEqual(TrashItem.objects.count(), 2)
+            self.assertEqual(AuditEvent.objects.filter(action="file.trashed").count(), 2)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_referenced_stopped_file_requires_double_confirmation_then_moves_to_trash(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "100"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-100-disk-0.qcow2"
+            disk.write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=100,
+                name="restore-test",
+                status="stopped",
+                disk_references=["nfs-vm:100/vm-100-disk-0.qcow2"],
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/100/vm-100-disk-0.qcow2",
+                derived_volid="nfs-vm:100/vm-100-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                {
+                    "path": "images/100/vm-100-disk-0.qcow2",
+                    "confirm_basic": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertTrue(disk.exists())
+            self.assertFalse(TrashItem.objects.exists())
+
+            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+                response = self.client.post(
+                    reverse("core:storage_trash_file", args=[storage.storage_id]),
+                    {
+                        "path": "images/100/vm-100-disk-0.qcow2",
+                        "confirm_basic": "yes",
+                        "confirm_risk": "yes",
+                        "next": browser_url,
+                    },
+                )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(disk.exists())
+            self.assertTrue(TrashItem.objects.exists())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_running_referenced_file_cannot_be_moved_to_trash(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "100"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-100-disk-0.qcow2"
+            disk.write_bytes(b"disk")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=100,
+                name="running-test",
+                status="running",
+                disk_references=["nfs-vm:100/vm-100-disk-0.qcow2"],
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/100/vm-100-disk-0.qcow2",
+                derived_volid="nfs-vm:100/vm-100-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+
+            response = self.client.post(
+                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                {
+                    "path": "images/100/vm-100-disk-0.qcow2",
+                    "confirm_basic": "yes",
+                    "confirm_risk": "yes",
+                    "next": reverse("core:storage_browser", args=[storage.storage_id]),
+                },
+            )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(disk.exists())
+            self.assertFalse(TrashItem.objects.exists())
+            self.assertFalse(AuditEvent.objects.filter(action="file.trashed").exists())
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_file_can_be_renamed_with_confirmation_and_directory_refresh(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            iso_dir = root / "template" / "iso"
+            iso_dir.mkdir(parents=True)
+            original = iso_dir / "old.iso"
+            original.write_bytes(b"iso")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-fs": {"ok": True, "status": "ok"}},
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="template",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="template_directory",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="template/iso",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="iso",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="template/iso/old.iso",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="iso",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=template%2Fiso"
+
+            response = self.client.post(
+                reverse("core:storage_rename_file", args=[storage.storage_id]),
+                {
+                    "path": "template/iso/old.iso",
+                    "new_name": "new.iso",
+                    "confirm_basic": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(original.exists())
+            self.assertEqual((iso_dir / "new.iso").read_bytes(), b"iso")
+            self.assertFalse(FileInventory.objects.filter(scan_run=scan, path="template/iso/old.iso").exists())
+            self.assertTrue(FileInventory.objects.filter(scan_run=scan, path="template/iso/new.iso").exists())
+            self.assertEqual(AuditEvent.objects.get(action="file.renamed").details["old_path"], "template/iso/old.iso")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_file_can_be_moved_with_confirmation_and_directory_refresh(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "template" / "iso"
+            target_dir = root / "snippets"
+            source_dir.mkdir(parents=True)
+            target_dir.mkdir()
+            original = source_dir / "move-me.iso"
+            original.write_bytes(b"move")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-fs": {"ok": True, "status": "ok"}},
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="template",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="template_directory",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="template/iso",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="iso",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="snippets",
+                entry_type=FileInventory.EntryType.DIRECTORY,
+                content_category="snippets",
+            )
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="template/iso/move-me.iso",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="iso",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=template%2Fiso"
+
+            response = self.client.post(
+                reverse("core:storage_move_file", args=[storage.storage_id]),
+                {
+                    "path": "template/iso/move-me.iso",
+                    "new_path": "snippets",
+                    "confirm_basic": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(original.exists())
+            self.assertEqual((target_dir / "move-me.iso").read_bytes(), b"move")
+            self.assertFalse(FileInventory.objects.filter(scan_run=scan, path="template/iso/move-me.iso").exists())
+            self.assertTrue(FileInventory.objects.filter(scan_run=scan, path="snippets/move-me.iso").exists())
+            self.assertEqual(AuditEvent.objects.get(action="file.moved").details["old_path"], "template/iso/move-me.iso")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_multiple_files_can_be_moved_to_the_same_directory(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "template" / "iso"
+            target_dir = root / "snippets"
+            source_dir.mkdir(parents=True)
+            target_dir.mkdir()
+            first = source_dir / "first.iso"
+            second = source_dir / "second.iso"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-fs": {"ok": True, "status": "ok"}},
+            )
+            for path, entry_type, category in [
+                ("template", FileInventory.EntryType.DIRECTORY, "template_directory"),
+                ("template/iso", FileInventory.EntryType.DIRECTORY, "iso"),
+                ("snippets", FileInventory.EntryType.DIRECTORY, "snippets"),
+                ("template/iso/first.iso", FileInventory.EntryType.FILE, "iso"),
+                ("template/iso/second.iso", FileInventory.EntryType.FILE, "iso"),
+            ]:
+                FileInventory.objects.create(
+                    scan_run=scan,
+                    storage=storage,
+                    path=path,
+                    entry_type=entry_type,
+                    content_category=category,
+                    classification=FileInventory.Classification.UNKNOWN,
+                )
+            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=template%2Fiso"
+
+            response = self.client.post(
+                reverse("core:storage_move_file", args=[storage.storage_id]),
+                {
+                    "path": ["template/iso/first.iso", "template/iso/second.iso"],
+                    "new_path": "snippets",
+                    "confirm_basic": "yes",
+                    "next": browser_url,
+                },
+            )
+
+            self.assertRedirects(response, browser_url)
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertEqual((target_dir / "first.iso").read_bytes(), b"first")
+            self.assertEqual((target_dir / "second.iso").read_bytes(), b"second")
+            self.assertEqual(AuditEvent.objects.filter(action="file.moved").count(), 2)
+            self.assertTrue(FileInventory.objects.filter(scan_run=scan, path="snippets/first.iso").exists())
+            self.assertTrue(FileInventory.objects.filter(scan_run=scan, path="snippets/second.iso").exists())
+
     def test_dashboard_keeps_last_completed_gate_while_new_scan_is_queued(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
         storage = StorageMount.objects.create(
-            storage_id="TrueNAS-FS",
-            display_name="TrueNAS-FS",
+            storage_id="nfs-fs",
+            display_name="nfs-fs",
             path="/storages/truenas-fs",
-            expected_consumers=["pve3"],
+            expected_consumers=["pve-node-1"],
         )
         completed_scan = ScanRun.objects.create(
             status=ScanRun.Status.COMPLETED,
             progress_message="Completed scan",
             storage_gate_status={
-                "TrueNAS-FS": {
+                "nfs-fs": {
                     "ok": True,
                     "status": "ok",
-                    "expected_consumers": ["pve3"],
+                    "expected_consumers": ["pve-node-1"],
                     "missing_consumers": [],
                 }
             },
@@ -385,16 +3128,16 @@ class ViewSmokeTests(TestCase):
         )
         ProxmoxInventory.objects.create(
             scan_run=completed_scan,
-            node="pve3",
+            node="pve-node-1",
             object_type=ProxmoxInventory.ObjectType.STORAGE,
-            name="TrueNAS-FS",
+            name="nfs-fs",
             status="1",
             config={
-                "storage": "TrueNAS-FS",
+                "storage": "nfs-fs",
                 "type": "nfs",
-                "server": "203.0.113.20",
-                "export": "/mnt/Pool-FS/FS/Proxmox",
-                "path": "/mnt/pve/TrueNAS-FS",
+                "server": "truenas.example.com",
+                "export": "/mnt/tank/proxmox-fs",
+                "path": "/mnt/pve/nfs-fs",
                 "options": "vers=4.2,nconnect=4",
                 "preallocation": "default",
                 "content": "rootdir,images",
@@ -417,21 +3160,27 @@ class ViewSmokeTests(TestCase):
                 used_bytes=6 * 1024**4,
                 used_percent=60.0,
                 filesystem_type="nfs4",
-                source="203.0.113.20:/mnt/Pool-FS/FS/Proxmox",
+                source="truenas.example.com:/mnt/tank/proxmox-fs",
                 mount_point="/storages/truenas-fs",
+                access_mode="read_write",
+                access_label="Read/write",
+                access_class="success",
+                can_write=True,
             ),
         ):
             response = self.client.get(reverse("core:dashboard"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "TrueNAS-FS")
+        self.assertContains(response, "nfs-fs")
         self.assertContains(response, "ok")
         self.assertContains(response, "Free / Total")
         self.assertContains(response, "4.0")
         self.assertContains(response, "10.0")
-        self.assertContains(response, "203.0.113.20")
+        self.assertContains(response, "truenas.example.com")
         self.assertContains(response, "vers=4.2,nconnect=4")
         self.assertContains(response, "nfs4")
+        self.assertContains(response, "PVE-helper access")
+        self.assertContains(response, "Read/write")
         self.assertContains(response, "Latest Scan")
         self.assertContains(response, "2026-06-26 08:15:30")
         self.assertContains(response, "Queued scan")
@@ -445,6 +3194,10 @@ class ViewSmokeTests(TestCase):
                 used_bytes=6 * 1024**4,
                 used_percent=60.0,
                 filesystem_type="nfs4",
+                access_mode="read_write",
+                access_label="Read/write",
+                access_class="success",
+                can_write=True,
             ),
         ):
             response = self.client.get(reverse("core:datastores"))
@@ -453,11 +3206,13 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Latest Scan")
         self.assertContains(response, "Filesystem")
         self.assertContains(response, "60.0%")
-        self.assertContains(response, "/mnt/Pool-FS/FS/Proxmox")
-        self.assertContains(response, "/mnt/pve/TrueNAS-FS")
+        self.assertContains(response, "/mnt/tank/proxmox-fs")
+        self.assertContains(response, "/mnt/pve/nfs-fs")
         self.assertNotContains(response, "/storages/truenas-fs")
         self.assertContains(response, "PVE options")
         self.assertContains(response, "default")
+        self.assertContains(response, "PVE-helper access")
+        self.assertContains(response, "Read/write")
         self.assertContains(response, "2026-06-26 08:15:30")
 
     def test_recent_tasks_endpoint_paginates_scans(self):
@@ -509,6 +3264,95 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(task_page.total, 1)
         self.assertIn("Fresh scan", task_page.tasks[0]["details"])
 
+    def test_recent_tasks_show_queued_inflate_until_terminal_event_exists(self):
+        queued = AuditEvent.objects.create(
+            username="viewer",
+            action="file.inflate_queued",
+            object_type="file",
+            object_id="nfs-vm:images/502/vm-502-disk-0.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "storage_name": "nfs-vm",
+                "path": "images/502/vm-502-disk-0.qcow2",
+                "target_preallocation": "full",
+            },
+        )
+
+        task_page = recent_task_page(limit=10)
+
+        self.assertEqual(task_page.total, 1)
+        self.assertEqual(task_page.tasks[0]["name"], "Inflate disk (full)")
+        self.assertEqual(task_page.tasks[0]["status"], "Queued")
+        self.assertIsNone(task_page.tasks[0]["finished_at"])
+
+        AuditEvent.objects.filter(pk=queued.pk).update(timestamp=timezone.now() - timedelta(seconds=30))
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.inflated",
+            object_type="file",
+            object_id="nfs-vm:images/502/vm-502-disk-0.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "storage_name": "nfs-vm",
+                "path": "images/502/vm-502-disk-0.qcow2",
+                "target_preallocation": "full",
+            },
+        )
+
+        task_page = recent_task_page(limit=10)
+
+        self.assertEqual(task_page.total, 1)
+        self.assertEqual(task_page.tasks[0]["name"], "Inflate disk (full)")
+        self.assertEqual(task_page.tasks[0]["status"], "Completed")
+        self.assertIsNotNone(task_page.tasks[0]["finished_at"])
+
+    def test_recent_tasks_serializes_file_refresh_metadata(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        event = AuditEvent.objects.create(
+            username="viewer",
+            action="file.inflated",
+            object_type="file",
+            object_id="nfs-vm:images/502/vm-502-disk-0.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "storage_name": "nfs-vm",
+                "path": "images/502/vm-502-disk-0.qcow2",
+                "target_preallocation": "metadata",
+            },
+        )
+
+        response = self.client.get(reverse("core:recent_tasks"))
+
+        self.assertEqual(response.status_code, 200)
+        task = response.json()["tasks"][0]
+        self.assertEqual(task["id"], f"file:{event.id}")
+        self.assertEqual(task["action"], "file.inflated")
+        self.assertEqual(task["storage_id"], "nfs-vm")
+        self.assertEqual(task["path"], "images/502/vm-502-disk-0.qcow2")
+        self.assertEqual(task["path_parent"], "images/502")
+        self.assertGreater(task["finished_at_ms"], 0)
+
+    def test_recent_tasks_include_download_file_actions(self):
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.downloaded",
+            object_type="file",
+            object_id="nfs-fs:template/iso/test.iso",
+            details={
+                "storage_id": "nfs-fs",
+                "storage_name": "nfs-fs",
+                "path": "template/iso/test.iso",
+            },
+        )
+
+        task_page = recent_task_page(limit=10)
+
+        self.assertEqual(task_page.total, 1)
+        self.assertEqual(task_page.tasks[0]["name"], "Download file")
+        self.assertEqual(task_page.tasks[0]["status"], "Completed")
+
     def test_dashboard_updates_scan_schedule(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -531,6 +3375,114 @@ class ViewSmokeTests(TestCase):
         )
         self.assertRedirects(response, reverse("core:dashboard"))
         self.assertFalse(Schedule.objects.filter(name=SCAN_SCHEDULE_NAME).exists())
+
+    def test_trash_purge_schedule_state_reads_text_kwargs(self):
+        Schedule.objects.create(
+            name=TRASH_PURGE_SCHEDULE_NAME,
+            func="core.tasks.purge_expired_trash",
+            schedule_type=Schedule.DAILY,
+            repeats=-1,
+            kwargs="{'max_age_days': 7}",
+        )
+
+        state = trash_purge_schedule_state()
+
+        self.assertTrue(state.enabled)
+        self.assertEqual(state.max_age_days, 7)
+
+    def test_audit_log_shows_audit_retention_schedule(self):
+        response = self.client.get(reverse("core:dashboard"))
+
+        self.assertNotContains(response, "Keep audit logs for")
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertContains(response, "Keep audit logs for")
+        self.assertContains(response, 'name="retention_days"')
+
+    def test_audit_log_updates_audit_retention_schedule(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        audit_url = reverse("core:audit_log")
+
+        response = self.client.post(
+            reverse("core:update_audit_retention_schedule"),
+            {"enabled": "on", "retention_days": "120", "next": audit_url},
+        )
+
+        self.assertRedirects(response, audit_url)
+        schedule = Schedule.objects.get(name=AUDIT_RETENTION_SCHEDULE_NAME)
+        self.assertEqual(schedule.func, "core.tasks.purge_expired_audit_events")
+        self.assertEqual(schedule.schedule_type, Schedule.DAILY)
+        self.assertIn("120", schedule.kwargs)
+        event = AuditEvent.objects.get(action="audit.retention.schedule.updated")
+        self.assertEqual(event.details["retention_days"], 120)
+
+        response = self.client.post(
+            reverse("core:update_audit_retention_schedule"),
+            {"retention_days": "120", "next": audit_url},
+        )
+
+        self.assertRedirects(response, audit_url)
+        self.assertFalse(Schedule.objects.filter(name=AUDIT_RETENTION_SCHEDULE_NAME).exists())
+
+    def test_audit_retention_schedule_state_reads_text_kwargs(self):
+        Schedule.objects.create(
+            name=AUDIT_RETENTION_SCHEDULE_NAME,
+            func="core.tasks.purge_expired_audit_events",
+            schedule_type=Schedule.DAILY,
+            repeats=-1,
+            kwargs="{'retention_days': 45}",
+        )
+
+        state = audit_retention_schedule_state()
+
+        self.assertTrue(state.enabled)
+        self.assertEqual(state.retention_days, 45)
+
+    def test_audit_retention_purges_old_events(self):
+        old_event = AuditEvent.objects.create(username="viewer", action="old.event")
+        keep_event = AuditEvent.objects.create(username="viewer", action="new.event")
+        AuditEvent.objects.filter(pk=old_event.pk).update(timestamp=timezone.now() - timedelta(days=10))
+        AuditEvent.objects.filter(pk=keep_event.pk).update(timestamp=timezone.now() - timedelta(days=2))
+
+        purge_expired_audit_events(retention_days=7)
+
+        self.assertFalse(AuditEvent.objects.filter(pk=old_event.pk).exists())
+        self.assertTrue(AuditEvent.objects.filter(pk=keep_event.pk).exists())
+        audit_event = AuditEvent.objects.get(action="audit.retention.purge")
+        self.assertEqual(audit_event.details["retention_days"], 7)
+        self.assertEqual(audit_event.details["purged"], 1)
+
+    def test_record_storage_space_snapshots_samples_enabled_storages_and_purges_old_points(self):
+        with TemporaryDirectory() as tmp:
+            storage = StorageMount.objects.create(
+                storage_id="nfs-fs",
+                display_name="nfs-fs",
+                path=tmp,
+            )
+            disabled_storage = StorageMount.objects.create(
+                storage_id="disabled",
+                display_name="disabled",
+                path=tmp,
+                enabled=False,
+            )
+            old_snapshot = StorageSpaceSnapshot.objects.create(
+                storage=storage,
+                recorded_at=timezone.now() - timedelta(days=10),
+                total_bytes=1000,
+                available_bytes=500,
+                used_bytes=500,
+            )
+
+            created = record_storage_space_snapshots(retention_days=8)
+
+        self.assertEqual(created, 1)
+        self.assertFalse(StorageSpaceSnapshot.objects.filter(pk=old_snapshot.pk).exists())
+        snapshot = StorageSpaceSnapshot.objects.get(storage=storage)
+        self.assertIsNone(snapshot.scan_run)
+        self.assertGreater(snapshot.total_bytes, 0)
+        self.assertFalse(StorageSpaceSnapshot.objects.filter(storage=disabled_storage).exists())
 
     def test_start_scan_is_silent_and_scan_status_updates_button_state(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -564,10 +3516,10 @@ class ViewSmokeTests(TestCase):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
         storage = StorageMount.objects.create(
-            storage_id="TrueNAS-FS",
-            display_name="TrueNAS-FS",
+            storage_id="nfs-fs",
+            display_name="nfs-fs",
             path="/storages/truenas-fs",
-            expected_consumers=["pve3"],
+            expected_consumers=["pve-node-1"],
         )
 
         response = self.client.post(
@@ -581,7 +3533,7 @@ class ViewSmokeTests(TestCase):
         self.assertRedirects(response, reverse("core:storage_browser", args=[storage.storage_id]))
         scan = ScanRun.objects.latest("created_at")
         self.assertEqual(scan.target_storage, storage)
-        self.assertEqual(scan.target_label, "TrueNAS-FS")
+        self.assertEqual(scan.target_label, "nfs-fs")
 
         task_page = recent_task_page()
-        self.assertEqual(task_page.tasks[0]["target"], "TrueNAS-FS")
+        self.assertEqual(task_page.tasks[0]["target"], "nfs-fs")

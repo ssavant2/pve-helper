@@ -24,9 +24,11 @@
           <th>Prealloc</th>
           <th>Expected consumers</th>
           <th>Gate</th>
+          <th>PVE-helper access</th>
           <th>Latest Scan</th>
           <th>Likely orphans</th>
           <th>Status</th>
+          <th aria-label="Actions"></th>
         </tr>
       </thead>
       <tbody>
@@ -73,13 +75,26 @@
                 -
               {% endif %}
             </td>
+            <td>
+              <span class="badge {{ storage.space_info.access_class }}" title="Effective access from the pve-helper web container">
+                {{ storage.space_info.access_label }}
+              </span>
+            </td>
             <td>{{ storage.latest_scan_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
             <td>{{ storage.latest_counts.likely_orphan|default:0 }}</td>
             <td><span class="badge {% if storage.enabled %}completed{% else %}failed{% endif %}">{% if storage.enabled %}Enabled{% else %}Disabled{% endif %}</span></td>
+            <td class="row-actions">
+              <a class="icon-link" href="{% url 'core:storage_browser' storage.storage_id %}" aria-label="Browse {{ storage.display_name }}" title="Browse">
+                <i data-lucide="folder-open" aria-hidden="true"></i>
+              </a>
+              <a class="icon-link" href="{% url 'core:storage_trash' storage.storage_id %}" aria-label="View {{ storage.display_name }} Recycle Bin" title="View Recycle Bin">
+                <i data-lucide="trash-2" aria-hidden="true"></i>
+              </a>
+            </td>
           </tr>
         {% empty %}
           <tr>
-            <td colspan="14" class="empty-state">No datastores configured in the database yet.</td>
+            <td colspan="17" class="empty-state">No datastores configured in the database yet.</td>
           </tr>
         {% endfor %}
       </tbody>

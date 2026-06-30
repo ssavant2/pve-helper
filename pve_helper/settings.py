@@ -134,7 +134,7 @@ AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
 ]
 
-OIDC_ISSUER_URL = env("OIDC_ISSUER_URL", "https://authentik.example.internal/application/o/pve-helper/").rstrip("/")
+OIDC_ISSUER_URL = env("OIDC_ISSUER_URL", "https://auth.example.com/application/o/pve-helper/").rstrip("/")
 OIDC_RP_CLIENT_ID = env("OIDC_CLIENT_ID", "")
 OIDC_RP_CLIENT_SECRET = env("OIDC_CLIENT_SECRET", "")
 OIDC_RP_SCOPES = env("OIDC_SCOPES", "openid profile email groups")
@@ -144,7 +144,7 @@ OIDC_CREATE_USER = True
 # must be set explicitly. Defaults below follow Authentik's URL scheme and are derived
 # from the issuer URL. authorize/token/userinfo are global under /application/o/, while
 # jwks is per-application (includes the provider slug). Each is overridable via env.
-_oidc_o_base = OIDC_ISSUER_URL.rsplit("/", 1)[0]  # e.g. https://authentik.example.internal/application/o
+_oidc_o_base = OIDC_ISSUER_URL.rsplit("/", 1)[0]  # e.g. https://auth.example.com/application/o
 OIDC_OP_AUTHORIZATION_ENDPOINT = env("OIDC_OP_AUTHORIZATION_ENDPOINT", f"{_oidc_o_base}/authorize/")
 OIDC_OP_TOKEN_ENDPOINT = env("OIDC_OP_TOKEN_ENDPOINT", f"{_oidc_o_base}/token/")
 OIDC_OP_USER_ENDPOINT = env("OIDC_OP_USER_ENDPOINT", f"{_oidc_o_base}/userinfo/")
@@ -171,19 +171,28 @@ if env_bool("SECURE_PROXY_SSL_HEADER", True):
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
-PVE_ENDPOINTS = env_list("PVE_ENDPOINTS", "https://pve1.example.com:8006")
+PVE_ENDPOINTS = env_list("PVE_ENDPOINTS", "https://pve-node-1.example.com:8006")
 PVE_VERIFY_TLS = env_bool("PVE_VERIFY_TLS", True)
 PVE_CA_BUNDLE = env("PVE_CA_BUNDLE", "")
 PVE_API_TOKEN_ID = env("PVE_API_TOKEN_ID", "")
 PVE_API_TOKEN_SECRET = env("PVE_API_TOKEN_SECRET", "")
-PVE_EXPECTED_CONSUMERS = env_list("PVE_EXPECTED_CONSUMERS", "pve3")
+PVE_EXPECTED_CONSUMERS = env_list("PVE_EXPECTED_CONSUMERS", "pve-node-1")
 
-TRUENAS_FS_STORAGE_ID = env("TRUENAS_FS_STORAGE_ID", "truenas-fs")
-TRUENAS_VM_STORAGE_ID = env("TRUENAS_VM_STORAGE_ID", "truenas-vm")
+TRUENAS_FS_STORAGE_ID = env("TRUENAS_FS_STORAGE_ID", "nfs-fs")
+TRUENAS_VM_STORAGE_ID = env("TRUENAS_VM_STORAGE_ID", "nfs-vm")
 TRUENAS_FS_EXPORT = env("TRUENAS_FS_EXPORT", "")
 TRUENAS_VM_EXPORT = env("TRUENAS_VM_EXPORT", "")
 TRUENAS_FS_CONTAINER_PATH = env("TRUENAS_FS_CONTAINER_PATH", "/storages/truenas-fs")
 TRUENAS_VM_CONTAINER_PATH = env("TRUENAS_VM_CONTAINER_PATH", "/storages/truenas-vm")
+STORAGE_WRITE_ENABLED = env_bool("STORAGE_WRITE_ENABLED", True)
+STORAGE_UPLOAD_MAX_SIZE_MB = env_int("STORAGE_UPLOAD_MAX_SIZE_MB", 0)
+FILE_UPLOAD_TEMP_DIR = env("FILE_UPLOAD_TEMP_DIR", "") or None
+STORAGE_IMAGE_INFO_ENABLED = env_bool("STORAGE_IMAGE_INFO_ENABLED", True)
+STORAGE_IMAGE_INFO_TIMEOUT_SECONDS = env_int("STORAGE_IMAGE_INFO_TIMEOUT_SECONDS", 15)
+STORAGE_INFLATE_TIMEOUT_SECONDS = env_int("STORAGE_INFLATE_TIMEOUT_SECONDS", 14400)
+STORAGE_INFLATE_WORKER_PRESERVES_OWNER = env_bool("STORAGE_INFLATE_WORKER_PRESERVES_OWNER", False)
+STORAGE_DOWNLOAD_ACCEL_ENABLED = env_bool("STORAGE_DOWNLOAD_ACCEL_ENABLED", False)
+STORAGE_DOWNLOAD_ACCEL_PREFIX = env("STORAGE_DOWNLOAD_ACCEL_PREFIX", "/_pve_helper_download")
 
 Q_CLUSTER = {
     "name": "pve-helper",

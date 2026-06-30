@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     AuditEvent,
     FileInventory,
+    OidcIdentity,
     ProxmoxEndpoint,
     ProxmoxInventory,
     ProxmoxStorageConsumer,
@@ -12,12 +13,19 @@ from .models import (
 )
 
 
+@admin.register(OidcIdentity)
+class OidcIdentityAdmin(admin.ModelAdmin):
+    list_display = ("user", "issuer", "subject", "created_at", "updated_at")
+    search_fields = ("user__username", "user__email", "issuer", "subject")
+    readonly_fields = ("created_at", "updated_at")
+
+
 @admin.register(AuditEvent)
 class AuditEventAdmin(admin.ModelAdmin):
-    list_display = ("timestamp", "username", "action", "object_type", "object_id", "outcome")
-    list_filter = ("action", "outcome", "object_type")
-    search_fields = ("username", "action", "object_id")
-    readonly_fields = ("timestamp",)
+    list_display = ("timestamp", "username", "action", "object_type", "object_id", "storage_id", "path", "outcome")
+    list_filter = ("action", "outcome", "object_type", "storage_id")
+    search_fields = ("username", "action", "object_id", "storage_id", "path")
+    readonly_fields = ("timestamp", "storage_id", "path", "target_preallocation")
 
 
 @admin.register(ProxmoxEndpoint)

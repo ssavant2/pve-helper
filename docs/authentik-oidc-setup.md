@@ -42,9 +42,9 @@ back-channel calls — see **Part F.2**.
 | App external URL | `https://pve-helper.example.com` |
 | Redirect URI | `https://pve-helper.example.com/auth/oidc/callback` |
 | Required group | `pve-helper-admins` |
-| Authentik (internal) URL | `https://authentik.example.internal` |
-| Issuer URL (per-provider mode) | `https://authentik.example.internal/application/o/pve-helper/` |
-| Discovery endpoint | `https://authentik.example.internal/application/o/pve-helper/.well-known/openid-configuration` |
+| Authentik URL | `https://auth.example.com` |
+| Issuer URL (per-provider mode) | `https://auth.example.com/application/o/pve-helper/` |
+| Discovery endpoint | `https://auth.example.com/application/o/pve-helper/.well-known/openid-configuration` |
 
 There are **two separate group concepts** in this setup. Do not confuse them:
 
@@ -217,7 +217,7 @@ Open the provider (Applications -> Providers -> your provider) and copy the **Cl
 and **Client Secret** into `.env`:
 
 ```env
-OIDC_ISSUER_URL=https://authentik.example.internal/application/o/pve-helper/
+OIDC_ISSUER_URL=https://auth.example.com/application/o/pve-helper/
 OIDC_CLIENT_ID=<from-authentik>
 OIDC_CLIENT_SECRET=<from-authentik>
 OIDC_REDIRECT_URI=https://pve-helper.example.com/auth/oidc/callback
@@ -269,7 +269,7 @@ membership.
 1. Confirm discovery is reachable:
 
    ```bash
-   curl -s https://authentik.example.internal/application/o/pve-helper/.well-known/openid-configuration | jq .issuer
+   curl -s https://auth.example.com/application/o/pve-helper/.well-known/openid-configuration | jq .issuer
    ```
 
 2. Visit the app, confirm redirect to Authentik, and that the **flow UI renders**

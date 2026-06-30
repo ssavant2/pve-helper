@@ -1,7 +1,8 @@
 # TrueNAS ACL for pve-helper
 
-Goal: let `pve-helper` read and traverse the Proxmox NFS exports without giving
-it write access.
+Goal: let `pve-helper` read and traverse the Proxmox NFS exports, and optionally
+grant write access to a specific storage when upload/trash/restore should be
+enabled.
 
 This guide is written for TrueNAS SCALE `25.10.4 - Goldeye`.
 
@@ -11,28 +12,29 @@ The app container runs as:
 uid=10001(app) gid=10001(app)
 ```
 
-TrueNAS must therefore know about UID/GID `10001` and the Proxmox storage paths
-must grant that identity read/traverse access.
+TrueNAS must therefore grant access to GID `10001`. If you create a matching
+TrueNAS user for naming and inspection, its UID may differ from the container
+UID. Target the `pve-helper` group, not the `pve-helper` user.
 
 ## Target Paths
 
-In this environment the NFS exports are existing vSphere-oriented datasets, and
-`Proxmox` is a plain directory inside each export, not its own dataset:
+Use variables for your local paths before running the shell snippets:
 
-```text
-/mnt/Pool-FS/FS/Proxmox
-/mnt/Pool-VMs/VM/Proxmox
+```bash
+export FS_PROXMOX_ROOT=/mnt/<pool>/<file-storage-export>/Proxmox
+export VM_PROXMOX_ROOT=/mnt/<pool>/<vm-storage-export>/Proxmox
+export FS_TEST_DIR="$FS_PROXMOX_ROOT/template/iso"
+export VM_TEST_DIR="$VM_PROXMOX_ROOT/images/<vmid>"
 ```
 
-Do **not** recursively change permissions on the parent datasets:
+The examples use `FS` for general file/ISO/backup storage and `VM` for VM disk
+image storage. A common lab layout is capacity/spinning disks for the file
+storage and SSDs for VM disks, but pve-helper only requires that the paths match
+your Proxmox storage layout.
 
-```text
-/mnt/Pool-FS/FS
-/mnt/Pool-VMs/VM
-```
-
-Those parent datasets can contain non-Proxmox/vSphere data and should keep their
-existing ACLs.
+Do **not** recursively change permissions on the parent dataset unless the whole
+dataset is dedicated to this Proxmox storage. Parent datasets can contain
+non-Proxmox data and should keep their existing ACLs.
 
 The clean long-term layout is to make each Proxmox storage root a child dataset.
 That gives it independent ACLs, snapshots, quotas, and rollback. For the current
@@ -51,14 +53,14 @@ layout, apply ACLs only to the `Proxmox` directories.
    ```
 
 5. Save.
-6. Go to `Credentials` -> `Users`.
-7. Click `Add`.
-8. Set:
+6. A matching user is optional for ACL naming and inspection. If you create one,
+   it does not have to use UID `10001`; the important part is that its primary
+   group is `pve-helper` / GID `10001`.
+7. If creating the user, go to `Credentials` -> `Users`, click `Add`, and set:
 
    ```text
    Username: pve-helper
    Full Name: pve-helper
-   UID: 10001
    Create New Primary Group: off
    Primary Group: pve-helper
    Home Directory: /var/empty
@@ -67,19 +69,19 @@ layout, apply ACLs only to the `Proxmox` directories.
    Disable Password: on
    ```
 
-9. Save.
+8. Save.
 
-If TrueNAS says UID or GID `10001` already exists, stop and check what already
-uses it. Do not reuse another service account by accident.
+If TrueNAS says GID `10001` already exists, stop and check what already uses it.
+Do not reuse another service account by accident.
 
 ## 2. Take a snapshot first
 
-Before applying recursive ACL changes, take a manual snapshot of each parent
+Before applying recursive ACL changes, take a manual snapshot of each affected
 dataset:
 
 ```text
-Pool-FS/FS
-Pool-VMs/VM
+<pool>/<file-storage-export>
+<pool>/<vm-storage-export>
 ```
 
 ACL mistakes are much less exciting when rollback exists.
@@ -92,8 +94,8 @@ for the parent dataset. Use the TrueNAS shell and target the exact directory.
 Proxmox creates some storage paths, such as `images/<vmid>`, as `root:root` with
 restrictive modes like `750`. That ownership/mode is created by Proxmox, not by
 TrueNAS. The ACL below does not change Proxmox ownership or write permissions;
-it only adds an extra read/traverse rule for the `pve-helper` UID so the scanner
-can inspect the files.
+it only adds an extra read/traverse rule for the `pve-helper` group so the
+scanner can inspect the files.
 
 Before using shell ACL commands, confirm that the parent datasets show
 `Unix Permissions` in the TrueNAS `Datasets` -> `Permissions` widget. If they
@@ -102,63 +104,49 @@ show NFSv4 ACL entries instead, stop and convert this guide first.
 Open `System` -> `Shell` in TrueNAS, or SSH to TrueNAS if SSH is enabled only
 for the maintenance window.
 
-First verify the user exists:
+First verify the identity. The important match is `gid=10001`:
 
 ```bash
 id pve-helper
 ```
 
-Expected:
+Example:
 
 ```text
-uid=10001(pve-helper) gid=10001(pve-helper)
+uid=<truenas-uid>(pve-helper) gid=10001(pve-helper) groups=10001(pve-helper)
 ```
 
 Then grant read/traverse on existing files and directories:
 
 ```bash
-setfacl -R -m u:pve-helper:rX /mnt/Pool-FS/FS/Proxmox
-setfacl -R -m u:pve-helper:rX /mnt/Pool-VMs/VM/Proxmox
-```
-
-If name lookup fails, use the numeric UID instead:
-
-```bash
-setfacl -R -m u:10001:rX /mnt/Pool-FS/FS/Proxmox
-setfacl -R -m u:10001:rX /mnt/Pool-VMs/VM/Proxmox
+setfacl -R -m g:pve-helper:rX "$FS_PROXMOX_ROOT"
+setfacl -R -m g:pve-helper:rX "$VM_PROXMOX_ROOT"
 ```
 
 Then grant default inheritance on directories so new `images/<vmid>` directories
 created later also inherit read/traverse:
 
 ```bash
-find /mnt/Pool-FS/FS/Proxmox -type d -exec setfacl -m d:u:pve-helper:rX {} +
-find /mnt/Pool-VMs/VM/Proxmox -type d -exec setfacl -m d:u:pve-helper:rX {} +
-```
-
-Numeric UID fallback:
-
-```bash
-find /mnt/Pool-FS/FS/Proxmox -type d -exec setfacl -m d:u:10001:rX {} +
-find /mnt/Pool-VMs/VM/Proxmox -type d -exec setfacl -m d:u:10001:rX {} +
+find "$FS_PROXMOX_ROOT" -type d -exec setfacl -m d:g:pve-helper:rX {} +
+find "$VM_PROXMOX_ROOT" -type d -exec setfacl -m d:g:pve-helper:rX {} +
 ```
 
 Check the current failing directory:
 
 ```bash
-getfacl /mnt/Pool-VMs/VM/Proxmox/images/500
+getfacl "$VM_TEST_DIR"
 ```
 
 You should see an entry similar to:
 
 ```text
-user:pve-helper:r-x
+group:pve-helper:r-x
 ```
 
 and, on directories, a default entry similar to:
 
 ```text
-default:user:pve-helper:r-x
+default:group:pve-helper:r-x
 ```
 
 The uppercase `X` is intentional. It adds execute/traverse to directories while
@@ -168,13 +156,67 @@ If the dataset uses NFSv4 ACLs instead of POSIX ACLs, stop here and convert this
 guide before applying shell ACL commands. The current NFS/Generic layout is
 expected to use POSIX/Unix ACLs.
 
-## 4. Refresh NFS if needed
+## 4. Add write ACL to a writable Proxmox storage
+
+Only do this for a storage that should allow upload/trash/restore/inflate from
+`pve-helper`.
+
+Grant write access on existing files and directories:
+
+```bash
+setfacl -R -m g:pve-helper:rwX "$FS_PROXMOX_ROOT"
+```
+
+Grant default inheritance on directories:
+
+```bash
+find "$FS_PROXMOX_ROOT" -type d -exec setfacl -m d:g:pve-helper:rwX {} +
+```
+
+When enabling writes on the VM storage, use the same pattern:
+
+```bash
+setfacl -R -m g:pve-helper:rwX "$VM_PROXMOX_ROOT"
+find "$VM_PROXMOX_ROOT" -type d -exec setfacl -m d:g:pve-helper:rwX {} +
+```
+
+Verify a writable directory. For VM storage, test the directory that contains
+the qcow2 file to inflate:
+
+```bash
+getfacl "$FS_TEST_DIR"
+getfacl "$VM_TEST_DIR"
+```
+
+Expected write entries:
+
+```text
+group:pve-helper:rwx
+default:group:pve-helper:rwx
+```
+
+Avoid user ACL entries such as `user:pve-helper` or `user:10001` for this
+deployment. `user:pve-helper` applies to the TrueNAS user's UID, not the
+container's UID, and a numeric `user:10001` entry is less clear than the group
+rule.
+
+If a numeric user ACL was added earlier, remove it before relying on the group
+ACL. POSIX ACL evaluation will match `user:10001` for the container user before
+it considers `group:pve-helper`, so a `user:10001:r-x` entry can block writes
+even when the group has `rwx`:
+
+```bash
+setfacl -R -x u:10001 "$VM_PROXMOX_ROOT"
+find "$VM_PROXMOX_ROOT" -type d -exec setfacl -x d:u:10001 {} +
+```
+
+## 5. Refresh NFS if needed
 
 ACL changes are often immediate. User/group identity changes can take a few
 minutes to affect NFS clients.
 
-If docker3 still gets `Permission denied`, restart or reload the NFS service in
-TrueNAS:
+If the Docker host still gets `Permission denied`, restart or reload the NFS
+service in TrueNAS:
 
 ```text
 System -> Services -> NFS -> Restart
@@ -187,7 +229,7 @@ cd /docker-apps/pve-helper
 docker compose up -d --force-recreate web worker
 ```
 
-If it still fails, remount the exports on docker3:
+If it still fails, remount the exports on the Docker host:
 
 ```bash
 cd /docker-apps/pve-helper
@@ -199,12 +241,12 @@ sudo mount /mnt/pve-helper/truenas-vm
 docker compose up -d web worker
 ```
 
-## 5. Verify from docker3
+## 6. Verify from the Docker host
 
 The app user must be able to list the VM directory:
 
 ```bash
-docker compose exec -T web sh -c 'id; ls -la /storages/truenas-vm/images/500'
+docker compose exec -T web sh -c 'id; ls -la /storages/truenas-vm/images/<vmid>'
 ```
 
 Expected:
@@ -212,7 +254,7 @@ Expected:
 ```text
 uid=10001(app) gid=10001(app)
 ...
-vm-500-disk-0.qcow2
+vm-<vmid>-disk-0.qcow2
 ```
 
 Then run a scan:
@@ -228,16 +270,28 @@ Expected result:
 {}
 ```
 
-or at least no `PermissionError` for `images/500`.
+or at least no `PermissionError` for `images/<vmid>`.
+
+To verify write access for a writable storage:
+
+```bash
+docker compose exec -T web sh -c 'printf test > /storages/truenas-fs/template/iso/.pve-helper-write-test && rm -f /storages/truenas-fs/template/iso/.pve-helper-write-test'
+docker compose exec -T web sh -c 'printf test > /storages/truenas-vm/images/<vmid>/.pve-helper-write-test && rm -f /storages/truenas-vm/images/<vmid>/.pve-helper-write-test'
+docker compose exec -T worker sh -c 'printf test > /storages/truenas-vm/images/<vmid>/.pve-helper-worker-write-test && rm -f /storages/truenas-vm/images/<vmid>/.pve-helper-worker-write-test'
+```
 
 ## Notes
 
-- Keep the NFS mount read-only on docker3 for now.
-- Keep the Docker bind mount read-only for now.
+- Both the host NFS mount and Docker bind mount must be read-write for a storage
+  before upload/trash/restore can work.
+- Inflate rewrites qcow2 images through the background worker. To preserve
+  Proxmox ownership on files such as `root:root` VM disks, run the worker with
+  UID/GID `0:0`, supplementary group `10001`, and only `CAP_CHOWN`; keep the web
+  container as the unprivileged app user.
 - Do not use NFS `Mapall` for this. The same exports are used by Proxmox, so
   changing identity mapping at the share level is more invasive than needed.
-- This only grants read/traverse to `pve-helper`; it should not change Proxmox
-  ownership or write behavior.
+- The ACL grants additional group access to `pve-helper`; it should not change
+  Proxmox ownership.
 
 ## References
 

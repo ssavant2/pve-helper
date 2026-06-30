@@ -6,7 +6,7 @@
 ## First local skeleton run
 
 1. Copy `.env.example` to `.env`.
-2. Replace at least `APP_SECRET_KEY` and `DB_PASSWORD`.
+2. Replace at least `APP_SECRET_KEY`, `DB_ADMIN_PASSWORD`, and `DB_PASSWORD`.
 3. Start Postgres:
 
    ```bash
@@ -28,10 +28,15 @@
 6. Start the app:
 
    ```bash
-   docker compose up -d web worker
+   docker compose up -d nginx web worker
    ```
 
 7. Open `http://dockerhost:21080` directly or configure NPM for `https://pve-helper.example.com`.
+
+The `nginx` service owns the public app port and proxies normal requests to the
+internal Django/Gunicorn `web` service. Authorized datastore downloads are served
+directly by nginx from read-only storage mounts after Django has performed auth,
+path validation, and audit logging.
 
 ## NFS mounts
 
@@ -52,18 +57,21 @@ Create the mount points:
 sudo mkdir -p /mnt/pve-helper/truenas-fs /mnt/pve-helper/truenas-vm
 ```
 
+The examples use two storages:
+
+- `nfs-fs` for general files such as ISOs, backups, templates, and other
+  capacity-oriented content. In a home lab this might be backed by spinning
+  disks.
+- `nfs-vm` for VM disk images. In a home lab this might be backed by SSDs.
+
+These names are only examples. Use storage IDs that match your Proxmox storage
+configuration.
+
 Recommended initial `/etc/fstab` entries:
 
 ```fstab
-203.0.113.10:/export/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
-203.0.113.10:/export/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
-```
-
-For this environment, substitute:
-
-```fstab
-203.0.113.20:/mnt/Pool-FS/FS/Proxmox /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
-203.0.113.20:/mnt/Pool-VMs/VM/Proxmox /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+truenas.example.com:/mnt/tank/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+truenas.example.com:/mnt/tank/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
 ```
 
 Apply and verify:
@@ -80,20 +88,102 @@ Then recreate the app containers so Docker binds the mounted NFS trees, not the 
 underlying directories:
 
 ```bash
-docker compose up -d --force-recreate web worker
+docker compose up -d --force-recreate nginx web worker
 ```
 
-Keep both the host NFS mounts and the Docker bind mounts read-only until write/trash
-support is deliberately enabled. When trash support is added later, the host mount and
-compose bind mount for the affected storage must be changed to read-write.
+Keep both the host NFS mounts and the Docker bind mounts read-only until you are ready
+to allow upload/trash/restore on a specific storage. When writes are allowed for that
+storage, change both the host mount and the compose bind mount for the affected storage
+to read-write.
 
 `nconnect=4` is a good starting point on modern Ubuntu kernels. It lets one NFS mount
 use multiple TCP connections, which can help throughput and parallel directory walks
 without changing the app. Increase only if measurements show a benefit.
 
 If the app can see the NFS export but cannot enter Proxmox VM directories such as
-`images/500`, add a read/traverse ACL for the app identity. See
+`images/<vmid>`, add a read/traverse ACL for the app identity. See
 `docs/truenas-acl-pve-helper.md`.
+
+## Storage write mode
+
+File upload, move-to-trash, and restore actions are enabled in app configuration by
+default, but they still require the effective storage mount to be writable from inside
+the `web` container. This lets one datastore stay read-only while another is writable.
+
+To allow writes for a storage:
+
+1. Change the affected host NFS mount from `ro` to `rw`.
+
+2. Change the affected Docker bind mount from `:ro` to `:rw`, then recreate `web` and
+   `worker`. The `nginx` storage mounts should stay read-only; nginx only serves
+   authorized downloads and proxies write requests to Django.
+
+`STORAGE_WRITE_ENABLED=false` is still available as a global emergency brake. It hides
+write controls and rejects write requests even if a storage is mounted read-write.
+`STORAGE_UPLOAD_MAX_SIZE_MB` controls the upload limit; `0` means no app-level limit.
+`FILE_UPLOAD_TEMP_DIR` controls where Django stores multipart upload chunks before the
+view writes the final file to its target path. For large datastore uploads, do not leave
+this on container `/tmp`: `/tmp` is a tmpfs in the hardened container and large uploads
+can kill the Gunicorn worker with out-of-memory errors before the app code sees the
+file. Put `FILE_UPLOAD_TEMP_DIR` on real storage with enough free space, for example:
+
+```env
+FILE_UPLOAD_TEMP_DIR=/storages/truenas-fs/.pve-helper-upload-tmp
+```
+
+Create that directory on the writable storage and make sure the app UID/GID can write
+to it before testing large uploads.
+
+By default, authorized datastore downloads use `X-Accel-Redirect`:
+
+- Django validates the requested storage/path and writes the audit event.
+- The pve-helper nginx sidecar serves the file bytes from a read-only mount.
+- The visible download URL stays the same.
+
+Set `STORAGE_DOWNLOAD_ACCEL_ENABLED=false` to fall back to Django/Gunicorn streaming.
+When fallback streaming is used, keep `GUNICORN_TIMEOUT` high enough for the largest
+expected file transfer. The container disables Gunicorn `sendfile` and sends
+`X-Accel-Buffering: no` on downloads to avoid bursty NFS-to-proxy buffering for large
+files.
+
+For Nginx Proxy Manager, add equivalent settings in the proxy host's advanced
+configuration when this app is used for large datastore uploads/downloads:
+
+```nginx
+proxy_buffering off;
+proxy_request_buffering off;
+proxy_max_temp_file_size 0;
+proxy_read_timeout 86400s;
+proxy_send_timeout 86400s;
+send_timeout 86400s;
+client_max_body_size 0;
+```
+
+`client_max_body_size 0` removes the NPM upload limit. Use a concrete size instead if
+your deployment should enforce a proxy-level upload policy.
+
+Browser note for large transfers:
+
+- Firefox has behaved reliably for large qcow2 downloads in testing and shows progress
+  immediately.
+- Chrome has shown misleading or broken behavior with very large files: the UI can sit
+  at `0 bytes`, create `Unconfirmed ... .crdownload` files, issue multiple Range
+  requests, or appear to restart a download even while the server is already streaming
+  data at full speed.
+- Prefer Firefox for large datastore uploads/downloads until Chrome's behavior is
+  better understood in your environment.
+
+The app still keeps destructive behavior narrow: files are moved to `.trash/pve-helper`
+on the same storage, not permanently deleted, and V1 only offers trash actions for files
+classified as `likely_orphan`.
+
+## PostgreSQL roles
+
+The app should connect as `DB_USER`, not the Postgres bootstrap/admin role.
+For new deployments this is handled by the init script mounted into
+`/docker-entrypoint-initdb.d`. For existing deployments that were initialized
+with `DB_USER` as `POSTGRES_USER`, follow `docs/postgres-hardening.md` once
+before switching the DB service to `DB_ADMIN_USER`.
 
 ## Authentik
 
@@ -103,7 +193,7 @@ Set:
 
 ```env
 APP_REQUIRE_LOGIN=true
-OIDC_ISSUER_URL=https://authentik.example.internal/application/o/pve-helper/
+OIDC_ISSUER_URL=https://auth.example.com/application/o/pve-helper/
 OIDC_CLIENT_ID=<from-authentik>
 OIDC_CLIENT_SECRET=<from-authentik>
 OIDC_REQUIRED_GROUP=pve-helper-admins
@@ -167,14 +257,14 @@ Initial single-node value:
 
 ```yaml
 expected_consumers:
-  - pve1
+  - pve-node-1
 ```
 
 Future value before further nodes consume the storage:
 
 ```yaml
 expected_consumers:
-  - pve1
-  - pve2
-  - pve3
+  - pve-node-1
+  - pve-node-2
+  - pve-node-3
 ```

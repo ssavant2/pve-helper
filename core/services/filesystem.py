@@ -25,6 +25,10 @@ class StorageSpaceInfo:
     filesystem_type: str = ""
     source: str = ""
     mount_point: str = ""
+    access_mode: str = "unknown"
+    access_label: str = "Unknown"
+    access_class: str = "unknown"
+    can_write: bool = False
     error: str = ""
 
 
@@ -40,6 +44,7 @@ def storage_space_info(path: str) -> StorageSpaceInfo:
     used_bytes = max(total_bytes - available_bytes, 0)
     used_percent = (used_bytes / total_bytes * 100) if total_bytes else 0
     mount = mount_info_for_path(storage_path)
+    access_mode = mount_access_mode(mount)
 
     return StorageSpaceInfo(
         ok=True,
@@ -50,6 +55,10 @@ def storage_space_info(path: str) -> StorageSpaceInfo:
         filesystem_type=mount.filesystem_type,
         source=mount.source,
         mount_point=mount.mount_point,
+        access_mode=access_mode,
+        access_label=mount_access_label(access_mode),
+        access_class=mount_access_class(access_mode),
+        can_write=access_mode == "read_write",
     )
 
 
@@ -79,6 +88,29 @@ def mount_info_for_path(path: Path) -> MountInfo:
     return best_match or MountInfo()
 
 
+def mount_access_mode(mount: MountInfo) -> str:
+    options = _option_set(mount.mount_options) | _option_set(mount.super_options)
+    if "ro" in options:
+        return "read_only"
+    if "rw" in options:
+        return "read_write"
+    return "unknown"
+
+
+def mount_access_label(access_mode: str) -> str:
+    return {
+        "read_only": "Read-only",
+        "read_write": "Read/write",
+    }.get(access_mode, "Unknown")
+
+
+def mount_access_class(access_mode: str) -> str:
+    return {
+        "read_only": "warning",
+        "read_write": "success",
+    }.get(access_mode, "unknown")
+
+
 def _parse_mountinfo_line(line: str) -> MountInfo:
     before, separator, after = line.partition(" - ")
     if not separator:
@@ -100,6 +132,10 @@ def _parse_mountinfo_line(line: str) -> MountInfo:
 
 def _decode_mountinfo_field(value: str) -> str:
     return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _option_set(options: str) -> set[str]:
+    return {option.split("=", 1)[0] for option in options.split(",") if option}
 
 
 def _is_path_relative_to(path: Path, parent: Path) -> bool:

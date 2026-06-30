@@ -1,206 +1,303 @@
-{% extends "base.html" %}
+{% extends "core/storage_base.html" %}
 
-{% block content %}
-  <section class="page-header">
-    <div>
-      <h1>{{ storage.display_name }}</h1>
-      <p>
-        {% if latest_scan %}
-          Browsing scan {{ latest_scan.id }} from {{ latest_scan.filesystem_scan_at|default:latest_scan.finished_at|default:latest_scan.created_at }}
-        {% else %}
-          No storage inventory has been scanned yet
-        {% endif %}
-      </p>
-    </div>
-    <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
-      {% csrf_token %}
-      <input type="hidden" name="storage_id" value="{{ storage.storage_id }}">
-      <input type="hidden" name="next" value="{{ request.get_full_path }}">
-      <button class="primary-action scan-action-button {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
-        <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
-          <i data-lucide="loader-circle" aria-hidden="true"></i>
-        </span>
-        <span data-scan-button-label>
-          {% if active_scan %}
-            {% if active_scan.status == "queued" %}Scan queued{% else %}Scanning{% endif %}
-          {% else %}
-            Start scan
-          {% endif %}
-        </span>
-      </button>
-    </form>
-  </section>
-
-  <section class="storage-summary-grid" aria-label="Storage capacity">
-    <div class="storage-summary-item">
-      <span class="metric-label">Free</span>
-      <strong>
-        {% if storage.space_info.ok %}
-          {{ storage.space_info.available_bytes|filesizeformat }}
-        {% else %}
-          -
-        {% endif %}
-      </strong>
-    </div>
-    <div class="storage-summary-item">
-      <span class="metric-label">Total</span>
-      <strong>
-        {% if storage.space_info.ok %}
-          {{ storage.space_info.total_bytes|filesizeformat }}
-        {% else %}
-          -
-        {% endif %}
-      </strong>
-    </div>
-    <div class="storage-summary-item">
-      <span class="metric-label">Used</span>
-      <strong>
-        {% if storage.space_info.ok %}
-          {{ storage.space_info.used_percent|floatformat:1 }}%
-        {% else %}
-          {{ storage.space_info.error|default:"unavailable" }}
-        {% endif %}
-      </strong>
-    </div>
-    <div class="storage-summary-item">
-      <span class="metric-label">Type</span>
-      <strong>{{ storage.details.storage_type|default:"-" }}</strong>
-    </div>
-    <div class="storage-summary-item">
-      <span class="metric-label">Server</span>
-      <strong>{{ storage.details.server|default:"-" }}</strong>
-    </div>
-    <div class="storage-summary-item">
-      <span class="metric-label">Filesystem</span>
-      <strong>{{ storage.space_info.filesystem_type|default:"-" }}</strong>
-      <span class="storage-summary-subtext">{{ storage.space_info.source|default:storage.space_info.mount_point|default:"-" }}</span>
-    </div>
-  </section>
-
-  <section class="storage-metadata-strip" aria-label="Proxmox storage settings">
-    <div>
-      <span>Export</span>
-      <code title="{{ storage.details.export_path|default:'-' }}">{{ storage.details.export_path|default:"-" }}</code>
-    </div>
-    <div>
-      <span>PVE path</span>
-      <code title="{{ storage.details.proxmox_path|default:'-' }}">{{ storage.details.proxmox_path|default:"-" }}</code>
-    </div>
-    <div>
-      <span>PVE options</span>
-      <code title="{{ storage.details.options|default:'-' }}">{{ storage.details.options|default:"-" }}</code>
-    </div>
-    <div>
-      <span>Preallocation</span>
-      <code>{{ storage.details.preallocation|default:"default" }}</code>
-    </div>
-  </section>
-
-  <section class="browser-toolbar">
-    <nav class="breadcrumb" aria-label="Storage path">
-      {% for crumb in breadcrumbs %}
-        {% if not forloop.first %}
-          <span class="breadcrumb-separator">/</span>
-        {% endif %}
-        {% if forloop.last %}
-          <span>{{ crumb.label }}</span>
-        {% else %}
-          <a href="{% url 'core:storage_browser' storage.storage_id %}{% if crumb.path %}?path={{ crumb.path|urlencode }}{% endif %}">{{ crumb.label }}</a>
-        {% endif %}
-      {% endfor %}
-    </nav>
-    <div class="browser-path" data-context-label="{{ storage.storage_id }}:{% if current_path %}{{ current_path }}{% else %}/{% endif %}">
-      <code>{{ storage.storage_id }}:{% if current_path %}{{ current_path }}{% else %}/{% endif %}</code>
-    </div>
-  </section>
-
-  <section class="panel">
-    <table class="data-table browser-table">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Classification</th>
-          <th>Size</th>
-          <th>Modified</th>
-          <th>Category</th>
-          <th>Reference</th>
-          <th aria-label="Actions"></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% if current_path %}
-          <tr data-context-label="{{ storage.storage_id }}:{% if parent_path %}{{ parent_path }}{% else %}/{% endif %}">
-            <td class="browser-name">
-              <a href="{% url 'core:storage_browser' storage.storage_id %}{% if parent_path %}?path={{ parent_path|urlencode }}{% endif %}">
-                <span class="file-icon"><i data-lucide="corner-up-left" aria-hidden="true"></i></span>
-                <span>..</span>
-              </a>
-            </td>
-            <td>Directory</td>
-            <td>-</td>
-            <td>-</td>
-            <td>-</td>
-            <td>-</td>
-            <td>-</td>
-            <td></td>
-          </tr>
-        {% endif %}
-
-        {% for entry in entries %}
-          <tr data-context-label="{{ storage.storage_id }}:{{ entry.path }}">
-            <td class="browser-name">
-              {% if entry.entry_type == "directory" %}
-                <a href="{% url 'core:storage_browser' storage.storage_id %}?path={{ entry.path|urlencode }}">
-                  <span class="file-icon directory"><i data-lucide="folder" aria-hidden="true"></i></span>
-                  <span>{{ entry.name }}</span>
-                </a>
-              {% elif entry.entry_type == "symlink" %}
-                <span class="file-icon"><i data-lucide="file-symlink" aria-hidden="true"></i></span>
-                <span>{{ entry.name }}</span>
-              {% else %}
-                <span class="file-icon"><i data-lucide="file" aria-hidden="true"></i></span>
-                <span>{{ entry.name }}</span>
-              {% endif %}
-            </td>
-            <td>{{ entry.get_entry_type_display }}</td>
-            <td><span class="badge {{ entry.classification_class }}">{{ entry.classification_label }}</span></td>
-            <td>{% if entry.size_bytes != None %}{{ entry.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
-            <td>{{ entry.modified_at|default:"-" }}</td>
-            <td>{{ entry.category_label }}</td>
-            <td>
-              {% if entry.derived_volid %}
-                <code>{{ entry.derived_volid }}</code>
-              {% else %}
-                <span class="muted">{{ entry.classification_reason|default:"-" }}</span>
-              {% endif %}
-            </td>
-            <td class="row-actions">
-              {% if entry.entry_type == "file" %}
-                <a
-                  class="icon-link"
-                  href="{% url 'core:storage_download' storage.storage_id %}?path={{ entry.path|urlencode }}"
-                  download
-                  aria-label="Download {{ entry.name }}"
-                  title="Download"
-                >
-                  <i data-lucide="download" aria-hidden="true"></i>
-                </a>
-              {% endif %}
-            </td>
-          </tr>
+{% block storage_content %}
+  <section
+    class="datastore-file-manager"
+    data-storage-file-manager
+    data-storage-id="{{ storage.storage_id }}"
+    data-current-path="{{ current_path }}"
+    data-storage-actions-enabled="{% if storage.storage_actions_enabled %}true{% else %}false{% endif %}"
+  >
+    <aside class="datastore-folder-pane" aria-label="Datastore folder tree">
+      <label class="folder-filter">
+        <span>Filter by a folder name</span>
+        <input type="search" data-folder-filter autocomplete="off">
+      </label>
+      <nav class="datastore-folder-tree">
+        {% for node in folder_tree %}
+          <div
+            class="folder-tree-node {% if node.is_current %}active{% endif %} {% if node.is_ancestor %}ancestor{% endif %}"
+            style="--depth: {{ node.depth }}"
+            data-folder-node
+            data-folder-name="{{ node.name|lower }}"
+            data-folder-path="{{ node.path }}"
+            data-folder-depth="{{ node.depth }}"
+            data-folder-expanded="{% if node.is_expanded %}true{% else %}false{% endif %}"
+            {% if not node.is_initially_visible %}hidden{% endif %}
+          >
+            {% if node.has_children %}
+              <button class="folder-tree-caret" type="button" data-folder-toggle aria-label="Toggle {{ node.name }}">
+                {% if node.is_expanded %}
+                  <i data-lucide="chevron-down" aria-hidden="true"></i>
+                {% else %}
+                  <i data-lucide="chevron-right" aria-hidden="true"></i>
+                {% endif %}
+              </button>
+            {% else %}
+              <span class="folder-tree-caret folder-tree-caret-placeholder" aria-hidden="true"></span>
+            {% endif %}
+            <a
+              class="folder-tree-link"
+              href="{% url 'core:storage_browser' storage.storage_id %}{% if node.path %}?path={{ node.path|urlencode }}{% endif %}"
+            >
+              <span class="folder-tree-icon">
+                {% if node.depth == 0 %}
+                  <i data-lucide="database" aria-hidden="true"></i>
+                {% else %}
+                  <i data-lucide="folder" aria-hidden="true"></i>
+                {% endif %}
+              </span>
+              <span class="folder-tree-label">{{ node.name }}</span>
+            </a>
+          </div>
         {% empty %}
-          <tr>
-            <td colspan="8" class="empty-state">
-              {% if latest_scan %}
-                This directory is empty in the latest scan.
-              {% else %}
-                Start a scan before browsing storage contents.
-              {% endif %}
-            </td>
-          </tr>
+          <span class="folder-tree-empty">Start a scan to load folders.</span>
         {% endfor %}
-      </tbody>
-    </table>
+      </nav>
+    </aside>
+
+    <section class="datastore-file-pane">
+      <div class="datastore-file-toolbar">
+        <div class="vs-file-actions">
+          {% if storage_write_enabled %}
+            {% if storage.storage_actions_enabled %}
+              <form
+                class="vs-toolbar-form"
+                method="post"
+                action="{% url 'core:storage_create_folder' storage.storage_id %}"
+                data-confirm-file-action
+                data-action-kind="new-folder"
+              >
+                {% csrf_token %}
+                <input type="hidden" name="path" value="{{ current_path }}">
+                <input type="hidden" name="folder_name" value="" data-new-folder-input>
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <button class="vs-toolbar-button" type="submit">New Folder</button>
+              </form>
+            {% else %}
+              <button class="vs-toolbar-button" type="button" disabled>New Folder</button>
+            {% endif %}
+            {% if storage.storage_actions_enabled %}
+              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload' storage.storage_id %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-on-file-select>
+                {% csrf_token %}
+                <input type="hidden" name="path" value="{{ current_path }}">
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <label class="vs-toolbar-button">
+                  Upload Files
+                  <input class="sr-only" type="file" name="file" required>
+                </label>
+              </form>
+            {% else %}
+              <button class="vs-toolbar-button" type="button" disabled>Upload Files</button>
+            {% endif %}
+            {% if storage.storage_actions_enabled %}
+              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload_folder' storage.storage_id %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-folder-on-file-select>
+                {% csrf_token %}
+                <input type="hidden" name="path" value="{{ current_path }}">
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <label class="vs-toolbar-button">
+                  Upload Folder
+                  <input class="sr-only" type="file" name="files" multiple webkitdirectory directory required>
+                </label>
+              </form>
+            {% else %}
+              <button class="vs-toolbar-button" type="button" disabled>Upload Folder</button>
+            {% endif %}
+          {% endif %}
+          <a
+            class="vs-toolbar-button disabled"
+            href="#"
+            data-file-download-action
+            data-no-soft-navigation
+            aria-disabled="true"
+          >Download</a>
+          {% if storage_write_enabled %}
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_move_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="move"
+              data-selected-file-action
+              data-allow-multiple="true"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="new_path" value="" data-move-input>
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button" type="submit" data-selected-file-button disabled>Move To</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_rename_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="rename"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="new_name" value="" data-rename-input>
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button" type="submit" data-selected-file-button disabled>Rename To</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_trash_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="trash"
+              data-selected-file-action
+              data-allow-multiple="true"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button danger" type="submit" data-selected-file-button disabled>Move to Recycle Bin</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_inflate_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="inflate"
+              data-inflate-mode="metadata"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="target_preallocation" value="metadata">
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button
+                class="vs-toolbar-button"
+                type="submit"
+                data-inflate-file-button
+                disabled
+                aria-label="Inflate selected QCOW2 disk to metadata preallocation"
+                title="Metadata preallocation allocates the QCOW2 map without zero-filling the whole virtual disk. The VM/CT must be stopped."
+              >Inflate Metadata</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_inflate_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="inflate"
+              data-inflate-mode="full"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="target_preallocation" value="full">
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button
+                class="vs-toolbar-button"
+                type="submit"
+                data-inflate-file-button
+                disabled
+                aria-label="Inflate selected QCOW2 disk to full preallocation"
+                title="Full preallocation writes out the whole virtual disk. It can take a long time, needs free space, and the VM/CT must be stopped."
+              >Inflate Full</button>
+            </form>
+          {% endif %}
+          <a class="vs-toolbar-button" href="{% url 'core:storage_trash' storage.storage_id %}">View Recycle Bin</a>
+        </div>
+        <label class="datastore-search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <span class="sr-only">Search in the current folder</span>
+          <input type="search" name="q" value="{{ file_query }}" placeholder="Search in the current folder" data-file-filter autocomplete="off">
+        </label>
+      </div>
+
+      <dialog class="move-picker-dialog" data-move-picker>
+        <div class="move-picker-panel">
+          <header class="move-picker-header">
+            <strong>Move To</strong>
+            <button class="icon-button" type="button" data-move-picker-cancel aria-label="Close">
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </header>
+          <div class="move-picker-tree" role="listbox" aria-label="Target folder">
+            {% for node in folder_tree %}
+              <div
+                class="move-picker-node"
+                style="--depth: {{ node.depth }}"
+                data-move-node
+                data-move-path="{{ node.path }}"
+                data-move-depth="{{ node.depth }}"
+                data-move-expanded="{% if node.is_expanded %}true{% else %}false{% endif %}"
+                {% if not node.is_initially_visible %}hidden{% endif %}
+              >
+                {% if node.has_children %}
+                  <button class="move-picker-caret" type="button" data-move-toggle aria-label="Toggle {{ node.name }}">
+                    {% if node.is_expanded %}
+                      <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    {% else %}
+                      <i data-lucide="chevron-right" aria-hidden="true"></i>
+                    {% endif %}
+                  </button>
+                {% else %}
+                  <span class="move-picker-caret move-picker-caret-placeholder" aria-hidden="true"></span>
+                {% endif %}
+                <button
+                  class="move-picker-target"
+                  type="button"
+                  data-move-target="{% if node.path %}{{ node.path }}{% else %}/{% endif %}"
+                  data-move-target-label="{% if node.path %}{{ node.path }}{% else %}Root{% endif %}"
+                >
+                  <span class="folder-tree-icon">
+                    {% if node.depth == 0 %}
+                      <i data-lucide="database" aria-hidden="true"></i>
+                    {% else %}
+                      <i data-lucide="folder" aria-hidden="true"></i>
+                    {% endif %}
+                  </span>
+                  <span>{{ node.name }}</span>
+                </button>
+              </div>
+            {% endfor %}
+          </div>
+          <footer class="move-picker-footer">
+            <span data-move-picker-selection>-</span>
+            <button class="vs-toolbar-button" type="button" data-move-picker-submit disabled>Move Here</button>
+          </footer>
+        </div>
+      </dialog>
+
+      <div class="inline-help">
+        Classification is conservative: likely orphan requires a complete gate check; blocked means one or more expected consumers were missing.
+      </div>
+
+      <div class="datastore-file-table-shell">
+        <table class="data-table vs-file-table">
+          <thead>
+            <tr>
+              <th class="select-column" aria-label="Select"></th>
+              <th>Name</th>
+              <th>Virtual Size</th>
+              <th>Backend Used</th>
+              <th>QCOW2 Map</th>
+              <th>Modified</th>
+              <th>Type</th>
+              <th>Classification</th>
+              <th>Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% include "core/partials/storage_file_rows.html" %}
+          </tbody>
+        </table>
+      </div>
+    </section>
   </section>
-{% endblock %}
+{% endblock storage_content %}

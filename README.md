@@ -12,7 +12,7 @@ additional modules over time.
 - Django Q2 worker
 - Built-in OIDC login and group authorization
 - Proxmox API client shell
-- Read-only storage scanner shell
+- Read-only storage scanner with optional gated upload/trash/restore actions
 - Health endpoints
 - vSphere-inspired server-rendered UI shell
 - Django admin models for audit, scans, storage, and inventory
@@ -26,12 +26,16 @@ authentication before using it against live Proxmox storage.
 The reference deployment is:
 
 1. Reverse proxy / TLS endpoint, for example Nginx Proxy Manager.
-2. `pve-helper` web container.
-3. Authentik OIDC login flow, initiated and enforced by the app with a required
+2. `pve-helper` nginx front container.
+3. `pve-helper` Django/Gunicorn web container.
+4. Authentik OIDC login flow, initiated and enforced by the app with a required
    group claim.
 
 In other words, normal HTTP traffic goes through the reverse proxy to the app;
 the app redirects the browser to Authentik when login is required.
+The nginx front container also serves authorized datastore downloads from
+read-only storage mounts after Django has approved the request, so very large
+downloads do not stream through the Django worker.
 
 Other front-door auth patterns can be used, but the app has native OIDC support
 and should still enforce its own login and group authorization with
@@ -44,9 +48,13 @@ that Proxmox uses. How that access is provided is deliberately deployment
 specific.
 
 In the reference homelab deployment, the Docker host has an extra NIC in the
-storage VLAN and mounts the TrueNAS NFS exports read-only on the host. Other
-setups can use a different network and mount design, as long as the container
-can read the same storage paths that Proxmox references.
+storage VLAN and mounts the TrueNAS NFS exports on the host. Other setups can
+use a different network and mount design, as long as the container can read the
+same storage paths that Proxmox references.
+
+Upload, trash, and restore actions depend on the effective Docker bind-mount
+mode for each storage. A datastore mounted read-only into the app remains
+read-only even when another datastore is writable. See `docs/deployment-runbook.md`.
 
 This project is meant for internal homelab / small ops use. It is not designed
 or supported as an enterprise storage-management product.
@@ -55,8 +63,9 @@ or supported as an enterprise storage-management product.
 
 Start with `docs/deployment-runbook.md`. For Authentik, see
 `docs/authentik-oidc-setup.md`. For Proxmox API credentials, see
-`docs/proxmox-api-token.md`. For PostgreSQL major upgrades, see
-`docs/postgres-major-upgrade.md`.
+`docs/proxmox-api-token.md`. For database role separation, see
+`docs/postgres-hardening.md`. Before pushing to a public remote, see
+`docs/public-release-checklist.md`.
 
 The compose defaults are for local skeleton verification. Before real internal use, create `.env`, set real secrets, configure Authentik OIDC, and keep `APP_REQUIRE_LOGIN=true`. `APP_BASE_URL` should be the canonical URL that Authentik redirects back to; the URL shown in the app header is taken from the current request.
 
