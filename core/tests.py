@@ -3910,6 +3910,40 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(task_page.tasks[0]["name"], "Download file")
         self.assertEqual(task_page.tasks[0]["status"], "Completed")
 
+    def test_recent_tasks_include_scheduled_action_runs(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        action = ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            target_name_snapshot="Lab VM",
+            target_node="pve1",
+            created_by=user,
+        )
+        run = ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=timezone.now(),
+            occurrence_key="recent",
+            status=ScheduledActionRun.Status.COMPLETED,
+            outcome=ScheduledActionRun.Outcome.SUCCESS_NOOP,
+            started_at=timezone.now(),
+            finished_at=timezone.now(),
+        )
+
+        task_page = recent_task_page(limit=10)
+
+        self.assertEqual(task_page.total, 1)
+        task = task_page.tasks[0]
+        self.assertEqual(task["id"], f"scheduled_action:{run.id}")
+        self.assertEqual(task["kind"], "scheduled_action")
+        self.assertEqual(task["name"], "Scheduled shutdown")
+        self.assertEqual(task["target"], "VM 500 (Lab VM)")
+        self.assertEqual(task["status"], "Completed - no action needed")
+        self.assertEqual(task["status_class"], "completed")
+        self.assertEqual(task["initiator"], "scheduler")
+        self.assertEqual(task["server"], "pve1")
+
     def test_dashboard_updates_scan_schedule(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)

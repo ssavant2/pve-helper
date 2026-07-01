@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from django.utils import timezone
 from django.db.models import Q
 
-from core.models import AuditEvent, ScanRun
+from core.models import AuditEvent, ScanRun, ScheduledActionRun
 
 
 DEFAULT_TASK_LIMIT = 5
@@ -74,6 +74,7 @@ def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTa
 
     tasks = [_scan_task(scan, initiators.get(str(scan.id), "system")) for scan in scans]
     tasks.extend(_file_task(event) for event in _visible_file_tasks())
+    tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
     tasks.sort(key=lambda task: task["sort_at"], reverse=True)
     total = len(tasks)
     return RecentTaskPage(tasks=tasks[offset : offset + limit], page=page, limit=limit, total=total)
@@ -102,6 +103,23 @@ def _visible_file_tasks():
         for event in events
         if event.action != INFLATE_QUEUED_ACTION or not _has_later_inflate_terminal(event, terminal_events)
     ]
+
+
+def _visible_scheduled_action_tasks():
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    terminal_statuses = [
+        ScheduledActionRun.Status.COMPLETED,
+        ScheduledActionRun.Status.FAILED,
+        ScheduledActionRun.Status.SKIPPED,
+        ScheduledActionRun.Status.MISSED,
+        ScheduledActionRun.Status.TIMEOUT,
+        ScheduledActionRun.Status.STALE,
+    ]
+    return (
+        ScheduledActionRun.objects.select_related("scheduled_action")
+        .exclude(Q(status__in=terminal_statuses) & Q(finished_at__lte=cutoff))
+        .order_by("-created_at")
+    )
 
 
 def _has_later_inflate_terminal(queued_event: AuditEvent, terminal_events: list[AuditEvent]) -> bool:
@@ -238,6 +256,74 @@ def _file_task_name(action: str) -> str:
         "file.inflated": "Inflate disk",
         "file.inflate_failed": "Inflate disk",
     }.get(action, action)
+
+
+def _scheduled_action_task(run: ScheduledActionRun) -> dict[str, object]:
+    action = run.scheduled_action
+    status, status_class = _scheduled_action_status(run)
+    target_type = action.get_target_type_display()
+    target_name = action.target_name_snapshot or ""
+    target = f"{target_type} {action.target_vmid}"
+    if target_name:
+        target = f"{target} ({target_name})"
+
+    return {
+        "id": f"scheduled_action:{run.id}",
+        "kind": "scheduled_action",
+        "action": action.action_type,
+        "name": f"Scheduled {action.get_action_type_display().lower()}",
+        "target": target,
+        "status": status,
+        "status_class": status_class,
+        "details": run.error or _scheduled_action_details(run),
+        "initiator": _scheduled_action_initiator(run),
+        "queued_for": _duration_label(run.created_at, run.started_at),
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "server": run.proxmox_task_node or action.target_node or "-",
+        "sort_at": run.finished_at or run.started_at or run.created_at,
+    }
+
+
+def _scheduled_action_status(run: ScheduledActionRun) -> tuple[str, str]:
+    if run.status == ScheduledActionRun.Status.QUEUED:
+        return "Queued", "queued"
+    if run.status in {
+        ScheduledActionRun.Status.PREFLIGHT,
+        ScheduledActionRun.Status.SUBMITTED,
+        ScheduledActionRun.Status.POLLING,
+    }:
+        return "Running", "running"
+    if run.status == ScheduledActionRun.Status.COMPLETED:
+        if run.outcome == ScheduledActionRun.Outcome.SUCCESS_NOOP:
+            return "Completed - no action needed", "completed"
+        return "Completed", "completed"
+    if run.status == ScheduledActionRun.Status.SKIPPED:
+        return "Skipped", "skipped"
+    if run.status == ScheduledActionRun.Status.MISSED:
+        return "Missed", "warning"
+    if run.status == ScheduledActionRun.Status.TIMEOUT:
+        return "Timed out", "failed"
+    if run.status == ScheduledActionRun.Status.STALE:
+        return "Stale", "failed"
+    return "Failed", "failed"
+
+
+def _scheduled_action_details(run: ScheduledActionRun) -> str:
+    action = run.scheduled_action
+    planned_for = _datetime_label(run.planned_for)
+    upid = run.proxmox_task_upid
+    if upid:
+        return f"Planned for {planned_for}, UPID {upid}"
+    return f"Planned for {planned_for}"
+
+
+def _scheduled_action_initiator(run: ScheduledActionRun) -> str:
+    if run.triggered_by:
+        return run.triggered_by.get_username()
+    if run.scheduled_action.created_by:
+        return run.scheduled_action.created_by.get_username()
+    return "system"
 
 
 def _scan_details(scan: ScanRun) -> str:
