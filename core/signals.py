@@ -5,6 +5,7 @@ from django.db.models.signals import post_migrate
 from django.dispatch import receiver
 
 from .models import AuditEvent
+from .services.scheduled_actions import ensure_scheduled_action_dispatch_schedule
 from .services.space_snapshot_schedule import ensure_space_snapshot_schedule
 
 
@@ -13,6 +14,7 @@ def ensure_always_on_schedules(sender, app_config, **kwargs):
     if app_config.name != "core":
         return
     ensure_space_snapshot_schedule()
+    ensure_scheduled_action_dispatch_schedule()
 
 
 @receiver(user_logged_in)

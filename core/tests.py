@@ -6,7 +6,7 @@ import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 from django.core.cache import cache
@@ -46,10 +46,18 @@ from core.services.proxmox import (
     ProxmoxAPIError,
     ProxmoxClient,
     ProxmoxTaskTimeout,
+    ProxmoxTaskResult,
 )
 from core.services.recent_tasks import recent_task_page
 from core.services.scan_retention import prune_scan_history
 from core.services.scan_schedule import SCAN_SCHEDULE_NAME, update_scan_schedule
+from core.services.scheduled_actions import (
+    SCHEDULED_ACTION_DISPATCH_FUNC,
+    SCHEDULED_ACTION_DISPATCH_INTERVAL_MINUTES,
+    SCHEDULED_ACTION_DISPATCH_SCHEDULE_NAME,
+    dispatch_due_scheduled_actions,
+    execute_scheduled_action_run,
+)
 from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
 from core.services.storage import StorageScanner
 from core.services.storage_actions import (
@@ -61,6 +69,7 @@ from core.services.storage_actions import (
 from core.services.storage_details import storage_details
 from core.services.trash_schedule import TRASH_PURGE_SCHEDULE_NAME, trash_purge_schedule_state
 from core.tasks import (
+    dispatch_scheduled_actions,
     enqueue_scheduled_scan,
     inflate_storage_file_task,
     normalize_uploaded_proxmox_image_paths_task,
@@ -357,6 +366,213 @@ class ScheduledActionModelTests(TestCase):
         )
 
         self.assertEqual(ScheduledActionRun.objects.count(), 2)
+
+
+class ScheduledActionDispatchTests(TestCase):
+    def _action(self, *, next_run_at=None, catch_up_policy=None, max_lateness_minutes=0):
+        return ScheduledAction.objects.create(
+            name="Start VM 500",
+            action_type=ScheduledAction.ActionType.START,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            schedule_type=ScheduledAction.ScheduleType.ONCE,
+            next_run_at=next_run_at or timezone.now(),
+            catch_up_policy=catch_up_policy or ScheduledAction.CatchUpPolicy.SKIP_MISSED,
+            max_lateness_minutes=max_lateness_minutes,
+        )
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
+    def test_dispatch_noops_when_scheduled_actions_are_disabled(self):
+        action = self._action()
+        enqueue = Mock()
+
+        result = dispatch_due_scheduled_actions(enqueue_func=enqueue)
+
+        self.assertTrue(result.disabled)
+        self.assertEqual(result.queued, 0)
+        self.assertFalse(ScheduledActionRun.objects.exists())
+        action.refresh_from_db()
+        self.assertTrue(action.enabled)
+        enqueue.assert_not_called()
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_dispatch_queues_due_one_time_action_and_disables_future_runs(self):
+        now = timezone.now()
+        action = self._action(next_run_at=now)
+        enqueue = Mock(return_value="task-id")
+
+        result = dispatch_due_scheduled_actions(now=now, enqueue_func=enqueue)
+
+        self.assertEqual(result.queued, 1)
+        run = ScheduledActionRun.objects.get(scheduled_action=action)
+        self.assertEqual(run.status, ScheduledActionRun.Status.QUEUED)
+        enqueue.assert_called_once_with("core.tasks.run_scheduled_action", run.id)
+        action.refresh_from_db()
+        self.assertFalse(action.enabled)
+        self.assertIsNone(action.next_run_at)
+        self.assertEqual(action.last_status, ScheduledAction.LastStatus.QUEUED)
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.run_queued").exists())
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_dispatch_marks_old_due_action_missed_without_catchup(self):
+        now = timezone.now()
+        action = self._action(next_run_at=now - timedelta(minutes=10))
+        enqueue = Mock()
+
+        result = dispatch_due_scheduled_actions(now=now, enqueue_func=enqueue)
+
+        self.assertEqual(result.missed, 1)
+        run = ScheduledActionRun.objects.get(scheduled_action=action)
+        self.assertEqual(run.status, ScheduledActionRun.Status.MISSED)
+        self.assertEqual(run.outcome, ScheduledActionRun.Outcome.MISSED)
+        action.refresh_from_db()
+        self.assertFalse(action.enabled)
+        self.assertEqual(action.last_status, ScheduledAction.LastStatus.MISSED)
+        enqueue.assert_not_called()
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_dispatch_does_not_queue_when_previous_run_is_in_flight(self):
+        now = timezone.now()
+        action = self._action(next_run_at=now)
+        ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=now - timedelta(minutes=1),
+            occurrence_key="previous",
+            status=ScheduledActionRun.Status.POLLING,
+        )
+        enqueue = Mock()
+
+        result = dispatch_due_scheduled_actions(now=now, enqueue_func=enqueue)
+
+        self.assertEqual(result.skipped, 1)
+        self.assertEqual(ScheduledActionRun.objects.count(), 1)
+        action.refresh_from_db()
+        self.assertTrue(action.enabled)
+        enqueue.assert_not_called()
+
+    def test_dispatch_task_returns_serializable_result(self):
+        result = dispatch_scheduled_actions()
+
+        self.assertEqual(result["queued"], 0)
+        self.assertTrue(result["disabled"])
+
+
+class ScheduledActionExecutionTests(TestCase):
+    class FakeProxmoxClient:
+        def __init__(self, *, status="stopped", config=None, task_success=True):
+            self.status = status
+            self.config = config or {"name": "Test VM"}
+            self.task_success = task_success
+            self.power_calls = []
+
+        def node_names(self, *, fallback=""):
+            return ["pve1"]
+
+        def guest_current(self, *, node, object_type, vmid):
+            return {"status": self.status, "name": "Test VM"}
+
+        def guest_config(self, *, node, object_type, vmid):
+            return self.config
+
+        def power_action(self, *, node, object_type, vmid, action, parameters=None):
+            self.power_calls.append(
+                {
+                    "node": node,
+                    "object_type": object_type,
+                    "vmid": vmid,
+                    "action": action,
+                    "parameters": parameters or {},
+                }
+            )
+            return "UPID:pve1:test:"
+
+        def wait_for_task(self, *, node, upid, timeout_seconds=None):
+            exitstatus = "OK" if self.task_success else "interrupted"
+            return ProxmoxTaskResult(
+                node=node,
+                upid=upid,
+                status="stopped",
+                exitstatus=exitstatus,
+                raw={"status": "stopped", "exitstatus": exitstatus},
+            )
+
+    def _queued_run(self, *, action_type=ScheduledAction.ActionType.START):
+        action = ScheduledAction.objects.create(
+            name="Power action",
+            action_type=action_type,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            action_timeout_seconds=30,
+        )
+        run = ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=timezone.now(),
+            occurrence_key="manual",
+            status=ScheduledActionRun.Status.QUEUED,
+        )
+        ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.com:8006")
+        return action, run
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_execute_run_submits_power_action_and_records_success(self):
+        action, run = self._queued_run()
+        fake_client = self.FakeProxmoxClient(status="stopped")
+
+        execute_scheduled_action_run(run.id, client_factory=lambda _url: fake_client)
+
+        run.refresh_from_db()
+        action.refresh_from_db()
+        self.assertEqual(run.status, ScheduledActionRun.Status.COMPLETED)
+        self.assertEqual(run.outcome, ScheduledActionRun.Outcome.SUCCESS)
+        self.assertEqual(run.proxmox_task_node, "pve1")
+        self.assertEqual(run.proxmox_task_upid, "UPID:pve1:test:")
+        self.assertEqual(run.preflight_snapshot["status"], "stopped")
+        self.assertEqual(action.last_status, ScheduledAction.LastStatus.COMPLETED)
+        self.assertEqual(fake_client.power_calls[0]["action"], "start")
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.run_completed").exists())
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_execute_run_completes_noop_when_guest_already_in_desired_state(self):
+        action, run = self._queued_run()
+        fake_client = self.FakeProxmoxClient(status="running")
+
+        execute_scheduled_action_run(run.id, client_factory=lambda _url: fake_client)
+
+        run.refresh_from_db()
+        action.refresh_from_db()
+        self.assertEqual(run.status, ScheduledActionRun.Status.COMPLETED)
+        self.assertEqual(run.outcome, ScheduledActionRun.Outcome.SUCCESS_NOOP)
+        self.assertEqual(fake_client.power_calls, [])
+        self.assertEqual(action.last_status, ScheduledAction.LastStatus.COMPLETED)
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_execute_run_skips_locked_guest(self):
+        action, run = self._queued_run(action_type=ScheduledAction.ActionType.SHUTDOWN)
+        fake_client = self.FakeProxmoxClient(status="running", config={"name": "Test VM", "lock": "backup"})
+
+        execute_scheduled_action_run(run.id, client_factory=lambda _url: fake_client)
+
+        run.refresh_from_db()
+        action.refresh_from_db()
+        self.assertEqual(run.status, ScheduledActionRun.Status.SKIPPED)
+        self.assertEqual(run.outcome, ScheduledActionRun.Outcome.SKIPPED)
+        self.assertIn("locked", run.error)
+        self.assertEqual(fake_client.power_calls, [])
+        self.assertEqual(action.last_status, ScheduledAction.LastStatus.SKIPPED)
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
+    def test_execute_run_skips_when_scheduled_actions_are_disabled(self):
+        action, run = self._queued_run()
+        fake_client = self.FakeProxmoxClient(status="stopped")
+
+        execute_scheduled_action_run(run.id, client_factory=lambda _url: fake_client)
+
+        run.refresh_from_db()
+        action.refresh_from_db()
+        self.assertEqual(run.status, ScheduledActionRun.Status.SKIPPED)
+        self.assertEqual(run.outcome, ScheduledActionRun.Outcome.SKIPPED)
+        self.assertEqual(fake_client.power_calls, [])
+        self.assertEqual(action.last_status, ScheduledAction.LastStatus.SKIPPED)
 
 
 @override_settings(OIDC_ISSUER_URL="https://issuer.example/application/o/pve-helper")
@@ -785,6 +1001,10 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(schedule.func, "core.tasks.record_storage_space_snapshots")
         self.assertEqual(schedule.schedule_type, Schedule.MINUTES)
         self.assertEqual(schedule.minutes, SPACE_SNAPSHOT_INTERVAL_MINUTES)
+        dispatcher = Schedule.objects.get(name=SCHEDULED_ACTION_DISPATCH_SCHEDULE_NAME)
+        self.assertEqual(dispatcher.func, SCHEDULED_ACTION_DISPATCH_FUNC)
+        self.assertEqual(dispatcher.schedule_type, Schedule.MINUTES)
+        self.assertEqual(dispatcher.minutes, SCHEDULED_ACTION_DISPATCH_INTERVAL_MINUTES)
 
     def test_storage_vms_uses_short_live_status_cache(self):
         cache.clear()

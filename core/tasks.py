@@ -27,6 +27,7 @@ from .services.partial_scan import refresh_storage_directory
 from .services.proxmox import ProxmoxClient
 from .services.scan_schedule import scan_schedule_state
 from .services.scan_retention import prune_scan_history
+from .services.scheduled_actions import dispatch_due_scheduled_actions, execute_scheduled_action_run
 from .services.storage import StorageScanner
 from .services.storage_actions import (
     StorageActionError,
@@ -40,6 +41,20 @@ from .services.storage_visibility import ignored_relative_paths_for_storage
 SPACE_SNAPSHOT_RETENTION_DAYS = 8
 
 logger = logging.getLogger(__name__)
+
+
+def dispatch_scheduled_actions() -> dict[str, int | bool]:
+    result = dispatch_due_scheduled_actions()
+    return {
+        "queued": result.queued,
+        "missed": result.missed,
+        "skipped": result.skipped,
+        "disabled": result.disabled,
+    }
+
+
+def run_scheduled_action(run_id: int) -> None:
+    execute_scheduled_action_run(run_id)
 
 
 def enqueue_scheduled_scan() -> int | None:

@@ -89,20 +89,29 @@ class ProxmoxClient:
         )
 
     def discover_node_name(self, fallback: str) -> str:
-        try:
-            nodes = self.get("nodes")
-        except ProxmoxAPIError:
+        node_names = self.node_names(fallback=fallback)
+        if not node_names:
             return fallback
 
-        if not isinstance(nodes, list) or not nodes:
-            return fallback
-
-        node_names = [str(node.get("node", "")) for node in nodes if node.get("node")]
         if fallback in node_names:
             return fallback
         if len(node_names) == 1:
             return node_names[0]
         return fallback
+
+    def node_names(self, *, fallback: str = "") -> list[str]:
+        try:
+            nodes = self.get("nodes")
+        except ProxmoxAPIError:
+            return [fallback] if fallback else []
+
+        if not isinstance(nodes, list):
+            return [fallback] if fallback else []
+
+        names = [str(node.get("node", "")) for node in nodes if node.get("node")]
+        if names:
+            return names
+        return [fallback] if fallback else []
 
     def inventory(self, node: str) -> InventoryResult:
         objects: list[ProxmoxObject] = []
@@ -175,17 +184,22 @@ class ProxmoxClient:
         return InventoryResult(node=node, ok=not errors, objects=objects, errors=errors)
 
     def guest_status(self, *, node: str, object_type: str, vmid: int) -> str:
-        if object_type == "vm":
-            guest_kind = "qemu"
-        elif object_type == "ct":
-            guest_kind = "lxc"
-        else:
-            raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
+        data = self.guest_current(node=node, object_type=object_type, vmid=vmid)
+        return str(data.get("status") or "")
 
-        data = self.get(f"nodes/{quote(node)}/{guest_kind}/{vmid}/status/current")
+    def guest_current(self, *, node: str, object_type: str, vmid: int) -> dict[str, Any]:
+        guest_kind = self._guest_kind(object_type)
+        data = self.get(f"nodes/{quote(node, safe='')}/{guest_kind}/{vmid}/status/current")
         if not isinstance(data, dict):
             raise ProxmoxAPIError(f"Unexpected guest status response for {object_type} {vmid}")
-        return str(data.get("status") or "")
+        return data
+
+    def guest_config(self, *, node: str, object_type: str, vmid: int) -> dict[str, Any]:
+        guest_kind = self._guest_kind(object_type)
+        data = self.get(f"nodes/{quote(node, safe='')}/{guest_kind}/{vmid}/config")
+        if not isinstance(data, dict):
+            raise ProxmoxAPIError(f"Unexpected guest config response for {object_type} {vmid}")
+        return data
 
     def power_action(
         self,
@@ -199,12 +213,7 @@ class ProxmoxClient:
         if not settings.SCHEDULED_ACTIONS_ENABLED:
             raise ProxmoxAPIError("Scheduled Proxmox actions are disabled.")
 
-        if object_type == "vm":
-            guest_kind = "qemu"
-        elif object_type == "ct":
-            guest_kind = "lxc"
-        else:
-            raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
+        guest_kind = self._guest_kind(object_type)
 
         if action not in {"start", "shutdown", "stop", "reboot"}:
             raise ProxmoxAPIError(f"Unsupported power action: {action}")
@@ -268,6 +277,13 @@ class ProxmoxClient:
 
     def post(self, path: str, *, data: dict[str, Any] | None = None) -> Any:
         return self._request("POST", path, data=data or {})
+
+    def _guest_kind(self, object_type: str) -> str:
+        if object_type == "vm":
+            return "qemu"
+        if object_type == "ct":
+            return "lxc"
+        raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
 
     def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None) -> Any:
         verify: bool | str = settings.PVE_VERIFY_TLS
