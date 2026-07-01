@@ -1143,6 +1143,15 @@ button.tree-node {
   padding: 16px;
 }
 
+.scheduled-warning-panel {
+  border-color: var(--amber);
+}
+
+.warning-copy {
+  margin: 0 0 8px;
+  color: var(--text);
+}
+
 .panel-empty-note {
   padding: 24px;
   text-align: center;

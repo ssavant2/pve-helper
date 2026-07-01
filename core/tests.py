@@ -3944,6 +3944,47 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(task["initiator"], "scheduler")
         self.assertEqual(task["server"], "pve1")
 
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_scheduled_tasks_page_lists_definitions_and_runs(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        action = ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            target_name_snapshot="Lab VM",
+            target_node="pve1",
+            schedule_type=ScheduledAction.ScheduleType.RECURRING,
+            recurrence_kind=ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
+            recurrence={"ordinal": "first", "weekday": "sunday", "time": "22:00"},
+            next_run_at=timezone.now() + timedelta(days=1),
+            created_by=user,
+            last_status=ScheduledAction.LastStatus.COMPLETED,
+        )
+        ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=timezone.now(),
+            occurrence_key="recent",
+            status=ScheduledActionRun.Status.COMPLETED,
+            outcome=ScheduledActionRun.Outcome.SUCCESS,
+            started_at=timezone.now(),
+            finished_at=timezone.now(),
+            proxmox_task_node="pve1",
+        )
+
+        response = self.client.get(reverse("core:scheduled_tasks"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Scheduled Tasks")
+        self.assertContains(response, "Scheduled tasks only run while pve-helper")
+        self.assertContains(response, "enabled")
+        self.assertContains(response, "Night shutdown")
+        self.assertContains(response, "VM 500 (Lab VM) on pve1")
+        self.assertContains(response, "Monthly on the first sunday at 22:00")
+        self.assertContains(response, "Latest Runs")
+        self.assertContains(response, "Success")
+
     def test_dashboard_updates_scan_schedule(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)

@@ -26,6 +26,7 @@ urlpatterns = [
     path("trash/<int:trash_item_id>/restore/", views.restore_storage_file, name="storage_restore_file"),
     path("trash/<int:trash_item_id>/purge/", views.purge_trash_item, name="purge_trash_item"),
     path("orphans/", views.orphan_finder, name="orphan_finder"),
+    path("scheduled-tasks/", views.scheduled_tasks, name="scheduled_tasks"),
     path("audit/", views.audit_log, name="audit_log"),
     path("tasks/recent/", views.recent_tasks, name="recent_tasks"),
     path("scans/schedule/", views.update_scan_schedule_view, name="update_scan_schedule"),

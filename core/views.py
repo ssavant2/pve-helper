@@ -21,7 +21,17 @@ from django.utils.http import content_disposition_header, url_has_allowed_host_a
 from django.views.decorators.http import require_POST
 from django_q.tasks import async_task
 
-from .models import AuditEvent, FileInventory, ProxmoxInventory, ScanRun, StorageMount, StorageSpaceSnapshot, TrashItem
+from .models import (
+    AuditEvent,
+    FileInventory,
+    ProxmoxInventory,
+    ScanRun,
+    ScheduledAction,
+    ScheduledActionRun,
+    StorageMount,
+    StorageSpaceSnapshot,
+    TrashItem,
+)
 from .services.file_actions import FileActionRisk, file_action_risk
 from .services.audit_retention_schedule import audit_retention_schedule_state, update_audit_retention_schedule
 from .services.filesystem import storage_space_info
@@ -117,6 +127,39 @@ def datastores(request):
         "storages": storages,
     }
     return render(request, "core/datastores.html", context)
+
+
+@app_login_required
+def scheduled_tasks(request):
+    actions = list(
+        ScheduledAction.objects.select_related("created_by")
+        .order_by("-enabled", "next_run_at", "name")
+    )
+    latest_runs = list(
+        ScheduledActionRun.objects.select_related("scheduled_action")
+        .order_by("-created_at")[:50]
+    )
+
+    for action in actions:
+        action.display_target = _scheduled_action_target_label(action)
+        action.display_schedule = _scheduled_action_schedule_label(action)
+        action.display_status_class = _scheduled_action_status_class(action.last_status)
+        action.display_creator = action.created_by.get_username() if action.created_by else "system"
+
+    for run in latest_runs:
+        run.display_target = _scheduled_action_target_label(run.scheduled_action)
+        run.display_status_class = _scheduled_run_status_class(run.status)
+        run.display_outcome = run.get_outcome_display() if run.outcome else "-"
+
+    context = {
+        **navigation_context("scheduled_tasks"),
+        "scheduled_actions": actions,
+        "latest_runs": latest_runs,
+        "scheduled_actions_enabled": settings.SCHEDULED_ACTIONS_ENABLED,
+        "schedule_timezone": settings.TIME_ZONE,
+        "run_retention_days": settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS,
+    }
+    return render(request, "core/scheduled_tasks.html", context)
 
 
 def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan: ScanRun | None) -> None:
@@ -1864,6 +1907,74 @@ def _content_category_label(category: str, path: str) -> str:
         "vm_images": "VM images",
     }
     return labels.get(category, "Other / unknown")
+
+
+def _scheduled_action_target_label(action: ScheduledAction) -> str:
+    label = f"{action.get_target_type_display()} {action.target_vmid}"
+    if action.target_name_snapshot:
+        label = f"{label} ({action.target_name_snapshot})"
+    if action.target_node:
+        label = f"{label} on {action.target_node}"
+    return label
+
+
+def _scheduled_action_schedule_label(action: ScheduledAction) -> str:
+    if action.schedule_type == ScheduledAction.ScheduleType.ONCE:
+        return f"Once at {tz.localtime(action.run_at or action.next_run_at).strftime('%Y-%m-%d %H:%M')}" if (action.run_at or action.next_run_at) else "Once"
+
+    recurrence = action.recurrence if isinstance(action.recurrence, dict) else {}
+    time_label = _recurrence_time_label(recurrence)
+    if action.recurrence_kind == ScheduledAction.RecurrenceKind.DAILY:
+        return f"Daily at {time_label}"
+    if action.recurrence_kind == ScheduledAction.RecurrenceKind.WEEKLY:
+        return f"Weekly at {time_label}"
+    if action.recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL:
+        ordinal = recurrence.get("ordinal", recurrence.get("week", "first"))
+        weekday = recurrence.get("weekday", "weekday")
+        return f"Monthly on the {ordinal} {weekday} at {time_label}"
+    if action.recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_DAY:
+        day = recurrence.get("day", recurrence.get("day_of_month", "?"))
+        return f"Monthly on day {day} at {time_label}"
+    return "Advanced recurrence"
+
+
+def _recurrence_time_label(recurrence: dict) -> str:
+    raw_time = recurrence.get("time")
+    if raw_time:
+        return str(raw_time)
+    try:
+        hour = int(recurrence.get("hour", 0))
+        minute = int(recurrence.get("minute", 0))
+    except (TypeError, ValueError):
+        hour = 0
+        minute = 0
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _scheduled_action_status_class(status: str) -> str:
+    return {
+        ScheduledAction.LastStatus.COMPLETED: "completed",
+        ScheduledAction.LastStatus.QUEUED: "queued",
+        ScheduledAction.LastStatus.FAILED: "failed",
+        ScheduledAction.LastStatus.TIMEOUT: "failed",
+        ScheduledAction.LastStatus.SKIPPED: "warning",
+        ScheduledAction.LastStatus.MISSED: "warning",
+    }.get(status, "")
+
+
+def _scheduled_run_status_class(status: str) -> str:
+    return {
+        ScheduledActionRun.Status.COMPLETED: "completed",
+        ScheduledActionRun.Status.QUEUED: "queued",
+        ScheduledActionRun.Status.PREFLIGHT: "running",
+        ScheduledActionRun.Status.SUBMITTED: "running",
+        ScheduledActionRun.Status.POLLING: "running",
+        ScheduledActionRun.Status.FAILED: "failed",
+        ScheduledActionRun.Status.TIMEOUT: "failed",
+        ScheduledActionRun.Status.STALE: "failed",
+        ScheduledActionRun.Status.SKIPPED: "warning",
+        ScheduledActionRun.Status.MISSED: "warning",
+    }.get(status, "")
 
 
 def _trash_purge_schedule_state():
