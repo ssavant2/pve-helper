@@ -8,6 +8,8 @@ from .models import (
     ProxmoxInventory,
     ProxmoxStorageConsumer,
     ScanRun,
+    ScheduledAction,
+    ScheduledActionRun,
     StorageMount,
     TrashItem,
 )
@@ -75,6 +77,41 @@ class ProxmoxStorageConsumerAdmin(admin.ModelAdmin):
     list_display = ("storage", "expected_node_name", "last_gate_status", "last_successful_inventory_scan")
     list_filter = ("last_gate_status",)
     search_fields = ("storage__storage_id", "expected_node_name")
+
+
+@admin.register(ScheduledAction)
+class ScheduledActionAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "enabled",
+        "action_type",
+        "target_type",
+        "target_vmid",
+        "target_node",
+        "next_run_at",
+        "last_status",
+    )
+    list_filter = ("enabled", "action_type", "target_type", "schedule_type", "catch_up_policy", "last_status")
+    search_fields = ("name", "target_name_snapshot", "target_node", "=target_vmid")
+    readonly_fields = ("created_at", "updated_at", "last_run_at", "last_status")
+    raw_id_fields = ("created_by",)
+
+
+@admin.register(ScheduledActionRun)
+class ScheduledActionRunAdmin(admin.ModelAdmin):
+    list_display = (
+        "scheduled_action",
+        "planned_for",
+        "status",
+        "outcome",
+        "proxmox_task_node",
+        "started_at",
+        "finished_at",
+    )
+    list_filter = ("status", "outcome", "proxmox_task_node")
+    search_fields = ("scheduled_action__name", "occurrence_key", "proxmox_task_upid", "error")
+    readonly_fields = ("created_at", "updated_at", "preflight_snapshot", "result")
+    raw_id_fields = ("scheduled_action", "triggered_by")
 
 
 @admin.register(TrashItem)

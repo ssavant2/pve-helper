@@ -255,6 +255,158 @@ class ProxmoxStorageConsumer(TimestampedModel):
         return f"{self.storage.storage_id}: {self.expected_node_name}"
 
 
+class ScheduledAction(TimestampedModel):
+    class ActionType(models.TextChoices):
+        START = "start", "Start"
+        SHUTDOWN = "shutdown", "Shutdown"
+        STOP = "stop", "Stop"
+        REBOOT = "reboot", "Reboot"
+
+    class TargetType(models.TextChoices):
+        VM = "vm", "VM"
+        CT = "ct", "Container"
+
+    class ScheduleType(models.TextChoices):
+        ONCE = "once", "Once"
+        RECURRING = "recurring", "Recurring"
+
+    class RecurrenceKind(models.TextChoices):
+        ADVANCED = "advanced", "Advanced"
+        DAILY = "daily", "Daily"
+        WEEKLY = "weekly", "Weekly"
+        MONTHLY_ORDINAL = "monthly_ordinal", "Monthly ordinal"
+        MONTHLY_DAY = "monthly_day", "Monthly day"
+
+    class CatchUpPolicy(models.TextChoices):
+        SKIP_MISSED = "skip_missed", "Skip missed"
+        RUN_ONCE_LATE = "run_once_late", "Run once late"
+
+    class LastStatus(models.TextChoices):
+        NEVER_RUN = "never_run", "Never run"
+        QUEUED = "queued", "Queued"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        SKIPPED = "skipped", "Skipped"
+        MISSED = "missed", "Missed"
+        TIMEOUT = "timeout", "Timed out"
+
+    name = models.CharField(max_length=160)
+    enabled = models.BooleanField(default=True)
+    action_type = models.CharField(max_length=40, choices=ActionType.choices)
+    action_timeout_seconds = models.PositiveIntegerField(default=1800)
+    target_type = models.CharField(max_length=20, choices=TargetType.choices)
+    target_vmid = models.PositiveIntegerField()
+    target_node = models.CharField(max_length=120, blank=True)
+    target_name_snapshot = models.CharField(max_length=255, blank=True)
+    parameters = models.JSONField(default=dict, blank=True)
+    schedule_type = models.CharField(max_length=20, choices=ScheduleType.choices, default=ScheduleType.ONCE)
+    run_at = models.DateTimeField(null=True, blank=True)
+    recurrence = models.JSONField(default=dict, blank=True)
+    recurrence_kind = models.CharField(
+        max_length=40,
+        choices=RecurrenceKind.choices,
+        default=RecurrenceKind.ADVANCED,
+    )
+    timezone = models.CharField(max_length=80, default="UTC")
+    catch_up_policy = models.CharField(
+        max_length=40,
+        choices=CatchUpPolicy.choices,
+        default=CatchUpPolicy.SKIP_MISSED,
+    )
+    max_lateness_minutes = models.PositiveIntegerField(default=0)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="pve_helper_scheduled_actions",
+    )
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_status = models.CharField(
+        max_length=40,
+        choices=LastStatus.choices,
+        default=LastStatus.NEVER_RUN,
+    )
+
+    class Meta:
+        ordering = ["-enabled", "next_run_at", "name"]
+        indexes = [
+            models.Index(fields=["enabled", "next_run_at"], name="core_sched_enabled_next_idx"),
+            models.Index(fields=["target_type", "target_vmid"], name="core_sched_target_idx"),
+            models.Index(fields=["action_type"], name="core_sched_action_idx"),
+            models.Index(fields=["created_by"], name="core_sched_created_by_idx"),
+        ]
+
+    def __str__(self) -> str:
+        target = f"{self.target_type}:{self.target_vmid}"
+        return f"{self.name} ({self.action_type} {target})"
+
+
+class ScheduledActionRun(TimestampedModel):
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        PREFLIGHT = "preflight", "Preflight"
+        SUBMITTED = "submitted", "Submitted"
+        POLLING = "polling", "Polling"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        SKIPPED = "skipped", "Skipped"
+        MISSED = "missed", "Missed"
+        TIMEOUT = "timeout", "Timed out"
+        STALE = "stale", "Stale"
+
+    class Outcome(models.TextChoices):
+        SUCCESS = "success", "Success"
+        SUCCESS_NOOP = "success_noop", "Success - no action needed"
+        FAILURE = "failure", "Failure"
+        SKIPPED = "skipped", "Skipped"
+        MISSED = "missed", "Missed"
+        TIMEOUT = "timeout", "Timed out"
+        STALE = "stale", "Stale"
+
+    scheduled_action = models.ForeignKey(
+        ScheduledAction,
+        on_delete=models.CASCADE,
+        related_name="runs",
+    )
+    planned_for = models.DateTimeField()
+    occurrence_key = models.CharField(max_length=160)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=40, choices=Status.choices, default=Status.QUEUED)
+    outcome = models.CharField(max_length=60, choices=Outcome.choices, blank=True)
+    proxmox_task_upid = models.CharField(max_length=512, blank=True)
+    proxmox_task_node = models.CharField(max_length=120, blank=True)
+    preflight_snapshot = models.JSONField(default=dict, blank=True)
+    result = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    triggered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="pve_helper_scheduled_action_runs",
+    )
+
+    class Meta:
+        ordering = ["-planned_for", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scheduled_action", "occurrence_key"],
+                name="uniq_schedaction_occurrence",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["scheduled_action", "status"], name="core_schedrun_as_idx"),
+            models.Index(fields=["status", "planned_for"], name="core_schedrun_status_plan_idx"),
+            models.Index(fields=["proxmox_task_upid"], name="core_schedrun_upid_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.scheduled_action_id}:{self.occurrence_key} ({self.status})"
+
+
 class TrashItem(TimestampedModel):
     class RestoreStatus(models.TextChoices):
         TRASHED = "trashed", "Trashed"

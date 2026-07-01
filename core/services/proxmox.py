@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -42,12 +43,29 @@ class InventoryResult:
     errors: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class ProxmoxTaskResult:
+    node: str
+    upid: str
+    status: str
+    exitstatus: str
+    raw: dict[str, Any]
+
+    @property
+    def success(self) -> bool:
+        return self.status == "stopped" and self.exitstatus == "OK"
+
+
 class ProxmoxAPIError(Exception):
     pass
 
 
+class ProxmoxTaskTimeout(ProxmoxAPIError):
+    pass
+
+
 class ProxmoxClient:
-    """Small read-only Proxmox API client."""
+    """Small Proxmox API client."""
 
     def __init__(self, endpoint: str):
         self.endpoint = endpoint.rstrip("/")
@@ -169,7 +187,89 @@ class ProxmoxClient:
             raise ProxmoxAPIError(f"Unexpected guest status response for {object_type} {vmid}")
         return str(data.get("status") or "")
 
+    def power_action(
+        self,
+        *,
+        node: str,
+        object_type: str,
+        vmid: int,
+        action: str,
+        parameters: dict[str, Any] | None = None,
+    ) -> str:
+        if not settings.SCHEDULED_ACTIONS_ENABLED:
+            raise ProxmoxAPIError("Scheduled Proxmox actions are disabled.")
+
+        if object_type == "vm":
+            guest_kind = "qemu"
+        elif object_type == "ct":
+            guest_kind = "lxc"
+        else:
+            raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
+
+        if action not in {"start", "shutdown", "stop", "reboot"}:
+            raise ProxmoxAPIError(f"Unsupported power action: {action}")
+
+        data = self.post(
+            f"nodes/{quote(node, safe='')}/{guest_kind}/{vmid}/status/{action}",
+            data=parameters or {},
+        )
+        if not isinstance(data, str) or not data:
+            raise ProxmoxAPIError(f"Unexpected task response for {object_type} {vmid} {action}")
+        return data
+
+    def task_status(self, *, node: str, upid: str) -> dict[str, Any]:
+        data = self.get(f"nodes/{quote(node, safe='')}/tasks/{quote(upid, safe='')}/status")
+        if not isinstance(data, dict):
+            raise ProxmoxAPIError(f"Unexpected task status response for {upid}")
+        return data
+
+    def wait_for_task(
+        self,
+        *,
+        node: str,
+        upid: str,
+        timeout_seconds: int | None = None,
+        poll_interval_seconds: float | None = None,
+        sleep_func=time.sleep,
+        monotonic_func=time.monotonic,
+    ) -> ProxmoxTaskResult:
+        timeout = timeout_seconds
+        if timeout is None:
+            timeout = settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
+        poll_interval = poll_interval_seconds
+        if poll_interval is None:
+            poll_interval = settings.SCHEDULED_ACTION_POLL_INTERVAL_SECONDS
+        poll_interval = max(float(poll_interval), 0.1)
+
+        deadline = monotonic_func() + max(timeout, 0)
+        last_status: dict[str, Any] = {}
+
+        while True:
+            last_status = self.task_status(node=node, upid=upid)
+            status = str(last_status.get("status") or "")
+            exitstatus = str(last_status.get("exitstatus") or "")
+            if status == "stopped" or exitstatus:
+                return ProxmoxTaskResult(
+                    node=node,
+                    upid=upid,
+                    status=status,
+                    exitstatus=exitstatus,
+                    raw=last_status,
+                )
+
+            now = monotonic_func()
+            if now >= deadline:
+                raise ProxmoxTaskTimeout(f"Timed out waiting for Proxmox task {upid}")
+
+            sleep_func(min(poll_interval, max(deadline - now, 0.1)))
+
     def get(self, path: str) -> Any:
+        return self._request("GET", path)
+
+    def post(self, path: str, *, data: dict[str, Any] | None = None) -> Any:
+        return self._request("POST", path, data=data or {})
+
+    def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None) -> Any:
         verify: bool | str = settings.PVE_VERIFY_TLS
         if settings.PVE_CA_BUNDLE:
             verify = settings.PVE_CA_BUNDLE
@@ -181,9 +281,11 @@ class ProxmoxClient:
             headers["Authorization"] = f"PVEAPIToken={token_id}={token_secret}"
 
         try:
-            response = httpx.get(
+            response = httpx.request(
+                method,
                 f"{self.endpoint}/api2/json/{path.lstrip('/')}",
                 headers=headers,
+                data=data,
                 timeout=15,
                 verify=verify,
             )

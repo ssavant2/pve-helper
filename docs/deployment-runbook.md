@@ -246,9 +246,18 @@ PVE_ENDPOINTS=https://pve1.example.com:8006
 PVE_VERIFY_TLS=true
 PVE_API_TOKEN_ID=<token-id>
 PVE_API_TOKEN_SECRET=<token-secret>
+SCHEDULED_ACTIONS_ENABLED=false
+SCHEDULED_ACTION_TIMEOUT_SECONDS=1800
+SCHEDULED_ACTION_POLL_INTERVAL_SECONDS=5
+SCHEDULED_ACTION_RUN_RETENTION_DAYS=90
 ```
 
 If Proxmox uses an internal CA, set `PVE_CA_BUNDLE` to a mounted internal-CA path.
+
+Keep `SCHEDULED_ACTIONS_ENABLED=false` until scheduled VM/CT actions are ready
+and you have deliberately granted `VM.PowerMgmt` to the pve-helper user/token.
+When enabled, `SCHEDULED_ACTION_TIMEOUT_SECONDS` is the max time pve-helper will
+wait for a submitted Proxmox task before marking it timed out.
 
 ## Storage consumer safety
 

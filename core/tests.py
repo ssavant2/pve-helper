@@ -8,10 +8,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import httpx
 from django.core.cache import cache
 from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.apps import apps
+from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
@@ -21,13 +23,30 @@ from django_q.models import Schedule
 
 from core.auth import PveHelperOIDCBackend
 from core.checks import production_startup_errors
-from core.models import AuditEvent, FileInventory, OidcIdentity, ProxmoxEndpoint, ProxmoxInventory, ScanRun, StorageMount, StorageSpaceSnapshot, TrashItem
+from core.models import (
+    AuditEvent,
+    FileInventory,
+    OidcIdentity,
+    ProxmoxEndpoint,
+    ProxmoxInventory,
+    ScanRun,
+    ScheduledAction,
+    ScheduledActionRun,
+    StorageMount,
+    StorageSpaceSnapshot,
+    TrashItem,
+)
 from core.signals import ensure_always_on_schedules
 from core.services.audit_retention_schedule import AUDIT_RETENTION_SCHEDULE_NAME, audit_retention_schedule_state
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
-from core.services.proxmox import LIVE_GUEST_STATUS_CACHE_SECONDS
+from core.services.proxmox import (
+    LIVE_GUEST_STATUS_CACHE_SECONDS,
+    ProxmoxAPIError,
+    ProxmoxClient,
+    ProxmoxTaskTimeout,
+)
 from core.services.recent_tasks import recent_task_page
 from core.services.scan_retention import prune_scan_history
 from core.services.scan_schedule import SCAN_SCHEDULE_NAME, update_scan_schedule
@@ -177,6 +196,167 @@ class RuntimeConfigurationTests(TestCase):
         details = storage_details(storage, scan, StorageSpaceInfo(ok=False))
 
         self.assertEqual(details.options, "vers=4.2,nconnect=4")
+
+
+class ProxmoxClientTests(SimpleTestCase):
+    def _response(self, data, *, status_code=200):
+        return httpx.Response(
+            status_code,
+            json={"data": data},
+            request=httpx.Request("GET", "https://pve.example.com/api2/json/test"),
+        )
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
+    def test_power_action_refuses_when_disabled(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+
+        with patch("core.services.proxmox.httpx.request") as request_mock:
+            with self.assertRaisesMessage(ProxmoxAPIError, "disabled"):
+                client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
+
+        request_mock.assert_not_called()
+
+    @override_settings(
+        SCHEDULED_ACTIONS_ENABLED=True,
+        PVE_VERIFY_TLS=True,
+        PVE_CA_BUNDLE="",
+        PVE_API_TOKEN_ID="pve-helper@pve!pve-helper",
+        PVE_API_TOKEN_SECRET="secret",
+    )
+    def test_power_action_posts_and_returns_upid(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+        upid = "UPID:pve1:00000001:00000002:00000003:qmstart:100:root@pam:"
+
+        with patch("core.services.proxmox.httpx.request", return_value=self._response(upid)) as request_mock:
+            result = client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
+
+        self.assertEqual(result, upid)
+        request_mock.assert_called_once()
+        args, kwargs = request_mock.call_args
+        self.assertEqual(args[0], "POST")
+        self.assertEqual(args[1], "https://pve.example.com:8006/api2/json/nodes/pve1/qemu/100/status/start")
+        self.assertEqual(kwargs["data"], {})
+        self.assertEqual(kwargs["headers"]["Authorization"], "PVEAPIToken=pve-helper@pve!pve-helper=secret")
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_power_action_rejects_unsupported_action(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+
+        with patch("core.services.proxmox.httpx.request") as request_mock:
+            with self.assertRaisesMessage(ProxmoxAPIError, "Unsupported power action"):
+                client.power_action(node="pve1", object_type="vm", vmid=100, action="suspend")
+
+        request_mock.assert_not_called()
+
+    def test_wait_for_task_returns_successful_result(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+
+        with patch.object(
+            client,
+            "task_status",
+            side_effect=[
+                {"status": "running"},
+                {"status": "stopped", "exitstatus": "OK"},
+            ],
+        ):
+            result = client.wait_for_task(
+                node="pve1",
+                upid="UPID:pve1:test:",
+                timeout_seconds=10,
+                poll_interval_seconds=0.1,
+                sleep_func=lambda _seconds: None,
+                monotonic_func=lambda: 0,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.exitstatus, "OK")
+
+    def test_wait_for_task_returns_failed_result(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+
+        with patch.object(client, "task_status", return_value={"status": "stopped", "exitstatus": "interrupted"}):
+            result = client.wait_for_task(
+                node="pve1",
+                upid="UPID:pve1:test:",
+                timeout_seconds=10,
+                poll_interval_seconds=0.1,
+                sleep_func=lambda _seconds: None,
+                monotonic_func=lambda: 0,
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.exitstatus, "interrupted")
+
+    def test_wait_for_task_times_out(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+        monotonic_values = iter([0, 11])
+
+        with patch.object(client, "task_status", return_value={"status": "running"}):
+            with self.assertRaisesMessage(ProxmoxTaskTimeout, "Timed out"):
+                client.wait_for_task(
+                    node="pve1",
+                    upid="UPID:pve1:test:",
+                    timeout_seconds=10,
+                    poll_interval_seconds=0.1,
+                    sleep_func=lambda _seconds: None,
+                    monotonic_func=lambda: next(monotonic_values),
+                )
+
+
+class ScheduledActionModelTests(TestCase):
+    def test_run_occurrence_key_is_unique_per_action(self):
+        action = ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            schedule_type=ScheduledAction.ScheduleType.ONCE,
+            next_run_at=timezone.now(),
+        )
+        planned_for = timezone.now()
+
+        ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=planned_for,
+            occurrence_key="2026-07-01T22:00:00Z",
+        )
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ScheduledActionRun.objects.create(
+                    scheduled_action=action,
+                    planned_for=planned_for,
+                    occurrence_key="2026-07-01T22:00:00Z",
+                )
+
+    def test_same_occurrence_key_can_be_used_for_different_actions(self):
+        first = ScheduledAction.objects.create(
+            name="Start VM 500",
+            action_type=ScheduledAction.ActionType.START,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+        )
+        second = ScheduledAction.objects.create(
+            name="Start VM 501",
+            action_type=ScheduledAction.ActionType.START,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=501,
+        )
+        planned_for = timezone.now()
+
+        ScheduledActionRun.objects.create(
+            scheduled_action=first,
+            planned_for=planned_for,
+            occurrence_key="2026-07-01T22:00:00Z",
+        )
+        ScheduledActionRun.objects.create(
+            scheduled_action=second,
+            planned_for=planned_for,
+            occurrence_key="2026-07-01T22:00:00Z",
+        )
+
+        self.assertEqual(ScheduledActionRun.objects.count(), 2)
 
 
 @override_settings(OIDC_ISSUER_URL="https://issuer.example/application/o/pve-helper")
