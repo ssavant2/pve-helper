@@ -20,6 +20,7 @@ SCHEDULED_ACTION_DISPATCH_FUNC = "core.tasks.dispatch_scheduled_actions"
 SCHEDULED_ACTION_EXECUTION_FUNC = "core.tasks.run_scheduled_action"
 SCHEDULED_ACTION_DISPATCH_INTERVAL_MINUTES = 1
 DISPATCH_GRACE = timedelta(seconds=120)
+STALE_RUN_GRACE = timedelta(minutes=5)
 
 IN_FLIGHT_RUN_STATUSES = {
     ScheduledActionRun.Status.QUEUED,
@@ -86,6 +87,9 @@ def dispatch_due_scheduled_actions(
     now=None,
     enqueue_func: Callable[..., Any] = async_task,
 ) -> DispatchResult:
+    reap_stale_scheduled_action_runs(now=now)
+    prune_scheduled_action_runs(retention_days=settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS, now=now)
+
     if not settings.SCHEDULED_ACTIONS_ENABLED:
         return DispatchResult(disabled=True)
 
@@ -166,6 +170,56 @@ def dispatch_due_scheduled_actions(
         )
 
     return DispatchResult(queued=len(queued_runs), missed=len(missed_runs), skipped=skipped)
+
+
+def reap_stale_scheduled_action_runs(*, now=None) -> int:
+    now = now or timezone.now()
+    stale_count = 0
+    runs = (
+        ScheduledActionRun.objects.select_related("scheduled_action")
+        .filter(status__in=IN_FLIGHT_RUN_STATUSES)
+        .order_by("created_at")
+    )
+    for run in runs:
+        reference_time = run.started_at or run.created_at
+        timeout = max(run.scheduled_action.action_timeout_seconds, settings.SCHEDULED_ACTION_TIMEOUT_SECONDS)
+        stale_after = reference_time + timedelta(seconds=timeout) + STALE_RUN_GRACE
+        if stale_after > now:
+            continue
+
+        _finish_run(
+            run,
+            status=ScheduledActionRun.Status.STALE,
+            outcome=ScheduledActionRun.Outcome.STALE,
+            action_status=ScheduledAction.LastStatus.FAILED,
+            error="Scheduled action run was marked stale after worker timeout.",
+        )
+        stale_count += 1
+    return stale_count
+
+
+def prune_scheduled_action_runs(*, retention_days: int | None = None, now=None) -> int:
+    retention_days = retention_days if retention_days is not None else settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS
+    now = now or timezone.now()
+    cutoff = now - timedelta(days=retention_days)
+    deleted_count, _deleted_by_model = (
+        ScheduledActionRun.objects.exclude(status__in=IN_FLIGHT_RUN_STATUSES)
+        .filter(finished_at__lt=cutoff)
+        .delete()
+    )
+
+    if deleted_count:
+        AuditEvent.objects.create(
+            username="system",
+            action="scheduled_action.run_retention.purge",
+            object_type="scheduled_action_run",
+            outcome="success",
+            details={
+                "retention_days": retention_days,
+                "purged": deleted_count,
+            },
+        )
+    return deleted_count
 
 
 def execute_scheduled_action_run(
@@ -422,6 +476,7 @@ def _finish_run(
         ScheduledActionRun.Status.FAILED: "scheduled_action.run_failed",
         ScheduledActionRun.Status.SKIPPED: "scheduled_action.run_skipped",
         ScheduledActionRun.Status.TIMEOUT: "scheduled_action.run_failed",
+        ScheduledActionRun.Status.STALE: "scheduled_action.run_failed",
     }.get(status, "scheduled_action.run_completed")
     audit_outcome = "success" if outcome in {ScheduledActionRun.Outcome.SUCCESS, ScheduledActionRun.Outcome.SUCCESS_NOOP} else outcome
     _audit_run(

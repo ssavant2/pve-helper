@@ -57,6 +57,8 @@ from core.services.scheduled_actions import (
     SCHEDULED_ACTION_DISPATCH_SCHEDULE_NAME,
     dispatch_due_scheduled_actions,
     execute_scheduled_action_run,
+    prune_scheduled_action_runs,
+    reap_stale_scheduled_action_runs,
 )
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
@@ -528,6 +530,58 @@ class ScheduledActionDispatchTests(TestCase):
 
         self.assertEqual(result["queued"], 0)
         self.assertTrue(result["disabled"])
+
+    @override_settings(SCHEDULED_ACTION_TIMEOUT_SECONDS=30)
+    def test_stale_reaper_marks_old_in_flight_runs(self):
+        now = timezone.now()
+        action = self._action(next_run_at=now + timedelta(hours=1))
+        action.action_timeout_seconds = 30
+        action.save(update_fields=["action_timeout_seconds", "updated_at"])
+        run = ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=now - timedelta(minutes=15),
+            occurrence_key="stale",
+            status=ScheduledActionRun.Status.POLLING,
+            started_at=now - timedelta(minutes=10),
+        )
+
+        count = reap_stale_scheduled_action_runs(now=now)
+
+        self.assertEqual(count, 1)
+        run.refresh_from_db()
+        action.refresh_from_db()
+        self.assertEqual(run.status, ScheduledActionRun.Status.STALE)
+        self.assertEqual(run.outcome, ScheduledActionRun.Outcome.STALE)
+        self.assertEqual(action.last_status, ScheduledAction.LastStatus.FAILED)
+        event = AuditEvent.objects.get(action="scheduled_action.run_failed")
+        self.assertEqual(event.outcome, "stale")
+
+    def test_run_retention_prunes_finished_history_only(self):
+        now = timezone.now()
+        action = self._action(next_run_at=now + timedelta(hours=1))
+        old_finished = ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=now - timedelta(days=120),
+            occurrence_key="old-finished",
+            status=ScheduledActionRun.Status.COMPLETED,
+            outcome=ScheduledActionRun.Outcome.SUCCESS,
+            finished_at=now - timedelta(days=120),
+        )
+        old_in_flight = ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=now - timedelta(days=120),
+            occurrence_key="old-active",
+            status=ScheduledActionRun.Status.QUEUED,
+            finished_at=now - timedelta(days=120),
+        )
+
+        count = prune_scheduled_action_runs(retention_days=90, now=now)
+
+        self.assertEqual(count, 1)
+        self.assertFalse(ScheduledActionRun.objects.filter(pk=old_finished.pk).exists())
+        self.assertTrue(ScheduledActionRun.objects.filter(pk=old_in_flight.pk).exists())
+        event = AuditEvent.objects.get(action="scheduled_action.run_retention.purge")
+        self.assertEqual(event.details["purged"], 1)
 
 
 class ScheduledActionExecutionTests(TestCase):
