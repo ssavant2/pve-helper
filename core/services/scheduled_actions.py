@@ -12,6 +12,7 @@ from django_q.tasks import async_task
 
 from core.models import AuditEvent, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
+from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 
 
 SCHEDULED_ACTION_DISPATCH_SCHEDULE_NAME = "pve-helper scheduled action dispatcher"
@@ -98,7 +99,6 @@ def dispatch_due_scheduled_actions(
             ScheduledAction.objects.select_for_update(skip_locked=True)
             .filter(
                 enabled=True,
-                schedule_type=ScheduledAction.ScheduleType.ONCE,
                 next_run_at__isnull=False,
                 next_run_at__lte=now,
             )
@@ -120,11 +120,12 @@ def dispatch_due_scheduled_actions(
                 scheduled_action=action,
                 occurrence_key=occurrence_key,
             ).exists():
-                _finish_one_time_action(action, now, ScheduledAction.LastStatus.SKIPPED)
+                _advance_action_after_claim(action, now, ScheduledAction.LastStatus.SKIPPED)
                 skipped += 1
                 continue
 
             if _is_missed(action, planned_for, now):
+                advance_error = _advance_action_after_claim(action, now, ScheduledAction.LastStatus.MISSED)
                 run = ScheduledActionRun.objects.create(
                     scheduled_action=action,
                     planned_for=planned_for,
@@ -132,19 +133,19 @@ def dispatch_due_scheduled_actions(
                     status=ScheduledActionRun.Status.MISSED,
                     outcome=ScheduledActionRun.Outcome.MISSED,
                     finished_at=now,
-                    error="Scheduled run was outside its allowed dispatch window.",
+                    error=advance_error or "Scheduled run was outside its allowed dispatch window.",
                 )
-                _finish_one_time_action(action, now, ScheduledAction.LastStatus.MISSED)
                 missed_runs.append(run)
                 continue
 
+            advance_error = _advance_action_after_claim(action, now, ScheduledAction.LastStatus.QUEUED)
             run = ScheduledActionRun.objects.create(
                 scheduled_action=action,
                 planned_for=planned_for,
                 occurrence_key=occurrence_key,
                 status=ScheduledActionRun.Status.QUEUED,
+                error=advance_error,
             )
-            _finish_one_time_action(action, now, ScheduledAction.LastStatus.QUEUED)
             queued_runs.append(run)
 
     for run in queued_runs:
@@ -436,12 +437,25 @@ def _finish_run(
     )
 
 
-def _finish_one_time_action(action: ScheduledAction, now, status: str) -> None:
-    action.enabled = False
-    action.next_run_at = None
+def _advance_action_after_claim(action: ScheduledAction, now, status: str) -> str:
+    error = ""
+    if action.schedule_type == ScheduledAction.ScheduleType.RECURRING:
+        try:
+            action.next_run_at = next_run_after(action, after=now)
+        except RecurrenceError as exc:
+            action.next_run_at = None
+            action.enabled = False
+            status = ScheduledAction.LastStatus.FAILED
+            error = str(exc)
+        else:
+            action.enabled = action.next_run_at is not None
+    else:
+        action.enabled = False
+        action.next_run_at = None
     action.last_run_at = now
     action.last_status = status
     action.save(update_fields=["enabled", "next_run_at", "last_run_at", "last_status", "updated_at"])
+    return error
 
 
 def _has_in_flight_run(action: ScheduledAction) -> bool:

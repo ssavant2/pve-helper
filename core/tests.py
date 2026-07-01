@@ -58,6 +58,7 @@ from core.services.scheduled_actions import (
     dispatch_due_scheduled_actions,
     execute_scheduled_action_run,
 )
+from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
 from core.services.storage import StorageScanner
 from core.services.storage_actions import (
@@ -368,6 +369,52 @@ class ScheduledActionModelTests(TestCase):
         self.assertEqual(ScheduledActionRun.objects.count(), 2)
 
 
+class ScheduledRecurrenceTests(TestCase):
+    def _recurring_action(self, *, kind, recurrence, timezone_name="UTC"):
+        return ScheduledAction.objects.create(
+            name="Recurring action",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            schedule_type=ScheduledAction.ScheduleType.RECURRING,
+            recurrence_kind=kind,
+            recurrence=recurrence,
+            timezone=timezone_name,
+        )
+
+    def test_next_run_supports_first_sunday_of_month(self):
+        action = self._recurring_action(
+            kind=ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
+            recurrence={"ordinal": "first", "weekday": "sunday", "time": "22:00"},
+            timezone_name="Europe/Stockholm",
+        )
+        after = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.UTC)
+
+        next_run = next_run_after(action, after=after)
+
+        self.assertEqual(next_run, datetime(2026, 7, 5, 20, 0, tzinfo=timezone.UTC))
+
+    def test_monthly_day_skips_months_without_that_day(self):
+        action = self._recurring_action(
+            kind=ScheduledAction.RecurrenceKind.MONTHLY_DAY,
+            recurrence={"day_of_month": 31, "time": "22:00"},
+        )
+
+        first = next_run_after(action, after=datetime(2026, 1, 31, 22, 30, tzinfo=timezone.UTC))
+
+        self.assertEqual(first, datetime(2026, 3, 31, 22, 0, tzinfo=timezone.UTC))
+
+    def test_invalid_timezone_raises_clear_error(self):
+        action = self._recurring_action(
+            kind=ScheduledAction.RecurrenceKind.DAILY,
+            recurrence={"time": "22:00"},
+            timezone_name="Mars/Olympus",
+        )
+
+        with self.assertRaisesMessage(RecurrenceError, "Unknown timezone"):
+            next_run_after(action, after=datetime(2026, 7, 1, 12, 0, tzinfo=timezone.UTC))
+
+
 class ScheduledActionDispatchTests(TestCase):
     def _action(self, *, next_run_at=None, catch_up_policy=None, max_lateness_minutes=0):
         return ScheduledAction.objects.create(
@@ -449,6 +496,32 @@ class ScheduledActionDispatchTests(TestCase):
         action.refresh_from_db()
         self.assertTrue(action.enabled)
         enqueue.assert_not_called()
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_dispatch_recurring_action_advances_next_run(self):
+        now = datetime(2026, 7, 1, 21, 0, tzinfo=timezone.UTC)
+        action = ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            schedule_type=ScheduledAction.ScheduleType.RECURRING,
+            recurrence_kind=ScheduledAction.RecurrenceKind.DAILY,
+            recurrence={"time": "22:00"},
+            timezone="UTC",
+            next_run_at=now,
+        )
+        enqueue = Mock(return_value="task-id")
+
+        result = dispatch_due_scheduled_actions(now=now, enqueue_func=enqueue)
+
+        self.assertEqual(result.queued, 1)
+        action.refresh_from_db()
+        self.assertTrue(action.enabled)
+        self.assertEqual(action.next_run_at, datetime(2026, 7, 1, 22, 0, tzinfo=timezone.UTC))
+        run = ScheduledActionRun.objects.get(scheduled_action=action)
+        self.assertEqual(run.planned_for, now)
+        enqueue.assert_called_once_with("core.tasks.run_scheduled_action", run.id)
 
     def test_dispatch_task_returns_serializable_result(self):
         result = dispatch_scheduled_actions()
