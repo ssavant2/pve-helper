@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
@@ -2098,9 +2098,9 @@ def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict
         "recurrence_kind_choices": [
             (ScheduledAction.RecurrenceKind.DAILY, "Daily"),
             (ScheduledAction.RecurrenceKind.WEEKLY, "Weekly"),
-            (ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL, "Monthly ordinal"),
-            (ScheduledAction.RecurrenceKind.MONTHLY_DAY, "Monthly day"),
-            (ScheduledAction.RecurrenceKind.ADVANCED, "Advanced RRULE"),
+            (ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL, "Monthly by weekday"),
+            (ScheduledAction.RecurrenceKind.MONTHLY_DAY, "Monthly by date"),
+            (ScheduledAction.RecurrenceKind.ADVANCED, "Custom RRULE"),
         ],
         "weekday_choices": SCHEDULED_ACTION_WEEKDAYS,
         "ordinal_choices": SCHEDULED_ACTION_ORDINALS,
@@ -2117,9 +2117,9 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
             "action_type": post.get("action_type", ScheduledAction.ActionType.SHUTDOWN),
             "target": post.get("target", ""),
             "schedule_type": post.get("schedule_type", ScheduledAction.ScheduleType.ONCE),
-            "run_at": post.get("run_at", ""),
+            **_posted_datetime_parts(post, "run"),
             "recurrence_kind": post.get("recurrence_kind", ScheduledAction.RecurrenceKind.DAILY),
-            "recurrence_time": post.get("recurrence_time", "22:00"),
+            **_posted_time_parts(post, "recurrence", default="22:00"),
             "weekday": post.get("weekday", "6"),
             "ordinal": post.get("ordinal", "first"),
             "day_of_month": post.get("day_of_month", "1"),
@@ -2132,15 +2132,20 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
     recurrence = action.recurrence if isinstance(action.recurrence, dict) else {}
     target = f"{action.target_type}:{action.target_vmid}" if action.target_type and action.target_vmid else ""
     run_at = action.run_at or action.next_run_at
+    run_date, run_hour, run_minute = _datetime_parts(run_at)
+    recurrence_hour, recurrence_minute = _time_parts(_recurrence_time_label(recurrence) if action.pk else "22:00")
     return {
         "name": action.name or "",
         "enabled": action.enabled if action.pk else True,
         "action_type": action.action_type or ScheduledAction.ActionType.SHUTDOWN,
         "target": target,
         "schedule_type": action.schedule_type or ScheduledAction.ScheduleType.ONCE,
-        "run_at": _datetime_local_value(run_at),
+        "run_date": run_date,
+        "run_hour": run_hour,
+        "run_minute": run_minute,
         "recurrence_kind": action.recurrence_kind or ScheduledAction.RecurrenceKind.DAILY,
-        "recurrence_time": _recurrence_time_label(recurrence) if action.pk else "22:00",
+        "recurrence_hour": recurrence_hour,
+        "recurrence_minute": recurrence_minute,
         "weekday": str(recurrence.get("weekday", "6")),
         "ordinal": str(recurrence.get("ordinal", recurrence.get("week", "first"))),
         "day_of_month": str(recurrence.get("day", recurrence.get("day_of_month", "1"))),
@@ -2152,7 +2157,7 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
 
 
 def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> list[dict]:
-    latest_scan = _latest_result_scan()
+    latest_scan = _latest_proxmox_inventory_scan()
     choices = []
     seen = set()
     if latest_scan:
@@ -2186,6 +2191,21 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
                 }
             )
     return choices
+
+
+def _latest_proxmox_inventory_scan() -> ScanRun | None:
+    return (
+        ScanRun.objects.filter(
+            proxmox_objects__object_type__in=[
+                ProxmoxInventory.ObjectType.VM,
+                ProxmoxInventory.ObjectType.CT,
+            ],
+            proxmox_objects__vmid__isnull=False,
+        )
+        .order_by("-created_at")
+        .distinct()
+        .first()
+    )
 
 
 def _inventory_target_label(obj: ProxmoxInventory) -> str:
@@ -2247,14 +2267,17 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     recurrence_kind = post.get("recurrence_kind", ScheduledAction.RecurrenceKind.DAILY)
     if schedule_type == ScheduledAction.ScheduleType.ONCE:
         try:
-            run_at = _parse_local_datetime(post.get("run_at", ""))
+            run_at = _parse_local_datetime_from_post(post)
         except ValueError as exc:
             errors.append(str(exc))
         recurrence_kind = ScheduledAction.RecurrenceKind.ADVANCED
     else:
         if recurrence_kind not in ScheduledAction.RecurrenceKind.values:
             errors.append("Unknown recurrence type.")
-        recurrence = _recurrence_from_post(post, recurrence_kind)
+        try:
+            recurrence = _recurrence_from_post(post, recurrence_kind)
+        except ValueError as exc:
+            errors.append(str(exc))
 
     if errors:
         return errors
@@ -2334,7 +2357,7 @@ def _apply_target_snapshot(action: ScheduledAction) -> None:
 
 
 def _recurrence_from_post(post, recurrence_kind: str) -> dict:
-    time_value = post.get("recurrence_time", "22:00").strip() or "22:00"
+    time_value = _time_value_from_post(post, "recurrence", fallback_name="recurrence_time", label="Recurring time")
     if recurrence_kind == ScheduledAction.RecurrenceKind.DAILY:
         return {"time": time_value}
     if recurrence_kind == ScheduledAction.RecurrenceKind.WEEKLY:
@@ -2382,6 +2405,36 @@ def _parse_local_datetime(value: str):
     return parsed
 
 
+def _parse_local_datetime_from_post(post):
+    legacy_value = post.get("run_at", "").strip()
+    if legacy_value:
+        return _parse_local_datetime(legacy_value)
+
+    run_date = post.get("run_date", "").strip()
+    if not run_date:
+        raise ValueError("Run date is required.")
+    try:
+        parsed_date = datetime.strptime(run_date, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError("Run date must use YYYY-MM-DD format.") from exc
+
+    hour = _bounded_int(post.get("run_hour", "0"), 0, 23, "Run hour")
+    minute = _bounded_int(post.get("run_minute", "0"), 0, 59, "Run minute")
+    return tz.make_aware(datetime.combine(parsed_date, time(hour, minute)), ZoneInfo(settings.TIME_ZONE))
+
+
+def _time_value_from_post(post, prefix: str, *, fallback_name: str, label: str) -> str:
+    hour_value = post.get(f"{prefix}_hour")
+    minute_value = post.get(f"{prefix}_minute")
+    if hour_value is None and minute_value is None:
+        fallback = post.get(fallback_name, "").strip()
+        if fallback:
+            hour_value, minute_value = _time_parts(fallback)
+    hour = _bounded_int(str(hour_value if hour_value is not None else "0"), 0, 23, f"{label} hour")
+    minute = _bounded_int(str(minute_value if minute_value is not None else "0"), 0, 59, f"{label} minute")
+    return f"{hour:02d}:{minute:02d}"
+
+
 def _bounded_int(value: str, minimum: int, maximum: int, label: str) -> int:
     try:
         parsed = int(value)
@@ -2392,10 +2445,55 @@ def _bounded_int(value: str, minimum: int, maximum: int, label: str) -> int:
     return parsed
 
 
-def _datetime_local_value(value) -> str:
+def _datetime_parts(value) -> tuple[str, str, str]:
     if value is None:
-        return ""
-    return tz.localtime(value).strftime("%Y-%m-%dT%H:%M")
+        return "", "22", "00"
+    local_value = tz.localtime(value)
+    return local_value.strftime("%Y-%m-%d"), local_value.strftime("%H"), local_value.strftime("%M")
+
+
+def _time_parts(value: str) -> tuple[str, str]:
+    parts = str(value or "22:00").split(":")
+    if len(parts) < 2:
+        return "22", "00"
+    try:
+        hour = max(0, min(23, int(parts[0])))
+        minute = max(0, min(59, int(parts[1])))
+    except ValueError:
+        return "22", "00"
+    return f"{hour:02d}", f"{minute:02d}"
+
+
+def _posted_datetime_parts(post, prefix: str) -> dict[str, str]:
+    legacy_value = post.get(f"{prefix}_at", "").strip()
+    if legacy_value:
+        try:
+            parsed = _parse_local_datetime(legacy_value)
+        except ValueError:
+            return {
+                f"{prefix}_date": post.get(f"{prefix}_date", ""),
+                f"{prefix}_hour": post.get(f"{prefix}_hour", "22"),
+                f"{prefix}_minute": post.get(f"{prefix}_minute", "00"),
+            }
+        date_value, hour_value, minute_value = _datetime_parts(parsed)
+        return {
+            f"{prefix}_date": post.get(f"{prefix}_date", date_value),
+            f"{prefix}_hour": post.get(f"{prefix}_hour", hour_value),
+            f"{prefix}_minute": post.get(f"{prefix}_minute", minute_value),
+        }
+    return {
+        f"{prefix}_date": post.get(f"{prefix}_date", ""),
+        f"{prefix}_hour": post.get(f"{prefix}_hour", "22"),
+        f"{prefix}_minute": post.get(f"{prefix}_minute", "00"),
+    }
+
+
+def _posted_time_parts(post, prefix: str, *, default: str) -> dict[str, str]:
+    hour_value, minute_value = _time_parts(post.get(f"{prefix}_time", default))
+    return {
+        f"{prefix}_hour": post.get(f"{prefix}_hour", hour_value),
+        f"{prefix}_minute": post.get(f"{prefix}_minute", minute_value),
+    }
 
 
 def _audit_scheduled_action_definition(request, action: str, scheduled_action: ScheduledAction) -> None:

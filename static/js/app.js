@@ -1573,12 +1573,51 @@
     });
   };
 
+  const initScheduledTaskForms = (root) => {
+    root.querySelectorAll("[data-scheduled-task-form]").forEach((form) => {
+      if (form.dataset.initialized === "true") return;
+      form.dataset.initialized = "true";
+
+      const scheduleType = form.querySelector("[data-schedule-type]");
+      const recurrenceKind = form.querySelector("[data-recurrence-kind]");
+      const scheduledFields = Array.from(form.querySelectorAll("[data-schedule-field]"));
+      const recurrenceFields = Array.from(form.querySelectorAll("[data-recurrence-field]"));
+
+      const visibleForRecurrence = (field, kind) => {
+        const fieldKind = field.dataset.recurrenceField;
+        if (fieldKind === "time") return kind !== "advanced";
+        if (fieldKind === "weekday") return kind === "weekly" || kind === "monthly_ordinal";
+        if (fieldKind === "ordinal") return kind === "monthly_ordinal";
+        if (fieldKind === "day") return kind === "monthly_day";
+        if (fieldKind === "rrule") return kind === "advanced";
+        return true;
+      };
+
+      const update = () => {
+        const recurring = scheduleType?.value === "recurring";
+        const kind = recurrenceKind?.value || "daily";
+        scheduledFields.forEach((field) => {
+          const fieldSchedule = field.dataset.scheduleField;
+          field.hidden = fieldSchedule === "recurring" ? !recurring : recurring;
+        });
+        recurrenceFields.forEach((field) => {
+          field.hidden = !recurring || !visibleForRecurrence(field, kind);
+        });
+      };
+
+      scheduleType?.addEventListener("change", update);
+      recurrenceKind?.addEventListener("change", update);
+      update();
+    });
+  };
+
   const initPage = (root = document) => {
     initAutoSubmitForms(root);
     initScanActions(root);
     initStorageFileManagers(root);
     initConfirmedFileActions(root);
     initConfirmForms(root);
+    initScheduledTaskForms(root);
     initAuditLogs(root);
     initSpaceCharts(root);
     initTableFilters(root);

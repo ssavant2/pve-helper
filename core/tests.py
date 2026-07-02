@@ -4078,6 +4078,17 @@ class ViewSmokeTests(TestCase):
             name="Lab VM",
         )
 
+        response = self.client.get(reverse("core:scheduled_task_create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Lab VM")
+        self.assertContains(response, 'value="vm:500"')
+        self.assertContains(response, "Timeout (seconds)")
+        self.assertContains(response, "Monthly by weekday")
+        self.assertContains(response, "Monthly by date")
+        self.assertContains(response, "Recurring Time")
+        self.assertContains(response, "Retry Window (hours)")
+
         response = self.client.get(reverse("core:scheduled_task_create"), {"target": "vm:500"})
 
         self.assertEqual(response.status_code, 200)
@@ -4094,7 +4105,8 @@ class ViewSmokeTests(TestCase):
                 "action_timeout_seconds": "900",
                 "schedule_type": ScheduledAction.ScheduleType.RECURRING,
                 "recurrence_kind": ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
-                "recurrence_time": "22:00",
+                "recurrence_hour": "22",
+                "recurrence_minute": "0",
                 "weekday": "6",
                 "ordinal": "first",
                 "catch_up_enabled": "on",
@@ -4112,6 +4124,40 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(action.max_lateness_minutes, 120)
         self.assertIsNotNone(action.next_run_at)
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.created").exists())
+
+    def test_scheduled_task_create_form_creates_one_time_task_with_24h_fields(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+        )
+
+        response = self.client.post(
+            reverse("core:scheduled_task_create"),
+            {
+                "name": "One-time reboot",
+                "enabled": "on",
+                "target": "vm:500",
+                "action_type": ScheduledAction.ActionType.REBOOT,
+                "action_timeout_seconds": "900",
+                "schedule_type": ScheduledAction.ScheduleType.ONCE,
+                "run_date": "2026-07-03",
+                "run_hour": "22",
+                "run_minute": "5",
+                "max_lateness_hours": "1",
+            },
+        )
+
+        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        action = ScheduledAction.objects.get(name="One-time reboot")
+        local_run_at = timezone.localtime(action.run_at)
+        self.assertEqual(local_run_at.strftime("%Y-%m-%d %H:%M"), "2026-07-03 22:05")
+        self.assertEqual(action.next_run_at, action.run_at)
 
     def test_scheduled_task_edit_form_updates_definition(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
@@ -4144,7 +4190,8 @@ class ViewSmokeTests(TestCase):
                 "action_timeout_seconds": "1800",
                 "schedule_type": ScheduledAction.ScheduleType.RECURRING,
                 "recurrence_kind": ScheduledAction.RecurrenceKind.DAILY,
-                "recurrence_time": "07:30",
+                "recurrence_hour": "7",
+                "recurrence_minute": "30",
                 "max_lateness_hours": "1",
             },
         )
