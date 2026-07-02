@@ -39,7 +39,7 @@ from .services.audit_retention_schedule import audit_retention_schedule_state, u
 from .services.filesystem import storage_space_info
 from .services.partial_scan import refresh_storage_directory
 from .services.permissions import storage_permissions as get_permissions
-from .services.proxmox import LIVE_GUEST_STATUS_CACHE_SECONDS, fetch_live_guest_status
+from .services.proxmox import LIVE_GUEST_STATUS_CACHE_SECONDS, fetch_live_guest_inventory, fetch_live_guest_status
 from .services.recent_tasks import recent_task_page, serialize_task_page
 from .services.scan_schedule import scan_schedule_state, update_scan_schedule
 from .services.scheduled_actions import ScheduledActionQueueError, queue_manual_scheduled_action_run
@@ -91,6 +91,22 @@ SCHEDULED_ACTION_ORDINALS = [
     ("fifth", "Fifth"),
     ("last", "Last"),
 ]
+SCHEDULED_ACTION_MONTHS = [
+    ("1", "Jan"),
+    ("2", "Feb"),
+    ("3", "Mar"),
+    ("4", "Apr"),
+    ("5", "May"),
+    ("6", "Jun"),
+    ("7", "Jul"),
+    ("8", "Aug"),
+    ("9", "Sep"),
+    ("10", "Oct"),
+    ("11", "Nov"),
+    ("12", "Dec"),
+]
+SCHEDULED_ACTION_DEFAULT_MONTHS = [value for value, _label in SCHEDULED_ACTION_MONTHS]
+SCHEDULED_ACTION_RECURRENCE_ONCE = "once"
 
 
 def app_login_required(view_func):
@@ -2094,16 +2110,16 @@ def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict
         "form_mode": mode,
         "target_choices": target_choices,
         "action_type_choices": ScheduledAction.ActionType.choices,
-        "schedule_type_choices": ScheduledAction.ScheduleType.choices,
         "recurrence_kind_choices": [
+            (SCHEDULED_ACTION_RECURRENCE_ONCE, "Once"),
             (ScheduledAction.RecurrenceKind.DAILY, "Daily"),
             (ScheduledAction.RecurrenceKind.WEEKLY, "Weekly"),
             (ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL, "Monthly by weekday"),
             (ScheduledAction.RecurrenceKind.MONTHLY_DAY, "Monthly by date"),
-            (ScheduledAction.RecurrenceKind.ADVANCED, "Custom RRULE"),
         ],
         "weekday_choices": SCHEDULED_ACTION_WEEKDAYS,
         "ordinal_choices": SCHEDULED_ACTION_ORDINALS,
+        "month_choices": SCHEDULED_ACTION_MONTHS,
         "scheduled_actions_enabled": settings.SCHEDULED_ACTIONS_ENABLED,
         "schedule_timezone": settings.TIME_ZONE,
     }
@@ -2116,14 +2132,12 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
             "enabled": post.get("enabled") == "on",
             "action_type": post.get("action_type", ScheduledAction.ActionType.SHUTDOWN),
             "target": post.get("target", ""),
-            "schedule_type": post.get("schedule_type", ScheduledAction.ScheduleType.ONCE),
             **_posted_datetime_parts(post, "run"),
-            "recurrence_kind": post.get("recurrence_kind", ScheduledAction.RecurrenceKind.DAILY),
-            **_posted_time_parts(post, "recurrence", default="22:00"),
-            "weekday": post.get("weekday", "6"),
-            "ordinal": post.get("ordinal", "first"),
-            "day_of_month": post.get("day_of_month", "1"),
-            "rrule": post.get("rrule", ""),
+            "recurrence_kind": post.get("recurrence_kind", SCHEDULED_ACTION_RECURRENCE_ONCE),
+            "weekdays": _posted_values(post, "weekdays", fallback_names=["weekday"], default=["6"]),
+            "ordinals": _posted_values(post, "ordinals", fallback_names=["ordinal"], default=["first"]),
+            "days_of_month": post.get("days_of_month", post.get("day_of_month", "1")),
+            "months": _posted_values(post, "months", default=SCHEDULED_ACTION_DEFAULT_MONTHS),
             "catch_up_enabled": post.get("catch_up_enabled") == "on",
             "max_lateness_hours": post.get("max_lateness_hours", "1"),
             "action_timeout_seconds": post.get("action_timeout_seconds", "1800"),
@@ -2131,25 +2145,30 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
 
     recurrence = action.recurrence if isinstance(action.recurrence, dict) else {}
     target = f"{action.target_type}:{action.target_vmid}" if action.target_type and action.target_vmid else ""
-    run_at = action.run_at or action.next_run_at
+    run_at = None
+    if action.schedule_type == ScheduledAction.ScheduleType.ONCE:
+        run_at = action.run_at or action.next_run_at
     run_date, run_hour, run_minute = _datetime_parts(run_at)
-    recurrence_hour, recurrence_minute = _time_parts(_recurrence_time_label(recurrence) if action.pk else "22:00")
+    if action.schedule_type == ScheduledAction.ScheduleType.RECURRING:
+        run_hour, run_minute = _time_parts(_recurrence_time_label(recurrence) if action.pk else "22:00")
+    recurrence_kind = (
+        SCHEDULED_ACTION_RECURRENCE_ONCE
+        if action.schedule_type != ScheduledAction.ScheduleType.RECURRING
+        else action.recurrence_kind or ScheduledAction.RecurrenceKind.DAILY
+    )
     return {
         "name": action.name or "",
         "enabled": action.enabled if action.pk else True,
         "action_type": action.action_type or ScheduledAction.ActionType.SHUTDOWN,
         "target": target,
-        "schedule_type": action.schedule_type or ScheduledAction.ScheduleType.ONCE,
         "run_date": run_date,
         "run_hour": run_hour,
         "run_minute": run_minute,
-        "recurrence_kind": action.recurrence_kind or ScheduledAction.RecurrenceKind.DAILY,
-        "recurrence_hour": recurrence_hour,
-        "recurrence_minute": recurrence_minute,
-        "weekday": str(recurrence.get("weekday", "6")),
-        "ordinal": str(recurrence.get("ordinal", recurrence.get("week", "first"))),
-        "day_of_month": str(recurrence.get("day", recurrence.get("day_of_month", "1"))),
-        "rrule": str(recurrence.get("rrule", "")),
+        "recurrence_kind": recurrence_kind,
+        "weekdays": _recurrence_values(recurrence, "weekdays", "weekday", default=["6"]),
+        "ordinals": _recurrence_values(recurrence, "ordinals", "ordinal", "week", default=["first"]),
+        "days_of_month": _recurrence_days_label(recurrence),
+        "months": _recurrence_values(recurrence, "months", default=SCHEDULED_ACTION_DEFAULT_MONTHS),
         "catch_up_enabled": action.catch_up_policy == ScheduledAction.CatchUpPolicy.RUN_ONCE_LATE,
         "max_lateness_hours": str(max(1, action.max_lateness_minutes // 60) if action.max_lateness_minutes else 1),
         "action_timeout_seconds": str(action.action_timeout_seconds or 1800),
@@ -2157,9 +2176,21 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
 
 
 def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> list[dict]:
-    latest_scan = _latest_proxmox_inventory_scan()
     choices = []
     seen = set()
+    for guest in fetch_live_guest_inventory(use_cache=False):
+        key = (guest.object_type, guest.vmid)
+        if key in seen:
+            continue
+        seen.add(key)
+        choices.append(
+            {
+                "value": f"{guest.object_type}:{guest.vmid}",
+                "label": _live_guest_target_label(guest),
+            }
+        )
+
+    latest_scan = _latest_proxmox_inventory_scan()
     if latest_scan:
         objects = (
             ProxmoxInventory.objects.filter(
@@ -2218,6 +2249,16 @@ def _inventory_target_label(obj: ProxmoxInventory) -> str:
     return label
 
 
+def _live_guest_target_label(guest) -> str:
+    type_label = "VM" if guest.object_type == ProxmoxInventory.ObjectType.VM else "Container"
+    label = f"{type_label} {guest.vmid}"
+    if guest.name:
+        label = f"{label} ({guest.name})"
+    if guest.node:
+        label = f"{label} on {guest.node}"
+    return label
+
+
 def _scheduled_target_label(target_type: str | None, target_vmid: int | None) -> str:
     if target_type is None or target_vmid is None:
         return ""
@@ -2230,6 +2271,20 @@ def _scheduled_target_label(target_type: str | None, target_vmid: int | None) ->
         return _inventory_target_label(obj)
     type_label = "VM" if target_type == ScheduledAction.TargetType.VM else "Container"
     return f"{type_label} {target_vmid}"
+
+
+def _live_guest_for_target(
+    target_type: str | None,
+    target_vmid: int | None,
+    *,
+    use_cache: bool,
+):
+    if target_type is None or target_vmid is None:
+        return None
+    for guest in fetch_live_guest_inventory(use_cache=use_cache):
+        if guest.object_type == target_type and guest.vmid == target_vmid:
+            return guest
+    return None
 
 
 def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[str]:
@@ -2251,27 +2306,26 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
         errors.append(str(exc))
         timeout_seconds = 1800
 
-    catch_up_enabled = post.get("catch_up_enabled") == "on"
+    selected_recurrence = post.get("recurrence_kind", SCHEDULED_ACTION_RECURRENCE_ONCE)
+    catch_up_enabled = post.get("catch_up_enabled") == "on" and selected_recurrence != SCHEDULED_ACTION_RECURRENCE_ONCE
     try:
         max_lateness_hours = _bounded_int(post.get("max_lateness_hours", "1"), 1, 24, "Retry window")
     except ValueError as exc:
         errors.append(str(exc))
         max_lateness_hours = 1
 
-    schedule_type = post.get("schedule_type", ScheduledAction.ScheduleType.ONCE)
-    if schedule_type not in ScheduledAction.ScheduleType.values:
-        errors.append("Unknown schedule type.")
-
     run_at = None
     recurrence = {}
-    recurrence_kind = post.get("recurrence_kind", ScheduledAction.RecurrenceKind.DAILY)
-    if schedule_type == ScheduledAction.ScheduleType.ONCE:
+    if selected_recurrence == SCHEDULED_ACTION_RECURRENCE_ONCE:
+        schedule_type = ScheduledAction.ScheduleType.ONCE
         try:
             run_at = _parse_local_datetime_from_post(post)
         except ValueError as exc:
             errors.append(str(exc))
         recurrence_kind = ScheduledAction.RecurrenceKind.ADVANCED
     else:
+        schedule_type = ScheduledAction.ScheduleType.RECURRING
+        recurrence_kind = selected_recurrence
         if recurrence_kind not in ScheduledAction.RecurrenceKind.values:
             errors.append("Unknown recurrence type.")
         try:
@@ -2330,6 +2384,12 @@ def _parse_scheduled_target(value: str) -> tuple[str | None, int | None]:
 def _apply_target_snapshot(action: ScheduledAction) -> None:
     action.target_node = ""
     action.target_name_snapshot = ""
+    live_guest = _live_guest_for_target(action.target_type, action.target_vmid, use_cache=False)
+    if live_guest:
+        action.target_node = live_guest.node
+        action.target_name_snapshot = live_guest.name
+        return
+
     latest_scan = _latest_result_scan()
     obj = None
     if latest_scan:
@@ -2357,22 +2417,101 @@ def _apply_target_snapshot(action: ScheduledAction) -> None:
 
 
 def _recurrence_from_post(post, recurrence_kind: str) -> dict:
-    time_value = _time_value_from_post(post, "recurrence", fallback_name="recurrence_time", label="Recurring time")
+    time_value = _time_value_from_post(post, "run", fallback_name="recurrence_time", label="Run time")
+    months = _choice_list_from_post(
+        post,
+        "months",
+        valid_values={value for value, _label in SCHEDULED_ACTION_MONTHS},
+        label="Month",
+        default=SCHEDULED_ACTION_DEFAULT_MONTHS,
+    )
+    month_filter = _month_filter(months)
     if recurrence_kind == ScheduledAction.RecurrenceKind.DAILY:
-        return {"time": time_value}
+        return {"time": time_value, **month_filter}
     if recurrence_kind == ScheduledAction.RecurrenceKind.WEEKLY:
-        return {"weekday": post.get("weekday", "6"), "time": time_value}
+        weekdays = _choice_list_from_post(
+            post,
+            "weekdays",
+            fallback_names=["weekday"],
+            valid_values={value for value, _label in SCHEDULED_ACTION_WEEKDAYS},
+            label="Weekday",
+        )
+        return {"weekdays": weekdays, "time": time_value, **month_filter}
     if recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL:
+        ordinals = _choice_list_from_post(
+            post,
+            "ordinals",
+            fallback_names=["ordinal"],
+            valid_values={value for value, _label in SCHEDULED_ACTION_ORDINALS},
+            label="Week",
+        )
+        weekdays = _choice_list_from_post(
+            post,
+            "weekdays",
+            fallback_names=["weekday"],
+            valid_values={value for value, _label in SCHEDULED_ACTION_WEEKDAYS},
+            label="Weekday",
+        )
         return {
-            "ordinal": post.get("ordinal", "first"),
-            "weekday": post.get("weekday", "6"),
+            "ordinals": ordinals,
+            "weekdays": weekdays,
             "time": time_value,
+            **month_filter,
         }
     if recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_DAY:
-        return {"day_of_month": post.get("day_of_month", "1"), "time": time_value}
+        return {
+            "days_of_month": _days_of_month_from_post(post),
+            "time": time_value,
+            **month_filter,
+        }
     if recurrence_kind == ScheduledAction.RecurrenceKind.ADVANCED:
         return {"rrule": post.get("rrule", "").strip()}
     return {}
+
+
+def _month_filter(months: list[str]) -> dict:
+    if months == SCHEDULED_ACTION_DEFAULT_MONTHS:
+        return {}
+    return {"months": months}
+
+
+def _choice_list_from_post(
+    post,
+    name: str,
+    *,
+    valid_values: set[str],
+    label: str,
+    fallback_names: list[str] | None = None,
+    default: list[str] | None = None,
+) -> list[str]:
+    values = _posted_values(post, name, fallback_names=fallback_names)
+    if not values and post.get(f"{name}_present") != "1":
+        values = list(default or [])
+    if not values:
+        raise ValueError(f"Select at least one {label.lower()}.")
+    invalid = [value for value in values if value not in valid_values]
+    if invalid:
+        raise ValueError(f"Unknown {label.lower()}: {', '.join(invalid)}.")
+    return values
+
+
+def _days_of_month_from_post(post) -> list[int]:
+    raw_value = post.get("days_of_month", post.get("day_of_month", "")).strip()
+    days = []
+    for part in raw_value.split(","):
+        value = part.strip()
+        if not value:
+            continue
+        try:
+            day = int(value)
+        except ValueError as exc:
+            raise ValueError("Days of month must be comma-separated numbers.") from exc
+        if day < 1 or day > 31:
+            raise ValueError("Days of month must be between 1 and 31.")
+        days.append(day)
+    if not days:
+        raise ValueError("Enter at least one day of month.")
+    return days
 
 
 def _refresh_scheduled_action_next_run(action: ScheduledAction) -> None:
@@ -2464,6 +2603,54 @@ def _time_parts(value: str) -> tuple[str, str]:
     return f"{hour:02d}", f"{minute:02d}"
 
 
+def _posted_values(post, name: str, *, fallback_names: list[str] | None = None, default: list[str] | None = None) -> list[str]:
+    values = []
+    if hasattr(post, "getlist"):
+        values = [str(value) for value in post.getlist(name) if str(value) != ""]
+    else:
+        raw_value = post.get(name)
+        if isinstance(raw_value, list):
+            values = [str(value) for value in raw_value if str(value) != ""]
+        elif raw_value not in (None, ""):
+            values = [str(raw_value)]
+
+    for fallback_name in fallback_names or []:
+        if values:
+            break
+        fallback_value = post.get(fallback_name)
+        if fallback_value not in (None, ""):
+            values = [str(fallback_value)]
+
+    return values or list(default or [])
+
+
+def _recurrence_values(
+    recurrence: dict,
+    name: str,
+    *fallback_names: str,
+    default: list[str] | None = None,
+) -> list[str]:
+    raw_value = recurrence.get(name)
+    for fallback_name in fallback_names:
+        if raw_value not in (None, "", []):
+            break
+        raw_value = recurrence.get(fallback_name)
+    if raw_value in (None, "", []):
+        return list(default or [])
+    if isinstance(raw_value, list):
+        return [str(value) for value in raw_value]
+    if isinstance(raw_value, tuple):
+        return [str(value) for value in raw_value]
+    if isinstance(raw_value, str) and "," in raw_value:
+        return [part.strip() for part in raw_value.split(",") if part.strip()]
+    return [str(raw_value)]
+
+
+def _recurrence_days_label(recurrence: dict) -> str:
+    days = _recurrence_values(recurrence, "days_of_month", "day", "day_of_month", default=["1"])
+    return ",".join(days)
+
+
 def _posted_datetime_parts(post, prefix: str) -> dict[str, str]:
     legacy_value = post.get(f"{prefix}_at", "").strip()
     if legacy_value:
@@ -2485,14 +2672,6 @@ def _posted_datetime_parts(post, prefix: str) -> dict[str, str]:
         f"{prefix}_date": post.get(f"{prefix}_date", ""),
         f"{prefix}_hour": post.get(f"{prefix}_hour", "22"),
         f"{prefix}_minute": post.get(f"{prefix}_minute", "00"),
-    }
-
-
-def _posted_time_parts(post, prefix: str, *, default: str) -> dict[str, str]:
-    hour_value, minute_value = _time_parts(post.get(f"{prefix}_time", default))
-    return {
-        f"{prefix}_hour": post.get(f"{prefix}_hour", hour_value),
-        f"{prefix}_minute": post.get(f"{prefix}_minute", minute_value),
     }
 
 
@@ -2537,15 +2716,22 @@ def _scheduled_action_schedule_label(action: ScheduledAction) -> str:
     if action.recurrence_kind == ScheduledAction.RecurrenceKind.DAILY:
         return f"Daily at {time_label}"
     if action.recurrence_kind == ScheduledAction.RecurrenceKind.WEEKLY:
-        return f"Weekly at {time_label}"
+        weekdays = _display_recurrence_values(recurrence, "weekdays", "weekday")
+        day_label = f" on {weekdays}" if weekdays else ""
+        return f"Weekly{day_label} at {time_label}"
     if action.recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL:
-        ordinal = recurrence.get("ordinal", recurrence.get("week", "first"))
-        weekday = recurrence.get("weekday", "weekday")
-        return f"Monthly on the {ordinal} {weekday} at {time_label}"
+        ordinals = _display_recurrence_values(recurrence, "ordinals", "ordinal", "week", default="first")
+        weekdays = _display_recurrence_values(recurrence, "weekdays", "weekday", default="weekday")
+        return f"Monthly on the {ordinals} {weekdays} at {time_label}"
     if action.recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_DAY:
-        day = recurrence.get("day", recurrence.get("day_of_month", "?"))
-        return f"Monthly on day {day} at {time_label}"
+        days = _display_recurrence_values(recurrence, "days_of_month", "day", "day_of_month", default="?")
+        return f"Monthly on day {days} at {time_label}"
     return "Advanced recurrence"
+
+
+def _display_recurrence_values(recurrence: dict, name: str, *fallback_names: str, default: str = "") -> str:
+    values = _recurrence_values(recurrence, name, *fallback_names, default=[default] if default else [])
+    return ", ".join(str(value) for value in values if str(value))
 
 
 def _recurrence_time_label(recurrence: dict) -> str:

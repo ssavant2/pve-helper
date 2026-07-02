@@ -22,121 +22,174 @@
     </section>
   {% endif %}
 
-  <form class="panel scheduled-task-form" method="post" data-scheduled-task-form>
+  <form class="panel scheduled-task-form" method="post" data-scheduled-task-form data-schedule-timezone="{{ schedule_timezone }}">
     {% csrf_token %}
-    <div class="scheduled-form-grid">
-      <label>
-        <span>Name</span>
-        <input type="text" name="name" maxlength="160" value="{{ form_values.name }}" required>
-      </label>
+    <div class="scheduled-task-layout">
+      <div class="scheduled-task-editor">
+        <section class="scheduled-form-section">
+          <div class="scheduled-form-grid">
+            <label>
+              <span>Name</span>
+              <input type="text" name="name" maxlength="160" value="{{ form_values.name }}" required>
+            </label>
 
-      <label class="checkbox-control scheduled-checkbox">
-        <input type="checkbox" name="enabled" {% if form_values.enabled %}checked{% endif %}>
-        <span>Enabled</span>
-      </label>
+            <label class="checkbox-control scheduled-checkbox">
+              <input type="checkbox" name="enabled" {% if form_values.enabled %}checked{% endif %}>
+              <span>Enabled</span>
+            </label>
 
-      <label>
-        <span>Target</span>
-        <select name="target" required>
-          <option value="">Select target</option>
-          {% for choice in target_choices %}
-            <option value="{{ choice.value }}" {% if form_values.target == choice.value %}selected{% endif %}>{{ choice.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
+            <label>
+              <span>Target</span>
+              <select name="target" required>
+                <option value="">Select target</option>
+                {% for choice in target_choices %}
+                  <option value="{{ choice.value }}" {% if form_values.target == choice.value %}selected{% endif %}>{{ choice.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
 
-      <label>
-        <span>Action</span>
-        <select name="action_type">
-          {% for value, label in action_type_choices %}
-            <option value="{{ value }}" {% if form_values.action_type == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </label>
+            <label>
+              <span>Action</span>
+              <select name="action_type">
+                {% for value, label in action_type_choices %}
+                  <option value="{{ value }}" {% if form_values.action_type == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
 
-      <label>
-        <span>Timeout (seconds)</span>
-        <input type="number" name="action_timeout_seconds" min="30" max="86400" value="{{ form_values.action_timeout_seconds }}">
-      </label>
+            <label>
+              <span>Timeout (seconds)</span>
+              <input type="number" name="action_timeout_seconds" min="30" max="86400" value="{{ form_values.action_timeout_seconds }}">
+            </label>
+          </div>
+        </section>
 
-      <label>
-        <span>Schedule</span>
-        <select name="schedule_type" data-schedule-type>
-          {% for value, label in schedule_type_choices %}
-            <option value="{{ value }}" {% if form_values.schedule_type == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </label>
+        <section class="scheduled-form-section">
+          <h2>Presets</h2>
+          <label class="scheduled-wide-label">
+            <span>Recurrence</span>
+            <select name="recurrence_kind" data-recurrence-kind>
+              {% for value, label in recurrence_kind_choices %}
+                <option value="{{ value }}" {% if form_values.recurrence_kind == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </section>
 
-      <label data-schedule-field="once">
-        <span>Run Date (YYYY-MM-DD)</span>
-        <input type="text" name="run_date" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" value="{{ form_values.run_date }}">
-      </label>
+        <section class="scheduled-form-section">
+          <h2>Time</h2>
+          <div class="scheduled-form-grid">
+            <label data-recurrence-field="date">
+              <span>Run Date</span>
+              <input type="date" name="run_date" value="{{ form_values.run_date }}">
+            </label>
 
-      <label data-schedule-field="once">
-        <span>Run Time</span>
-        <span class="time-pair">
-          <input type="number" name="run_hour" min="0" max="23" value="{{ form_values.run_hour }}" aria-label="Run hour">
-          <span>:</span>
-          <input type="number" name="run_minute" min="0" max="59" value="{{ form_values.run_minute }}" aria-label="Run minute">
-        </span>
-      </label>
+            <label data-recurrence-field="time">
+              <span>Run Time</span>
+              <span class="time-pair">
+                <input type="number" name="run_hour" min="0" max="23" value="{{ form_values.run_hour }}" aria-label="Run hour">
+                <span>:</span>
+                <input type="number" name="run_minute" min="0" max="59" value="{{ form_values.run_minute }}" aria-label="Run minute">
+              </span>
+            </label>
+          </div>
+        </section>
 
-      <label data-schedule-field="recurring">
-        <span>Recurrence</span>
-        <select name="recurrence_kind" data-recurrence-kind>
-          {% for value, label in recurrence_kind_choices %}
-            <option value="{{ value }}" {% if form_values.recurrence_kind == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </label>
+        <section class="scheduled-form-section" data-recurrence-field="days">
+          <h2>Days</h2>
+          <input type="hidden" name="weekdays_present" value="1">
+          <input type="hidden" name="ordinals_present" value="1">
+          <label class="scheduled-wide-label" data-recurrence-field="day">
+            <span>Days of Month</span>
+            <input type="text" name="days_of_month" value="{{ form_values.days_of_month }}" inputmode="numeric">
+          </label>
 
-      <label data-schedule-field="recurring" data-recurrence-field="time">
-        <span>Recurring Time</span>
-        <span class="time-pair">
-          <input type="number" name="recurrence_hour" min="0" max="23" value="{{ form_values.recurrence_hour }}" aria-label="Recurring hour">
-          <span>:</span>
-          <input type="number" name="recurrence_minute" min="0" max="59" value="{{ form_values.recurrence_minute }}" aria-label="Recurring minute">
-        </span>
-      </label>
+          <fieldset class="scheduled-check-field" data-recurrence-field="ordinals">
+            <legend>Weeks</legend>
+            <div class="scheduled-check-grid ordinal-grid">
+              {% for value, label in ordinal_choices %}
+                <label class="checkbox-control">
+                  <input type="checkbox" name="ordinals" value="{{ value }}" {% if value in form_values.ordinals %}checked{% endif %}>
+                  <span>{{ label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          </fieldset>
 
-      <label data-schedule-field="recurring" data-recurrence-field="weekday">
-        <span>Weekday</span>
-        <select name="weekday">
-          {% for value, label in weekday_choices %}
-            <option value="{{ value }}" {% if form_values.weekday == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </label>
+          <fieldset class="scheduled-check-field" data-recurrence-field="weekdays">
+            <legend>Days of Week</legend>
+            <div class="scheduled-check-grid weekday-grid">
+              {% for value, label in weekday_choices %}
+                <label class="checkbox-control">
+                  <input type="checkbox" name="weekdays" value="{{ value }}" {% if value in form_values.weekdays %}checked{% endif %}>
+                  <span>{{ label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          </fieldset>
+        </section>
 
-      <label data-schedule-field="recurring" data-recurrence-field="ordinal">
-        <span>Week</span>
-        <select name="ordinal">
-          {% for value, label in ordinal_choices %}
-            <option value="{{ value }}" {% if form_values.ordinal == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </label>
+        <section class="scheduled-form-section" data-recurrence-field="months">
+          <h2>Months</h2>
+          <input type="hidden" name="months_present" value="1">
+          <div class="scheduled-check-grid month-grid">
+            {% for value, label in month_choices %}
+              <label class="checkbox-control">
+                <input type="checkbox" name="months" value="{{ value }}" {% if value in form_values.months %}checked{% endif %}>
+                <span>{{ label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </section>
 
-      <label data-schedule-field="recurring" data-recurrence-field="day">
-        <span>Day of Month</span>
-        <input type="number" name="day_of_month" min="1" max="31" value="{{ form_values.day_of_month }}">
-      </label>
+        <section class="scheduled-form-section">
+          <h2>Retry</h2>
+          <div class="scheduled-form-grid">
+            <label class="checkbox-control scheduled-checkbox" data-recurrence-field="catch-up">
+              <input type="checkbox" name="catch_up_enabled" {% if form_values.catch_up_enabled %}checked{% endif %}>
+              <span>Retry if missed</span>
+            </label>
 
-      <label class="scheduled-form-wide" data-schedule-field="recurring" data-recurrence-field="rrule">
-        <span>iCalendar RRULE</span>
-        <input type="text" name="rrule" value="{{ form_values.rrule }}">
-      </label>
+            <label data-recurrence-field="catch-up">
+              <span>Retry Window (hours)</span>
+              <input type="number" name="max_lateness_hours" min="1" max="24" value="{{ form_values.max_lateness_hours }}">
+            </label>
+          </div>
+        </section>
+      </div>
 
-      <label class="checkbox-control scheduled-checkbox" data-schedule-field="recurring">
-        <input type="checkbox" name="catch_up_enabled" {% if form_values.catch_up_enabled %}checked{% endif %}>
-        <span>Retry if missed</span>
-      </label>
-
-      <label data-schedule-field="recurring">
-        <span>Retry Window (hours)</span>
-        <input type="number" name="max_lateness_hours" min="1" max="24" value="{{ form_values.max_lateness_hours }}">
-      </label>
+      <aside class="scheduled-preview-panel">
+        <div class="scheduled-preview-heading">
+          <h2>Schedule Preview</h2>
+          <p data-schedule-preview-expression>-</p>
+          <p data-schedule-preview-time>-</p>
+        </div>
+        <div class="scheduled-preview-calendar">
+          <div class="scheduled-calendar-toolbar">
+            <button class="icon-button" type="button" data-schedule-calendar-prev aria-label="Previous month">
+              <i data-lucide="chevron-left" aria-hidden="true"></i>
+            </button>
+            <strong data-schedule-calendar-month>-</strong>
+            <button class="icon-button" type="button" data-schedule-calendar-next aria-label="Next month">
+              <i data-lucide="chevron-right" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div class="scheduled-calendar-weekdays" aria-hidden="true">
+            <span>Mon</span>
+            <span>Tue</span>
+            <span>Wed</span>
+            <span>Thu</span>
+            <span>Fri</span>
+            <span>Sat</span>
+            <span>Sun</span>
+          </div>
+          <div class="scheduled-calendar-grid" data-schedule-calendar-grid></div>
+        </div>
+        <div class="scheduled-preview-timezone">
+          <strong>System Time Zone:</strong> {{ schedule_timezone }}
+        </div>
+        <ol class="scheduled-preview-list" data-schedule-preview-list></ol>
+      </aside>
     </div>
 
     <div class="scheduled-form-actions">

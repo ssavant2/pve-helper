@@ -74,17 +74,26 @@ inventory.
    - Role: `PVEAuditor`
    - Propagate: enabled.
 
-6. Optional: grant VM/CT power permissions for Scheduled Tasks:
+6. Optional: grant VM/CT permissions for Scheduled Tasks:
 
    Proxmox reserves the `PVE*` role namespace for built-in roles, so use a
    project role name such as `HelperPower`.
 
+   Scheduled Tasks need `VM.Audit` to list selectable VM/CT targets and
+   `VM.PowerMgmt` to start, stop, shutdown, or reboot them.
+
    CLI:
 
    ```bash
-   pveum role add HelperPower --privs "VM.PowerMgmt"
+   pveum role add HelperPower --privs "VM.Audit VM.PowerMgmt"
    pveum acl modify /vms -user pve-helper@pve -role HelperPower -propagate 1
    pveum acl modify /vms -token 'pve-helper@pve!pve-helper' -role HelperPower -propagate 1
+   ```
+
+   If `HelperPower` already exists, update it instead:
+
+   ```bash
+   pveum role modify HelperPower --privs "VM.Audit VM.PowerMgmt"
    ```
 
    GUI:
@@ -92,7 +101,7 @@ inventory.
    - Go to `Datacenter` -> `Permissions` -> `Roles`.
    - Click `Add`.
    - Role name: `HelperPower`.
-   - Privileges: `VM.PowerMgmt`.
+   - Privileges: `VM.Audit`, `VM.PowerMgmt`.
    - Go to `Datacenter` -> `Permissions`.
    - Add a `User Permission` on `/vms` for `pve-helper@pve` with role
      `HelperPower`, with propagation enabled.
@@ -103,8 +112,8 @@ inventory.
    Verify:
 
    ```bash
-   pveum user permissions pve-helper@pve | grep -E 'VM.PowerMgmt|/vms'
-   pveum user token permissions pve-helper@pve pve-helper | grep -E 'VM.PowerMgmt|/vms'
+   pveum user permissions pve-helper@pve | grep -E 'VM.Audit|VM.PowerMgmt|/vms'
+   pveum user token permissions pve-helper@pve pve-helper | grep -E 'VM.Audit|VM.PowerMgmt|/vms'
    ```
 
 7. Add the values to `.env`:
@@ -148,7 +157,9 @@ The current read-only scanner uses these API areas:
 read permissions needed for VM, node, and datastore inventory.
 
 The optional Scheduled Tasks power actions require `VM.PowerMgmt` on `/vms` for
-the same user and token. That is intentionally narrower than `PVEVMAdmin`.
+the same user and token. They also require `VM.Audit` on `/vms`; without it,
+Proxmox can return an empty VM/CT target list even when the API request itself
+succeeds. That is intentionally narrower than `PVEVMAdmin`.
 
 ## References
 

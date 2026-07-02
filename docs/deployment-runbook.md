@@ -234,8 +234,10 @@ Create a dedicated API token. The intended baseline role is `PVEAuditor` on `/`,
 enough for inventory, storage visibility, and orphan classification.
 
 If Scheduled Tasks power actions are enabled, add the custom `HelperPower` role with
-`VM.PowerMgmt` on `/vms` to both the user and the privilege-separated token. Proxmox
-reserves the `PVE*` role namespace, so do not name the custom role `PVE...`.
+`VM.Audit` and `VM.PowerMgmt` on `/vms` to both the user and the
+privilege-separated token. `VM.Audit` is needed for the target picker to list VM/CT
+guests, and `VM.PowerMgmt` is needed to start, stop, shutdown, or reboot them.
+Proxmox reserves the `PVE*` role namespace, so do not name the custom role `PVE...`.
 
 For the full UI walkthrough, see `docs/proxmox-api-token.md`.
 
@@ -246,7 +248,7 @@ PVE_ENDPOINTS=https://pve1.example.com:8006
 PVE_VERIFY_TLS=true
 PVE_API_TOKEN_ID=<token-id>
 PVE_API_TOKEN_SECRET=<token-secret>
-SCHEDULED_ACTIONS_ENABLED=false
+SCHEDULED_ACTIONS_ENABLED=true
 SCHEDULED_ACTION_TIMEOUT_SECONDS=1800
 SCHEDULED_ACTION_POLL_INTERVAL_SECONDS=5
 SCHEDULED_ACTION_RUN_RETENTION_DAYS=90
@@ -254,8 +256,9 @@ SCHEDULED_ACTION_RUN_RETENTION_DAYS=90
 
 If Proxmox uses an internal CA, set `PVE_CA_BUNDLE` to a mounted internal-CA path.
 
-Keep `SCHEDULED_ACTIONS_ENABLED=false` until scheduled VM/CT actions are ready
-and you have deliberately granted `VM.PowerMgmt` to the pve-helper user/token.
+Set `SCHEDULED_ACTIONS_ENABLED=false` if you want to disable scheduled VM/CT
+power actions at runtime even when the pve-helper token has HelperPower
+permissions.
 When enabled, `SCHEDULED_ACTION_TIMEOUT_SECONDS` is the max time pve-helper will
 wait for a submitted Proxmox task before marking it timed out.
 

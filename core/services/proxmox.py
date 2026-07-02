@@ -13,6 +13,7 @@ from .classification import extract_disk_references
 
 
 LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
+LIVE_GUEST_INVENTORY_CACHE_KEY = "pve-helper:live-guest-inventory:v1"
 LIVE_GUEST_STATUS_CACHE_SECONDS = 30
 
 
@@ -33,6 +34,15 @@ class ProxmoxObject:
     status: str
     config: dict[str, Any]
     disk_references: list[str]
+
+
+@dataclass(frozen=True)
+class ProxmoxGuestSummary:
+    node: str
+    object_type: str
+    vmid: int
+    name: str
+    status: str
 
 
 @dataclass(frozen=True)
@@ -370,10 +380,42 @@ def fetch_live_guest_status() -> dict[tuple[str, int], str]:
     return result
 
 
+def fetch_live_guest_inventory(*, use_cache: bool = True) -> list[ProxmoxGuestSummary]:
+    if use_cache:
+        cached = cache.get(LIVE_GUEST_INVENTORY_CACHE_KEY)
+        if isinstance(cached, list):
+            return cached
+
+    result = _fetch_live_guest_inventory_uncached()
+    if use_cache:
+        cache.set(LIVE_GUEST_INVENTORY_CACHE_KEY, result, LIVE_GUEST_STATUS_CACHE_SECONDS)
+    return result
+
+
 def _fetch_live_guest_status_uncached() -> dict[tuple[str, int], str]:
     """Return {(object_type, vmid): status} for all guests across all endpoints."""
-    result: dict[tuple[str, int], str] = {}
+    return {
+        (guest.object_type, guest.vmid): guest.status
+        for guest in _fetch_live_guest_inventory_uncached()
+        if guest.status
+    }
+
+
+def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
+    """Return lightweight guest inventory across all configured endpoints."""
+    guests_by_key: dict[tuple[str, int], ProxmoxGuestSummary] = {}
     for client in configured_clients():
+        try:
+            resources = client.get("cluster/resources?type=vm")
+        except ProxmoxAPIError:
+            resources = []
+        if isinstance(resources, list):
+            guest_count_before = len(guests_by_key)
+            for resource in resources:
+                _add_guest_summary(guests_by_key, resource)
+            if len(guests_by_key) > guest_count_before:
+                continue
+
         try:
             nodes = client.get("nodes")
         except ProxmoxAPIError:
@@ -393,8 +435,47 @@ def _fetch_live_guest_status_uncached() -> dict[tuple[str, int], str]:
                 if not isinstance(guests, list):
                     continue
                 for guest in guests:
-                    vmid = guest.get("vmid")
-                    status = guest.get("status")
-                    if vmid is not None and status:
-                        result[(object_type, int(vmid))] = str(status)
-    return result
+                    _add_guest_summary(guests_by_key, guest, node=node, object_type=object_type)
+    return sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
+
+
+def _add_guest_summary(
+    guests_by_key: dict[tuple[str, int], ProxmoxGuestSummary],
+    data: dict[str, Any],
+    *,
+    node: str | None = None,
+    object_type: str | None = None,
+) -> None:
+    if not isinstance(data, dict):
+        return
+
+    resource_type = object_type
+    if resource_type is None:
+        raw_type = str(data.get("type") or "")
+        if raw_type == "qemu":
+            resource_type = "vm"
+        elif raw_type == "lxc":
+            resource_type = "ct"
+        else:
+            return
+
+    vmid = data.get("vmid")
+    if vmid is None:
+        return
+    try:
+        vmid_int = int(vmid)
+    except (TypeError, ValueError):
+        return
+
+    guest_node = str(node or data.get("node") or "")
+    key = (resource_type, vmid_int)
+    guests_by_key.setdefault(
+        key,
+        ProxmoxGuestSummary(
+            node=guest_node,
+            object_type=resource_type,
+            vmid=vmid_int,
+            name=str(data.get("name") or data.get("hostname") or ""),
+            status=str(data.get("status") or ""),
+        ),
+    )

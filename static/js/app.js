@@ -1578,34 +1578,216 @@
       if (form.dataset.initialized === "true") return;
       form.dataset.initialized = "true";
 
-      const scheduleType = form.querySelector("[data-schedule-type]");
       const recurrenceKind = form.querySelector("[data-recurrence-kind]");
-      const scheduledFields = Array.from(form.querySelectorAll("[data-schedule-field]"));
       const recurrenceFields = Array.from(form.querySelectorAll("[data-recurrence-field]"));
+      const previewExpression = form.querySelector("[data-schedule-preview-expression]");
+      const previewTime = form.querySelector("[data-schedule-preview-time]");
+      const previewList = form.querySelector("[data-schedule-preview-list]");
+      const calendarMonth = form.querySelector("[data-schedule-calendar-month]");
+      const calendarGrid = form.querySelector("[data-schedule-calendar-grid]");
+      const calendarPrev = form.querySelector("[data-schedule-calendar-prev]");
+      const calendarNext = form.querySelector("[data-schedule-calendar-next]");
+      const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const ordinalNumbers = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+      let calendarOffset = 0;
 
-      const visibleForRecurrence = (field, kind) => {
+      const enabledForRecurrence = (field, kind) => {
         const fieldKind = field.dataset.recurrenceField;
-        if (fieldKind === "time") return kind !== "advanced";
-        if (fieldKind === "weekday") return kind === "weekly" || kind === "monthly_ordinal";
-        if (fieldKind === "ordinal") return kind === "monthly_ordinal";
+        if (fieldKind === "date") return kind === "once";
+        if (fieldKind === "time") return true;
         if (fieldKind === "day") return kind === "monthly_day";
-        if (fieldKind === "rrule") return kind === "advanced";
+        if (fieldKind === "weekdays") return kind === "weekly" || kind === "monthly_ordinal";
+        if (fieldKind === "ordinals") return kind === "monthly_ordinal";
+        if (fieldKind === "months") return kind !== "once";
+        if (fieldKind === "catch-up") return kind !== "once";
         return true;
       };
 
-      const update = () => {
-        const recurring = scheduleType?.value === "recurring";
-        const kind = recurrenceKind?.value || "daily";
-        scheduledFields.forEach((field) => {
-          const fieldSchedule = field.dataset.scheduleField;
-          field.hidden = fieldSchedule === "recurring" ? !recurring : recurring;
-        });
-        recurrenceFields.forEach((field) => {
-          field.hidden = !recurring || !visibleForRecurrence(field, kind);
-        });
+      const valueFor = (name) => form.querySelector(`[name="${name}"]`)?.value || "";
+      const checkedValues = (name) => Array.from(form.querySelectorAll(`[name="${name}"]:checked`)).map((input) => input.value);
+      const pad = (value) => String(value).padStart(2, "0");
+      const parsedNumber = (value, fallback, min, max) => {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isNaN(parsed)) return fallback;
+        return Math.min(max, Math.max(min, parsed));
+      };
+      const runHour = () => parsedNumber(valueFor("run_hour"), 0, 0, 23);
+      const runMinute = () => parsedNumber(valueFor("run_minute"), 0, 0, 59);
+      const selectedMonths = () => checkedValues("months").map((value) => Number.parseInt(value, 10)).filter((value) => !Number.isNaN(value));
+      const selectedWeekdays = () => checkedValues("weekdays").map((value) => Number.parseInt(value, 10)).filter((value) => !Number.isNaN(value));
+      const selectedOrdinals = () => checkedValues("ordinals");
+      const selectedDaysOfMonth = () => valueFor("days_of_month").split(",")
+        .map((value) => Number.parseInt(value.trim(), 10))
+        .filter((value) => !Number.isNaN(value) && value >= 1 && value <= 31);
+      const localWeekday = (date) => (date.getDay() + 6) % 7;
+      const formatTime = () => `${pad(runHour())}:${pad(runMinute())}`;
+      const formatDateTime = (date) => {
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
+      };
+      const sameDayKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+      const nthWeekdayOfMonth = (year, month, weekday, ordinal) => {
+        if (ordinal === "last") {
+          const date = new Date(year, month + 1, 0, runHour(), runMinute(), 0, 0);
+          while (localWeekday(date) !== weekday) {
+            date.setDate(date.getDate() - 1);
+          }
+          return date;
+        }
+        const ordinalNumber = ordinalNumbers[ordinal];
+        if (!ordinalNumber) return null;
+        const date = new Date(year, month, 1, runHour(), runMinute(), 0, 0);
+        const offset = (weekday - localWeekday(date) + 7) % 7;
+        date.setDate(1 + offset + (ordinalNumber - 1) * 7);
+        return date.getMonth() === month ? date : null;
       };
 
-      scheduleType?.addEventListener("change", update);
+      const addOccurrence = (occurrences, seen, date, now, months) => {
+        if (!date || date <= now) return;
+        if (months.length && !months.includes(date.getMonth() + 1)) return;
+        const key = date.getTime();
+        if (seen.has(key)) return;
+        seen.add(key);
+        occurrences.push(date);
+      };
+
+      const computeOccurrences = (limit = 80) => {
+        const kind = recurrenceKind?.value || "once";
+        const now = new Date();
+        const hour = runHour();
+        const minute = runMinute();
+        const occurrences = [];
+        const seen = new Set();
+        const months = kind === "once" ? [] : selectedMonths();
+
+        if (kind === "once") {
+          const dateValue = valueFor("run_date");
+          if (dateValue) {
+            const date = new Date(`${dateValue}T${pad(hour)}:${pad(minute)}:00`);
+            addOccurrence(occurrences, seen, date, new Date(0), months);
+          }
+          return occurrences;
+        }
+
+        if (!months.length) return [];
+
+        if (kind === "daily" || kind === "weekly") {
+          const weekdays = kind === "weekly" ? selectedWeekdays() : [];
+          const cursor = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
+          for (let i = 0; i < 1096 && occurrences.length < limit; i += 1) {
+            if (kind === "daily" || weekdays.includes(localWeekday(cursor))) {
+              addOccurrence(occurrences, seen, new Date(cursor), now, months);
+            }
+            cursor.setDate(cursor.getDate() + 1);
+          }
+        } else if (kind === "monthly_day") {
+          const days = selectedDaysOfMonth();
+          for (let offset = 0; offset < 84 && occurrences.length < limit; offset += 1) {
+            const monthCursor = new Date(now.getFullYear(), now.getMonth() + offset, 1, hour, minute, 0, 0);
+            days.forEach((day) => {
+              const date = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), day, hour, minute, 0, 0);
+              if (date.getMonth() === monthCursor.getMonth()) {
+                addOccurrence(occurrences, seen, date, now, months);
+              }
+            });
+          }
+        } else if (kind === "monthly_ordinal") {
+          const weekdays = selectedWeekdays();
+          const ordinals = selectedOrdinals();
+          for (let offset = 0; offset < 84 && occurrences.length < limit; offset += 1) {
+            const monthCursor = new Date(now.getFullYear(), now.getMonth() + offset, 1, hour, minute, 0, 0);
+            ordinals.forEach((ordinal) => {
+              weekdays.forEach((weekday) => {
+                addOccurrence(
+                  occurrences,
+                  seen,
+                  nthWeekdayOfMonth(monthCursor.getFullYear(), monthCursor.getMonth(), weekday, ordinal),
+                  now,
+                  months,
+                );
+              });
+            });
+          }
+        }
+
+        return occurrences.sort((a, b) => a.getTime() - b.getTime()).slice(0, limit);
+      };
+
+      const renderCalendar = (occurrences) => {
+        if (!calendarMonth || !calendarGrid) return;
+        const today = new Date();
+        const monthDate = new Date(today.getFullYear(), today.getMonth() + calendarOffset, 1);
+        calendarMonth.textContent = `${monthLabels[monthDate.getMonth()]} ${monthDate.getFullYear()}`;
+        const runDays = new Set(
+          occurrences
+            .filter((date) => date.getFullYear() === monthDate.getFullYear() && date.getMonth() === monthDate.getMonth())
+            .map((date) => sameDayKey(date)),
+        );
+        const firstOffset = localWeekday(monthDate);
+        const startDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - firstOffset);
+        calendarGrid.innerHTML = "";
+        for (let index = 0; index < 42; index += 1) {
+          const date = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + index);
+          const day = document.createElement("span");
+          day.className = "scheduled-calendar-day";
+          day.textContent = String(date.getDate());
+          if (date.getMonth() === monthDate.getMonth()) day.classList.add("in-month");
+          if (runDays.has(sameDayKey(date))) day.classList.add("has-run");
+          if (sameDayKey(date) === sameDayKey(today)) day.classList.add("today");
+          calendarGrid.appendChild(day);
+        }
+      };
+
+      const renderPreview = () => {
+        const kind = recurrenceKind?.value || "once";
+        const occurrences = computeOccurrences();
+        const labels = {
+          once: "Once",
+          daily: "Daily",
+          weekly: "Weekly",
+          monthly_day: "Monthly by date",
+          monthly_ordinal: "Monthly by weekday",
+        };
+        if (previewExpression) previewExpression.textContent = labels[kind] || "Custom";
+        if (previewTime) previewTime.textContent = `At ${formatTime()}`;
+        if (previewList) {
+          previewList.innerHTML = "";
+          occurrences.slice(0, 10).forEach((date) => {
+            const item = document.createElement("li");
+            item.textContent = formatDateTime(date);
+            previewList.appendChild(item);
+          });
+          if (!previewList.children.length) {
+            const item = document.createElement("li");
+            item.textContent = "No matching runs";
+            previewList.appendChild(item);
+          }
+        }
+        renderCalendar(occurrences);
+      };
+
+      const update = () => {
+        const kind = recurrenceKind?.value || "once";
+        recurrenceFields.forEach((field) => {
+          const enabled = enabledForRecurrence(field, kind);
+          field.classList.toggle("scheduled-field-disabled", !enabled);
+          field.querySelectorAll("input:not([type='hidden']), select, textarea").forEach((control) => {
+            control.disabled = !enabled;
+          });
+        });
+        renderPreview();
+      };
+
+      calendarPrev?.addEventListener("click", () => {
+        calendarOffset -= 1;
+        renderPreview();
+      });
+      calendarNext?.addEventListener("click", () => {
+        calendarOffset += 1;
+        renderPreview();
+      });
+      form.addEventListener("input", update);
+      form.addEventListener("change", update);
       recurrenceKind?.addEventListener("change", update);
       update();
     });

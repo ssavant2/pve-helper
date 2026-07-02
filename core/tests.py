@@ -47,6 +47,7 @@ from core.services.proxmox import (
     ProxmoxClient,
     ProxmoxTaskTimeout,
     ProxmoxTaskResult,
+    _fetch_live_guest_inventory_uncached,
 )
 from core.services.recent_tasks import recent_task_page
 from core.services.scan_retention import prune_scan_history
@@ -260,6 +261,29 @@ class ProxmoxClientTests(SimpleTestCase):
 
         request_mock.assert_not_called()
 
+    def test_live_guest_inventory_uses_cluster_resources(self):
+        client = Mock()
+
+        def get(path):
+            if path == "cluster/resources?type=vm":
+                return [
+                    {"type": "qemu", "vmid": 500, "name": "Lab VM", "node": "pve1", "status": "running"},
+                    {"type": "lxc", "vmid": 101, "name": "Lab CT", "node": "pve2", "status": "stopped"},
+                ]
+            if path == "nodes":
+                return []
+            raise AssertionError(f"Unexpected Proxmox path: {path}")
+
+        client.get.side_effect = get
+
+        with patch("core.services.proxmox.configured_clients", return_value=[client]):
+            guests = _fetch_live_guest_inventory_uncached()
+
+        self.assertEqual([(guest.object_type, guest.vmid, guest.name, guest.node) for guest in guests], [
+            ("ct", 101, "Lab CT", "pve2"),
+            ("vm", 500, "Lab VM", "pve1"),
+        ])
+
     def test_wait_for_task_returns_successful_result(self):
         client = ProxmoxClient("https://pve.example.com:8006")
 
@@ -396,6 +420,19 @@ class ScheduledRecurrenceTests(TestCase):
 
         self.assertEqual(next_run, datetime(2026, 7, 5, 20, 0, tzinfo=timezone.UTC))
 
+    def test_next_run_supports_multiple_monthly_ordinals(self):
+        action = self._recurring_action(
+            kind=ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
+            recurrence={"ordinals": ["second", "fourth"], "weekdays": ["2"], "time": "22:00"},
+            timezone_name="Europe/Stockholm",
+        )
+
+        first = next_run_after(action, after=datetime(2026, 6, 30, 12, 0, tzinfo=timezone.UTC))
+        second = next_run_after(action, after=datetime(2026, 7, 9, 12, 0, tzinfo=timezone.UTC))
+
+        self.assertEqual(first, datetime(2026, 7, 8, 20, 0, tzinfo=timezone.UTC))
+        self.assertEqual(second, datetime(2026, 7, 22, 20, 0, tzinfo=timezone.UTC))
+
     def test_monthly_day_skips_months_without_that_day(self):
         action = self._recurring_action(
             kind=ScheduledAction.RecurrenceKind.MONTHLY_DAY,
@@ -525,6 +562,7 @@ class ScheduledActionDispatchTests(TestCase):
         self.assertEqual(run.planned_for, now)
         enqueue.assert_called_once_with("core.tasks.run_scheduled_action", run.id)
 
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
     def test_dispatch_task_returns_serializable_result(self):
         result = dispatch_scheduled_actions()
 
@@ -937,6 +975,15 @@ class StartupCheckTests(SimpleTestCase):
 
 @override_settings(APP_REQUIRE_LOGIN=False)
 class ViewSmokeTests(TestCase):
+    def _live_guest(self, *, object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped"):
+        guest = Mock()
+        guest.object_type = object_type
+        guest.vmid = vmid
+        guest.name = name
+        guest.node = node
+        guest.status = status
+        return guest
+
     def _folder_node_tag(self, response, path: str) -> str:
         html = response.content.decode()
         marker = f'data-folder-path="{path}"'
@@ -4046,7 +4093,8 @@ class ViewSmokeTests(TestCase):
             proxmox_task_node="pve1",
         )
 
-        response = self.client.get(reverse("core:scheduled_tasks"))
+        with patch("core.views.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
+            response = self.client.get(reverse("core:scheduled_tasks"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Scheduled Tasks")
@@ -4058,7 +4106,8 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Latest Runs")
         self.assertContains(response, "Success")
 
-        response = self.client.get(reverse("core:scheduled_tasks"), {"target": "vm:500"})
+        with patch("core.views.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
+            response = self.client.get(reverse("core:scheduled_tasks"), {"target": "vm:500"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "filtered to VM 500 (Lab VM) on pve1")
@@ -4078,7 +4127,8 @@ class ViewSmokeTests(TestCase):
             name="Lab VM",
         )
 
-        response = self.client.get(reverse("core:scheduled_task_create"))
+        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.get(reverse("core:scheduled_task_create"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
@@ -4086,44 +4136,70 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Timeout (seconds)")
         self.assertContains(response, "Monthly by weekday")
         self.assertContains(response, "Monthly by date")
-        self.assertContains(response, "Recurring Time")
+        self.assertContains(response, "Run Time")
         self.assertContains(response, "Retry Window (hours)")
+        self.assertContains(response, "Schedule Preview")
+        self.assertContains(response, "Weeks")
+        self.assertContains(response, "Months")
 
-        response = self.client.get(reverse("core:scheduled_task_create"), {"target": "vm:500"})
+        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.get(reverse("core:scheduled_task_create"), {"target": "vm:500"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
         self.assertContains(response, 'value="vm:500" selected')
 
-        response = self.client.post(
-            reverse("core:scheduled_task_create"),
-            {
-                "name": "Night shutdown",
-                "enabled": "on",
-                "target": "vm:500",
-                "action_type": ScheduledAction.ActionType.SHUTDOWN,
-                "action_timeout_seconds": "900",
-                "schedule_type": ScheduledAction.ScheduleType.RECURRING,
-                "recurrence_kind": ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
-                "recurrence_hour": "22",
-                "recurrence_minute": "0",
-                "weekday": "6",
-                "ordinal": "first",
-                "catch_up_enabled": "on",
-                "max_lateness_hours": "2",
-            },
-        )
+        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.post(
+                reverse("core:scheduled_task_create"),
+                {
+                    "name": "Night shutdown",
+                    "enabled": "on",
+                    "target": "vm:500",
+                    "action_type": ScheduledAction.ActionType.SHUTDOWN,
+                    "action_timeout_seconds": "900",
+                    "recurrence_kind": ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
+                    "run_hour": "22",
+                    "run_minute": "0",
+                    "weekdays_present": "1",
+                    "weekdays": ["2"],
+                    "ordinals_present": "1",
+                    "ordinals": ["second", "fourth"],
+                    "months_present": "1",
+                    "months": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"],
+                    "catch_up_enabled": "on",
+                    "max_lateness_hours": "2",
+                },
+            )
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
         action = ScheduledAction.objects.get(name="Night shutdown")
         self.assertTrue(action.enabled)
         self.assertEqual(action.created_by, user)
         self.assertEqual(action.target_node, "pve1")
         self.assertEqual(action.target_name_snapshot, "Lab VM")
-        self.assertEqual(action.recurrence["ordinal"], "first")
+        self.assertEqual(action.recurrence["ordinals"], ["second", "fourth"])
+        self.assertEqual(action.recurrence["weekdays"], ["2"])
         self.assertEqual(action.max_lateness_minutes, 120)
         self.assertIsNotNone(action.next_run_at)
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.created").exists())
+
+    def test_scheduled_task_create_form_uses_live_targets_without_scan(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+
+        live_guests = [
+            self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1"),
+            self._live_guest(object_type="ct", vmid=101, name="Lab CT", node="pve2"),
+        ]
+        with patch("core.views.fetch_live_guest_inventory", return_value=live_guests):
+            response = self.client.get(reverse("core:scheduled_task_create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'value="vm:500"')
+        self.assertContains(response, "VM 500 (Lab VM) on pve1")
+        self.assertContains(response, 'value="ct:101"')
+        self.assertContains(response, "Container 101 (Lab CT) on pve2")
 
     def test_scheduled_task_create_form_creates_one_time_task_with_24h_fields(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
@@ -4137,23 +4213,24 @@ class ViewSmokeTests(TestCase):
             name="Lab VM",
         )
 
-        response = self.client.post(
-            reverse("core:scheduled_task_create"),
-            {
-                "name": "One-time reboot",
-                "enabled": "on",
-                "target": "vm:500",
-                "action_type": ScheduledAction.ActionType.REBOOT,
-                "action_timeout_seconds": "900",
-                "schedule_type": ScheduledAction.ScheduleType.ONCE,
-                "run_date": "2026-07-03",
-                "run_hour": "22",
-                "run_minute": "5",
-                "max_lateness_hours": "1",
-            },
-        )
+        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.post(
+                reverse("core:scheduled_task_create"),
+                {
+                    "name": "One-time reboot",
+                    "enabled": "on",
+                    "target": "vm:500",
+                    "action_type": ScheduledAction.ActionType.REBOOT,
+                    "action_timeout_seconds": "900",
+                    "recurrence_kind": "once",
+                    "run_date": "2026-07-03",
+                    "run_hour": "22",
+                    "run_minute": "5",
+                    "max_lateness_hours": "1",
+                },
+            )
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
         action = ScheduledAction.objects.get(name="One-time reboot")
         local_run_at = timezone.localtime(action.run_at)
         self.assertEqual(local_run_at.strftime("%Y-%m-%d %H:%M"), "2026-07-03 22:05")
@@ -4180,23 +4257,23 @@ class ViewSmokeTests(TestCase):
             next_run_at=timezone.now() + timedelta(hours=1),
         )
 
-        response = self.client.post(
-            reverse("core:scheduled_task_edit", args=[action.id]),
-            {
-                "name": "Morning start",
-                "enabled": "on",
-                "target": "vm:500",
-                "action_type": ScheduledAction.ActionType.START,
-                "action_timeout_seconds": "1800",
-                "schedule_type": ScheduledAction.ScheduleType.RECURRING,
-                "recurrence_kind": ScheduledAction.RecurrenceKind.DAILY,
-                "recurrence_hour": "7",
-                "recurrence_minute": "30",
-                "max_lateness_hours": "1",
-            },
-        )
+        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.post(
+                reverse("core:scheduled_task_edit", args=[action.id]),
+                {
+                    "name": "Morning start",
+                    "enabled": "on",
+                    "target": "vm:500",
+                    "action_type": ScheduledAction.ActionType.START,
+                    "action_timeout_seconds": "1800",
+                    "recurrence_kind": ScheduledAction.RecurrenceKind.DAILY,
+                    "run_hour": "7",
+                    "run_minute": "30",
+                    "max_lateness_hours": "1",
+                },
+            )
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
         action.refresh_from_db()
         self.assertEqual(action.name, "Morning start")
         self.assertEqual(action.schedule_type, ScheduledAction.ScheduleType.RECURRING)
@@ -4219,7 +4296,7 @@ class ViewSmokeTests(TestCase):
 
         response = self.client.post(reverse("core:scheduled_task_toggle", args=[action.id]), {"enabled": "1"})
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
         action.refresh_from_db()
         self.assertTrue(action.enabled)
         self.assertIsNotNone(action.next_run_at)
@@ -4227,7 +4304,7 @@ class ViewSmokeTests(TestCase):
 
         response = self.client.post(reverse("core:scheduled_task_delete", args=[action.id]))
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
         self.assertFalse(ScheduledAction.objects.filter(pk=action.pk).exists())
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.deleted").exists())
 
@@ -4245,7 +4322,7 @@ class ViewSmokeTests(TestCase):
         with patch("core.services.scheduled_actions.async_task", return_value="manual-task-id"):
             response = self.client.post(reverse("core:scheduled_task_run_now", args=[action.id]))
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
         run = ScheduledActionRun.objects.get(scheduled_action=action)
         self.assertEqual(run.status, ScheduledActionRun.Status.QUEUED)
         self.assertEqual(run.triggered_by, user)
