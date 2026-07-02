@@ -40,12 +40,17 @@
 
             <label>
               <span>Target</span>
-              <select name="target" required>
+              <select name="target" required data-scheduled-target>
                 <option value="">Select target</option>
                 {% for choice in target_choices %}
-                  <option value="{{ choice.value }}" {% if form_values.target == choice.value %}selected{% endif %}>{{ choice.label }}</option>
+                  <option value="{{ choice.value }}" data-node="{{ choice.node }}" {% if form_values.target == choice.value %}selected{% endif %}>{{ choice.label }}</option>
                 {% endfor %}
               </select>
+            </label>
+
+            <label>
+              <span>Current Node</span>
+              <input type="text" value="-" readonly data-scheduled-target-node>
             </label>
 
             <label>

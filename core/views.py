@@ -173,13 +173,11 @@ def scheduled_tasks(request):
     target_filter_value = f"{target_type}:{target_vmid}" if target_type and target_vmid else ""
 
     actions_query = ScheduledAction.objects.select_related("created_by")
-    runs_query = ScheduledActionRun.objects.select_related("scheduled_action")
     if target_filter_value:
         actions_query = actions_query.filter(target_type=target_type, target_vmid=target_vmid)
-        runs_query = runs_query.filter(scheduled_action__target_type=target_type, scheduled_action__target_vmid=target_vmid)
 
     actions = list(actions_query.order_by("-enabled", "next_run_at", "name"))
-    latest_runs = list(runs_query.order_by("-created_at")[:50])
+    latest_runs = _latest_scheduled_runs(target_type=target_type, target_vmid=target_vmid)
 
     for action in actions:
         action.display_target = _scheduled_action_target_label(action)
@@ -187,10 +185,9 @@ def scheduled_tasks(request):
         action.display_status_class = _scheduled_action_status_class(action.last_status)
         action.display_creator = action.created_by.get_username() if action.created_by else "system"
 
-    for run in latest_runs:
-        run.display_target = _scheduled_action_target_label(run.scheduled_action)
-        run.display_status_class = _scheduled_run_status_class(run.status)
-        run.display_outcome = run.get_outcome_display() if run.outcome else "-"
+    scheduled_runs_url = reverse("core:scheduled_task_runs")
+    if target_filter_value:
+        scheduled_runs_url = f"{scheduled_runs_url}?{urlencode({'target': target_filter_value})}"
 
     context = {
         **navigation_context("scheduled_tasks"),
@@ -202,8 +199,23 @@ def scheduled_tasks(request):
         "target_filter": target_filter_value,
         "target_filter_label": _scheduled_target_label(target_type, target_vmid) if target_filter_value else "",
         "scheduled_task_create_query": urlencode({"target": target_filter_value}) if target_filter_value else "",
+        "scheduled_runs_url": scheduled_runs_url,
     }
     return render(request, "core/scheduled_tasks.html", context)
+
+
+@app_login_required
+def scheduled_task_runs(request):
+    target_filter = request.GET.get("target", "")
+    target_type, target_vmid = _parse_scheduled_target(target_filter)
+    return JsonResponse(
+        {
+            "runs": [
+                _serialize_scheduled_run(run)
+                for run in _latest_scheduled_runs(target_type=target_type, target_vmid=target_vmid, limit=10)
+            ]
+        }
+    )
 
 
 @app_login_required
@@ -2187,6 +2199,7 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
             {
                 "value": f"{guest.object_type}:{guest.vmid}",
                 "label": _live_guest_target_label(guest),
+                "node": guest.node,
             }
         )
 
@@ -2209,6 +2222,7 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
                 {
                     "value": f"{obj.object_type}:{obj.vmid}",
                     "label": _inventory_target_label(obj),
+                    "node": obj.node,
                 }
             )
 
@@ -2219,6 +2233,7 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
                 {
                     "value": value,
                     "label": _scheduled_action_target_label(action),
+                    "node": action.target_node,
                 }
             )
     return choices
@@ -2244,8 +2259,6 @@ def _inventory_target_label(obj: ProxmoxInventory) -> str:
     label = f"{type_label} {obj.vmid}"
     if obj.name:
         label = f"{label} ({obj.name})"
-    if obj.node:
-        label = f"{label} on {obj.node}"
     return label
 
 
@@ -2254,8 +2267,6 @@ def _live_guest_target_label(guest) -> str:
     label = f"{type_label} {guest.vmid}"
     if guest.name:
         label = f"{label} ({guest.name})"
-    if guest.node:
-        label = f"{label} on {guest.node}"
     return label
 
 
@@ -2292,6 +2303,8 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     name = post.get("name", "").strip()
     if not name:
         errors.append("Name is required.")
+    elif ScheduledAction.objects.filter(name=name).exclude(pk=action.pk).exists():
+        errors.append("A scheduled task with this name already exists.")
     target_type, target_vmid = _parse_scheduled_target(post.get("target", ""))
     if target_type is None or target_vmid is None:
         errors.append("Target is required.")
@@ -2702,9 +2715,52 @@ def _scheduled_action_target_label(action: ScheduledAction) -> str:
     label = f"{action.get_target_type_display()} {action.target_vmid}"
     if action.target_name_snapshot:
         label = f"{label} ({action.target_name_snapshot})"
-    if action.target_node:
-        label = f"{label} on {action.target_node}"
     return label
+
+
+def _latest_scheduled_runs(
+    *,
+    target_type: str | None = None,
+    target_vmid: int | None = None,
+    limit: int = 10,
+) -> list[ScheduledActionRun]:
+    runs_query = ScheduledActionRun.objects.select_related("scheduled_action")
+    if target_type and target_vmid is not None:
+        runs_query = runs_query.filter(scheduled_action__target_type=target_type, scheduled_action__target_vmid=target_vmid)
+
+    runs = list(runs_query.order_by("-created_at")[:limit])
+    for run in runs:
+        run.display_target = _scheduled_action_target_label(run.scheduled_action)
+        run.display_status_class = _scheduled_run_status_class(run.status)
+        run.display_outcome = run.get_outcome_display() if run.outcome else "-"
+        run.display_node = _scheduled_run_node_label(run)
+    return runs
+
+
+def _serialize_scheduled_run(run: ScheduledActionRun) -> dict[str, str]:
+    return {
+        "planned_for": _format_local_datetime(run.planned_for),
+        "task": run.scheduled_action.name,
+        "target": run.display_target,
+        "status": run.get_status_display(),
+        "status_class": run.display_status_class,
+        "outcome": run.display_outcome,
+        "started_at": _format_local_datetime(run.started_at),
+        "finished_at": _format_local_datetime(run.finished_at),
+        "node": run.display_node,
+        "message": run.error or "-",
+    }
+
+
+def _scheduled_run_node_label(run: ScheduledActionRun) -> str:
+    preflight = run.preflight_snapshot if isinstance(run.preflight_snapshot, dict) else {}
+    return run.proxmox_task_node or str(preflight.get("node") or "") or run.scheduled_action.target_node or "-"
+
+
+def _format_local_datetime(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    return tz.localtime(value).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _scheduled_action_schedule_label(action: ScheduledAction) -> str:

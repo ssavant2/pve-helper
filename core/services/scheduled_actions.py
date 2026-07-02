@@ -468,11 +468,14 @@ def _skip_reason(action: ScheduledAction, preflight: dict[str, Any]) -> str:
 def _store_preflight(run: ScheduledActionRun, preflight: dict[str, Any]) -> None:
     if not preflight:
         return
+    node = str(preflight.get("node") or "")
     ScheduledActionRun.objects.filter(pk=run.pk).update(
         preflight_snapshot=preflight,
+        proxmox_task_node=node,
         updated_at=timezone.now(),
     )
     run.preflight_snapshot = preflight
+    run.proxmox_task_node = node
 
 
 def _mark_submitted(run: ScheduledActionRun, node: str, upid: str) -> None:

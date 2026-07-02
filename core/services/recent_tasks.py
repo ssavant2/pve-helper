@@ -280,9 +280,14 @@ def _scheduled_action_task(run: ScheduledActionRun) -> dict[str, object]:
         "queued_for": _duration_label(run.created_at, run.started_at),
         "started_at": run.started_at,
         "finished_at": run.finished_at,
-        "server": run.proxmox_task_node or action.target_node or "-",
+        "server": _scheduled_action_node(run),
         "sort_at": run.finished_at or run.started_at or run.created_at,
     }
+
+
+def _scheduled_action_node(run: ScheduledActionRun) -> str:
+    preflight = run.preflight_snapshot if isinstance(run.preflight_snapshot, dict) else {}
+    return run.proxmox_task_node or str(preflight.get("node") or "") or run.scheduled_action.target_node or "-"
 
 
 def _scheduled_action_status(run: ScheduledActionRun) -> tuple[str, str]:

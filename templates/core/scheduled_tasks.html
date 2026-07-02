@@ -118,9 +118,14 @@
     </table>
   </section>
 
-  <section class="panel panel-spaced">
+  <section
+    class="panel panel-spaced"
+    data-scheduled-runs
+    data-scheduled-runs-url="{{ scheduled_runs_url }}"
+    data-scheduled-runs-poll-ms="10000"
+  >
     <div class="panel-heading">
-      <h2>Latest Runs</h2>
+      <h2>Latest 10 Runs</h2>
     </div>
     <table class="data-table compact">
       <thead>
@@ -136,7 +141,7 @@
           <th>Message</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody data-scheduled-run-rows>
         {% for run in latest_runs %}
           <tr>
             <td>{{ run.planned_for|date:"Y-m-d H:i:s" }}</td>
@@ -146,7 +151,7 @@
             <td>{{ run.display_outcome }}</td>
             <td>{{ run.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
             <td>{{ run.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
-            <td>{{ run.proxmox_task_node|default:"-" }}</td>
+            <td>{{ run.display_node }}</td>
             <td>{{ run.error|default:"-" }}</td>
           </tr>
         {% empty %}

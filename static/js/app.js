@@ -4,6 +4,7 @@
   const softContentSelector = "[data-soft-nav-content]";
   const softStatusSelector = "[data-soft-nav-status]";
   const softTreeSelector = "[data-soft-nav-tree]";
+  const recentTasksRefreshEvent = "pve-helper:recent-tasks-refresh";
 
   let activeLabel = "";
   let pageCleanup = [];
@@ -71,6 +72,18 @@
     const pad = (value) => String(value).padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
   };
+
+  const escapeHtml = (value) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => {
+      const entities = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      };
+      return entities[char];
+    });
 
   const registerPageCleanup = (cleanup) => {
     pageCleanup.push(cleanup);
@@ -492,7 +505,9 @@
       const fileFilter = manager.querySelector("[data-file-filter]");
       const folderFilter = manager.querySelector("[data-folder-filter]");
       const folderNodes = Array.from(manager.querySelectorAll("[data-folder-node]"));
-      const uploadForms = Array.from(manager.querySelectorAll("[data-upload-on-file-select], [data-upload-folder-on-file-select]"));
+      const uploadForms = Array.from(
+        manager.querySelectorAll("[data-upload-on-file-select], [data-upload-folder-on-file-select]")
+      );
       const selectedRows = new Set();
       const currentRows = () => Array.from(manager.querySelectorAll("[data-file-row]"));
 
@@ -564,7 +579,9 @@
       };
 
       const setSelectedPaths = (form, paths) => {
-        form.querySelectorAll("[data-selected-path-extra]").forEach((input) => input.remove());
+        form.querySelectorAll("[data-selected-path-extra]").forEach((input) => {
+          input.remove();
+        });
         const primaryInput = form.querySelector("[data-selected-path-input]");
         if (!primaryInput) {
           return;
@@ -629,7 +646,10 @@
             (inflateMode === "metadata"
               ? selected[0]?.dataset.canInflateMetadata === "true"
               : selected[0]?.dataset.canInflateFull === "true");
-          const enabled = actionKind === "inflate" ? Boolean(storageActionsEnabled && canInflate) : Boolean(storageActionsEnabled && hasValidSelection);
+          const enabled =
+            actionKind === "inflate"
+              ? Boolean(storageActionsEnabled && canInflate)
+              : Boolean(storageActionsEnabled && hasValidSelection);
           const button = form.querySelector("[data-selected-file-button], [data-inflate-file-button]");
           if (button) {
             button.disabled = !enabled;
@@ -788,7 +808,9 @@
           if (!input.files.length) {
             return;
           }
-          form.querySelectorAll("[data-folder-upload-relative-path]").forEach((item) => item.remove());
+          form.querySelectorAll("[data-folder-upload-relative-path]").forEach((item) => {
+            item.remove();
+          });
           if (form.hasAttribute("data-upload-folder-on-file-select")) {
             Array.from(input.files).forEach((file) => {
               const relativePath = file.webkitRelativePath || file.name;
@@ -924,19 +946,8 @@
       has_next: false,
     };
 
-    const escapeHtml = (value) =>
-      String(value ?? "").replace(/[&<>"']/g, (char) => {
-        const entities = {
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        };
-        return entities[char];
-      });
-
-    const taskSeenKey = (task) => `pve-helper-reloaded-task-${task.id || `${task.action}:${task.storage_id}:${task.path}`}`;
+    const taskSeenKey = (task) =>
+      `pve-helper-reloaded-task-${task.id || `${task.action}:${task.storage_id}:${task.path}`}`;
 
     const taskWasReloaded = (task) => {
       try {
@@ -1096,10 +1107,14 @@
         return;
       }
 
+      const normalizedPage = Math.max(0, page);
       loadingTasks = true;
       try {
         const url = new URL(tasksUrl, window.location.origin);
-        url.searchParams.set("page", String(Math.max(0, page)));
+        url.searchParams.set("page", String(normalizedPage));
+        if (normalizedPage === 0) {
+          window.dispatchEvent(new CustomEvent(recentTasksRefreshEvent));
+        }
         const response = await fetch(url, {
           headers: {
             Accept: "application/json",
@@ -1157,6 +1172,84 @@
       },
       Number.isFinite(pollMs) ? pollMs : 10000
     );
+  };
+
+  const initScheduledRuns = (root = document) => {
+    root.querySelectorAll("[data-scheduled-runs]").forEach((panel) => {
+      if (panel.dataset.initialized === "true") {
+        return;
+      }
+
+      panel.dataset.initialized = "true";
+      const rows = panel.querySelector("[data-scheduled-run-rows]");
+      const runsUrl = panel.dataset.scheduledRunsUrl || "";
+      const pollMs = Number.parseInt(panel.dataset.scheduledRunsPollMs || "10000", 10);
+      const hasRecentTaskbar = Boolean(document.querySelector("[data-recent-tasks]"));
+      let loadingRuns = false;
+
+      const runRowHtml = (run) => `
+        <tr>
+          <td>${escapeHtml(run.planned_for)}</td>
+          <td>${escapeHtml(run.task)}</td>
+          <td>${escapeHtml(run.target)}</td>
+          <td><span class="badge ${escapeHtml(run.status_class)}">${escapeHtml(run.status)}</span></td>
+          <td>${escapeHtml(run.outcome)}</td>
+          <td>${escapeHtml(run.started_at)}</td>
+          <td>${escapeHtml(run.finished_at)}</td>
+          <td>${escapeHtml(run.node)}</td>
+          <td>${escapeHtml(run.message)}</td>
+        </tr>
+      `;
+
+      const renderRuns = (runs) => {
+        if (!rows) {
+          return;
+        }
+        if (!runs.length) {
+          rows.innerHTML = '<tr><td colspan="9" class="empty-state">No scheduled task runs yet.</td></tr>';
+          return;
+        }
+        rows.innerHTML = runs.map(runRowHtml).join("");
+      };
+
+      const loadRuns = async () => {
+        if (!runsUrl || loadingRuns) {
+          return;
+        }
+
+        loadingRuns = true;
+        try {
+          const response = await fetch(new URL(runsUrl, window.location.origin), {
+            headers: {
+              Accept: "application/json",
+            },
+          });
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          renderRuns(data.runs || []);
+        } catch (_error) {
+          // Latest runs refresh is best effort; the server-rendered rows remain usable.
+        } finally {
+          loadingRuns = false;
+        }
+      };
+
+      const refreshWithRecentTasks = () => {
+        if (document.visibilityState !== "hidden") {
+          loadRuns();
+        }
+      };
+      window.addEventListener(recentTasksRefreshEvent, refreshWithRecentTasks);
+      registerPageCleanup(() => window.removeEventListener(recentTasksRefreshEvent, refreshWithRecentTasks));
+
+      if (!hasRecentTaskbar) {
+        loadRuns();
+        const intervalId = window.setInterval(refreshWithRecentTasks, Number.isFinite(pollMs) ? pollMs : 10000);
+        registerPageCleanup(() => window.clearInterval(intervalId));
+      }
+    });
   };
 
   const initAuditLogs = (root = document) => {
@@ -1401,26 +1494,35 @@
       svg.dataset.chartRendered = "1";
 
       let raw;
-      try { raw = JSON.parse(svg.dataset.chartData || "[]"); } catch (_) { return; }
+      try {
+        raw = JSON.parse(svg.dataset.chartData || "[]");
+      } catch (_) {
+        return;
+      }
       if (!raw.length) return;
 
       const rect = svg.getBoundingClientRect();
       const W = rect.width || 600;
       const H = 220;
-      const PL = 98, PR = 18, PT = 34, PB = 48;
+      const PL = 98,
+        PR = 18,
+        PT = 34,
+        PB = 48;
       const pW = W - PL - PR;
       const pH = H - PT - PB;
       svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
 
       let maxB = 0;
-      raw.forEach((d) => { if (d.total_bytes > maxB) maxB = d.total_bytes; });
+      raw.forEach((d) => {
+        if (d.total_bytes > maxB) maxB = d.total_bytes;
+      });
       if (!maxB) return;
 
       const ts = raw.map((d) => new Date(d.timestamp).getTime());
       const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
       const chartEnd = ts[ts.length - 1];
       const chartStart = Math.min(ts[0], chartEnd - sevenDaysMs);
-      const chartRange = (chartEnd - chartStart) || 1;
+      const chartRange = chartEnd - chartStart || 1;
       const xOf = (t) => PL + ((t - chartStart) / chartRange) * pW;
       const yOf = (b) => PT + pH - (b / maxB) * pH;
       const colors = {
@@ -1431,15 +1533,12 @@
         label: "#cfe7ff",
       };
       const fmt = (b) => {
-        if (b >= 549755813888) return (b / 1099511627776).toFixed(1) + " TB";
-        if (b >= 1073741824) return (b / 1073741824).toFixed(1) + " GB";
-        if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
-        return (b / 1024).toFixed(1) + " KB";
+        if (b >= 549755813888) return `${(b / 1099511627776).toFixed(1)} TB`;
+        if (b >= 1073741824) return `${(b / 1073741824).toFixed(1)} GB`;
+        if (b >= 1048576) return `${(b / 1048576).toFixed(1)} MB`;
+        return `${(b / 1024).toFixed(1)} KB`;
       };
       const pad2 = (n) => String(n).padStart(2, "0");
-      const fmtTime = (d) => (
-        `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
-      );
       const fmtDate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
       const fmtClock = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
       const ns = "http://www.w3.org/2000/svg";
@@ -1457,29 +1556,44 @@
         if (styleStr) e.setAttribute("style", styleStr);
         return e;
       };
-      const tx = (tag, a, t) => { const e = el(tag, a); e.textContent = t; return e; };
+      const tx = (tag, a, t) => {
+        const e = el(tag, a);
+        e.textContent = t;
+        return e;
+      };
 
       svg.appendChild(el("rect", { x: PL, y: PT, width: pW, height: pH, fill: "rgba(10, 20, 30, 0.18)" }));
 
       for (let i = 0; i <= 5; i++) {
-        const percent = 100 - (i * 20);
+        const percent = 100 - i * 20;
         const yP = PT + (pH / 5) * i;
         const v = maxB * (percent / 100);
         svg.appendChild(el("line", { x1: PL, y1: yP, x2: W - PR, y2: yP, stroke: colors.grid, "stroke-width": "1" }));
-        svg.appendChild(tx("text", { x: PL - 42, y: yP + 4, "text-anchor": "end", fill: colors.label, "font-size": "11" }, fmt(v)));
-        svg.appendChild(tx("text", { x: PL - 6, y: yP + 4, "text-anchor": "end", fill: "var(--muted)", "font-size": "10" }, `${percent}%`));
+        svg.appendChild(
+          tx("text", { x: PL - 42, y: yP + 4, "text-anchor": "end", fill: colors.label, "font-size": "11" }, fmt(v))
+        );
+        svg.appendChild(
+          tx(
+            "text",
+            { x: PL - 6, y: yP + 4, "text-anchor": "end", fill: "var(--muted)", "font-size": "10" },
+            `${percent}%`
+          )
+        );
       }
 
-      const series = raw.length === 1
-        ? [
-            { ...raw[0], chart_ts: chartStart },
-            { ...raw[0], chart_ts: chartEnd },
-          ]
-        : raw.map((d) => ({ ...d, chart_ts: new Date(d.timestamp).getTime() }));
+      const series =
+        raw.length === 1
+          ? [
+              { ...raw[0], chart_ts: chartStart },
+              { ...raw[0], chart_ts: chartEnd },
+            ]
+          : raw.map((d) => ({ ...d, chart_ts: new Date(d.timestamp).getTime() }));
       const seriesTs = series.map((d) => d.chart_ts);
       const linePath = (key) => {
         let path = `M ${xOf(seriesTs[0])} ${yOf(series[0][key])}`;
-        series.forEach((d, i) => { path += ` L ${xOf(seriesTs[i])} ${yOf(d[key])}`; });
+        series.forEach((d, i) => {
+          path += ` L ${xOf(seriesTs[i])} ${yOf(d[key])}`;
+        });
         return path;
       };
       const areaToBottom = (key) => {
@@ -1497,25 +1611,42 @@
 
       svg.appendChild(el("path", { d: areaToBottom("used_bytes"), fill: colors.used, opacity: "0.72" }));
       svg.appendChild(el("path", { d: areaBetween("total_bytes", "used_bytes"), fill: colors.free, opacity: "0.62" }));
-      svg.appendChild(el("path", { d: linePath("used_bytes"), fill: "none", stroke: colors.used, "stroke-width": "2.5" }));
-      svg.appendChild(el("path", { d: linePath("total_bytes"), fill: "none", stroke: colors.total, "stroke-width": "2.5" }));
+      svg.appendChild(
+        el("path", { d: linePath("used_bytes"), fill: "none", stroke: colors.used, "stroke-width": "2.5" })
+      );
+      svg.appendChild(
+        el("path", { d: linePath("total_bytes"), fill: "none", stroke: colors.total, "stroke-width": "2.5" })
+      );
 
       // Data points
       raw.forEach((d, i) => {
-        svg.appendChild(el("circle", { cx: xOf(ts[i]), cy: yOf(d.used_bytes), r: "3.5", fill: colors.used, stroke: "var(--surface)", "stroke-width": "1" }));
+        svg.appendChild(
+          el("circle", {
+            cx: xOf(ts[i]),
+            cy: yOf(d.used_bytes),
+            r: "3.5",
+            fill: colors.used,
+            stroke: "var(--surface)",
+            "stroke-width": "1",
+          })
+        );
       });
 
       // Time labels
       [
         [chartStart, "start"],
-        [chartStart + (chartRange / 2), "middle"],
+        [chartStart + chartRange / 2, "middle"],
         [chartEnd, "end"],
       ].forEach(([labelTs, anchor]) => {
         const dt = new Date(labelTs);
         const textAnchor = anchor === "start" ? "start" : anchor === "end" ? "end" : "middle";
         const x = anchor === "start" ? PL : anchor === "end" ? W - PR : xOf(labelTs);
-        svg.appendChild(tx("text", { x, y: H - 20, "text-anchor": textAnchor, fill: "var(--muted)", "font-size": "10" }, fmtDate(dt)));
-        svg.appendChild(tx("text", { x, y: H - 7, "text-anchor": textAnchor, fill: "var(--muted)", "font-size": "10" }, fmtClock(dt)));
+        svg.appendChild(
+          tx("text", { x, y: H - 20, "text-anchor": textAnchor, fill: "var(--muted)", "font-size": "10" }, fmtDate(dt))
+        );
+        svg.appendChild(
+          tx("text", { x, y: H - 7, "text-anchor": textAnchor, fill: "var(--muted)", "font-size": "10" }, fmtClock(dt))
+        );
       });
 
       // Legend
@@ -1533,18 +1664,20 @@
       const last = raw[raw.length - 1];
       const lastX = xOf(ts[ts.length - 1]);
       const lastLabelNearRight = lastX > W - PR - 72;
-      svg.appendChild(tx(
-        "text",
-        {
-          x: lastLabelNearRight ? W - PR : Math.max(PL, lastX),
-          y: Math.max(PT + 11, yOf(last.used_bytes) - 8),
-          "text-anchor": lastLabelNearRight ? "end" : "middle",
-          fill: "#d7ecff",
-          "font-size": "10",
-          "font-weight": "600",
-        },
-        `${fmt(last.used_bytes)} used`
-      ));
+      svg.appendChild(
+        tx(
+          "text",
+          {
+            x: lastLabelNearRight ? W - PR : Math.max(PL, lastX),
+            y: Math.max(PT + 11, yOf(last.used_bytes) - 8),
+            "text-anchor": lastLabelNearRight ? "end" : "middle",
+            fill: "#d7ecff",
+            "font-size": "10",
+            "font-weight": "600",
+          },
+          `${fmt(last.used_bytes)} used`
+        )
+      );
     });
   };
 
@@ -1578,6 +1711,8 @@
       if (form.dataset.initialized === "true") return;
       form.dataset.initialized = "true";
 
+      const targetSelect = form.querySelector("[data-scheduled-target]");
+      const targetNode = form.querySelector("[data-scheduled-target-node]");
       const recurrenceKind = form.querySelector("[data-recurrence-kind]");
       const recurrenceFields = Array.from(form.querySelectorAll("[data-recurrence-field]"));
       const previewExpression = form.querySelector("[data-schedule-preview-expression]");
@@ -1604,7 +1739,8 @@
       };
 
       const valueFor = (name) => form.querySelector(`[name="${name}"]`)?.value || "";
-      const checkedValues = (name) => Array.from(form.querySelectorAll(`[name="${name}"]:checked`)).map((input) => input.value);
+      const checkedValues = (name) =>
+        Array.from(form.querySelectorAll(`[name="${name}"]:checked`)).map((input) => input.value);
       const pad = (value) => String(value).padStart(2, "0");
       const parsedNumber = (value, fallback, min, max) => {
         const parsed = Number.parseInt(value, 10);
@@ -1613,12 +1749,20 @@
       };
       const runHour = () => parsedNumber(valueFor("run_hour"), 0, 0, 23);
       const runMinute = () => parsedNumber(valueFor("run_minute"), 0, 0, 59);
-      const selectedMonths = () => checkedValues("months").map((value) => Number.parseInt(value, 10)).filter((value) => !Number.isNaN(value));
-      const selectedWeekdays = () => checkedValues("weekdays").map((value) => Number.parseInt(value, 10)).filter((value) => !Number.isNaN(value));
+      const selectedMonths = () =>
+        checkedValues("months")
+          .map((value) => Number.parseInt(value, 10))
+          .filter((value) => !Number.isNaN(value));
+      const selectedWeekdays = () =>
+        checkedValues("weekdays")
+          .map((value) => Number.parseInt(value, 10))
+          .filter((value) => !Number.isNaN(value));
       const selectedOrdinals = () => checkedValues("ordinals");
-      const selectedDaysOfMonth = () => valueFor("days_of_month").split(",")
-        .map((value) => Number.parseInt(value.trim(), 10))
-        .filter((value) => !Number.isNaN(value) && value >= 1 && value <= 31);
+      const selectedDaysOfMonth = () =>
+        valueFor("days_of_month")
+          .split(",")
+          .map((value) => Number.parseInt(value.trim(), 10))
+          .filter((value) => !Number.isNaN(value) && value >= 1 && value <= 31);
       const localWeekday = (date) => (date.getDay() + 6) % 7;
       const formatTime = () => `${pad(runHour())}:${pad(runMinute())}`;
       const formatDateTime = (date) => {
@@ -1703,7 +1847,7 @@
                   seen,
                   nthWeekdayOfMonth(monthCursor.getFullYear(), monthCursor.getMonth(), weekday, ordinal),
                   now,
-                  months,
+                  months
                 );
               });
             });
@@ -1720,8 +1864,10 @@
         calendarMonth.textContent = `${monthLabels[monthDate.getMonth()]} ${monthDate.getFullYear()}`;
         const runDays = new Set(
           occurrences
-            .filter((date) => date.getFullYear() === monthDate.getFullYear() && date.getMonth() === monthDate.getMonth())
-            .map((date) => sameDayKey(date)),
+            .filter(
+              (date) => date.getFullYear() === monthDate.getFullYear() && date.getMonth() === monthDate.getMonth()
+            )
+            .map((date) => sameDayKey(date))
         );
         const firstOffset = localWeekday(monthDate);
         const startDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - firstOffset);
@@ -1766,7 +1912,14 @@
         renderCalendar(occurrences);
       };
 
+      const updateTargetNode = () => {
+        if (!targetSelect || !targetNode) return;
+        const selectedOption = targetSelect.selectedOptions[0];
+        targetNode.value = selectedOption?.dataset.node || "-";
+      };
+
       const update = () => {
+        updateTargetNode();
         const kind = recurrenceKind?.value || "once";
         recurrenceFields.forEach((field) => {
           const enabled = enabledForRecurrence(field, kind);
@@ -1800,6 +1953,7 @@
     initConfirmedFileActions(root);
     initConfirmForms(root);
     initScheduledTaskForms(root);
+    initScheduledRuns(root);
     initAuditLogs(root);
     initSpaceCharts(root);
     initTableFilters(root);
@@ -1817,10 +1971,10 @@
     initThemeToggle();
     initTaskbarToggle();
     initTreeModules(document);
-    initRecentTasks();
     initContextMenu();
     initSoftNavigation();
     initPage(document);
+    initRecentTasks();
   };
 
   initShell();

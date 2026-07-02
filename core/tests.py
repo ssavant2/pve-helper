@@ -707,6 +707,8 @@ class ScheduledActionExecutionTests(TestCase):
         action.refresh_from_db()
         self.assertEqual(run.status, ScheduledActionRun.Status.COMPLETED)
         self.assertEqual(run.outcome, ScheduledActionRun.Outcome.SUCCESS_NOOP)
+        self.assertEqual(run.proxmox_task_node, "pve1")
+        self.assertEqual(run.preflight_snapshot["node"], "pve1")
         self.assertEqual(fake_client.power_calls, [])
         self.assertEqual(action.last_status, ScheduledAction.LastStatus.COMPLETED)
 
@@ -4101,19 +4103,99 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Scheduled tasks only run while pve-helper")
         self.assertContains(response, "enabled")
         self.assertContains(response, "Night shutdown")
-        self.assertContains(response, "VM 500 (Lab VM) on pve1")
+        self.assertContains(response, "VM 500 (Lab VM)")
         self.assertContains(response, "Monthly on the first sunday at 22:00")
-        self.assertContains(response, "Latest Runs")
+        self.assertContains(response, "Latest 10 Runs")
         self.assertContains(response, "Success")
 
         with patch("core.views.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
             response = self.client.get(reverse("core:scheduled_tasks"), {"target": "vm:500"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "filtered to VM 500 (Lab VM) on pve1")
+        self.assertContains(response, "filtered to VM 500 (Lab VM)")
         self.assertContains(response, "Night shutdown")
         self.assertContains(response, "target=vm%3A500")
         self.assertNotContains(response, "Container reboot")
+
+    def test_scheduled_task_runs_endpoint_lists_and_filters_latest_runs(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        vm_action = ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            target_name_snapshot="Lab VM",
+            target_node="pve1",
+            created_by=user,
+        )
+        ct_action = ScheduledAction.objects.create(
+            name="Container reboot",
+            action_type=ScheduledAction.ActionType.REBOOT,
+            target_type=ScheduledAction.TargetType.CT,
+            target_vmid=101,
+            target_name_snapshot="Lab CT",
+            target_node="pve1",
+            created_by=user,
+        )
+        run = ScheduledActionRun.objects.create(
+            scheduled_action=vm_action,
+            planned_for=timezone.now(),
+            occurrence_key="recent",
+            status=ScheduledActionRun.Status.COMPLETED,
+            outcome=ScheduledActionRun.Outcome.SUCCESS_NOOP,
+            started_at=timezone.now(),
+            finished_at=timezone.now(),
+            proxmox_task_node="pve1",
+        )
+        ScheduledActionRun.objects.create(
+            scheduled_action=ct_action,
+            planned_for=timezone.now(),
+            occurrence_key="ct-recent",
+            status=ScheduledActionRun.Status.QUEUED,
+        )
+
+        response = self.client.get(reverse("core:scheduled_task_runs"), {"target": "vm:500"})
+
+        self.assertEqual(response.status_code, 200)
+        runs = response.json()["runs"]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["task"], "Night shutdown")
+        self.assertEqual(runs[0]["target"], "VM 500 (Lab VM)")
+        self.assertEqual(runs[0]["status"], "Completed")
+        self.assertEqual(runs[0]["status_class"], "completed")
+        self.assertEqual(runs[0]["outcome"], "Success - no action needed")
+        self.assertEqual(runs[0]["node"], "pve1")
+        self.assertRegex(runs[0]["planned_for"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        self.assertEqual(ScheduledActionRun.objects.get(pk=run.pk).status, ScheduledActionRun.Status.COMPLETED)
+
+    def test_scheduled_task_runs_endpoint_limits_latest_runs_to_ten(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        action = ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            target_name_snapshot="Lab VM",
+            target_node="pve1",
+            created_by=user,
+        )
+        for index in range(12):
+            ScheduledActionRun.objects.create(
+                scheduled_action=action,
+                planned_for=timezone.now(),
+                occurrence_key=f"recent-{index}",
+                status=ScheduledActionRun.Status.COMPLETED,
+                outcome=ScheduledActionRun.Outcome.SUCCESS,
+                started_at=timezone.now(),
+                finished_at=timezone.now(),
+            )
+
+        response = self.client.get(reverse("core:scheduled_task_runs"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["runs"]), 10)
 
     def test_scheduled_task_create_form_creates_recurring_task(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
@@ -4133,6 +4215,8 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
         self.assertContains(response, 'value="vm:500"')
+        self.assertContains(response, "Current Node")
+        self.assertContains(response, 'data-node="pve1"')
         self.assertContains(response, "Timeout (seconds)")
         self.assertContains(response, "Monthly by weekday")
         self.assertContains(response, "Monthly by date")
@@ -4147,7 +4231,7 @@ class ViewSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
-        self.assertContains(response, 'value="vm:500" selected')
+        self.assertContains(response, 'value="vm:500" data-node="pve1" selected')
 
         with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
@@ -4184,6 +4268,36 @@ class ViewSmokeTests(TestCase):
         self.assertIsNotNone(action.next_run_at)
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.created").exists())
 
+    def test_scheduled_task_create_rejects_duplicate_name(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+        )
+
+        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.post(
+                reverse("core:scheduled_task_create"),
+                {
+                    "name": "Night shutdown",
+                    "enabled": "on",
+                    "target": "vm:500",
+                    "action_type": ScheduledAction.ActionType.SHUTDOWN,
+                    "action_timeout_seconds": "900",
+                    "recurrence_kind": "once",
+                    "run_date": "2026-07-03",
+                    "run_hour": "22",
+                    "run_minute": "0",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "A scheduled task with this name already exists.", status_code=400)
+        self.assertEqual(ScheduledAction.objects.filter(name="Night shutdown").count(), 1)
+
     def test_scheduled_task_create_form_uses_live_targets_without_scan(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
@@ -4197,9 +4311,11 @@ class ViewSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'value="vm:500"')
-        self.assertContains(response, "VM 500 (Lab VM) on pve1")
+        self.assertContains(response, "VM 500 (Lab VM)")
+        self.assertContains(response, 'data-node="pve1"')
         self.assertContains(response, 'value="ct:101"')
-        self.assertContains(response, "Container 101 (Lab CT) on pve2")
+        self.assertContains(response, "Container 101 (Lab CT)")
+        self.assertContains(response, 'data-node="pve2"')
 
     def test_scheduled_task_create_form_creates_one_time_task_with_24h_fields(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
@@ -4235,6 +4351,43 @@ class ViewSmokeTests(TestCase):
         local_run_at = timezone.localtime(action.run_at)
         self.assertEqual(local_run_at.strftime("%Y-%m-%d %H:%M"), "2026-07-03 22:05")
         self.assertEqual(action.next_run_at, action.run_at)
+
+    def test_scheduled_task_edit_rejects_duplicate_name(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+        )
+        action = ScheduledAction.objects.create(
+            name="Morning start",
+            action_type=ScheduledAction.ActionType.START,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=501,
+        )
+
+        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(vmid=501)]):
+            response = self.client.post(
+                reverse("core:scheduled_task_edit", args=[action.id]),
+                {
+                    "name": "Night shutdown",
+                    "enabled": "on",
+                    "target": "vm:501",
+                    "action_type": ScheduledAction.ActionType.START,
+                    "action_timeout_seconds": "900",
+                    "recurrence_kind": "once",
+                    "run_date": "2026-07-03",
+                    "run_hour": "07",
+                    "run_minute": "0",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "A scheduled task with this name already exists.", status_code=400)
+        action.refresh_from_db()
+        self.assertEqual(action.name, "Morning start")
 
     def test_scheduled_task_edit_form_updates_definition(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")

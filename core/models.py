@@ -290,7 +290,7 @@ class ScheduledAction(TimestampedModel):
         MISSED = "missed", "Missed"
         TIMEOUT = "timeout", "Timed out"
 
-    name = models.CharField(max_length=160)
+    name = models.CharField(max_length=160, unique=True)
     enabled = models.BooleanField(default=True)
     action_type = models.CharField(max_length=40, choices=ActionType.choices)
     action_timeout_seconds = models.PositiveIntegerField(default=1800)
