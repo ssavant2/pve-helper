@@ -463,6 +463,14 @@ button.tree-node {
   color: var(--muted);
 }
 
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .primary-action {
   min-height: 34px;
   padding: 0 14px;
@@ -1154,6 +1162,42 @@ button.tree-node {
 
 .scheduled-task-form {
   padding: 16px;
+}
+
+.guest-scheduled-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.scheduled-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--surface-alt);
+}
+
+.scheduled-action-chip span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted-link {
+  align-self: center;
+  color: var(--muted);
+}
+
+.muted-link:hover {
+  color: var(--accent-strong);
 }
 
 .scheduled-form-grid {

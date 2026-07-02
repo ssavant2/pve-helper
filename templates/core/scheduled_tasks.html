@@ -4,9 +4,20 @@
   <section class="page-header">
     <div>
       <h1>Scheduled Tasks</h1>
-      <p>VM and container power actions managed by pve-helper</p>
+      <p>
+        {% if target_filter %}
+          VM and container power actions filtered to {{ target_filter_label }}
+        {% else %}
+          VM and container power actions managed by pve-helper
+        {% endif %}
+      </p>
     </div>
-    <a class="primary-action" href="{% url 'core:scheduled_task_create' %}">New Scheduled Task</a>
+    <div class="page-header-actions">
+      {% if target_filter %}
+        <a class="secondary-action" href="{% url 'core:scheduled_tasks' %}">Clear Filter</a>
+      {% endif %}
+      <a class="primary-action" href="{% url 'core:scheduled_task_create' %}{% if scheduled_task_create_query %}?{{ scheduled_task_create_query }}{% endif %}">New Scheduled Task</a>
+    </div>
   </section>
 
   <section class="panel scheduled-warning-panel">

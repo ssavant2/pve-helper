@@ -152,14 +152,18 @@ def datastores(request):
 
 @app_login_required
 def scheduled_tasks(request):
-    actions = list(
-        ScheduledAction.objects.select_related("created_by")
-        .order_by("-enabled", "next_run_at", "name")
-    )
-    latest_runs = list(
-        ScheduledActionRun.objects.select_related("scheduled_action")
-        .order_by("-created_at")[:50]
-    )
+    target_filter = request.GET.get("target", "")
+    target_type, target_vmid = _parse_scheduled_target(target_filter)
+    target_filter_value = f"{target_type}:{target_vmid}" if target_type and target_vmid else ""
+
+    actions_query = ScheduledAction.objects.select_related("created_by")
+    runs_query = ScheduledActionRun.objects.select_related("scheduled_action")
+    if target_filter_value:
+        actions_query = actions_query.filter(target_type=target_type, target_vmid=target_vmid)
+        runs_query = runs_query.filter(scheduled_action__target_type=target_type, scheduled_action__target_vmid=target_vmid)
+
+    actions = list(actions_query.order_by("-enabled", "next_run_at", "name"))
+    latest_runs = list(runs_query.order_by("-created_at")[:50])
 
     for action in actions:
         action.display_target = _scheduled_action_target_label(action)
@@ -179,6 +183,9 @@ def scheduled_tasks(request):
         "scheduled_actions_enabled": settings.SCHEDULED_ACTIONS_ENABLED,
         "schedule_timezone": settings.TIME_ZONE,
         "run_retention_days": settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS,
+        "target_filter": target_filter_value,
+        "target_filter_label": _scheduled_target_label(target_type, target_vmid) if target_filter_value else "",
+        "scheduled_task_create_query": urlencode({"target": target_filter_value}) if target_filter_value else "",
     }
     return render(request, "core/scheduled_tasks.html", context)
 
@@ -192,6 +199,11 @@ def scheduled_task_create(request):
             _audit_scheduled_action_definition(request, "scheduled_action.created", action)
             return redirect("core:scheduled_tasks")
     else:
+        target_type, target_vmid = _parse_scheduled_target(request.GET.get("target", ""))
+        if target_type and target_vmid:
+            action.target_type = target_type
+            action.target_vmid = target_vmid
+            _apply_target_snapshot(action)
         errors = []
 
     context = _scheduled_action_form_context(
@@ -793,6 +805,7 @@ def storage_vms(request, storage_id: str):
             key = (guest.object_type, guest.vmid)
             if key in live_status:
                 guest.status = live_status[key]
+        _decorate_guests_with_scheduled_actions(guests)
 
     context = {
         **_storage_tab_context(storage, latest_scan, "vms"),
@@ -2045,6 +2058,32 @@ def _content_category_label(category: str, path: str) -> str:
     return labels.get(category, "Other / unknown")
 
 
+def _decorate_guests_with_scheduled_actions(guests: list[ProxmoxInventory]) -> None:
+    vmids = [guest.vmid for guest in guests if guest.object_type == ProxmoxInventory.ObjectType.VM and guest.vmid]
+    ctids = [guest.vmid for guest in guests if guest.object_type == ProxmoxInventory.ObjectType.CT and guest.vmid]
+    action_filter = Q()
+    if vmids:
+        action_filter |= Q(target_type=ScheduledAction.TargetType.VM, target_vmid__in=vmids)
+    if ctids:
+        action_filter |= Q(target_type=ScheduledAction.TargetType.CT, target_vmid__in=ctids)
+
+    actions_by_target: dict[tuple[str, int], list[ScheduledAction]] = {}
+    if action_filter:
+        actions = ScheduledAction.objects.filter(action_filter).order_by("-enabled", "next_run_at", "name")
+        for action in actions:
+            action.display_schedule = _scheduled_action_schedule_label(action)
+            action.display_status_class = _scheduled_action_status_class(action.last_status)
+            actions_by_target.setdefault((action.target_type, action.target_vmid), []).append(action)
+
+    for guest in guests:
+        target = f"{guest.object_type}:{guest.vmid}"
+        guest.scheduled_actions = actions_by_target.get((guest.object_type, guest.vmid), [])
+        guest.scheduled_action_count = len(guest.scheduled_actions)
+        guest.scheduled_action_search_text = " ".join(action.name for action in guest.scheduled_actions)
+        guest.schedule_action_url = f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}"
+        guest.scheduled_actions_url = f"{reverse('core:scheduled_tasks')}?{urlencode({'target': target})}"
+
+
 def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict, errors: list[str], mode: str) -> dict:
     target_choices = _scheduled_action_target_choices(action)
     return {
@@ -2137,7 +2176,7 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
                 }
             )
 
-    if action and action.pk and action.target_vmid:
+    if action and action.target_type and action.target_vmid:
         value = f"{action.target_type}:{action.target_vmid}"
         if (action.target_type, action.target_vmid) not in seen:
             choices.append(
@@ -2157,6 +2196,20 @@ def _inventory_target_label(obj: ProxmoxInventory) -> str:
     if obj.node:
         label = f"{label} on {obj.node}"
     return label
+
+
+def _scheduled_target_label(target_type: str | None, target_vmid: int | None) -> str:
+    if target_type is None or target_vmid is None:
+        return ""
+    obj = (
+        ProxmoxInventory.objects.filter(object_type=target_type, vmid=target_vmid)
+        .order_by("-scan_run__created_at", "node")
+        .first()
+    )
+    if obj:
+        return _inventory_target_label(obj)
+    type_label = "VM" if target_type == ScheduledAction.TargetType.VM else "Container"
+    return f"{type_label} {target_vmid}"
 
 
 def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[str]:

@@ -1152,6 +1152,15 @@ class ViewSmokeTests(TestCase):
             status="stopped",
             disk_references=["nfs-vm:images/100/vm-100-disk-0.qcow2"],
         )
+        ScheduledAction.objects.create(
+            name="Night shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=100,
+            target_name_snapshot="Test VM",
+            target_node="pve-node-1",
+            last_status=ScheduledAction.LastStatus.NEVER_RUN,
+        )
 
         with patch("core.services.proxmox._fetch_live_guest_status_uncached", return_value={("vm", 100): "running"}) as fetch:
             response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
@@ -1164,6 +1173,10 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Guest status is live data cached for up to 30 seconds.")
         self.assertContains(response, "Disk references are from inventory scanned")
         self.assertContains(response, "running")
+        self.assertContains(response, "Scheduled Tasks")
+        self.assertContains(response, "Night shutdown")
+        self.assertContains(response, "Never run")
+        self.assertContains(response, "target=vm%3A100")
         self.assertContains(second_response, "running")
         cache.clear()
 
@@ -3991,6 +4004,14 @@ class ViewSmokeTests(TestCase):
     def test_scheduled_tasks_page_lists_definitions_and_runs(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+        )
         action = ScheduledAction.objects.create(
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
@@ -4004,6 +4025,15 @@ class ViewSmokeTests(TestCase):
             next_run_at=timezone.now() + timedelta(days=1),
             created_by=user,
             last_status=ScheduledAction.LastStatus.COMPLETED,
+        )
+        ScheduledAction.objects.create(
+            name="Container reboot",
+            action_type=ScheduledAction.ActionType.REBOOT,
+            target_type=ScheduledAction.TargetType.CT,
+            target_vmid=101,
+            target_name_snapshot="Lab CT",
+            target_node="pve1",
+            created_by=user,
         )
         ScheduledActionRun.objects.create(
             scheduled_action=action,
@@ -4028,6 +4058,14 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Latest Runs")
         self.assertContains(response, "Success")
 
+        response = self.client.get(reverse("core:scheduled_tasks"), {"target": "vm:500"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "filtered to VM 500 (Lab VM) on pve1")
+        self.assertContains(response, "Night shutdown")
+        self.assertContains(response, "target=vm%3A500")
+        self.assertNotContains(response, "Container reboot")
+
     def test_scheduled_task_create_form_creates_recurring_task(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
@@ -4039,6 +4077,12 @@ class ViewSmokeTests(TestCase):
             vmid=500,
             name="Lab VM",
         )
+
+        response = self.client.get(reverse("core:scheduled_task_create"), {"target": "vm:500"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Lab VM")
+        self.assertContains(response, 'value="vm:500" selected')
 
         response = self.client.post(
             reverse("core:scheduled_task_create"),
