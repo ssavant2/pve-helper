@@ -1152,6 +1152,50 @@ button.tree-node {
   color: var(--text);
 }
 
+.scheduled-task-form {
+  padding: 16px;
+}
+
+.scheduled-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.scheduled-form-grid label:not(.checkbox-control) {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scheduled-form-grid input[type="text"],
+.scheduled-form-grid input[type="datetime-local"],
+.scheduled-form-grid input[type="time"],
+.scheduled-form-grid input[type="number"],
+.scheduled-form-grid select {
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.scheduled-checkbox {
+  align-self: end;
+}
+
+.scheduled-form-wide {
+  grid-column: 1 / -1;
+}
+
+.scheduled-form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
 .panel-empty-note {
   padding: 24px;
   text-align: center;
@@ -1610,6 +1654,11 @@ code {
   border-color: var(--line-strong);
   background: var(--blue-soft);
   color: var(--accent-strong);
+}
+
+.icon-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .icon-button.danger:hover {

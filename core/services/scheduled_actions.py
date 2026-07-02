@@ -53,6 +53,10 @@ class ScheduledActionExecutionError(Exception):
         self.preflight = preflight or {}
 
 
+class ScheduledActionQueueError(Exception):
+    pass
+
+
 def ensure_scheduled_action_dispatch_schedule() -> Schedule:
     defaults = {
         "func": SCHEDULED_ACTION_DISPATCH_FUNC,
@@ -170,6 +174,44 @@ def dispatch_due_scheduled_actions(
         )
 
     return DispatchResult(queued=len(queued_runs), missed=len(missed_runs), skipped=skipped)
+
+
+def queue_manual_scheduled_action_run(
+    action: ScheduledAction,
+    *,
+    triggered_by=None,
+    now=None,
+    enqueue_func: Callable[..., Any] | None = None,
+) -> ScheduledActionRun:
+    if not settings.SCHEDULED_ACTIONS_ENABLED:
+        raise ScheduledActionQueueError("Scheduled Proxmox actions are disabled.")
+
+    now = now or timezone.now()
+    with transaction.atomic():
+        action = ScheduledAction.objects.select_for_update().get(pk=action.pk)
+        if _has_in_flight_run(action):
+            raise ScheduledActionQueueError("This scheduled action already has a run in progress.")
+
+        run = ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=now,
+            occurrence_key=_manual_occurrence_key(action, now, triggered_by),
+            status=ScheduledActionRun.Status.QUEUED,
+            triggered_by=triggered_by if getattr(triggered_by, "is_authenticated", False) else None,
+        )
+        action.last_status = ScheduledAction.LastStatus.QUEUED
+        action.last_run_at = now
+        action.save(update_fields=["last_status", "last_run_at", "updated_at"])
+
+    enqueue = enqueue_func or async_task
+    task_id = enqueue(SCHEDULED_ACTION_EXECUTION_FUNC, run.id)
+    _audit_run(
+        run,
+        action="scheduled_action.run_queued",
+        outcome="success",
+        details={"task_id": task_id, "source": "manual"},
+    )
+    return run
 
 
 def reap_stale_scheduled_action_runs(*, now=None) -> int:
@@ -532,6 +574,12 @@ def _occurrence_key(planned_for) -> str:
     return planned_for.astimezone(timezone.UTC).isoformat().replace("+00:00", "Z")
 
 
+def _manual_occurrence_key(action: ScheduledAction, planned_for, triggered_by) -> str:
+    username = triggered_by.get_username() if getattr(triggered_by, "is_authenticated", False) else "system"
+    key = f"manual:{action.id}:{_occurrence_key(planned_for)}:{username}"
+    return key[:160]
+
+
 def _audit_run(
     run: ScheduledActionRun,
     *,
@@ -540,8 +588,10 @@ def _audit_run(
     details: dict[str, Any] | None = None,
 ) -> None:
     scheduled_action = run.scheduled_action
+    user = run.triggered_by if run.triggered_by_id else None
     AuditEvent.objects.create(
-        username="system",
+        user=user,
+        username=user.get_username() if user else "system",
         action=action,
         object_type="scheduled_action",
         object_id=str(scheduled_action.id),

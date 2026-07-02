@@ -196,7 +196,7 @@ class RuntimeConfigurationTests(TestCase):
             export="truenas.example.com:/mnt/tank/proxmox-vm",
             path="/storages/truenas-vm",
         )
-        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status={"nfs-vm": {"ok": True}})
         ProxmoxInventory.objects.create(
             scan_run=scan,
             node="pve-node-1",
@@ -1142,7 +1142,7 @@ class ViewSmokeTests(TestCase):
             display_name="nfs-vm",
             path="/storages/truenas-vm",
         )
-        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status={"nfs-vm": {"ok": True}})
         ProxmoxInventory.objects.create(
             scan_run=scan,
             node="pve-node-1",
@@ -2226,6 +2226,9 @@ class ViewSmokeTests(TestCase):
         self.assertNotContains(response, "June 26, 2026")
 
     def test_audit_log_paginates_events(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        AuditEvent.objects.all().delete()
         base_time = datetime(2026, 6, 26, 7, 0, 0, tzinfo=timezone.get_current_timezone())
         for index in range(205):
             event = AuditEvent.objects.create(
@@ -2388,6 +2391,46 @@ class ViewSmokeTests(TestCase):
         self.assertNotContains(response, "file.upload_normalized")
         self.assertNotContains(response, "trash.purge.schedule.updated")
         self.assertNotContains(response, "scan.retention.purge")
+
+    def test_audit_log_uses_readable_scheduled_task_labels(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        AuditEvent.objects.create(
+            username="viewer",
+            action="scheduled_action.created",
+            object_type="scheduled_action",
+            object_id="42",
+            outcome="success",
+            details={
+                "scheduled_action_name": "Night shutdown",
+                "target_type": "vm",
+                "target_vmid": 500,
+            },
+        )
+        AuditEvent.objects.create(
+            username="system",
+            action="scheduled_action.run_completed",
+            object_type="scheduled_action_run",
+            object_id="run-42",
+            outcome="success",
+            details={
+                "scheduled_action_name": "Morning start",
+                "target_type": "ct",
+                "target_vmid": 101,
+            },
+        )
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "VMs")
+        self.assertContains(response, "Scheduled task created")
+        self.assertContains(response, "Scheduled task completed")
+        self.assertContains(response, "Night shutdown")
+        self.assertContains(response, "Morning start")
+        self.assertNotContains(response, "scheduled_action.created")
+        self.assertNotContains(response, "scheduled_action.run_completed")
 
     @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=False)
     def test_storage_file_download_uses_latest_inventory_and_audits_action(self):
@@ -3985,6 +4028,140 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Latest Runs")
         self.assertContains(response, "Success")
 
+    def test_scheduled_task_create_form_creates_recurring_task(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+        )
+
+        response = self.client.post(
+            reverse("core:scheduled_task_create"),
+            {
+                "name": "Night shutdown",
+                "enabled": "on",
+                "target": "vm:500",
+                "action_type": ScheduledAction.ActionType.SHUTDOWN,
+                "action_timeout_seconds": "900",
+                "schedule_type": ScheduledAction.ScheduleType.RECURRING,
+                "recurrence_kind": ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
+                "recurrence_time": "22:00",
+                "weekday": "6",
+                "ordinal": "first",
+                "catch_up_enabled": "on",
+                "max_lateness_hours": "2",
+            },
+        )
+
+        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        action = ScheduledAction.objects.get(name="Night shutdown")
+        self.assertTrue(action.enabled)
+        self.assertEqual(action.created_by, user)
+        self.assertEqual(action.target_node, "pve1")
+        self.assertEqual(action.target_name_snapshot, "Lab VM")
+        self.assertEqual(action.recurrence["ordinal"], "first")
+        self.assertEqual(action.max_lateness_minutes, 120)
+        self.assertIsNotNone(action.next_run_at)
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.created").exists())
+
+    def test_scheduled_task_edit_form_updates_definition(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+        )
+        action = ScheduledAction.objects.create(
+            name="Old name",
+            action_type=ScheduledAction.ActionType.START,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            schedule_type=ScheduledAction.ScheduleType.ONCE,
+            run_at=timezone.now() + timedelta(hours=1),
+            next_run_at=timezone.now() + timedelta(hours=1),
+        )
+
+        response = self.client.post(
+            reverse("core:scheduled_task_edit", args=[action.id]),
+            {
+                "name": "Morning start",
+                "enabled": "on",
+                "target": "vm:500",
+                "action_type": ScheduledAction.ActionType.START,
+                "action_timeout_seconds": "1800",
+                "schedule_type": ScheduledAction.ScheduleType.RECURRING,
+                "recurrence_kind": ScheduledAction.RecurrenceKind.DAILY,
+                "recurrence_time": "07:30",
+                "max_lateness_hours": "1",
+            },
+        )
+
+        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        action.refresh_from_db()
+        self.assertEqual(action.name, "Morning start")
+        self.assertEqual(action.schedule_type, ScheduledAction.ScheduleType.RECURRING)
+        self.assertEqual(action.recurrence, {"time": "07:30"})
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.updated").exists())
+
+    def test_scheduled_task_toggle_and_delete_views(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        action = ScheduledAction.objects.create(
+            name="Daily reboot",
+            enabled=False,
+            action_type=ScheduledAction.ActionType.REBOOT,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            schedule_type=ScheduledAction.ScheduleType.RECURRING,
+            recurrence_kind=ScheduledAction.RecurrenceKind.DAILY,
+            recurrence={"time": "02:00"},
+        )
+
+        response = self.client.post(reverse("core:scheduled_task_toggle", args=[action.id]), {"enabled": "1"})
+
+        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        action.refresh_from_db()
+        self.assertTrue(action.enabled)
+        self.assertIsNotNone(action.next_run_at)
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.enabled").exists())
+
+        response = self.client.post(reverse("core:scheduled_task_delete", args=[action.id]))
+
+        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        self.assertFalse(ScheduledAction.objects.filter(pk=action.pk).exists())
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.deleted").exists())
+
+    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
+    def test_scheduled_task_run_now_queues_manual_run(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        action = ScheduledAction.objects.create(
+            name="Manual start",
+            action_type=ScheduledAction.ActionType.START,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+        )
+
+        with patch("core.services.scheduled_actions.async_task", return_value="manual-task-id"):
+            response = self.client.post(reverse("core:scheduled_task_run_now", args=[action.id]))
+
+        self.assertRedirects(response, reverse("core:scheduled_tasks"))
+        run = ScheduledActionRun.objects.get(scheduled_action=action)
+        self.assertEqual(run.status, ScheduledActionRun.Status.QUEUED)
+        self.assertEqual(run.triggered_by, user)
+        self.assertTrue(run.occurrence_key.startswith("manual:"))
+        event = AuditEvent.objects.get(action="scheduled_action.run_queued")
+        self.assertEqual(event.username, "scheduler")
+
     def test_dashboard_updates_scan_schedule(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -4023,6 +4200,9 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(state.max_age_days, 7)
 
     def test_audit_log_shows_audit_retention_schedule(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
         response = self.client.get(reverse("core:dashboard"))
 
         self.assertNotContains(response, "Keep audit logs for")

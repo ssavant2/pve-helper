@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib import messages
@@ -17,6 +18,7 @@ from django.shortcuts import render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone as tz
+from django.utils.dateparse import parse_datetime
 from django.utils.http import content_disposition_header, url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 from django_q.tasks import async_task
@@ -40,6 +42,8 @@ from .services.permissions import storage_permissions as get_permissions
 from .services.proxmox import LIVE_GUEST_STATUS_CACHE_SECONDS, fetch_live_guest_status
 from .services.recent_tasks import recent_task_page, serialize_task_page
 from .services.scan_schedule import scan_schedule_state, update_scan_schedule
+from .services.scheduled_actions import ScheduledActionQueueError, queue_manual_scheduled_action_run
+from .services.scheduled_recurrence import RecurrenceError, next_run_after
 from .services.storage_actions import (
     INFLATE_PREALLOCATION_FULL,
     INFLATE_PREALLOCATION_METADATA,
@@ -70,6 +74,23 @@ SPACE_CHART_BUCKET_HOURS = 12
 SPACE_CHART_MAX_POINTS = 14
 FILE_BROWSER_BATCH_SIZE = 200
 AUDIT_PAGE_SIZE = 200
+SCHEDULED_ACTION_WEEKDAYS = [
+    ("0", "Monday"),
+    ("1", "Tuesday"),
+    ("2", "Wednesday"),
+    ("3", "Thursday"),
+    ("4", "Friday"),
+    ("5", "Saturday"),
+    ("6", "Sunday"),
+]
+SCHEDULED_ACTION_ORDINALS = [
+    ("first", "First"),
+    ("second", "Second"),
+    ("third", "Third"),
+    ("fourth", "Fourth"),
+    ("fifth", "Fifth"),
+    ("last", "Last"),
+]
 
 
 def app_login_required(view_func):
@@ -160,6 +181,87 @@ def scheduled_tasks(request):
         "run_retention_days": settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS,
     }
     return render(request, "core/scheduled_tasks.html", context)
+
+
+@app_login_required
+def scheduled_task_create(request):
+    action = ScheduledAction()
+    if request.method == "POST":
+        errors = _apply_scheduled_action_form(action, request.POST, request.user)
+        if not errors:
+            _audit_scheduled_action_definition(request, "scheduled_action.created", action)
+            return redirect("core:scheduled_tasks")
+    else:
+        errors = []
+
+    context = _scheduled_action_form_context(
+        action,
+        form_values=_scheduled_action_form_values(action, request.POST if request.method == "POST" else None),
+        errors=errors,
+        mode="create",
+    )
+    return render(request, "core/scheduled_task_form.html", context, status=400 if errors else 200)
+
+
+@app_login_required
+def scheduled_task_edit(request, action_id: int):
+    action = get_object_or_404(ScheduledAction, pk=action_id)
+    if request.method == "POST":
+        errors = _apply_scheduled_action_form(action, request.POST, request.user)
+        if not errors:
+            _audit_scheduled_action_definition(request, "scheduled_action.updated", action)
+            return redirect("core:scheduled_tasks")
+    else:
+        errors = []
+
+    context = _scheduled_action_form_context(
+        action,
+        form_values=_scheduled_action_form_values(action, request.POST if request.method == "POST" else None),
+        errors=errors,
+        mode="edit",
+    )
+    return render(request, "core/scheduled_task_form.html", context, status=400 if errors else 200)
+
+
+@require_POST
+@app_login_required
+def scheduled_task_toggle(request, action_id: int):
+    action = get_object_or_404(ScheduledAction, pk=action_id)
+    enabled = request.POST.get("enabled") == "1"
+    if enabled:
+        try:
+            _refresh_scheduled_action_next_run(action)
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect("core:scheduled_tasks")
+    action.enabled = enabled
+    action.save(update_fields=["enabled", "next_run_at", "updated_at"])
+    _audit_scheduled_action_definition(
+        request,
+        "scheduled_action.enabled" if enabled else "scheduled_action.disabled",
+        action,
+    )
+    return redirect("core:scheduled_tasks")
+
+
+@require_POST
+@app_login_required
+def scheduled_task_delete(request, action_id: int):
+    action = get_object_or_404(ScheduledAction, pk=action_id)
+    _audit_scheduled_action_definition(request, "scheduled_action.deleted", action)
+    action.delete()
+    return redirect("core:scheduled_tasks")
+
+
+@require_POST
+@app_login_required
+def scheduled_task_run_now(request, action_id: int):
+    action = get_object_or_404(ScheduledAction, pk=action_id)
+    try:
+        queue_manual_scheduled_action_run(action, triggered_by=request.user)
+    except ScheduledActionQueueError as exc:
+        messages.error(request, str(exc))
+    return redirect("core:scheduled_tasks")
 
 
 def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan: ScanRun | None) -> None:
@@ -1247,7 +1349,7 @@ def _audit_module_key(event: AuditEvent) -> str:
         return "auth"
     if action.startswith("network.") or object_type.startswith("network"):
         return "network"
-    if action.startswith("vm.") or object_type in {"vm", "ct", "guest"}:
+    if action.startswith("vm.") or action.startswith("scheduled_action.") or object_type in {"vm", "ct", "guest", "scheduled_action", "scheduled_action_run"}:
         return "vms"
     if action.startswith("cluster.") or object_type.startswith("cluster"):
         return "clusters"
@@ -1335,6 +1437,30 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Audit retention purge"
     if event.action == "audit.retention.schedule.updated":
         return "Audit retention schedule updated"
+    if event.action == "scheduled_action.created":
+        return "Scheduled task created"
+    if event.action == "scheduled_action.updated":
+        return "Scheduled task updated"
+    if event.action == "scheduled_action.enabled":
+        return "Scheduled task enabled"
+    if event.action == "scheduled_action.disabled":
+        return "Scheduled task disabled"
+    if event.action == "scheduled_action.deleted":
+        return "Scheduled task deleted"
+    if event.action == "scheduled_action.run_queued":
+        return "Scheduled task queued"
+    if event.action == "scheduled_action.run_started":
+        return "Scheduled task started"
+    if event.action == "scheduled_action.run_completed":
+        return "Scheduled task completed"
+    if event.action == "scheduled_action.run_failed":
+        return "Scheduled task failed"
+    if event.action == "scheduled_action.run_skipped":
+        return "Scheduled task skipped"
+    if event.action == "scheduled_action.run_missed":
+        return "Scheduled task missed"
+    if event.action == "scheduled_action.run_retention.purge":
+        return "Scheduled task retention purge"
     return event.action
 
 
@@ -1360,6 +1486,16 @@ def _audit_object_label(event: AuditEvent) -> str:
         return "Audit retention schedule"
     if event.object_type == "audit_retention":
         return "Audit retention"
+    if event.object_type in {"scheduled_action", "scheduled_action_run"}:
+        details = event.details if isinstance(event.details, dict) else {}
+        name = details.get("scheduled_action_name")
+        if name:
+            return str(name)
+        target_type = details.get("target_type")
+        target_vmid = details.get("target_vmid")
+        if target_type and target_vmid:
+            return f"{str(target_type).upper()} {target_vmid}"
+        return "Scheduled task"
     return f"{event.object_type} {event.object_id}".strip() or "-"
 
 
@@ -1907,6 +2043,329 @@ def _content_category_label(category: str, path: str) -> str:
         "vm_images": "VM images",
     }
     return labels.get(category, "Other / unknown")
+
+
+def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict, errors: list[str], mode: str) -> dict:
+    target_choices = _scheduled_action_target_choices(action)
+    return {
+        **navigation_context("scheduled_tasks"),
+        "scheduled_action": action,
+        "form_values": form_values,
+        "form_errors": errors,
+        "form_mode": mode,
+        "target_choices": target_choices,
+        "action_type_choices": ScheduledAction.ActionType.choices,
+        "schedule_type_choices": ScheduledAction.ScheduleType.choices,
+        "recurrence_kind_choices": [
+            (ScheduledAction.RecurrenceKind.DAILY, "Daily"),
+            (ScheduledAction.RecurrenceKind.WEEKLY, "Weekly"),
+            (ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL, "Monthly ordinal"),
+            (ScheduledAction.RecurrenceKind.MONTHLY_DAY, "Monthly day"),
+            (ScheduledAction.RecurrenceKind.ADVANCED, "Advanced RRULE"),
+        ],
+        "weekday_choices": SCHEDULED_ACTION_WEEKDAYS,
+        "ordinal_choices": SCHEDULED_ACTION_ORDINALS,
+        "scheduled_actions_enabled": settings.SCHEDULED_ACTIONS_ENABLED,
+        "schedule_timezone": settings.TIME_ZONE,
+    }
+
+
+def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
+    if post is not None:
+        return {
+            "name": post.get("name", ""),
+            "enabled": post.get("enabled") == "on",
+            "action_type": post.get("action_type", ScheduledAction.ActionType.SHUTDOWN),
+            "target": post.get("target", ""),
+            "schedule_type": post.get("schedule_type", ScheduledAction.ScheduleType.ONCE),
+            "run_at": post.get("run_at", ""),
+            "recurrence_kind": post.get("recurrence_kind", ScheduledAction.RecurrenceKind.DAILY),
+            "recurrence_time": post.get("recurrence_time", "22:00"),
+            "weekday": post.get("weekday", "6"),
+            "ordinal": post.get("ordinal", "first"),
+            "day_of_month": post.get("day_of_month", "1"),
+            "rrule": post.get("rrule", ""),
+            "catch_up_enabled": post.get("catch_up_enabled") == "on",
+            "max_lateness_hours": post.get("max_lateness_hours", "1"),
+            "action_timeout_seconds": post.get("action_timeout_seconds", "1800"),
+        }
+
+    recurrence = action.recurrence if isinstance(action.recurrence, dict) else {}
+    target = f"{action.target_type}:{action.target_vmid}" if action.target_type and action.target_vmid else ""
+    run_at = action.run_at or action.next_run_at
+    return {
+        "name": action.name or "",
+        "enabled": action.enabled if action.pk else True,
+        "action_type": action.action_type or ScheduledAction.ActionType.SHUTDOWN,
+        "target": target,
+        "schedule_type": action.schedule_type or ScheduledAction.ScheduleType.ONCE,
+        "run_at": _datetime_local_value(run_at),
+        "recurrence_kind": action.recurrence_kind or ScheduledAction.RecurrenceKind.DAILY,
+        "recurrence_time": _recurrence_time_label(recurrence) if action.pk else "22:00",
+        "weekday": str(recurrence.get("weekday", "6")),
+        "ordinal": str(recurrence.get("ordinal", recurrence.get("week", "first"))),
+        "day_of_month": str(recurrence.get("day", recurrence.get("day_of_month", "1"))),
+        "rrule": str(recurrence.get("rrule", "")),
+        "catch_up_enabled": action.catch_up_policy == ScheduledAction.CatchUpPolicy.RUN_ONCE_LATE,
+        "max_lateness_hours": str(max(1, action.max_lateness_minutes // 60) if action.max_lateness_minutes else 1),
+        "action_timeout_seconds": str(action.action_timeout_seconds or 1800),
+    }
+
+
+def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> list[dict]:
+    latest_scan = _latest_result_scan()
+    choices = []
+    seen = set()
+    if latest_scan:
+        objects = (
+            ProxmoxInventory.objects.filter(
+                scan_run=latest_scan,
+                object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+                vmid__isnull=False,
+            )
+            .order_by("object_type", "vmid", "node")
+        )
+        for obj in objects:
+            key = (obj.object_type, obj.vmid)
+            if key in seen:
+                continue
+            seen.add(key)
+            choices.append(
+                {
+                    "value": f"{obj.object_type}:{obj.vmid}",
+                    "label": _inventory_target_label(obj),
+                }
+            )
+
+    if action and action.pk and action.target_vmid:
+        value = f"{action.target_type}:{action.target_vmid}"
+        if (action.target_type, action.target_vmid) not in seen:
+            choices.append(
+                {
+                    "value": value,
+                    "label": _scheduled_action_target_label(action),
+                }
+            )
+    return choices
+
+
+def _inventory_target_label(obj: ProxmoxInventory) -> str:
+    type_label = "VM" if obj.object_type == ProxmoxInventory.ObjectType.VM else "Container"
+    label = f"{type_label} {obj.vmid}"
+    if obj.name:
+        label = f"{label} ({obj.name})"
+    if obj.node:
+        label = f"{label} on {obj.node}"
+    return label
+
+
+def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[str]:
+    errors: list[str] = []
+    name = post.get("name", "").strip()
+    if not name:
+        errors.append("Name is required.")
+    target_type, target_vmid = _parse_scheduled_target(post.get("target", ""))
+    if target_type is None or target_vmid is None:
+        errors.append("Target is required.")
+
+    action_type = post.get("action_type", "")
+    if action_type not in ScheduledAction.ActionType.values:
+        errors.append("Unknown action.")
+
+    try:
+        timeout_seconds = _bounded_int(post.get("action_timeout_seconds", "1800"), 30, 86400, "Timeout")
+    except ValueError as exc:
+        errors.append(str(exc))
+        timeout_seconds = 1800
+
+    catch_up_enabled = post.get("catch_up_enabled") == "on"
+    try:
+        max_lateness_hours = _bounded_int(post.get("max_lateness_hours", "1"), 1, 24, "Retry window")
+    except ValueError as exc:
+        errors.append(str(exc))
+        max_lateness_hours = 1
+
+    schedule_type = post.get("schedule_type", ScheduledAction.ScheduleType.ONCE)
+    if schedule_type not in ScheduledAction.ScheduleType.values:
+        errors.append("Unknown schedule type.")
+
+    run_at = None
+    recurrence = {}
+    recurrence_kind = post.get("recurrence_kind", ScheduledAction.RecurrenceKind.DAILY)
+    if schedule_type == ScheduledAction.ScheduleType.ONCE:
+        try:
+            run_at = _parse_local_datetime(post.get("run_at", ""))
+        except ValueError as exc:
+            errors.append(str(exc))
+        recurrence_kind = ScheduledAction.RecurrenceKind.ADVANCED
+    else:
+        if recurrence_kind not in ScheduledAction.RecurrenceKind.values:
+            errors.append("Unknown recurrence type.")
+        recurrence = _recurrence_from_post(post, recurrence_kind)
+
+    if errors:
+        return errors
+
+    action.name = name[:160]
+    action.enabled = post.get("enabled") == "on"
+    action.action_type = action_type
+    action.action_timeout_seconds = timeout_seconds
+    action.target_type = target_type
+    action.target_vmid = target_vmid
+    _apply_target_snapshot(action)
+    action.schedule_type = schedule_type
+    action.run_at = run_at
+    action.recurrence = recurrence
+    action.recurrence_kind = recurrence_kind
+    action.timezone = settings.TIME_ZONE
+    action.catch_up_policy = (
+        ScheduledAction.CatchUpPolicy.RUN_ONCE_LATE
+        if catch_up_enabled
+        else ScheduledAction.CatchUpPolicy.SKIP_MISSED
+    )
+    action.max_lateness_minutes = max_lateness_hours * 60 if catch_up_enabled else 0
+    action.parameters = {}
+    if not action.pk:
+        action.created_by = user if user.is_authenticated else None
+        action.last_status = ScheduledAction.LastStatus.NEVER_RUN
+
+    try:
+        _refresh_scheduled_action_next_run(action)
+    except ValueError as exc:
+        return [str(exc)]
+
+    action.save()
+    return []
+
+
+def _parse_scheduled_target(value: str) -> tuple[str | None, int | None]:
+    if ":" not in value:
+        return None, None
+    target_type, raw_vmid = value.split(":", 1)
+    if target_type not in ScheduledAction.TargetType.values:
+        return None, None
+    try:
+        vmid = int(raw_vmid)
+    except ValueError:
+        return None, None
+    return target_type, vmid if vmid > 0 else None
+
+
+def _apply_target_snapshot(action: ScheduledAction) -> None:
+    action.target_node = ""
+    action.target_name_snapshot = ""
+    latest_scan = _latest_result_scan()
+    obj = None
+    if latest_scan:
+        obj = (
+            ProxmoxInventory.objects.filter(
+                scan_run=latest_scan,
+                object_type=action.target_type,
+                vmid=action.target_vmid,
+            )
+            .order_by("node")
+            .first()
+        )
+    if obj is None:
+        obj = (
+            ProxmoxInventory.objects.filter(
+                object_type=action.target_type,
+                vmid=action.target_vmid,
+            )
+            .order_by("-scan_run__created_at", "node")
+            .first()
+        )
+    if obj:
+        action.target_node = obj.node
+        action.target_name_snapshot = obj.name
+
+
+def _recurrence_from_post(post, recurrence_kind: str) -> dict:
+    time_value = post.get("recurrence_time", "22:00").strip() or "22:00"
+    if recurrence_kind == ScheduledAction.RecurrenceKind.DAILY:
+        return {"time": time_value}
+    if recurrence_kind == ScheduledAction.RecurrenceKind.WEEKLY:
+        return {"weekday": post.get("weekday", "6"), "time": time_value}
+    if recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL:
+        return {
+            "ordinal": post.get("ordinal", "first"),
+            "weekday": post.get("weekday", "6"),
+            "time": time_value,
+        }
+    if recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_DAY:
+        return {"day_of_month": post.get("day_of_month", "1"), "time": time_value}
+    if recurrence_kind == ScheduledAction.RecurrenceKind.ADVANCED:
+        return {"rrule": post.get("rrule", "").strip()}
+    return {}
+
+
+def _refresh_scheduled_action_next_run(action: ScheduledAction) -> None:
+    if action.schedule_type == ScheduledAction.ScheduleType.ONCE:
+        if action.run_at is None:
+            raise ValueError("One-time schedules require a run time.")
+        action.next_run_at = action.run_at
+        return
+
+    try:
+        action.next_run_at = next_run_after(action, after=tz.now())
+    except RecurrenceError as exc:
+        raise ValueError(str(exc)) from exc
+    if action.next_run_at is None:
+        raise ValueError("Could not calculate the next run time.")
+
+
+def _parse_local_datetime(value: str):
+    value = value.strip()
+    if not value:
+        raise ValueError("Run time is required.")
+    parsed = parse_datetime(value)
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("Run time must be a valid date and time.") from exc
+    if tz.is_naive(parsed):
+        return tz.make_aware(parsed, ZoneInfo(settings.TIME_ZONE))
+    return parsed
+
+
+def _bounded_int(value: str, minimum: int, maximum: int, label: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a number.") from exc
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{label} must be between {minimum} and {maximum}.")
+    return parsed
+
+
+def _datetime_local_value(value) -> str:
+    if value is None:
+        return ""
+    return tz.localtime(value).strftime("%Y-%m-%dT%H:%M")
+
+
+def _audit_scheduled_action_definition(request, action: str, scheduled_action: ScheduledAction) -> None:
+    AuditEvent.objects.create(
+        user=request.user if request.user.is_authenticated else None,
+        username=request.user.get_username() if request.user.is_authenticated else "",
+        action=action,
+        object_type="scheduled_action",
+        object_id=str(scheduled_action.id),
+        outcome="success",
+        details={
+            "scheduled_action_id": scheduled_action.id,
+            "scheduled_action_name": scheduled_action.name,
+            "enabled": scheduled_action.enabled,
+            "action_type": scheduled_action.action_type,
+            "target_type": scheduled_action.target_type,
+            "target_vmid": scheduled_action.target_vmid,
+            "target_node": scheduled_action.target_node,
+            "schedule_type": scheduled_action.schedule_type,
+            "recurrence_kind": scheduled_action.recurrence_kind,
+            "next_run_at": scheduled_action.next_run_at.isoformat() if scheduled_action.next_run_at else "",
+        },
+    )
 
 
 def _scheduled_action_target_label(action: ScheduledAction) -> str:
