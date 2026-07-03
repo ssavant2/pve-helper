@@ -11,7 +11,7 @@ from django_q.models import Schedule
 from django_q.tasks import async_task
 
 from core.models import AuditEvent, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
-from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
+from core.services.proxmox import clear_live_guest_caches, ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 
 
@@ -298,6 +298,7 @@ def execute_scheduled_action_run(
                 action_status=ScheduledAction.LastStatus.COMPLETED,
                 result={"message": no_op_outcome},
             )
+            clear_live_guest_caches()
             return
 
         skip_reason = _skip_reason(action, preflight)
@@ -363,6 +364,7 @@ def execute_scheduled_action_run(
             action_status=ScheduledAction.LastStatus.COMPLETED,
             result={"proxmox_task": result.raw},
         )
+        clear_live_guest_caches()
     else:
         _finish_run(
             run,

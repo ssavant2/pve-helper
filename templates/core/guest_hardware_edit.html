@@ -2,90 +2,272 @@
 {% load guest_labels %}
 
 {% block content %}
-  <section class="page-header">
-    <div>
-      <h1>Edit Settings &mdash; {% guest_label guest_identity %}</h1>
-      <p>Virtual hardware. Changes are written to the Proxmox VM configuration.</p>
+  <section class="hardware-editor-page">
+    <div class="hardware-editor-header">
+      <div class="hardware-editor-title">
+        <h1>Edit Hardware</h1>
+        <span class="hardware-title-separator" aria-hidden="true"></span>
+        <span class="hardware-editor-guest">{% guest_label guest_identity %}</span>
+      </div>
+      <a class="hardware-editor-close" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}" aria-label="Close">x</a>
     </div>
-    <div class="page-header-actions">
-      <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
-    </div>
-  </section>
 
-  <section class="panel panel-spaced guest-edit-panel">
-    <form method="post" action="{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}">
+    <form class="hardware-editor-form" method="post" action="{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}">
       {% csrf_token %}
 
-      <div class="hw-section">
-        <h3>CPU</h3>
-        <div class="form-grid">
-          <div class="form-field"><label for="hw-cores">Cores</label><input type="number" min="1" id="hw-cores" name="cores" value="{{ cores }}"></div>
-          <div class="form-field"><label for="hw-sockets">Sockets</label><input type="number" min="1" id="hw-sockets" name="sockets" value="{{ sockets }}"></div>
-          <div class="form-field"><label for="hw-memory">Memory (MB)</label><input type="number" min="1" id="hw-memory" name="memory" value="{{ memory }}"></div>
-        </div>
+      <div class="hardware-editor-tabs" aria-label="Edit settings tabs">
+        <span class="hardware-editor-tab active">Virtual Hardware</span>
+        <span class="hardware-editor-tab muted">VM Options</span>
+        <span class="hardware-editor-tab muted">Advanced Parameters</span>
       </div>
 
-      <div class="hw-section">
-        <h3>Hard Disks</h3>
+      <div class="hardware-editor-toolbar">
+        <details class="hw-add-menu">
+          <summary>Add New Device</summary>
+          <div class="hw-add-menu-panel">
+            <div class="hw-add-group">
+              <div class="hw-add-group-title">Disks, Drives and Storage</div>
+              <div class="hw-add-fields">
+                <label>
+                  <span>Hard Disk Storage</span>
+                  <select name="newdisk_storage">
+                    <option value="">No new disk</option>
+                    {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span>Hard Disk Size (GB)</span>
+                  <input type="number" min="1" name="newdisk_size" placeholder="GB">
+                </label>
+              </div>
+              {% if cdrom %}<a class="hw-add-menu-link" href="#device-{{ cdrom.label }}">CD/DVD Drive</a>{% endif %}
+            </div>
+
+            <div class="hw-add-group">
+              <div class="hw-add-group-title">Controllers and Security</div>
+              {% if not has_efi_disk %}
+                <div class="hw-add-fields">
+                  <label>
+                    <span>EFI Disk Storage</span>
+                    <select name="new_efi_storage">
+                      <option value="">No EFI disk</option>
+                      {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+                    </select>
+                  </label>
+                  <label>
+                    <span>EFI Type</span>
+                    <select name="new_efi_type">
+                      <option value="4m">4m</option>
+                      <option value="2m">2m</option>
+                    </select>
+                  </label>
+                  <label class="hw-checkbox"><input type="checkbox" name="new_efi_pre_enrolled" checked> Pre-enrolled keys</label>
+                </div>
+              {% endif %}
+              {% if not has_tpm %}
+                <div class="hw-add-fields">
+                  <label>
+                    <span>TPM Storage</span>
+                    <select name="new_tpm_storage">
+                      <option value="">No TPM state</option>
+                      {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+                    </select>
+                  </label>
+                  <label>
+                    <span>TPM Version</span>
+                    <select name="new_tpm_version">
+                      <option value="v2.0">v2.0</option>
+                      <option value="v1.2">v1.2</option>
+                    </select>
+                  </label>
+                </div>
+              {% endif %}
+            </div>
+
+            <div class="hw-add-group">
+              <div class="hw-add-group-title">Other Devices</div>
+              {% if not has_rng %}
+                <div class="hw-add-fields">
+                  <label class="hw-checkbox"><input type="checkbox" name="new_rng_enable"> RNG Device</label>
+                  <label><span>Source</span><input type="text" name="new_rng_source" value="/dev/urandom"></label>
+                  <label><span>Max bytes</span><input type="number" min="0" name="new_rng_max_bytes" value="1024"></label>
+                </div>
+              {% endif %}
+              {% if not has_audio %}
+                <div class="hw-add-fields">
+                  <label class="hw-checkbox"><input type="checkbox" name="new_audio_enable"> Audio Device</label>
+                  <label>
+                    <span>Device</span>
+                    <select name="new_audio_device">
+                      <option value="ich9-intel-hda">ich9-intel-hda</option>
+                      <option value="intel-hda">intel-hda</option>
+                      <option value="AC97">AC97</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Driver</span>
+                    <select name="new_audio_driver">
+                      <option value="spice">spice</option>
+                      <option value="none">none</option>
+                    </select>
+                  </label>
+                </div>
+              {% endif %}
+              <div class="hw-add-fields">
+                <label><span>Serial Port</span><input type="text" name="new_serial_value" placeholder="socket or /dev/ttyS0"></label>
+                <label>
+                  <span>USB Target Type</span>
+                  <select name="new_usb_target_type">
+                    <option value="host">host</option>
+                    <option value="mapping">mapping</option>
+                  </select>
+                </label>
+                <label><span>USB Target</span><input type="text" name="new_usb_target" placeholder="spice, 1-2, abcd:1234"></label>
+                <label class="hw-checkbox"><input type="checkbox" name="new_usb3"> USB3</label>
+              </div>
+              <div class="hw-add-fields">
+                <label>
+                  <span>PCI Target Type</span>
+                  <select name="new_pci_target_type">
+                    <option value="host">host</option>
+                    <option value="mapping">mapping</option>
+                  </select>
+                </label>
+                <label><span>PCI Target</span><input type="text" name="new_pci_target" placeholder="0000:00:02.0 or mapping id"></label>
+                <label class="hw-checkbox"><input type="checkbox" name="new_pci_pcie" checked> PCIe</label>
+              </div>
+              <div class="hw-add-fields">
+                <label><span>Virtiofs Mapping</span><input type="text" name="new_virtiofs_dirid" placeholder="directory mapping id"></label>
+                <label>
+                  <span>Virtiofs Cache</span>
+                  <select name="new_virtiofs_cache">
+                    <option value="">auto</option>
+                    <option value="always">always</option>
+                    <option value="metadata">metadata</option>
+                    <option value="never">never</option>
+                  </select>
+                </label>
+                <label class="hw-checkbox"><input type="checkbox" name="new_virtiofs_direct_io"> Direct I/O</label>
+              </div>
+            </div>
+
+            <div class="hw-add-group">
+              <div class="hw-add-group-title">Network</div>
+              <div class="hw-add-fields">
+                <label>
+                  <span>Network Adapter Bridge</span>
+                  <select name="newnic_bridge">
+                    <option value="">No new NIC</option>
+                    {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label><span>VLAN</span><input type="number" name="newnic_vlan" placeholder="none"></label>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="hw-vsphere-list">
+        <details class="hw-vsphere-row" id="device-cpu" open>
+          <summary class="hw-vsphere-summary">
+            <span class="hw-vsphere-name"><span class="hw-vsphere-chevron">&rsaquo;</span>CPU</span>
+            <span class="hw-vsphere-value">{{ cores|default:"-" }} core{{ cores|pluralize }}{% if sockets %}, {{ sockets }} socket{{ sockets|pluralize }}{% endif %}</span>
+          </summary>
+          <div class="hw-vsphere-body">
+            <div class="hw-vsphere-fields">
+              <label><span>Cores</span><input type="number" min="1" id="hw-cores" name="cores" value="{{ cores }}"></label>
+              <label><span>Sockets</span><input type="number" min="1" id="hw-sockets" name="sockets" value="{{ sockets }}"></label>
+            </div>
+          </div>
+        </details>
+
+        <details class="hw-vsphere-row" id="device-memory">
+          <summary class="hw-vsphere-summary">
+            <span class="hw-vsphere-name"><span class="hw-vsphere-chevron">&rsaquo;</span>Memory</span>
+            <span class="hw-vsphere-value">{{ memory|default:"-" }} MB</span>
+          </summary>
+          <div class="hw-vsphere-body">
+            <div class="hw-vsphere-fields">
+              <label><span>Memory (MB)</span><input type="number" min="1" id="hw-memory" name="memory" value="{{ memory }}"></label>
+            </div>
+          </div>
+        </details>
+
         {% for disk in disks %}
-          <div class="hw-device">
-            <div class="hw-device-label"><code>{{ disk.label }}</code> {{ disk.storage_id }} <span class="muted">({{ disk.size|default:"?" }} {{ disk.format }})</span></div>
-            <label class="hw-inline">Resize to (GB) <input type="number" min="1" name="disk_{{ disk.label }}_size" placeholder="grow only"></label>
-            <label class="hw-inline hw-remove"><input type="checkbox" name="disk_{{ disk.label }}_remove"> Detach</label>
-          </div>
-        {% empty %}
-          <p class="muted">No disks.</p>
+          <details class="hw-vsphere-row" id="device-{{ disk.label }}">
+            <summary class="hw-vsphere-summary">
+              <span class="hw-vsphere-name"><span class="hw-vsphere-chevron">&rsaquo;</span>Hard Disk {{ forloop.counter }} <code>{{ disk.label }}</code></span>
+              <span class="hw-vsphere-value">{{ disk.size|default:"?" }}{% if disk.format %} {{ disk.format }}{% endif %}{% if disk.storage_id %} &middot; {{ disk.storage_id }}{% endif %}</span>
+            </summary>
+            <div class="hw-vsphere-body">
+              <div class="hw-vsphere-fields">
+                <label><span>Resize to (GB)</span><input type="number" min="1" name="disk_{{ disk.label }}_size" placeholder="grow only"></label>
+                <label class="hw-checkbox hw-danger"><input type="checkbox" name="disk_{{ disk.label }}_remove"> Detach disk</label>
+              </div>
+            </div>
+          </details>
         {% endfor %}
-        <div class="hw-add">
-          <span class="muted">Add disk:</span>
-          <select name="newdisk_storage">
-            <option value="">storage...</option>
-            {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-          </select>
-          <input type="number" min="1" name="newdisk_size" placeholder="GB">
-        </div>
-      </div>
 
-      <div class="hw-section">
-        <h3>Network Devices</h3>
         {% for nic in nics %}
-          <div class="hw-device">
-            <div class="hw-device-label"><code>{{ nic.label }}</code> <span class="muted">{{ nic.model }} · {{ nic.mac }}</span></div>
-            <label class="hw-inline">Bridge
-              <select name="nic_{{ nic.label }}_bridge">
-                {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
-              </select>
-            </label>
-            <label class="hw-inline">VLAN <input type="number" name="nic_{{ nic.label }}_vlan" value="{{ nic.vlan }}" placeholder="none"></label>
-            <label class="hw-inline hw-remove"><input type="checkbox" name="nic_{{ nic.label }}_remove"> Remove</label>
-          </div>
-        {% empty %}
-          <p class="muted">No network devices.</p>
+          <details class="hw-vsphere-row" id="device-{{ nic.label }}">
+            <summary class="hw-vsphere-summary">
+              <span class="hw-vsphere-name"><span class="hw-vsphere-chevron">&rsaquo;</span>Network Adapter {{ forloop.counter }} <code>{{ nic.label }}</code></span>
+              <span class="hw-vsphere-value">{{ nic.bridge|default:"-" }}{% if nic.vlan %} &middot; VLAN {{ nic.vlan }}{% endif %}</span>
+            </summary>
+            <div class="hw-vsphere-body">
+              <div class="hw-vsphere-fields">
+                <label>
+                  <span>Bridge / VNet</span>
+                  <select name="nic_{{ nic.label }}_bridge">
+                    {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label><span>VLAN</span><input type="number" name="nic_{{ nic.label }}_vlan" value="{{ nic.vlan }}" placeholder="none"></label>
+                <label class="hw-checkbox hw-danger"><input type="checkbox" name="nic_{{ nic.label }}_remove"> Remove adapter</label>
+              </div>
+            </div>
+          </details>
         {% endfor %}
-        <div class="hw-add">
-          <span class="muted">Add NIC:</span>
-          <select name="newnic_bridge">
-            <option value="">bridge / vnet...</option>
-            {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
-          </select>
-          <input type="number" name="newnic_vlan" placeholder="VLAN (optional)">
-        </div>
+
+        {% if cdrom %}
+          <details class="hw-vsphere-row" id="device-{{ cdrom.label }}">
+            <summary class="hw-vsphere-summary">
+              <span class="hw-vsphere-name"><span class="hw-vsphere-chevron">&rsaquo;</span>CD/DVD Drive <code>{{ cdrom.label }}</code></span>
+              <span class="hw-vsphere-value">{{ cdrom_iso|default:"No media" }}</span>
+            </summary>
+            <div class="hw-vsphere-body">
+              <input type="hidden" name="cdrom_key" value="{{ cdrom.label }}">
+              <div class="hw-vsphere-fields">
+                <label>
+                  <span>ISO Image</span>
+                  <select name="cdrom_iso">
+                    <option value="" {% if not cdrom_iso %}selected{% endif %}>No media (eject)</option>
+                    {% for iso in options.isos %}<option value="{{ iso }}" {% if iso == cdrom_iso %}selected{% endif %}>{{ iso }}</option>{% endfor %}
+                  </select>
+                </label>
+              </div>
+            </div>
+          </details>
+        {% endif %}
+
+        {% for device in advanced_devices %}
+          <details class="hw-vsphere-row" id="device-{{ device.key }}">
+            <summary class="hw-vsphere-summary">
+              <span class="hw-vsphere-name"><span class="hw-vsphere-chevron">&rsaquo;</span>{{ device.label }} <code>{{ device.key }}</code></span>
+              <span class="hw-vsphere-value">{{ device.value }}</span>
+            </summary>
+            <div class="hw-vsphere-body">
+              <div class="hw-vsphere-fields hw-vsphere-fields-wide">
+                <label><span>Configuration</span><input type="text" name="adv_{{ device.key }}_value" value="{{ device.value }}"></label>
+                <label class="hw-checkbox hw-danger"><input type="checkbox" name="adv_{{ device.key }}_remove"> Remove device</label>
+              </div>
+            </div>
+          </details>
+        {% endfor %}
       </div>
 
-      {% if cdrom %}
-        <div class="hw-section">
-          <h3>CD/DVD ({{ cdrom.label }})</h3>
-          <input type="hidden" name="cdrom_key" value="{{ cdrom.label }}">
-          <select name="cdrom_iso">
-            <option value="" {% if not cdrom_iso %}selected{% endif %}>No media (eject)</option>
-            {% for iso in options.isos %}<option value="{{ iso }}" {% if iso == cdrom_iso %}selected{% endif %}>{{ iso }}</option>{% endfor %}
-          </select>
-        </div>
-      {% endif %}
-
-      <p class="muted">USB, PCI, EFI, TPM, Serial, Audio, RNG and Virtiofs devices are not editable here yet.</p>
-
-      <div class="form-actions">
+      <div class="hardware-editor-actions">
         <button class="primary-action" type="submit">Save changes</button>
         <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
       </div>

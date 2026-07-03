@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load guest_labels %}
 
 {% block content %}
   <section class="page-header">
@@ -58,7 +59,13 @@
             <td>{{ event.display_module }}</td>
             <td>{{ event.username|default:"-" }}</td>
             <td>{{ event.display_action }}</td>
-            <td>{{ event.display_object }}</td>
+            <td>
+              {% if event.guest_identity %}
+                {% guest_label event.guest_identity %}
+              {% else %}
+                {{ event.display_object }}
+              {% endif %}
+            </td>
             <td><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
           </tr>
         {% endfor %}

@@ -2,12 +2,18 @@
 
 {% block guest_content %}
   <section class="vm-summary-grid" data-summary-cards>
-    <div class="panel summary-card" data-card-key="guest-os">
+    <div
+      class="panel summary-card"
+      data-card-key="guest-os"
+      data-guest-agent-summary
+      data-agent-summary-url="{% url 'core:guest_agent_summary_api' guest.object_type guest.vmid %}"
+      data-agent-summary-status="{{ guest.status|default:'' }}"
+    >
       <div class="panel-heading"><h2>Guest OS</h2><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div>
       <div class="summary-os">
-        <span class="summary-os-icon guest-icon-wrap{% if guest.status == 'running' %} running{% endif %}"><i data-lucide="{% if guest.object_type == 'ct' %}box{% else %}hard-drive{% endif %}" aria-hidden="true"></i></span>
+        <span class="summary-os-icon guest-icon-wrap{% if guest.status == 'running' %} running{% endif %}"><i data-lucide="{% if guest.object_type == 'ct' %}box{% elif guest_is_template %}layers{% else %}hard-drive{% endif %}" aria-hidden="true"></i></span>
         <div>
-          <div class="summary-os-name">{% if guest_agent_summary.os_name %}{{ guest_agent_summary.os_name }}{% else %}{{ guest_os_label }}{% endif %}</div>
+          <div class="summary-os-name" data-agent-os-name>{% if guest_agent_summary.os_pretty_name %}{{ guest_agent_summary.os_pretty_name }}{% else %}{{ guest_os_label }}{% endif %}</div>
           <div class="muted">
             {% if guest.status == "running" %}
               <span class="badge completed">Powered On</span>
@@ -18,12 +24,27 @@
         </div>
       </div>
       {% if guest_agent_summary.enabled %}
-        <dl class="details-list summary-os-agent">
-          {% if guest_agent_summary.hostname %}<div><dt>DNS name</dt><dd>{{ guest_agent_summary.hostname }}</dd></div>{% endif %}
+        <dl class="details-list summary-os-agent" data-agent-details>
+          {% if guest_agent_summary.os_name %}<div data-agent-dynamic-row><dt>OS name</dt><dd>{{ guest_agent_summary.os_name }}</dd></div>{% endif %}
+          {% if guest_agent_summary.os_version %}<div data-agent-dynamic-row><dt>Version</dt><dd>{{ guest_agent_summary.os_version }}{% if guest_agent_summary.os_version_id %} <span class="muted">({{ guest_agent_summary.os_version_id }})</span>{% endif %}</dd></div>{% endif %}
+          {% if guest_agent_summary.architecture %}<div data-agent-dynamic-row><dt>Architecture</dt><dd>{{ guest_agent_summary.architecture }}</dd></div>{% endif %}
+          {% if guest_agent_summary.kernel_release %}<div data-agent-dynamic-row><dt>Kernel</dt><dd>{{ guest_agent_summary.kernel_release }}</dd></div>{% endif %}
+          {% if guest_agent_summary.hostname %}<div data-agent-dynamic-row><dt>DNS name</dt><dd>{{ guest_agent_summary.hostname }}</dd></div>{% endif %}
           {% if guest_agent_summary.ips %}
-            <div><dt>IP addresses</dt><dd>{% for ip in guest_agent_summary.ips %}{{ ip }}{% if not forloop.last %}<br>{% endif %}{% endfor %}</dd></div>
+            <div data-agent-dynamic-row><dt>IP addresses</dt><dd>{% for ip in guest_agent_summary.ips %}{{ ip }}{% if not forloop.last %}<br>{% endif %}{% endfor %}</dd></div>
           {% endif %}
-          <div><dt>Guest agent</dt><dd>{% if guest_agent_summary.running %}<span class="badge completed">Running</span>{% else %}<span class="badge">Not running</span>{% endif %}</dd></div>
+          <div>
+            <dt>Guest agent</dt>
+            <dd>
+              {% if guest_agent_summary.running %}
+                <span class="badge completed" data-agent-status-badge>Running</span>
+              {% elif guest.status == "running" and not guest_agent_summary.cached %}
+                <span class="badge" data-agent-status-badge>Cached data pending</span>
+              {% else %}
+                <span class="badge" data-agent-status-badge>Not running</span>
+              {% endif %}
+            </dd>
+          </div>
         </dl>
       {% endif %}
     </div>
@@ -59,7 +80,7 @@
     </div>
 
     <div class="panel summary-card" data-card-key="hardware">
-      <div class="panel-heading"><h2>{% if guest.object_type == "ct" %}Container Hardware{% else %}VM Hardware{% endif %}</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% if guest.object_type == 'vm' %}{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}{% else %}{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=hardware{% endif %}">Edit</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+      <div class="panel-heading"><h2>{% if guest.object_type == "ct" %}Container Hardware{% else %}VM Hardware{% endif %}</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% if guest.object_type == 'vm' %}{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}{% else %}{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=hardware{% endif %}">Edit Hardware</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
       <dl class="details-list">
         {% if guest_cpu_label %}<div><dt>CPU</dt><dd>{{ guest_cpu_label }}</dd></div>{% endif %}
         {% if guest_memory_label %}<div><dt>Memory</dt><dd>{{ guest_memory_label }}</dd></div>{% endif %}

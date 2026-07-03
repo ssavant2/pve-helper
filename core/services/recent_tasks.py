@@ -5,6 +5,7 @@ from datetime import timedelta
 from pathlib import PurePosixPath
 
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.db.models import Q
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
@@ -16,9 +17,14 @@ GUEST_TASK_NAMES = {
     "guest.power.shutdown": "Shut down guest",
     "guest.power.reboot": "Restart guest",
     "guest.power.stop": "Power off",
+    "guest.power.reset": "Reset guest",
     "guest.snapshot.create": "Create snapshot",
     "guest.snapshot.delete": "Delete snapshot",
     "guest.snapshot.rollback": "Rollback snapshot",
+    "guest.template.convert": "Convert to template",
+    "guest.clone.create": "Clone guest",
+    "guest.tags.updated": "Update tags",
+    "guest.destroy": "Destroy guest",
     "guest.config.updated": "Reconfigure",
     "guest.hardware.updated": "Reconfigure hardware",
     "guest.cloudinit.update": "Update Cloud-Init",
@@ -237,14 +243,31 @@ def _visible_guest_tasks():
 def _guest_task(event: AuditEvent) -> dict[str, object]:
     details = event.details if isinstance(event.details, dict) else {}
     identity = guest_identity(details.get("target_type"), details.get("vmid"), details.get("name") or "")
-    failed = event.outcome not in ("success", "", None)
+    status, status_class = _guest_task_status(event)
+    finished_at = _guest_task_finished_at(event, details, status_class)
     extra = ""
+    if event.action == "guest.clone.create" and details.get("new_vmid"):
+        new_name = str(details.get("new_name") or "").strip()
+        extra = f"new VMID {details['new_vmid']}" + (f" ({new_name})" if new_name else "")
+    elif event.action == "guest.tags.updated":
+        mode = str(details.get("mode") or "update").strip()
+        tags = details.get("tags") if isinstance(details.get("tags"), list) else []
+        extra = f"{mode}: {', '.join(tags)}" if tags else mode
+    elif event.action == "guest.destroy":
+        flags = []
+        if details.get("purge"):
+            flags.append("purge")
+        if details.get("destroy_unreferenced_disks"):
+            flags.append("destroy unreferenced disks")
+        extra = ", ".join(flags)
     for key in ("snapshot", "storage", "volid", "job_id", "target"):
-        if details.get(key):
+        if not extra and details.get(key):
             extra = str(details[key])
             break
     if not extra and details.get("fields"):
         extra = ", ".join(details["fields"]) if isinstance(details["fields"], list) else str(details["fields"])
+    if not extra and details.get("error"):
+        extra = str(details["error"])
     return {
         "id": f"guest:{event.id}",
         "kind": "guest",
@@ -252,16 +275,37 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         "name": GUEST_TASK_NAMES.get(event.action, event.action),
         "target": identity.full_label_with_type,
         "target_guest": identity.as_dict(),
-        "status": "Failed" if failed else "Completed",
-        "status_class": "failed" if failed else "completed",
+        "status": status,
+        "status_class": status_class,
         "details": extra or "-",
         "initiator": event.username or (event.user.get_username() if event.user else "system"),
         "queued_for": "-",
         "started_at": event.timestamp,
-        "finished_at": event.timestamp,
-        "server": str(details.get("node") or "-"),
-        "sort_at": event.timestamp,
+        "finished_at": finished_at,
+        "server": str(details.get("proxmox_task_node") or details.get("node") or "-"),
+        "sort_at": finished_at or event.timestamp,
     }
+
+
+def _guest_task_status(event: AuditEvent) -> tuple[str, str]:
+    if event.outcome == "running":
+        return "Running", "running"
+    if event.outcome == "queued":
+        return "Queued", "queued"
+    if event.outcome == "failed":
+        return "Failed", "failed"
+    return "Completed", "completed"
+
+
+def _guest_task_finished_at(event: AuditEvent, details: dict, status_class: str):
+    if status_class in {"running", "queued"}:
+        return None
+    finished_at = details.get("finished_at")
+    if isinstance(finished_at, str) and finished_at:
+        parsed = parse_datetime(finished_at)
+        if parsed is not None:
+            return parsed
+    return event.timestamp
 
 
 def _file_task(event: AuditEvent) -> dict[str, object]:

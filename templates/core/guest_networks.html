@@ -6,7 +6,7 @@
       <div class="panel-heading"><h2>Network Adapters</h2></div>
       <table class="data-table compact">
         <thead>
-          <tr><th>Device</th><th>Model</th><th>Bridge</th><th>VLAN</th><th>MAC</th><th>Firewall</th><th>Rate</th></tr>
+          <tr><th>Device</th><th>Model</th><th>Bridge</th><th>VLAN</th><th>MAC</th><th>IP Address</th><th>Firewall</th><th>Rate</th></tr>
         </thead>
         <tbody>
           {% for net in nets %}
@@ -16,11 +16,18 @@
               <td>{{ net.bridge|default:"-" }}</td>
               <td>{{ net.vlan|default:"-" }}</td>
               <td>{{ net.mac|default:"-" }}</td>
+              <td>
+                {% if net.ip_addresses %}
+                  {% for ip in net.ip_addresses %}{{ ip }}{% if not forloop.last %}<br>{% endif %}{% endfor %}
+                {% else %}
+                  -
+                {% endif %}
+              </td>
               <td>{% if net.firewall %}On{% else %}Off{% endif %}</td>
               <td>{{ net.rate|default:"-" }}</td>
             </tr>
           {% empty %}
-            <tr><td colspan="7" class="empty-state">No network adapters configured.</td></tr>
+            <tr><td colspan="8" class="empty-state">No network adapters configured.</td></tr>
           {% endfor %}
         </tbody>
       </table>

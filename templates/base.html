@@ -29,10 +29,10 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260702-22">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260703-10">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script defer src="{% static 'js/app.js' %}?v=20260702-22"></script>
+    <script defer src="{% static 'js/app.js' %}?v=20260703-10"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -79,16 +79,28 @@
             </div>
           </section>
 
-          <a class="tree-node module-node {% if active_nav == 'vms' %}active{% endif %}" href="{% url 'core:vms' %}">
-            <span class="tree-caret"></span>
-            <span class="tree-icon"><i data-lucide="monitor" aria-hidden="true"></i></span>
-            <span class="tree-label">VMs</span>
-          </a>
+          <section class="tree-module expanded" data-tree-module="vms" aria-label="VMs and containers module">
+            <button class="tree-node module-node {% if active_nav == 'vms' or active_nav == 'vms_overview' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="true">
+              <span class="tree-caret" data-tree-caret>v</span>
+              <span class="tree-icon"><i data-lucide="monitor" aria-hidden="true"></i></span>
+              <span class="tree-label">VMs/CTs</span>
+            </button>
+            <div class="tree-children">
+              <a class="tree-node tree-leaf {% if active_nav == 'vms_overview' %}active{% endif %}" href="{% url 'core:vms_overview' %}">
+                <span class="tree-icon"><i data-lucide="layout-dashboard" aria-hidden="true"></i></span>
+                <span class="tree-label">Overview</span>
+              </a>
+              <a class="tree-node tree-leaf {% if active_nav == 'vms' %}active{% endif %}" href="{% url 'core:vms' %}">
+                <span class="tree-icon"><i data-lucide="monitor" aria-hidden="true"></i></span>
+                <span class="tree-label">VMs/CTs</span>
+              </a>
+            </div>
+          </section>
 
           <section class="tree-module expanded" data-tree-module="storage" aria-label="Storage module">
-            <button class="tree-node module-node active-module" type="button" data-tree-toggle aria-expanded="true">
+            <button class="tree-node module-node {% if active_nav == 'dashboard' or active_nav == 'datastores' or active_nav == 'storage_browser' or active_nav == 'orphans' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="true">
               <span class="tree-caret" data-tree-caret>v</span>
-              <span class="tree-icon storage-icon"><i data-lucide="database" aria-hidden="true"></i></span>
+              <span class="tree-icon"><i data-lucide="database" aria-hidden="true"></i></span>
               <span class="tree-label">Storage</span>
             </button>
             <div class="tree-children">
@@ -165,7 +177,6 @@
           </button>
           <div class="taskbar-tabs" role="tablist" aria-label="Operations">
             <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
-            <button class="taskbar-tab" type="button" role="tab" aria-selected="false" disabled>Alarms</button>
           </div>
           <div class="taskbar-controls">
             <button class="taskbar-page-button" type="button" data-task-prev {% if not app_recent_tasks_page.has_previous %}disabled{% endif %}>Previous 5</button>

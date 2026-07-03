@@ -1,7 +1,13 @@
 {% extends "core/guest_base.html" %}
 
 {% block guest_content %}
-  <section class="storage-tab-content">
+  <section
+    class="storage-tab-content"
+    data-guest-snapshots
+    data-object-type="{{ guest.object_type }}"
+    data-vmid="{{ guest.vmid }}"
+    data-rendered-at-ms="{{ snapshot_rendered_at_ms }}"
+  >
     {% if guest_write_enabled %}
       <div class="panel panel-spaced">
         <div class="panel-heading"><h2>Take Snapshot</h2></div>
@@ -18,6 +24,12 @@
     <div class="panel panel-spaced">
       <div class="panel-heading">
         <h2>Snapshots <span class="muted">({{ snapshot_count }})</span></h2>
+        {% if guest_write_enabled and snapshot_count %}
+          <form method="post" action="{% url 'core:guest_snapshot_delete_all' guest.object_type guest.vmid %}" onsubmit="return confirm('Delete all {{ snapshot_count }} snapshots for this guest? This cannot be undone.');">
+            {% csrf_token %}
+            <button class="secondary-action danger" type="submit">Delete all</button>
+          </form>
+        {% endif %}
       </div>
       {% if snapshot_error %}<p class="panel-meta"><span class="badge failed">Unavailable</span> {{ snapshot_error }}</p>{% endif %}
       <table class="data-table compact snapshot-tree">

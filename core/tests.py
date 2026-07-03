@@ -37,11 +37,13 @@ from core.models import (
     TrashItem,
 )
 from core.signals import ensure_always_on_schedules
+from core.tasks import poll_guest_audit_task
 from core.services.audit_retention_schedule import AUDIT_RETENTION_SCHEDULE_NAME, audit_retention_schedule_state
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
 from core.services.proxmox import (
+    LIVE_GUEST_INVENTORY_CACHE_SECONDS,
     LIVE_GUEST_STATUS_CACHE_SECONDS,
     ProxmoxAPIError,
     ProxmoxClient,
@@ -932,6 +934,44 @@ class AuditEventTests(TestCase):
             ).exists()
         )
 
+    def test_poll_guest_audit_task_marks_running_event_completed(self):
+        event = AuditEvent.objects.create(
+            username="operator",
+            action="guest.power.start",
+            object_type="guest",
+            object_id="vm:500",
+            outcome="running",
+            details={
+                "node": "pve1",
+                "vmid": 500,
+                "target_type": "vm",
+                "name": "Lab VM",
+                "proxmox_task_upid": "UPID:pve1:start:500:root@pam:",
+            },
+        )
+
+        with patch("core.tasks.ProxmoxClient") as client_cls:
+            client_cls.return_value.wait_for_task.return_value = ProxmoxTaskResult(
+                node="pve1",
+                upid="UPID:pve1:start:500:root@pam:",
+                status="stopped",
+                exitstatus="OK",
+                raw={"status": "stopped", "exitstatus": "OK"},
+            )
+
+            poll_guest_audit_task(
+                event.id,
+                "https://pve1.example.com:8006",
+                "pve1",
+                "UPID:pve1:start:500:root@pam:",
+                30,
+            )
+
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "success")
+        self.assertEqual(event.details["proxmox_task"]["exitstatus"], "OK")
+        self.assertIn("finished_at", event.details)
+
 
 class StartupCheckTests(SimpleTestCase):
     def test_production_startup_checks_are_silent_in_debug(self):
@@ -1217,9 +1257,9 @@ class ViewSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
-        self.assertEqual(LIVE_GUEST_STATUS_CACHE_SECONDS, 30)
+        self.assertEqual(LIVE_GUEST_STATUS_CACHE_SECONDS, 1)
         self.assertEqual(fetch.call_count, 1)
-        self.assertContains(response, "Guest status is live data cached for up to 30 seconds.")
+        self.assertContains(response, "Power state is live data cached for up to 1 second.")
         self.assertContains(response, "Disk references are from inventory scanned")
         self.assertContains(response, "running")
         self.assertContains(response, "Scheduled Tasks")
@@ -3968,6 +4008,31 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(task_page.tasks[0]["status"], "Completed")
         self.assertIsNotNone(task_page.tasks[0]["finished_at"])
 
+    def test_recent_tasks_show_running_guest_upid_event(self):
+        AuditEvent.objects.create(
+            username="operator",
+            action="guest.power.start",
+            object_type="guest",
+            object_id="vm:500",
+            outcome="running",
+            details={
+                "node": "pve1",
+                "vmid": 500,
+                "target_type": "vm",
+                "name": "Lab VM",
+                "proxmox_task_upid": "UPID:pve1:start:500:root@pam:",
+            },
+        )
+
+        task_page = recent_task_page(limit=10)
+
+        self.assertEqual(task_page.total, 1)
+        self.assertEqual(task_page.tasks[0]["name"], "Power on")
+        self.assertEqual(task_page.tasks[0]["status"], "Running")
+        self.assertEqual(task_page.tasks[0]["status_class"], "running")
+        self.assertIsNone(task_page.tasks[0]["finished_at"])
+        self.assertEqual(task_page.tasks[0]["server"], "pve1")
+
     def test_recent_tasks_serializes_file_refresh_metadata(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -4048,6 +4113,622 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(task["status_class"], "completed")
         self.assertEqual(task["initiator"], "scheduler")
         self.assertEqual(task["server"], "pve1")
+
+    def test_vms_overview_uses_full_width_table_layout(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+        ):
+            response = self.client.get(reverse("core:vms_overview"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-vm-overview')
+        self.assertContains(response, 'data-vm-select')
+        self.assertContains(response, 'data-vm-bulk-form')
+        self.assertContains(response, 'data-vm-agent-info-url')
+        self.assertEqual(LIVE_GUEST_INVENTORY_CACHE_SECONDS, 30)
+        self.assertContains(response, "Inventory cached for 30 seconds; power state refreshes every 1 second.")
+        self.assertContains(response, "Has snapshot")
+        self.assertNotContains(response, "guest-list-pane")
+
+    def test_vms_overview_snapshot_info_reports_live_snapshot_state(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+            status="running",
+            config={},
+        )
+
+        class FakeClient:
+            def get(self, path, *, timeout=None):
+                if path == "nodes/pve1/qemu/500/snapshot":
+                    return [{"name": "current"}, {"name": "before-upgrade"}]
+                raise ProxmoxAPIError(path)
+
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+            patch("core.views.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:vms_overview_snapshot_info"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["guests"],
+            [{"target": "vm:500@pve1", "has_snapshot": True, "has_snapshot_label": "Yes"}],
+        )
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_snapshots_orders_current_after_real_snapshots_and_shows_delete_all(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def get(self, path, *, timeout=None):
+                if path == "nodes/pve1/qemu/500/snapshot":
+                    return [
+                        {"name": "manual_1", "snaptime": 100},
+                        {"name": "current", "parent": "manual_1"},
+                        {"name": "manual_2", "parent": "manual_1", "snaptime": 200},
+                    ]
+                raise ProxmoxAPIError(path)
+
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:guest_snapshots", args=["vm", 500]))
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertLess(content.index("manual_1"), content.index("manual_2"))
+        self.assertLess(content.index("manual_2"), content.index("NOW"))
+        self.assertContains(response, "Delete all")
+
+    def test_vms_overview_agent_info_enriches_rows_from_guest_agent(self):
+        cache.clear()
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+            status="running",
+            config={"agent": "1", "ostype": "l26"},
+        )
+
+        class FakeClient:
+            def get(self, path, *, timeout=None):
+                if path == "nodes/pve1/qemu/500/agent/get-osinfo":
+                    return {
+                        "result": {
+                            "name": "Ubuntu",
+                            "pretty-name": "Ubuntu 24.04.4 LTS",
+                            "version": "24.04.4 LTS (Noble Numbat)",
+                            "version-id": "24.04",
+                            "machine": "x86_64",
+                        }
+                    }
+                if path == "nodes/pve1/qemu/500/agent/get-host-name":
+                    return {"result": {"host-name": "lab-vm"}}
+                if path == "nodes/pve1/qemu/500/agent/network-get-interfaces":
+                    return {"result": [{"name": "ens18", "ip-addresses": [{"ip-address": "192.0.2.50"}]}]}
+                raise ProxmoxAPIError(path)
+
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+            patch("core.views.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:vms_overview_agent_info"))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["guests"][0]
+        self.assertEqual(payload["target"], "vm:500@pve1")
+        self.assertEqual(payload["guest_os"], "Ubuntu 24.04.4 LTS")
+        self.assertEqual(payload["ip_label"], "192.0.2.50")
+        self.assertEqual(payload["agent"], "Running")
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_hardware_edit_renders_for_vm_disks_and_networks(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def node_names(self, *, fallback=""):
+                return ["pve1"]
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {
+                    "name": "Lab VM",
+                    "cores": "2",
+                    "sockets": "1",
+                    "memory": "2048",
+                    "scsi0": "nfs-vm:vm-500-disk-0.qcow2,size=32G",
+                    "ide2": "none,media=cdrom",
+                    "net0": "virtio=BC:24:11:22:33:44,bridge=vmbr0",
+                }
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/nextid":
+                    return 501
+                if path == "nodes/pve1/storage":
+                    return [
+                        {"storage": "nfs-vm", "content": "images,iso"},
+                        {"storage": "local", "content": "iso"},
+                    ]
+                if path == "nodes/pve1/network":
+                    return [{"type": "bridge", "iface": "vmbr0"}]
+                if path == "cluster/sdn/vnets":
+                    return []
+                if path == "nodes/pve1/storage/local/content?content=iso":
+                    return [{"volid": "local:iso/ubuntu.iso"}]
+                if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
+                    return []
+                raise ProxmoxAPIError(path)
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.get(reverse("core:guest_hardware_edit", args=["vm", 500]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Virtual Hardware")
+        self.assertContains(response, "scsi0")
+        self.assertContains(response, "vmbr0")
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_create_vm_requires_name_before_posting_to_proxmox(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.posts = []
+
+            def node_names(self, *, fallback=""):
+                return ["pve1"]
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/nextid":
+                    return 500
+                if path == "nodes/pve1/storage":
+                    return [{"storage": "nfs-vm", "content": "images,iso"}]
+                if path == "nodes/pve1/network":
+                    return [{"type": "bridge", "iface": "vmbr0"}]
+                if path == "cluster/sdn/vnets":
+                    return []
+                if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
+                    return []
+                raise ProxmoxAPIError(path)
+
+            def post(self, path, data=None):
+                self.posts.append((path, data or {}))
+                return "UPID:pve1:create:500:root@pam:"
+
+        fake_client = FakeClient()
+        with patch("core.services.guest_create.configured_clients", return_value=[fake_client]):
+            response = self.client.post(
+                reverse("core:guest_create", args=["vm"]),
+                {
+                    "node": "pve1",
+                    "vmid": "500",
+                    "name": "",
+                    "ostype": "l26",
+                    "cores": "1",
+                    "sockets": "1",
+                    "memory": "2048",
+                    "disk_storage": "nfs-vm",
+                    "disk_size": "32",
+                    "bridge": "vmbr0",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Name is required.")
+        self.assertEqual(fake_client.posts, [])
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_power_action_posts_to_selected_guest_and_audit_uses_guest_label(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.posts = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def post(self, path, data=None):
+                self.posts.append((path, data or {}))
+                return "UPID:pve1:00000001:00000002:00000003:qmstart:500:root@pam:"
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {"bulk_action": "start", "guest": ["vm:500"]},
+            )
+
+        self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(list(get_messages(response.wsgi_request)), [])
+        self.assertEqual(fake_client.posts, [("nodes/pve1/qemu/500/status/start", {})])
+
+        event = AuditEvent.objects.get(action="guest.power.start")
+        self.assertEqual(event.username, "operator")
+        self.assertEqual(event.details["name"], "Lab VM")
+
+        audit_response = self.client.get(reverse("core:audit_log"))
+        self.assertContains(audit_response, "Power on guest")
+        self.assertContains(audit_response, "guest-label")
+        self.assertContains(audit_response, '<span class="guest-vmid">500</span>', html=True)
+        self.assertContains(audit_response, '<span class="guest-name">Lab VM</span>', html=True)
+        self.assertNotContains(audit_response, "guest.power.start")
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_clone_posts_clone_request(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.posts = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def post(self, path, data=None):
+                self.posts.append((path, data or {}))
+                return "UPID:pve1:clone:500:root@pam:"
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {
+                    "bulk_action": "clone",
+                    "guest": ["vm:500"],
+                    "clone_newid": "600",
+                    "clone_name": "Lab Clone",
+                    "clone_full": "1",
+                    "clone_storage": "nfs-vm",
+                },
+            )
+
+        self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(
+            fake_client.posts,
+            [
+                (
+                    "nodes/pve1/qemu/500/clone",
+                    {"newid": "600", "full": 1, "name": "Lab Clone", "storage": "nfs-vm"},
+                )
+            ],
+        )
+        event = AuditEvent.objects.get(action="guest.clone.create")
+        self.assertEqual(event.details["new_vmid"], 600)
+        self.assertEqual(event.details["new_name"], "Lab Clone")
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_delete_all_snapshots_deletes_leaf_first(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.deletes = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def get(self, path, *, timeout=None):
+                if path == "nodes/pve1/qemu/500/snapshot":
+                    return [
+                        {"name": "snap-a", "snaptime": 100},
+                        {"name": "snap-b", "parent": "snap-a", "snaptime": 200},
+                        {"name": "current", "parent": "snap-b"},
+                    ]
+                raise ProxmoxAPIError(path)
+
+            def delete(self, path):
+                self.deletes.append(path)
+                return "UPID:pve1:snapshot-delete:500:root@pam:"
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {"bulk_action": "delete_snapshots", "guest": ["vm:500"]},
+            )
+
+        self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(
+            fake_client.deletes,
+            [
+                "nodes/pve1/qemu/500/snapshot/snap-b",
+                "nodes/pve1/qemu/500/snapshot/snap-a",
+            ],
+        )
+        event = AuditEvent.objects.get(action="guest.snapshot.delete_all")
+        self.assertEqual(event.details["deleted"], 2)
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_snapshot_delete_waits_for_proxmox_task(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.deletes = []
+                self.waits = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def delete(self, path):
+                self.deletes.append(path)
+                return "UPID:pve1:snapshot-delete:500:root@pam:"
+
+            def wait_for_task(self, *, node, upid, timeout_seconds=None):
+                self.waits.append((node, upid, timeout_seconds))
+                return ProxmoxTaskResult(
+                    node=node,
+                    upid=upid,
+                    status="stopped",
+                    exitstatus="OK",
+                    raw={"status": "stopped", "exitstatus": "OK"},
+                )
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(reverse("core:guest_snapshot_delete", args=["vm", 500, "snap-a"]))
+
+        self.assertRedirects(response, reverse("core:guest_snapshots", args=["vm", 500]), fetch_redirect_response=False)
+        self.assertEqual(fake_client.deletes, ["nodes/pve1/qemu/500/snapshot/snap-a"])
+        self.assertEqual(fake_client.waits, [("pve1", "UPID:pve1:snapshot-delete:500:root@pam:", 60)])
+        self.assertTrue(AuditEvent.objects.filter(action="guest.snapshot.delete", outcome="success").exists())
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_clone_options_returns_nextid_and_storage_default(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM", "scsi0": "nfs-vm:vm-500-disk-0.qcow2,size=32G"}
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/nextid":
+                    return 600
+                if path == "nodes/pve1/storage":
+                    return [
+                        {"storage": "local", "content": "iso"},
+                        {"storage": "nfs-vm", "content": "images,iso"},
+                    ]
+                raise ProxmoxAPIError(path)
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.get(reverse("core:guest_clone_options", args=["vm", 500]))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["nextid"], "600")
+        self.assertEqual(payload["default_storage"], "nfs-vm")
+        self.assertEqual(payload["storages"], [{"id": "nfs-vm", "label": "nfs-vm"}])
+        self.assertEqual(payload["suggested_name"], "Lab VM-clone")
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_clone_requires_name(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.posts = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def post(self, path, data=None):
+                self.posts.append((path, data or {}))
+                return "UPID:pve1:clone:500:root@pam:"
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {
+                    "bulk_action": "clone",
+                    "guest": ["vm:500"],
+                    "clone_newid": "600",
+                    "clone_name": "",
+                    "clone_full": "1",
+                    "clone_storage": "nfs-vm",
+                },
+            )
+
+        self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(fake_client.posts, [])
+        event = AuditEvent.objects.get(action="guest.clone.create")
+        self.assertEqual(event.outcome, "failed")
+        self.assertIn("Name is required", event.details["error"])
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_destroy_requires_matching_vmid_and_calls_delete(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.deletes = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def delete(self, path):
+                self.deletes.append(path)
+                return "UPID:pve1:destroy:500:root@pam:"
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            failed_response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {
+                    "bulk_action": "destroy",
+                    "guest": ["vm:500"],
+                    "destroy_confirm_vmid": "501",
+                    "destroy_purge": "1",
+                    "destroy_unreferenced_disks": "1",
+                },
+            )
+            success_response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {
+                    "bulk_action": "destroy",
+                    "guest": ["vm:500"],
+                    "destroy_confirm_vmid": "500",
+                    "destroy_purge": "1",
+                    "destroy_unreferenced_disks": "1",
+                },
+            )
+
+        self.assertRedirects(failed_response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertRedirects(success_response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(
+            fake_client.deletes,
+            ["nodes/pve1/qemu/500?purge=1&destroy-unreferenced-disks=1"],
+        )
+        self.assertEqual(AuditEvent.objects.filter(action="guest.destroy", outcome="failed").count(), 1)
+        self.assertEqual(AuditEvent.objects.filter(action="guest.destroy", outcome="running").count(), 1)
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_tags_updates_multiple_guests(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.configs = {
+                    500: {"name": "Lab VM", "tags": "old"},
+                    501: {"name": "Other VM"},
+                }
+                self.updates = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return dict(self.configs[vmid])
+
+            def set_guest_config(self, *, node, object_type, vmid, updates, delete=None, digest=None):
+                self.updates.append((vmid, updates, delete or []))
+                return None
+
+        fake_client = FakeClient()
+        live_guests = [
+            self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped"),
+            self._live_guest(object_type="vm", vmid=501, name="Other VM", node="pve1", status="stopped"),
+        ]
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=live_guests),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {
+                    "bulk_action": "tags",
+                    "guest": ["vm:500", "vm:501"],
+                    "tags_mode": "add",
+                    "tags_value": "new old",
+                },
+            )
+
+        self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(
+            fake_client.updates,
+            [
+                (500, {"tags": "old;new"}, []),
+                (501, {"tags": "new;old"}, []),
+            ],
+        )
+        self.assertEqual(AuditEvent.objects.filter(action="guest.tags.updated").count(), 2)
 
     @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_scheduled_tasks_page_lists_definitions_and_runs(self):

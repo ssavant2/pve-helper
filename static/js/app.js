@@ -6,8 +6,11 @@
   const softStatusSelector = "[data-soft-nav-status]";
   const softTreeSelector = "[data-soft-nav-tree]";
   const recentTasksRefreshEvent = "pve-helper:recent-tasks-refresh";
+  const summaryCardHeightKey = "pve-helper-summary-card-height-session-v1";
 
   let activeLabel = "";
+  let activeVmOverview = null;
+  let activeVmContextRows = [];
   let pageCleanup = [];
   let navigationController = null;
   const activeUploads = new Map();
@@ -1044,7 +1047,7 @@
         if ((task.path_parent || "") !== currentPath) {
           return false;
         }
-        if (Number(task.finished_at_ms || 0) <= renderedAtMs) {
+        if (Number(task.finished_at_ms || 0) < renderedAtMs - 15000) {
           return false;
         }
         return !taskWasReloaded(task);
@@ -1056,6 +1059,79 @@
 
       storageReloadPending = true;
       rememberTaskReload(completedInflate);
+      window.location.reload();
+      return true;
+    };
+
+    const maybeReloadCurrentSnapshotView = (tasks) => {
+      const snapshotView = document.querySelector("[data-guest-snapshots]");
+      if (!snapshotView) {
+        return false;
+      }
+
+      const objectType = snapshotView.dataset.objectType || "";
+      const vmid = String(snapshotView.dataset.vmid || "");
+      const renderedAtMs = Number(snapshotView.dataset.renderedAtMs || 0);
+      const completedSnapshotTask = tasks.find((task) => {
+        if (!String(task.action || "").startsWith("guest.snapshot.")) {
+          return false;
+        }
+        if (task.status_class !== "completed") {
+          return false;
+        }
+        const target = task.target_guest || {};
+        if (String(target.type || "") !== objectType || String(target.vmid || "") !== vmid) {
+          return false;
+        }
+        if (Number(task.finished_at_ms || 0) <= renderedAtMs) {
+          return false;
+        }
+        return !taskWasReloaded(task);
+      });
+
+      if (!completedSnapshotTask) {
+        return false;
+      }
+
+      rememberTaskReload(completedSnapshotTask);
+      window.location.reload();
+      return true;
+    };
+
+    const maybeReloadCurrentGuestInventory = (tasks) => {
+      const overview = document.querySelector("[data-vm-overview]");
+      if (!overview) {
+        return false;
+      }
+
+      const completedInventoryTask = tasks.find((task) => {
+        if (!["guest.destroy", "guest.clone.create"].includes(task.action)) {
+          return false;
+        }
+        if (task.status_class !== "completed") {
+          return false;
+        }
+        if (taskWasReloaded(task)) {
+          return false;
+        }
+        if (task.action === "guest.destroy") {
+          const target = task.target_guest || {};
+          const nodeSuffix = task.server && task.server !== "-" ? `@${task.server}` : "";
+          const targetId = `${target.type || ""}:${target.vmid || ""}${nodeSuffix}`;
+          const legacyTargetId = `${target.type || ""}:${target.vmid || ""}`;
+          return Boolean(
+            overview.querySelector(`[data-guest-target="${CSS.escape(targetId)}"]`) ||
+              overview.querySelector(`[data-guest-target="${CSS.escape(legacyTargetId)}"]`)
+          );
+        }
+        return Number(task.finished_at_ms || 0) >= renderedAtMs - 300000;
+      });
+
+      if (!completedInventoryTask) {
+        return false;
+      }
+
+      rememberTaskReload(completedInventoryTask);
       window.location.reload();
       return true;
     };
@@ -1196,7 +1272,11 @@
               )
           );
         }
-        if (maybeReloadCurrentStorageBrowser(loadedTasks)) {
+        if (
+          maybeReloadCurrentStorageBrowser(loadedTasks) ||
+          maybeReloadCurrentSnapshotView(loadedTasks) ||
+          maybeReloadCurrentGuestInventory(loadedTasks)
+        ) {
           return;
         }
         lastLoadedTasks = loadedTasks;
@@ -1366,6 +1446,784 @@
     });
   };
 
+  const vmOverviewRows = (overview) => Array.from(overview.querySelectorAll("[data-vm-overview-row]"));
+
+  const visibleVmOverviewRows = (overview) => vmOverviewRows(overview).filter((row) => !row.hidden);
+
+  const selectedVmOverviewRows = (overview) =>
+    vmOverviewRows(overview).filter((row) => row.querySelector("[data-vm-select]")?.checked);
+
+  const syncVmOverviewSelection = (overview) => {
+    const rows = vmOverviewRows(overview);
+    rows.forEach((row) => {
+      row.classList.toggle("selected", Boolean(row.querySelector("[data-vm-select]")?.checked));
+    });
+
+    const selectedRows = selectedVmOverviewRows(overview);
+    const visibleRows = visibleVmOverviewRows(overview);
+    const selectedVisibleCount = visibleRows.filter((row) => row.querySelector("[data-vm-select]")?.checked).length;
+    const selectAll = overview.querySelector("[data-vm-select-all]");
+    if (selectAll) {
+      selectAll.checked = visibleRows.length > 0 && selectedVisibleCount === visibleRows.length;
+      selectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleRows.length;
+    }
+
+    const status = overview.querySelector("[data-vm-selection-status]");
+    if (status) {
+      status.textContent = `${selectedRows.length} selected`;
+    }
+  };
+
+  const applyStoredSortForOverview = (overview) => {
+    const table = overview?.querySelector("[data-sortable-table]");
+    if (table && typeof table.pveHelperApplyStoredSort === "function") {
+      table.pveHelperApplyStoredSort();
+    }
+  };
+
+  const initVmOverviewSelection = (root = document) => {
+    root.querySelectorAll("[data-vm-overview]").forEach((overview) => {
+      if (overview.dataset.selectionInitialized === "true") {
+        syncVmOverviewSelection(overview);
+        return;
+      }
+      overview.dataset.selectionInitialized = "true";
+
+      overview.addEventListener("change", (event) => {
+        const selectAll = event.target.closest("[data-vm-select-all]");
+        if (selectAll && overview.contains(selectAll)) {
+          visibleVmOverviewRows(overview).forEach((row) => {
+            const checkbox = row.querySelector("[data-vm-select]");
+            if (checkbox) {
+              checkbox.checked = selectAll.checked;
+            }
+          });
+          syncVmOverviewSelection(overview);
+          return;
+        }
+
+        const checkbox = event.target.closest("[data-vm-select]");
+        if (checkbox && overview.contains(checkbox)) {
+          syncVmOverviewSelection(overview);
+        }
+      });
+
+      syncVmOverviewSelection(overview);
+    });
+  };
+
+  const initVmOverviewAgentInfo = (root = document) => {
+    root.querySelectorAll("[data-vm-overview][data-vm-agent-info-url]").forEach((overview) => {
+      if (overview.dataset.agentInfoInitialized === "true") {
+        return;
+      }
+      overview.dataset.agentInfoInitialized = "true";
+      const agentInfoUrl = overview.dataset.vmAgentInfoUrl || "";
+      if (!agentInfoUrl) {
+        return;
+      }
+
+      const loadAgentInfo = async () => {
+        try {
+          const response = await fetch(new URL(agentInfoUrl, window.location.origin), {
+            headers: {
+              Accept: "application/json",
+            },
+          });
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          (data.guests || []).forEach((guest) => {
+            const target = guest.target || "";
+            const row = overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
+            if (!row) {
+              return;
+            }
+            const updates = [
+              [row.querySelector("[data-agent-os-cell]"), guest.guest_os],
+              [row.querySelector("[data-agent-ip-cell]"), guest.ip_label],
+              [row.querySelector("[data-agent-status-cell]"), guest.agent],
+            ];
+            updates.forEach(([cell, value]) => {
+              if (!cell || !value) {
+                return;
+              }
+              cell.textContent = value;
+              cell.dataset.sortValue = value;
+            });
+            const extraFilterText = [guest.guest_os, guest.ip_label, guest.agent]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase();
+            if (extraFilterText && !row.dataset.filterText.includes(extraFilterText)) {
+              row.dataset.filterText = `${row.dataset.filterText} ${extraFilterText}`;
+            }
+          });
+          applyStoredSortForOverview(overview);
+        } catch (_error) {
+          // Guest-agent enrichment is optional; the overview remains usable.
+        }
+      };
+
+      loadAgentInfo();
+    });
+  };
+
+  const initVmOverviewSnapshotInfo = (root = document) => {
+    root.querySelectorAll("[data-vm-overview][data-vm-snapshot-info-url]").forEach((overview) => {
+      if (overview.dataset.snapshotInfoInitialized === "true") {
+        return;
+      }
+      overview.dataset.snapshotInfoInitialized = "true";
+      const snapshotInfoUrl = overview.dataset.vmSnapshotInfoUrl || "";
+      if (!snapshotInfoUrl) {
+        return;
+      }
+
+      const loadSnapshotInfo = async () => {
+        try {
+          const response = await fetch(new URL(snapshotInfoUrl, window.location.origin), {
+            headers: {
+              Accept: "application/json",
+            },
+          });
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          (data.guests || []).forEach((guest) => {
+            const target = guest.target || "";
+            const row = overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
+            const cell = row?.querySelector("[data-snapshot-status-cell]");
+            if (!row || !cell) {
+              return;
+            }
+            const value = guest.has_snapshot_label || (guest.has_snapshot ? "Yes" : "No");
+            cell.textContent = value;
+            cell.dataset.sortValue = value;
+            const extraFilterText = String(value || "").toLowerCase();
+            if (extraFilterText && !row.dataset.filterText.includes(extraFilterText)) {
+              row.dataset.filterText = `${row.dataset.filterText} ${extraFilterText}`;
+            }
+          });
+          applyStoredSortForOverview(overview);
+        } catch (_error) {
+          // Snapshot enrichment is optional; fallback values remain visible.
+        }
+      };
+
+      loadSnapshotInfo();
+    });
+  };
+
+  const iconForGuestStatus = (row, status) => {
+    if (status === "running") {
+      return "play";
+    }
+    if (row.dataset.guestType === "ct") {
+      return "box";
+    }
+    if (row.dataset.guestTemplate === "true") {
+      return "layers";
+    }
+    return "monitor";
+  };
+
+  const updateVmRowStatus = (row, guest) => {
+    const status = guest.status || "";
+    const stateLabel =
+      guest.state_label || (status === "running" ? "Powered On" : status === "stopped" ? "Powered Off" : "-");
+    const healthLabel = guest.health_label || (status ? "Normal" : "Unknown");
+    row.dataset.guestStatus = status;
+
+    const stateCell = row.querySelector("[data-guest-state-cell]");
+    if (stateCell) {
+      stateCell.textContent = stateLabel;
+      stateCell.dataset.sortValue = stateLabel;
+    }
+
+    const healthCell = row.querySelector("[data-guest-health-cell]");
+    if (healthCell) {
+      healthCell.innerHTML = `<span class="status-normal">OK</span> ${healthLabel}`;
+      healthCell.dataset.sortValue = healthLabel;
+    }
+
+    const statusIcon = row.querySelector("[data-guest-status-icon]");
+    if (statusIcon) {
+      statusIcon.classList.toggle("running-icon", status === "running");
+      statusIcon.title = status || "unknown";
+      statusIcon.innerHTML = `<i data-lucide="${iconForGuestStatus(row, status)}" aria-hidden="true"></i>`;
+    }
+
+    const activeBadge = row
+      .closest("[data-vm-overview]")
+      ?.querySelector(`[data-active-guest-status-badge][data-guest-target="${CSS.escape(guest.target || "")}"]`);
+    if (activeBadge) {
+      activeBadge.textContent = status || "-";
+      activeBadge.classList.toggle("completed", status === "running");
+    }
+  };
+
+  const initVmStatusRefresh = (root = document) => {
+    root.querySelectorAll("[data-vm-overview][data-vm-status-url]").forEach((overview) => {
+      if (overview.dataset.statusRefreshInitialized === "true") {
+        return;
+      }
+      overview.dataset.statusRefreshInitialized = "true";
+      const statusUrl = overview.dataset.vmStatusUrl || "";
+      if (!statusUrl) {
+        return;
+      }
+
+      const refresh = async () => {
+        if (!document.body.contains(overview) || document.hidden) {
+          return;
+        }
+        try {
+          const response = await fetch(new URL(statusUrl, window.location.origin), {
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          const liveTargets = new Set((data.guests || []).map((guest) => guest.target || ""));
+          (data.guests || []).forEach((guest) => {
+            const target = guest.target || "";
+            const row = overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
+            if (!row) {
+              return;
+            }
+            updateVmRowStatus(row, guest);
+          });
+          if (data.live_available) {
+            vmOverviewRows(overview).forEach((row) => {
+              const target = row.dataset.guestTarget || "";
+              if (target && !liveTargets.has(target)) {
+                row.remove();
+              }
+            });
+            syncVmOverviewSelection(overview);
+          }
+          applyStoredSortForOverview(overview);
+          createIcons();
+        } catch (_error) {
+          // Status refresh is opportunistic; the current page stays usable if it fails.
+        }
+      };
+
+      refresh();
+      const intervalId = window.setInterval(refresh, 1000);
+      registerPageCleanup(() => window.clearInterval(intervalId));
+    });
+  };
+
+  const initGuestAgentSummaries = (root = document) => {
+    root.querySelectorAll("[data-guest-agent-summary][data-agent-summary-url]").forEach((card) => {
+      if (card.dataset.agentSummaryInitialized === "true") {
+        return;
+      }
+      card.dataset.agentSummaryInitialized = "true";
+      const url = card.dataset.agentSummaryUrl || "";
+      const status = card.dataset.agentSummaryStatus || "";
+      if (!url || status !== "running") {
+        return;
+      }
+
+      const osName = card.querySelector("[data-agent-os-name]");
+      const details = card.querySelector("[data-agent-details]");
+      const statusBadge = card.querySelector("[data-agent-status-badge]");
+      let attempts = 0;
+
+      const renderRows = (rows) => {
+        if (!details || !Array.isArray(rows)) {
+          return;
+        }
+        details.querySelectorAll("[data-agent-dynamic-row]").forEach((row) => {
+          row.remove();
+        });
+        rows.forEach((row) => {
+          const wrapper = document.createElement("div");
+          wrapper.dataset.agentDynamicRow = "true";
+          const term = document.createElement("dt");
+          term.textContent = row.label || "";
+          const value = document.createElement("dd");
+          String(row.value || "")
+            .split("\n")
+            .forEach((line, index) => {
+              if (index > 0) {
+                value.appendChild(document.createElement("br"));
+              }
+              value.appendChild(document.createTextNode(line));
+            });
+          wrapper.append(term, value);
+          details.insertBefore(wrapper, details.lastElementChild);
+        });
+      };
+
+      const refresh = async () => {
+        attempts += 1;
+        try {
+          const response = await fetch(new URL(url, window.location.origin), {
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          if (osName && data.os_label) {
+            osName.textContent = data.os_label;
+          }
+          renderRows(data.rows || []);
+          if (statusBadge) {
+            statusBadge.textContent = data.status_label || "Not running";
+            statusBadge.classList.toggle("completed", Boolean(data.running));
+          }
+          syncSummaryCardHeights(document);
+          if (!data.running && attempts < 3) {
+            window.setTimeout(refresh, 5000);
+          }
+        } catch (_error) {
+          if (attempts < 3) {
+            window.setTimeout(refresh, 5000);
+          }
+        }
+      };
+
+      refresh();
+    });
+  };
+
+  const submitVmBulkAction = (overview, action, fields = {}, targetRows = null) => {
+    const form = overview.querySelector("[data-vm-bulk-form]");
+    const actionInput = overview.querySelector("[data-vm-bulk-action]");
+    const snapshotInput = overview.querySelector("[data-vm-bulk-snapshot-name]");
+    const rows = targetRows || selectedVmOverviewRows(overview);
+    if (!form || !actionInput || !snapshotInput || rows.length === 0) {
+      return;
+    }
+
+    form.querySelectorAll("[data-vm-bulk-target]").forEach((input) => {
+      input.remove();
+    });
+    form.querySelectorAll("[data-vm-bulk-extra]").forEach((input) => {
+      input.remove();
+    });
+    rows.forEach((row) => {
+      const target = row.dataset.guestTarget || "";
+      if (!target) {
+        return;
+      }
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "guest";
+      input.value = target;
+      input.dataset.vmBulkTarget = "true";
+      form.appendChild(input);
+    });
+    actionInput.value = action;
+    snapshotInput.value = fields.snapshot_name || "";
+    Object.entries(fields).forEach(([name, value]) => {
+      if (name === "snapshot_name") {
+        return;
+      }
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = value;
+      input.dataset.vmBulkExtra = "true";
+      form.appendChild(input);
+    });
+    if (form.requestSubmit) {
+      form.requestSubmit();
+    } else {
+      form.submit();
+    }
+  };
+
+  const clearVmContextHighlights = () => {
+    document.querySelectorAll("[data-vm-overview-row].context-selected").forEach((row) => {
+      row.classList.remove("context-selected");
+    });
+    activeVmContextRows = [];
+  };
+
+  const defaultSnapshotName = () => {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    return `manual_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  };
+
+  const ensureVmActionDialog = () => {
+    let dialog = document.querySelector("[data-vm-action-dialog]");
+    if (!dialog) {
+      dialog = document.createElement("dialog");
+      dialog.className = "vm-action-dialog";
+      dialog.dataset.vmActionDialog = "true";
+      document.body.appendChild(dialog);
+    }
+    return dialog;
+  };
+
+  const selectedGuestSummary = (rows) => `${rows.length} selected guest${rows.length === 1 ? "" : "s"}`;
+
+  const openVmFormDialog = ({ title, summary, bodyHtml, submitLabel, submitClass = "primary-action", onSubmit }) => {
+    const dialog = ensureVmActionDialog();
+    dialog.innerHTML = `
+      <form class="vm-action-dialog-form" method="dialog">
+        <div class="vm-action-dialog-heading">
+          <h2>${escapeHtml(title)}</h2>
+          <button type="button" data-vm-dialog-close aria-label="Close">×</button>
+        </div>
+        <p class="panel-meta">${escapeHtml(summary)}</p>
+        <div class="vm-action-dialog-body">${bodyHtml}</div>
+        <p class="form-error" data-vm-dialog-error hidden></p>
+        <div class="form-actions">
+          <button class="${escapeHtml(submitClass)}" type="submit" data-vm-dialog-submit>${escapeHtml(submitLabel)}</button>
+          <button class="secondary-action" type="button" data-vm-dialog-cancel>Cancel</button>
+        </div>
+      </form>
+    `;
+    const form = dialog.querySelector("form");
+    const error = dialog.querySelector("[data-vm-dialog-error]");
+    const close = () => dialog.close();
+    dialog.querySelector("[data-vm-dialog-close]")?.addEventListener("click", close);
+    dialog.querySelector("[data-vm-dialog-cancel]")?.addEventListener("click", close);
+    form?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!form) {
+        return;
+      }
+      const message = onSubmit(new FormData(form));
+      if (message) {
+        if (error) {
+          error.textContent = message;
+          error.hidden = false;
+        }
+        return;
+      }
+      dialog.close();
+    });
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+    }
+    return dialog;
+  };
+
+  const openSnapshotDialog = (overview, rows) => {
+    openVmFormDialog({
+      title: "Take Snapshot",
+      summary: selectedGuestSummary(rows),
+      submitLabel: "Take Snapshot",
+      bodyHtml: `
+        <label class="form-field">
+          <span>Snapshot name</span>
+          <input type="text" name="snapshot_name" value="${escapeHtml(defaultSnapshotName())}" autocomplete="off" required>
+        </label>
+      `,
+      onSubmit: (formData) => {
+        const snapshotName = String(formData.get("snapshot_name") || "").trim();
+        if (!/^[A-Za-z0-9_-]+$/.test(snapshotName)) {
+          return "Snapshot names can only contain letters, digits, _ and -.";
+        }
+        submitVmBulkAction(overview, "snapshot", { snapshot_name: snapshotName }, rows);
+        return "";
+      },
+    });
+  };
+
+  const openTagsDialog = (overview, rows) => {
+    openVmFormDialog({
+      title: "Edit Tags",
+      summary: selectedGuestSummary(rows),
+      submitLabel: "Apply Tags",
+      bodyHtml: `
+        <label class="form-field">
+          <span>Operation</span>
+          <select name="tags_mode">
+            <option value="add">Add tags</option>
+            <option value="remove">Remove tags</option>
+            <option value="replace">Replace all tags</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span>Tags</span>
+          <input type="text" name="tags_value" autocomplete="off" placeholder="backup-standard veeam-standard">
+        </label>
+      `,
+      onSubmit: (formData) => {
+        const mode = String(formData.get("tags_mode") || "").trim();
+        const tags = String(formData.get("tags_value") || "").trim();
+        if (!["add", "remove", "replace"].includes(mode)) {
+          return "Choose a tag operation.";
+        }
+        if (mode !== "replace" && !tags) {
+          return "Enter at least one tag.";
+        }
+        submitVmBulkAction(overview, "tags", { tags_mode: mode, tags_value: tags }, rows);
+        return "";
+      },
+    });
+  };
+
+  const openCloneDialog = (overview, rows) => {
+    const row = rows[0];
+    const label = row?.dataset.guestLabel || "guest";
+    const guestName = row?.dataset.guestName || "";
+    const dialog = openVmFormDialog({
+      title: "Clone",
+      summary: label,
+      submitLabel: "Clone",
+      bodyHtml: `
+        <label class="form-field">
+          <span>New VMID</span>
+          <input type="number" name="clone_newid" min="1" step="1" required disabled>
+        </label>
+        <label class="form-field">
+          <span>Name</span>
+          <input type="text" name="clone_name" autocomplete="off" required value="${escapeHtml(guestName ? `${guestName}-clone` : "")}">
+        </label>
+        <label class="form-field">
+          <span>Storage</span>
+          <select name="clone_storage" disabled>
+            <option value="">Loading storages...</option>
+          </select>
+        </label>
+        <label class="form-field form-field-inline">
+          <input type="checkbox" name="clone_full" value="1" checked>
+          <span>Full clone</span>
+        </label>
+      `,
+      onSubmit: (formData) => {
+        const newid = String(formData.get("clone_newid") || "").trim();
+        if (!/^[0-9]+$/.test(newid) || Number(newid) <= 0) {
+          return "New VMID must be a positive whole number.";
+        }
+        const name = String(formData.get("clone_name") || "").trim();
+        if (!name) {
+          return "Name is required.";
+        }
+        submitVmBulkAction(
+          overview,
+          "clone",
+          {
+            clone_newid: newid,
+            clone_name: name,
+            clone_storage: String(formData.get("clone_storage") || "").trim(),
+            clone_full: formData.get("clone_full") === "1" ? "1" : "0",
+          },
+          rows
+        );
+        return "";
+      },
+    });
+    const submitButton = dialog?.querySelector("[data-vm-dialog-submit]");
+    const idInput = dialog?.querySelector("[name='clone_newid']");
+    const storageSelect = dialog?.querySelector("[name='clone_storage']");
+    const fullCheckbox = dialog?.querySelector("[name='clone_full']");
+    const error = dialog?.querySelector("[data-vm-dialog-error]");
+    if (submitButton) {
+      submitButton.disabled = true;
+    }
+    const syncStorageState = () => {
+      if (storageSelect && fullCheckbox) {
+        storageSelect.disabled = !fullCheckbox.checked || storageSelect.options.length === 0;
+      }
+    };
+    fullCheckbox?.addEventListener("change", syncStorageState);
+    const optionsUrl = row?.dataset.cloneOptionsUrl || "";
+    if (!optionsUrl) {
+      if (error) {
+        error.textContent = "Could not resolve clone options URL.";
+        error.hidden = false;
+      }
+      return;
+    }
+    fetch(new URL(optionsUrl, window.location.origin), { headers: { Accept: "application/json" } })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Could not load clone options.");
+        }
+        return response.json();
+      })
+      .then((data) => {
+        if (idInput) {
+          idInput.value = data.nextid || "";
+          idInput.disabled = false;
+        }
+        if (storageSelect) {
+          storageSelect.innerHTML = "";
+          const storages = Array.isArray(data.storages) ? data.storages : [];
+          if (storages.length === 0) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "Same/default storage";
+            storageSelect.appendChild(option);
+          } else {
+            storages.forEach((storage) => {
+              const option = document.createElement("option");
+              option.value = storage.id || "";
+              option.textContent = storage.label || storage.id || "";
+              if (storage.id === data.default_storage) {
+                option.selected = true;
+              }
+              storageSelect.appendChild(option);
+            });
+          }
+        }
+        const nameInput = dialog?.querySelector("[name='clone_name']");
+        if (nameInput && !nameInput.value && data.suggested_name) {
+          nameInput.value = data.suggested_name;
+        }
+        syncStorageState();
+        if (submitButton) {
+          submitButton.disabled = false;
+        }
+      })
+      .catch((errorObject) => {
+        if (error) {
+          error.textContent = errorObject.message || "Could not load clone options.";
+          error.hidden = false;
+        }
+      });
+  };
+
+  const openDestroyDialog = (overview, rows) => {
+    const row = rows[0];
+    const label = row?.dataset.guestLabel || "guest";
+    const target = row?.dataset.guestTarget || "";
+    const vmid = target.split(":")[1] || "";
+    openVmFormDialog({
+      title: "Remove VM/CT",
+      summary: label,
+      submitLabel: "Remove",
+      submitClass: "primary-action danger-action",
+      bodyHtml: `
+        <div class="danger-confirmation">
+          <i data-lucide="triangle-alert" aria-hidden="true"></i>
+          <div>
+            <p>Destroy this guest and remove it from Proxmox inventory.</p>
+            <p class="warning-copy">Referenced disks will be destroyed by Proxmox.</p>
+          </div>
+        </div>
+        <label class="form-field">
+          <span>Enter VMID to confirm (${escapeHtml(vmid)})</span>
+          <input type="number" name="destroy_confirm_vmid" min="1" step="1" autocomplete="off" required>
+        </label>
+        <label class="form-field form-field-inline">
+          <input type="checkbox" name="destroy_purge" value="1" checked>
+          <span>Purge from job configurations</span>
+        </label>
+        <label class="form-field form-field-inline">
+          <input type="checkbox" name="destroy_unreferenced_disks" value="1" checked>
+          <span>Destroy unreferenced disks owned by guest</span>
+        </label>
+      `,
+      onSubmit: (formData) => {
+        const confirmed = String(formData.get("destroy_confirm_vmid") || "").trim();
+        if (confirmed !== vmid) {
+          return `Enter ${vmid} to confirm.`;
+        }
+        submitVmBulkAction(
+          overview,
+          "destroy",
+          {
+            destroy_confirm_vmid: confirmed,
+            destroy_purge: formData.get("destroy_purge") === "1" ? "1" : "0",
+            destroy_unreferenced_disks: formData.get("destroy_unreferenced_disks") === "1" ? "1" : "0",
+          },
+          rows
+        );
+        return "";
+      },
+    });
+    createIcons();
+  };
+
+  const openVmContextMenu = (menu, row, event) => {
+    const overview = row.closest("[data-vm-overview]");
+    if (!overview) {
+      return false;
+    }
+
+    clearVmContextHighlights();
+    const selectedRows = selectedVmOverviewRows(overview);
+    const rowCheckbox = row.querySelector("[data-vm-select]");
+    const contextRows = rowCheckbox?.checked && selectedRows.length ? selectedRows : [row];
+    contextRows.forEach((item) => {
+      item.classList.add("context-selected");
+    });
+
+    const selectedCount = contextRows.length;
+    const writable = overview.dataset.vmWriteEnabled === "true";
+    const allRunning = contextRows.every((item) => item.dataset.guestStatus === "running");
+    const allNotRunning = contextRows.every((item) => item.dataset.guestStatus !== "running");
+    const allStopped = contextRows.every((item) => item.dataset.guestStatus === "stopped");
+    const allVms = contextRows.every((item) => item.dataset.guestType === "vm");
+    const noTemplates = contextRows.every((item) => item.dataset.guestTemplate !== "true");
+    const singleSelected = contextRows.length === 1;
+
+    activeVmOverview = overview;
+    activeVmContextRows = contextRows;
+    activeLabel = "";
+    menu.innerHTML = `
+      <div class="context-menu-title">Actions - ${selectedCount} Object${selectedCount === 1 ? "" : "s"}</div>
+      <button type="button" data-vm-action="open-summary" ${singleSelected ? "" : "disabled"}>Open Summary</button>
+      <button type="button" data-vm-action="edit-hardware" ${singleSelected && writable ? "" : "disabled"}>Edit Hardware...</button>
+      <div class="context-menu-separator"></div>
+      <div class="context-menu-submenu">
+        <button type="button" class="context-menu-parent">Power <span>›</span></button>
+        <div class="context-menu-submenu-panel">
+          <button type="button" data-vm-action="start" ${writable && allNotRunning ? "" : "disabled"}><i data-lucide="play" aria-hidden="true"></i>Power On</button>
+          <button type="button" data-vm-action="stop" ${writable && allRunning ? "" : "disabled"}><i data-lucide="square" aria-hidden="true"></i>Power Off</button>
+          <button type="button" data-vm-action="reset" ${writable && allRunning && allVms ? "" : "disabled"}><i data-lucide="rotate-ccw" aria-hidden="true"></i>Reset</button>
+          <div class="context-menu-separator"></div>
+          <button type="button" data-vm-action="shutdown" ${writable && allRunning ? "" : "disabled"}><i data-lucide="power" aria-hidden="true"></i>Shut Down Guest OS</button>
+          <button type="button" data-vm-action="reboot" ${writable && allRunning ? "" : "disabled"}><i data-lucide="refresh-cw" aria-hidden="true"></i>Restart Guest OS</button>
+        </div>
+      </div>
+      <div class="context-menu-submenu">
+        <button type="button" class="context-menu-parent">Guest OS <span>›</span></button>
+        <div class="context-menu-submenu-panel">
+          <button type="button" data-vm-action="open-summary" ${singleSelected ? "" : "disabled"}>Open Summary</button>
+          <button type="button" disabled>Run command</button>
+        </div>
+      </div>
+      <div class="context-menu-submenu">
+        <button type="button" class="context-menu-parent">Snapshots <span>›</span></button>
+        <div class="context-menu-submenu-panel">
+          <button type="button" data-vm-action="snapshot" ${writable ? "" : "disabled"}><i data-lucide="camera" aria-hidden="true"></i>Take Snapshot...</button>
+          <button type="button" data-vm-action="open-snapshots" ${singleSelected ? "" : "disabled"}>Manage Snapshots</button>
+          <button type="button" data-vm-action="delete-snapshots" ${writable ? "" : "disabled"}>Delete All Snapshots...</button>
+        </div>
+      </div>
+      <div class="context-menu-separator"></div>
+      <button type="button" disabled><i data-lucide="move-right" aria-hidden="true"></i>Migrate...</button>
+      <div class="context-menu-submenu">
+        <button type="button" class="context-menu-parent">Template <span>›</span></button>
+        <div class="context-menu-submenu-panel">
+          <button type="button" data-vm-action="clone" ${singleSelected && writable ? "" : "disabled"}>Clone...</button>
+          <button type="button" data-vm-action="template" ${writable && allStopped && allVms && noTemplates ? "" : "disabled"}>Convert to Template</button>
+        </div>
+      </div>
+      <div class="context-menu-submenu">
+        <button type="button" class="context-menu-parent">Tags <span>›</span></button>
+        <div class="context-menu-submenu-panel">
+          <button type="button" data-vm-action="edit-tags" ${writable ? "" : "disabled"}>Edit Tags...</button>
+          <button type="button" disabled>Remove Tags...</button>
+        </div>
+      </div>
+      <div class="context-menu-separator"></div>
+      <button type="button" data-vm-action="destroy" class="danger" ${singleSelected && writable && allStopped ? "" : "disabled"}>Remove from Disk...</button>
+    `;
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+    menu.hidden = false;
+    createIcons();
+    return true;
+  };
+
   const initContextMenu = () => {
     const menu = document.getElementById("context-menu");
     if (!menu || menu.dataset.initialized === "true") {
@@ -1374,13 +2232,25 @@
 
     menu.dataset.initialized = "true";
     document.addEventListener("contextmenu", (event) => {
+      const vmRow = event.target.closest("[data-vm-overview-row]");
+      if (vmRow && openVmContextMenu(menu, vmRow, event)) {
+        event.preventDefault();
+        return;
+      }
+
       const row = event.target.closest("[data-context-label]");
       if (!row) {
         return;
       }
 
       event.preventDefault();
+      activeVmOverview = null;
+      clearVmContextHighlights();
       activeLabel = row.dataset.contextLabel || "";
+      menu.innerHTML = `
+        <button type="button" data-action="details">Details</button>
+        <button type="button" data-action="copy-path">Copy path</button>
+      `;
       menu.style.left = `${event.clientX}px`;
       menu.style.top = `${event.clientY}px`;
       menu.hidden = false;
@@ -1389,10 +2259,98 @@
     document.addEventListener("click", (event) => {
       if (!menu.contains(event.target)) {
         menu.hidden = true;
+        clearVmContextHighlights();
       }
     });
 
     menu.addEventListener("click", async (event) => {
+      const vmButton = event.target.closest("button[data-vm-action]");
+      if (vmButton && activeVmOverview) {
+        const targetRows = activeVmContextRows.length ? activeVmContextRows : selectedVmOverviewRows(activeVmOverview);
+        const firstRow = targetRows[0];
+        const action = vmButton.dataset.vmAction || "";
+        if (vmButton.disabled || !firstRow) {
+          return;
+        }
+        if (action === "open-summary") {
+          window.location.href = firstRow.dataset.detailUrl || window.location.href;
+          return;
+        }
+        if (action === "edit-hardware") {
+          window.location.href =
+            firstRow.dataset.editHardwareUrl ||
+            firstRow.dataset.editOptionsUrl ||
+            firstRow.dataset.detailUrl ||
+            window.location.href;
+          return;
+        }
+        if (action === "open-snapshots") {
+          window.location.href = firstRow.dataset.snapshotsUrl || window.location.href;
+          return;
+        }
+        if (action === "edit-tags") {
+          openTagsDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "snapshot") {
+          openSnapshotDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "clone") {
+          openCloneDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "destroy") {
+          openDestroyDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (
+          action === "delete-snapshots" &&
+          !window.confirm(
+            `Delete all snapshots for ${targetRows.length} selected guest${targetRows.length === 1 ? "" : "s"}? This cannot be undone.`
+          )
+        ) {
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (
+          ["stop", "reset"].includes(action) &&
+          !window.confirm(
+            `${action === "reset" ? "Reset" : "Power off"} ${targetRows.length} selected guest${targetRows.length === 1 ? "" : "s"}?`
+          )
+        ) {
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (
+          action === "template" &&
+          !window.confirm(`Convert ${targetRows.length} selected VM${targetRows.length === 1 ? "" : "s"} to template?`)
+        ) {
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        submitVmBulkAction(
+          activeVmOverview,
+          action === "delete-snapshots" ? "delete_snapshots" : action,
+          {},
+          targetRows
+        );
+        menu.hidden = true;
+        clearVmContextHighlights();
+        return;
+      }
+
       const button = event.target.closest("button[data-action]");
       if (!button) {
         return;
@@ -1403,6 +2361,7 @@
       }
 
       menu.hidden = true;
+      clearVmContextHighlights();
     });
   };
 
@@ -1745,14 +2704,323 @@
     root.querySelectorAll("[data-table-filter]").forEach((input) => {
       if (input.dataset.filterBound) return;
       input.dataset.filterBound = "1";
-      const table = input.closest(".panel")?.querySelector("[data-filterable-table]");
+      const selector = input.dataset.tableFilter || "";
+      const table = selector
+        ? document.querySelector(selector)
+        : input.closest(".panel")?.querySelector("[data-filterable-table]");
       if (!table) return;
       input.addEventListener("input", () => {
         const q = input.value.toLowerCase().trim();
         table.querySelectorAll("tbody tr[data-filter-text]").forEach((row) => {
           row.hidden = q && !row.dataset.filterText.includes(q);
         });
+        const overview = table.closest("[data-vm-overview]");
+        if (overview) {
+          syncVmOverviewSelection(overview);
+        }
       });
+    });
+  };
+
+  const initColumnPickers = (root) => {
+    root.querySelectorAll("[data-column-picker]").forEach((picker) => {
+      if (picker.dataset.initialized === "true") return;
+      picker.dataset.initialized = "true";
+
+      const tableName = picker.dataset.columnPicker || "";
+      const table = document.querySelector(`[data-column-table="${CSS.escape(tableName)}"]`);
+      if (!table) return;
+
+      const storageKey = `pve-helper-columns-${tableName}`;
+      const orderStorageKey = `${storageKey}-order`;
+      const toggles = Array.from(picker.querySelectorAll("[data-column-toggle]"));
+      const panel = picker.querySelector(".column-picker-panel");
+      const defaultState = {};
+      toggles.forEach((toggle) => {
+        defaultState[toggle.dataset.columnToggle] = toggle.checked;
+      });
+      document.addEventListener("click", (event) => {
+        if (picker.open && !picker.contains(event.target)) {
+          picker.open = false;
+        }
+      });
+      const defaultOrder = toggles.map((toggle) => toggle.dataset.columnToggle).filter(Boolean);
+
+      let order = [...defaultOrder];
+      try {
+        const storedOrder = JSON.parse(localStorage.getItem(orderStorageKey) || "[]");
+        if (Array.isArray(storedOrder)) {
+          const known = new Set(defaultOrder);
+          order = [
+            ...storedOrder.filter((column) => known.has(column)),
+            ...defaultOrder.filter((column) => !storedOrder.includes(column)),
+          ];
+        }
+      } catch (_error) {
+        order = [...defaultOrder];
+      }
+
+      let state = { ...defaultState };
+      try {
+        const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+        if (stored && typeof stored === "object") {
+          state = { ...state, ...stored };
+        }
+      } catch (_error) {
+        state = { ...defaultState };
+      }
+
+      const applyColumnOrder = () => {
+        const normalizedOrder = [
+          ...order.filter((column) => defaultOrder.includes(column)),
+          ...defaultOrder.filter((column) => !order.includes(column)),
+        ];
+        order = normalizedOrder;
+        Array.from(table.rows).forEach((row) => {
+          const cells = Array.from(row.children);
+          const fixedCells = cells.filter((cell) => !cell.dataset.column);
+          const cellsByColumn = new Map();
+          cells
+            .filter((cell) => cell.dataset.column)
+            .forEach((cell) => {
+              cellsByColumn.set(cell.dataset.column, cell);
+            });
+          fixedCells.forEach((cell) => {
+            row.appendChild(cell);
+          });
+          normalizedOrder.forEach((column) => {
+            const cell = cellsByColumn.get(column);
+            if (cell) {
+              row.appendChild(cell);
+            }
+          });
+        });
+      };
+
+      const saveColumnOrder = () => {
+        try {
+          localStorage.setItem(orderStorageKey, JSON.stringify(order));
+        } catch (_error) {
+          // Column order preferences are optional.
+        }
+      };
+
+      const columnFromOption = (option) => option?.querySelector("[data-column-toggle]")?.dataset.columnToggle || "";
+
+      const clearDragMarkers = () => {
+        picker.querySelectorAll(".drag-over-before, .drag-over-after").forEach((option) => {
+          option.classList.remove("drag-over-before", "drag-over-after");
+        });
+      };
+
+      const syncPickerOrder = () => {
+        if (!panel) return;
+        const labelsByColumn = new Map(
+          toggles.map((toggle) => [
+            toggle.dataset.columnToggle,
+            toggle.closest("[data-column-picker-option]") || toggle.closest("label"),
+          ])
+        );
+        order.forEach((column) => {
+          const label = labelsByColumn.get(column);
+          if (label) {
+            panel.appendChild(label);
+          }
+        });
+      };
+
+      toggles.forEach((toggle) => {
+        const label = toggle.closest("label");
+        if (!label || label.dataset.columnPickerOption === "true") return;
+        label.dataset.columnPickerOption = "true";
+        label.classList.add("column-picker-option");
+        const grip = document.createElement("span");
+        grip.className = "column-picker-grip";
+        grip.dataset.columnDragHandle = "true";
+        grip.draggable = true;
+        grip.title = "Drag to reorder";
+        grip.setAttribute("aria-label", "Drag to reorder");
+        grip.textContent = "⋮⋮";
+        grip.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        label.prepend(grip);
+      });
+
+      const apply = () => {
+        applyColumnOrder();
+        toggles.forEach((toggle) => {
+          const column = toggle.dataset.columnToggle;
+          if (!column) return;
+          if (!toggle.disabled) {
+            toggle.checked = state[column] !== false;
+          }
+          const visible = toggle.disabled || toggle.checked;
+          table.querySelectorAll(`[data-column="${CSS.escape(column)}"]`).forEach((cell) => {
+            cell.hidden = !visible;
+          });
+        });
+        syncPickerOrder();
+      };
+
+      toggles.forEach((toggle) => {
+        toggle.addEventListener("change", () => {
+          state[toggle.dataset.columnToggle] = toggle.checked;
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(state));
+          } catch (_error) {
+            // Column preferences are optional.
+          }
+          apply();
+        });
+      });
+      let draggedColumn = "";
+      picker.addEventListener("dragstart", (event) => {
+        const handle = event.target.closest("[data-column-drag-handle]");
+        if (!handle || !picker.contains(handle)) return;
+        const option = handle.closest("[data-column-picker-option]");
+        draggedColumn = columnFromOption(option);
+        if (!draggedColumn) return;
+        option?.classList.add("dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", draggedColumn);
+      });
+
+      picker.addEventListener("dragover", (event) => {
+        if (!draggedColumn) return;
+        const option = event.target.closest("[data-column-picker-option]");
+        const targetColumn = columnFromOption(option);
+        if (!option || !picker.contains(option) || !targetColumn || targetColumn === draggedColumn) return;
+        event.preventDefault();
+        const rect = option.getBoundingClientRect();
+        const after = event.clientY > rect.top + rect.height / 2;
+        clearDragMarkers();
+        option.classList.toggle("drag-over-before", !after);
+        option.classList.toggle("drag-over-after", after);
+      });
+
+      picker.addEventListener("drop", (event) => {
+        if (!draggedColumn) return;
+        const option = event.target.closest("[data-column-picker-option]");
+        const targetColumn = columnFromOption(option);
+        if (!option || !picker.contains(option) || !targetColumn || targetColumn === draggedColumn) return;
+        event.preventDefault();
+        const after = option.classList.contains("drag-over-after");
+        const nextOrder = order.filter((column) => column !== draggedColumn);
+        const targetIndex = nextOrder.indexOf(targetColumn);
+        if (targetIndex < 0) return;
+        nextOrder.splice(targetIndex + (after ? 1 : 0), 0, draggedColumn);
+        order = nextOrder;
+        saveColumnOrder();
+        apply();
+      });
+
+      picker.addEventListener("dragend", () => {
+        draggedColumn = "";
+        clearDragMarkers();
+        picker.querySelectorAll("[data-column-picker-option].dragging").forEach((option) => {
+          option.classList.remove("dragging");
+        });
+      });
+
+      apply();
+    });
+  };
+
+  const initSortableTables = (root) => {
+    root.querySelectorAll("[data-sortable-table]").forEach((table) => {
+      if (table.dataset.sortableInitialized === "true") return;
+      table.dataset.sortableInitialized = "true";
+
+      const headers = Array.from(table.querySelectorAll("thead th[data-sort]"));
+      const tableName =
+        table.dataset.columnTable ||
+        table.id ||
+        `table-${Array.from(document.querySelectorAll("[data-sortable-table]")).indexOf(table)}`;
+      const storageKey = `pve-helper-sort-${tableName}`;
+
+      const readStoredSort = () => {
+        try {
+          const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+          if (stored && typeof stored === "object" && stored.column && stored.direction) {
+            return stored;
+          }
+        } catch (_error) {
+          // Sorting remains usable without localStorage.
+        }
+        return null;
+      };
+
+      const writeStoredSort = (column, direction) => {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify({ column, direction }));
+        } catch (_error) {
+          // Sorting remains usable without localStorage.
+        }
+      };
+
+      const sortByHeader = (header, direction, persist = true) => {
+        const index = Array.from(header.parentElement?.children || []).indexOf(header);
+        if (index < 0) return;
+        headers.forEach((other) => {
+          other.dataset.sortDirection = "";
+          other.removeAttribute("aria-sort");
+        });
+        header.dataset.sortDirection = direction;
+        header.setAttribute("aria-sort", direction === "asc" ? "ascending" : "descending");
+
+        const numeric = header.dataset.sort === "number";
+        const tbody = table.tBodies[0];
+        const rows = Array.from(tbody.querySelectorAll("tr")).filter((row) => row.children.length > 1);
+        rows.sort((a, b) => {
+          const aCell = a.children[index];
+          const bCell = b.children[index];
+          const aRaw = aCell?.dataset.sortValue ?? aCell?.textContent ?? "";
+          const bRaw = bCell?.dataset.sortValue ?? bCell?.textContent ?? "";
+          const result = numeric
+            ? Number(aRaw || 0) - Number(bRaw || 0)
+            : String(aRaw).localeCompare(String(bRaw), undefined, { numeric: true, sensitivity: "base" });
+          return direction === "asc" ? result : -result;
+        });
+        rows.forEach((row) => {
+          tbody.appendChild(row);
+        });
+        if (persist) {
+          writeStoredSort(header.dataset.column || header.textContent.trim(), direction);
+        }
+        const overview = table.closest("[data-vm-overview]");
+        if (overview) {
+          syncVmOverviewSelection(overview);
+        }
+      };
+
+      table.pveHelperApplyStoredSort = () => {
+        const stored = readStoredSort();
+        if (!stored) return;
+        const header = headers.find(
+          (candidate) => (candidate.dataset.column || candidate.textContent.trim()) === stored.column
+        );
+        if (!header) return;
+        sortByHeader(header, stored.direction === "desc" ? "desc" : "asc", false);
+      };
+
+      headers.forEach((header) => {
+        header.tabIndex = 0;
+        header.classList.add("sortable-heading");
+        const sort = () => {
+          const direction = header.dataset.sortDirection === "asc" ? "desc" : "asc";
+          sortByHeader(header, direction);
+        };
+        header.addEventListener("click", sort);
+        header.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            sort();
+          }
+        });
+      });
+      table.pveHelperApplyStoredSort();
     });
   };
 
@@ -2174,6 +3442,46 @@
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     });
+    let resizeTimer = null;
+    const resizeHandler = () => {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => syncSummaryCardHeights(document), 120);
+    };
+    window.addEventListener("resize", resizeHandler);
+    registerPageCleanup(() => window.removeEventListener("resize", resizeHandler));
+    syncSummaryCardHeights(root);
+  };
+
+  const syncSummaryCardHeights = (root = document) => {
+    const grid = root.querySelector("[data-summary-cards]");
+    if (!grid) {
+      return;
+    }
+    const cards = Array.from(grid.querySelectorAll(".summary-card:not(.card-placeholder)"));
+    if (!cards.length) {
+      return;
+    }
+
+    grid.style.removeProperty("--summary-card-min-height");
+    cards.forEach((card) => {
+      card.style.removeProperty("min-height");
+    });
+    const measured = Math.ceil(Math.max(...cards.map((card) => card.scrollHeight || card.offsetHeight || 0), 300));
+    let sessionHeight = 0;
+    try {
+      sessionHeight = Number.parseInt(sessionStorage.getItem(summaryCardHeightKey) || "0", 10) || 0;
+    } catch (_error) {
+      sessionHeight = 0;
+    }
+    const height = Math.max(measured, sessionHeight, 300);
+    grid.style.setProperty("--summary-card-min-height", `${height}px`);
+    try {
+      if (height > sessionHeight) {
+        sessionStorage.setItem(summaryCardHeightKey, String(height));
+      }
+    } catch (_error) {
+      // Equal card sizing still works for the current page without storage.
+    }
   };
 
   const initNodeReload = (root = document) => {
@@ -2204,6 +3512,13 @@
     initAuditLogs(root);
     initSpaceCharts(root);
     initTableFilters(root);
+    initColumnPickers(root);
+    initSortableTables(root);
+    initVmOverviewSelection(root);
+    initVmOverviewAgentInfo(root);
+    initVmOverviewSnapshotInfo(root);
+    initVmStatusRefresh(root);
+    initGuestAgentSummaries(root);
     createIcons();
   };
 

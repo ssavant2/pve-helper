@@ -13,22 +13,28 @@
     {% elif not has_rrd %}
       <div class="panel"><p class="muted" style="padding:14px;">No metric data for this timeframe.</p></div>
     {% else %}
-      <div class="vm-summary-grid">
+      <div class="vm-monitor-grid">
         {% for c in charts %}
-          <div class="panel summary-card">
+          <div class="panel monitor-card">
             <div class="panel-heading">
-              <h2>{{ c.title }}</h2>
+              <div class="monitor-title-stack">
+                <h2>{{ c.title }}</h2>
+                {% if c.current %}<span class="monitor-current">{{ c.current }}</span>{% endif %}
+              </div>
               <div class="card-heading-actions">
                 {% for item in c.legend %}<span class="chart-legend {{ item.cls }}">{{ item.label }}</span>{% endfor %}
-                {% if c.current %}<span class="muted">{{ c.current }}</span>{% endif %}
               </div>
             </div>
             <div class="metric-chart">
               <div class="metric-axis">
-                <span>{{ c.chart.axis_max_label }}</span>
-                <span>0</span>
+                {% for tick in c.chart.ticks %}
+                  <span>{{ tick.label }}</span>
+                {% endfor %}
               </div>
               <svg viewBox="0 0 {{ c.chart.width }} {{ c.chart.height }}" preserveAspectRatio="none" role="img" aria-label="{{ c.title }}">
+                {% for tick in c.chart.ticks %}
+                  <line x1="0" x2="{{ c.chart.width }}" y1="{{ tick.y }}" y2="{{ tick.y }}" class="metric-grid-line"></line>
+                {% endfor %}
                 {% for s in c.chart.series %}
                   {% if c.legend %}
                     <polyline points="{{ s.line }}" fill="none" class="metric-line ms{{ forloop.counter }}"></polyline>

@@ -14,7 +14,8 @@ from .classification import extract_disk_references
 
 LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
 LIVE_GUEST_INVENTORY_CACHE_KEY = "pve-helper:live-guest-inventory:v1"
-LIVE_GUEST_STATUS_CACHE_SECONDS = 30
+LIVE_GUEST_STATUS_CACHE_SECONDS = 1
+LIVE_GUEST_INVENTORY_CACHE_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,12 @@ class ProxmoxGuestSummary:
     vmid: int
     name: str
     status: str
+    cpu: float = 0.0
+    mem: int = 0
+    maxmem: int = 0
+    disk: int = 0
+    maxdisk: int = 0
+    uptime: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,10 @@ class ProxmoxTaskResult:
     @property
     def success(self) -> bool:
         return self.status == "stopped" and self.exitstatus == "OK"
+
+    @property
+    def ok(self) -> bool:
+        return self.success
 
 
 class ProxmoxAPIError(Exception):
@@ -225,7 +236,7 @@ class ProxmoxClient:
 
         guest_kind = self._guest_kind(object_type)
 
-        if action not in {"start", "shutdown", "stop", "reboot"}:
+        if action not in {"start", "shutdown", "stop", "reboot", "reset"}:
             raise ProxmoxAPIError(f"Unsupported power action: {action}")
 
         data = self.post(
@@ -282,8 +293,8 @@ class ProxmoxClient:
 
             sleep_func(min(poll_interval, max(deadline - now, 0.1)))
 
-    def get(self, path: str) -> Any:
-        return self._request("GET", path)
+    def get(self, path: str, *, timeout: float | None = None) -> Any:
+        return self._request("GET", path, timeout=timeout)
 
     def post(self, path: str, *, data: dict[str, Any] | None = None) -> Any:
         return self._request("POST", path, data=data or {})
@@ -323,7 +334,7 @@ class ProxmoxClient:
             return "lxc"
         raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
 
-    def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None) -> Any:
+    def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         verify: bool | str = settings.PVE_VERIFY_TLS
         if settings.PVE_CA_BUNDLE:
             verify = settings.PVE_CA_BUNDLE
@@ -340,7 +351,7 @@ class ProxmoxClient:
                 f"{self.endpoint}/api2/json/{path.lstrip('/')}",
                 headers=headers,
                 data=data,
-                timeout=15,
+                timeout=timeout or 15,
                 verify=verify,
             )
             response.raise_for_status()
@@ -398,7 +409,7 @@ def configured_clients() -> list[ProxmoxClient]:
     return [ProxmoxClient(endpoint) for endpoint in settings.PVE_ENDPOINTS]
 
 
-def fetch_live_guest_status() -> dict[tuple[str, int], str]:
+def fetch_live_guest_status() -> dict[tuple[str, str, int], str]:
     cached = cache.get(LIVE_GUEST_STATUS_CACHE_KEY)
     if isinstance(cached, dict):
         return cached
@@ -416,14 +427,18 @@ def fetch_live_guest_inventory(*, use_cache: bool = True) -> list[ProxmoxGuestSu
 
     result = _fetch_live_guest_inventory_uncached()
     if use_cache:
-        cache.set(LIVE_GUEST_INVENTORY_CACHE_KEY, result, LIVE_GUEST_STATUS_CACHE_SECONDS)
+        cache.set(LIVE_GUEST_INVENTORY_CACHE_KEY, result, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
     return result
 
 
-def _fetch_live_guest_status_uncached() -> dict[tuple[str, int], str]:
-    """Return {(object_type, vmid): status} for all guests across all endpoints."""
+def clear_live_guest_caches() -> None:
+    cache.delete_many([LIVE_GUEST_STATUS_CACHE_KEY, LIVE_GUEST_INVENTORY_CACHE_KEY])
+
+
+def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
+    """Return {(node, object_type, vmid): status} for all guests across all endpoints."""
     return {
-        (guest.object_type, guest.vmid): guest.status
+        (guest.node, guest.object_type, guest.vmid): guest.status
         for guest in _fetch_live_guest_inventory_uncached()
         if guest.status
     }
@@ -431,7 +446,7 @@ def _fetch_live_guest_status_uncached() -> dict[tuple[str, int], str]:
 
 def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
     """Return lightweight guest inventory across all configured endpoints."""
-    guests_by_key: dict[tuple[str, int], ProxmoxGuestSummary] = {}
+    guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
     for client in configured_clients():
         try:
             resources = client.get("cluster/resources?type=vm")
@@ -468,7 +483,7 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
 
 
 def _add_guest_summary(
-    guests_by_key: dict[tuple[str, int], ProxmoxGuestSummary],
+    guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary],
     data: dict[str, Any],
     *,
     node: str | None = None,
@@ -496,7 +511,7 @@ def _add_guest_summary(
         return
 
     guest_node = str(node or data.get("node") or "")
-    key = (resource_type, vmid_int)
+    key = (guest_node, resource_type, vmid_int)
     guests_by_key.setdefault(
         key,
         ProxmoxGuestSummary(
@@ -505,5 +520,25 @@ def _add_guest_summary(
             vmid=vmid_int,
             name=str(data.get("name") or data.get("hostname") or ""),
             status=str(data.get("status") or ""),
+            cpu=_float_or_zero(data.get("cpu")),
+            mem=_int_or_zero(data.get("mem")),
+            maxmem=_int_or_zero(data.get("maxmem")),
+            disk=_int_or_zero(data.get("disk")),
+            maxdisk=_int_or_zero(data.get("maxdisk")),
+            uptime=_int_or_zero(data.get("uptime")),
         ),
     )
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0

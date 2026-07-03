@@ -24,7 +24,7 @@ from .services.config import sync_runtime_configuration
 from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
-from .services.proxmox import ProxmoxClient
+from .services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout, clear_live_guest_caches
 from .services.scan_schedule import scan_schedule_state
 from .services.scan_retention import prune_scan_history
 from .services.scheduled_actions import dispatch_due_scheduled_actions, execute_scheduled_action_run
@@ -55,6 +55,45 @@ def dispatch_scheduled_actions() -> dict[str, int | bool]:
 
 def run_scheduled_action(run_id: int) -> None:
     execute_scheduled_action_run(run_id)
+
+
+def poll_guest_audit_task(
+    audit_event_id: int,
+    endpoint_url: str,
+    node: str,
+    upid: str,
+    timeout_seconds: int,
+) -> None:
+    event = AuditEvent.objects.filter(pk=audit_event_id).first()
+    if event is None:
+        return
+
+    details = event.details if isinstance(event.details, dict) else {}
+    details = dict(details)
+    try:
+        result = ProxmoxClient(endpoint_url).wait_for_task(
+            node=node,
+            upid=upid,
+            timeout_seconds=timeout_seconds,
+        )
+    except ProxmoxTaskTimeout as exc:
+        event.outcome = "failed"
+        details["error"] = str(exc)
+    except ProxmoxAPIError as exc:
+        event.outcome = "failed"
+        details["error"] = str(exc)
+    else:
+        details["proxmox_task"] = result.raw
+        if result.success:
+            event.outcome = "success"
+        else:
+            event.outcome = "failed"
+            details["error"] = f"Proxmox task exitstatus: {result.exitstatus or result.status or 'unknown'}"
+
+    details["finished_at"] = timezone.now().isoformat()
+    event.details = details
+    event.save(update_fields=["outcome", "details"])
+    clear_live_guest_caches()
 
 
 def enqueue_scheduled_scan() -> int | None:
@@ -298,7 +337,7 @@ def _run_scan(scan: ScanRun) -> None:
         endpoint_attempts.append(node_name)
         result = client.inventory(node_name)
 
-        if result.ok:
+        if result.success:
             endpoint_successes.append(node_name)
             endpoint.last_health_status = "ok"
             endpoint.last_successful_scan = timezone.now()

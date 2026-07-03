@@ -5,15 +5,15 @@
   <section class="vs-object-header">
     <div class="vs-title-row">
       <div class="vs-title">
-        <span class="vs-title-icon"><i data-lucide="{% if guest.object_type == 'ct' %}box{% elif guest_is_template %}copy{% else %}monitor{% endif %}" aria-hidden="true"></i></span>
+        <span class="vs-title-icon"><i data-lucide="{% if guest.object_type == 'ct' %}box{% elif guest_is_template %}layers{% else %}monitor{% endif %}" aria-hidden="true"></i></span>
         <div>
           <h1>{% guest_label guest_identity %}</h1>
           <p>
             <span class="badge{% if guest_is_template %} infrastructure{% endif %}">{{ guest_type_label }}</span>
             {% if guest.status == "running" %}
-              <span class="badge completed">{{ guest.status }}</span>
+              <span class="badge completed" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}">{{ guest.status }}</span>
             {% else %}
-              <span class="badge">{{ guest.status|default:"-" }}</span>
+              <span class="badge" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}">{{ guest.status|default:"-" }}</span>
             {% endif %}
             on node <strong>{{ guest.node|default:"-" }}</strong>
           </p>
