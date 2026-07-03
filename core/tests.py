@@ -4300,8 +4300,96 @@ class ViewSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Virtual Hardware")
+        self.assertContains(response, "VM Options")
+        self.assertContains(response, "Boot Options")
         self.assertContains(response, "scsi0")
         self.assertContains(response, "vmbr0")
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_hardware_edit_updates_vm_options(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.updates = None
+                self.delete = None
+                self.digest = None
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {
+                    "digest": "abc123",
+                    "name": "Lab VM",
+                    "cores": "2",
+                    "sockets": "1",
+                    "memory": "2048",
+                    "agent": "1,fstrim_cloned_disks=1",
+                    "boot": "order=scsi0",
+                    "ostype": "l26",
+                    "bios": "seabios",
+                }
+
+            def set_guest_config(self, *, node, object_type, vmid, updates, delete=None, digest=None):
+                self.updates = updates
+                self.delete = delete or []
+                self.digest = digest
+                return None
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:guest_hardware_edit", args=["vm", 500]),
+                {
+                    "vm_name": "Renamed VM",
+                    "vm_description": "Lab notes",
+                    "vm_onboot": "on",
+                    "vm_protection": "on",
+                    "vm_agent": "on",
+                    "vm_tablet": "on",
+                    "vm_acpi": "on",
+                    "vm_boot": "order=scsi0;ide2;net0",
+                    "vm_ostype": "win11",
+                    "vm_bios": "ovmf",
+                    "vm_machine": "q35",
+                    "vm_scsihw": "virtio-scsi-single",
+                    "vm_cpu": "host",
+                    "vm_numa": "on",
+                    "startup_order": "2",
+                    "startup_up": "30",
+                    "startup_down": "60",
+                    "cores": "2",
+                    "sockets": "1",
+                    "memory": "2048",
+                },
+            )
+
+        self.assertRedirects(response, reverse("core:guest_summary", args=["vm", 500]), fetch_redirect_response=False)
+        self.assertEqual(fake_client.digest, "abc123")
+        self.assertEqual(fake_client.delete, [])
+        self.assertEqual(
+            fake_client.updates,
+            {
+                "name": "Renamed VM",
+                "description": "Lab notes",
+                "onboot": "1",
+                "protection": "1",
+                "boot": "order=scsi0;ide2;net0",
+                "ostype": "win11",
+                "bios": "ovmf",
+                "machine": "q35",
+                "scsihw": "virtio-scsi-single",
+                "cpu": "host",
+                "numa": "1",
+                "startup": "order=2,up=30,down=60",
+            },
+        )
 
     @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_create_vm_requires_name_before_posting_to_proxmox(self):

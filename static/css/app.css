@@ -3443,8 +3443,8 @@ body.cards-dragging {
 
 /* --- vSphere-style hardware edit --- */
 .hardware-editor-page {
-  width: min(1280px, calc(100vw - 32px));
-  margin: 0 auto;
+  width: min(1220px, calc(100vw - 24px));
+  margin: -6px auto 0;
 }
 
 .hardware-editor-header {
@@ -3452,7 +3452,7 @@ body.cards-dragging {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 14px;
+  margin-bottom: 20px;
 }
 
 .hardware-editor-title {
@@ -3464,19 +3464,22 @@ body.cards-dragging {
 
 .hardware-editor-title h1 {
   margin: 0;
-  font-size: 28px;
-  font-weight: 500;
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 300;
+  letter-spacing: 0;
 }
 
 .hardware-title-separator {
   width: 1px;
-  height: 24px;
-  background: var(--line);
+  height: 30px;
+  background: rgba(207, 223, 232, 0.45);
 }
 
 .hardware-editor-guest {
   color: var(--muted);
-  font-size: 20px;
+  font-size: 24px;
+  font-weight: 300;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3485,40 +3488,70 @@ body.cards-dragging {
 
 .hardware-editor-close {
   color: var(--muted);
-  font-size: 26px;
+  font-size: 32px;
+  font-weight: 200;
   line-height: 1;
   text-decoration: none;
 }
 
 .hardware-editor-form {
   position: relative;
+  padding-bottom: 58px;
+  background:
+    linear-gradient(180deg, rgba(52, 73, 83, 0.28), rgba(10, 19, 24, 0.38)),
+    var(--bg);
+  border-top: 1px solid rgba(164, 189, 202, 0.22);
 }
 
 .hardware-editor-tabs {
   display: flex;
   gap: 34px;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 12px;
+  margin-bottom: 0;
+}
+
+.hardware-tab-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .hardware-editor-tab {
-  padding: 12px 0 10px;
+  cursor: pointer;
+  padding: 13px 4px 10px;
   border-bottom: 3px solid transparent;
   color: var(--muted);
   font-size: 15px;
   font-weight: 600;
 }
 
+.hardware-editor-tab.disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+#hardware-tab-virtual:checked ~ .hardware-editor-tabs label[for="hardware-tab-virtual"],
+#hardware-tab-options:checked ~ .hardware-editor-tabs label[for="hardware-tab-options"],
 .hardware-editor-tab.active {
   color: var(--text);
   border-bottom-color: var(--accent);
 }
 
+.hardware-tab-panel {
+  display: none;
+}
+
+#hardware-tab-virtual:checked ~ .hardware-tab-panel-virtual,
+#hardware-tab-options:checked ~ .hardware-tab-panel-options {
+  display: block;
+}
+
 .hardware-editor-toolbar {
   display: flex;
   justify-content: flex-end;
-  min-height: 42px;
+  min-height: 58px;
   align-items: center;
+  padding: 0 20px;
 }
 
 .hw-add-menu {
@@ -3546,17 +3579,17 @@ body.cards-dragging {
 
 .hw-add-menu-panel {
   position: absolute;
-  top: calc(100% + 12px);
+  top: calc(100% + 14px);
   right: 0;
   z-index: 60;
-  width: min(380px, calc(100vw - 48px));
+  width: min(342px, calc(100vw - 48px));
   max-height: min(720px, 72vh);
   overflow: auto;
-  padding: 16px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: var(--shadow);
+  padding: 16px 18px;
+  background: #1b313a;
+  border: 1px solid rgba(108, 136, 149, 0.55);
+  border-radius: 4px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
 
 .hw-add-group {
@@ -3574,7 +3607,7 @@ body.cards-dragging {
 }
 
 .hw-add-group-title {
-  color: var(--muted);
+  color: #b7c5cd;
   font-size: 13px;
   font-weight: 700;
 }
@@ -3584,8 +3617,7 @@ body.cards-dragging {
   gap: 8px;
 }
 
-.hw-add-fields label,
-.hw-vsphere-fields label {
+.hw-add-fields label {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -3595,15 +3627,24 @@ body.cards-dragging {
 
 .hw-add-fields input,
 .hw-add-fields select,
-.hw-vsphere-fields input,
-.hw-vsphere-fields select {
+.hw-inline-field input,
+.hw-inline-field select,
+.hw-inline-field textarea {
   width: 100%;
-  padding: 7px 9px;
-  background: var(--surface_alt, transparent);
+  padding: 5px 7px;
+  background: transparent;
   color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border: 0;
+  border-bottom: 1px solid rgba(199, 218, 228, 0.45);
+  border-radius: 0;
   font: inherit;
+}
+
+.hw-add-fields input,
+.hw-add-fields select {
+  background: rgba(4, 13, 18, 0.34);
+  border: 1px solid rgba(108, 136, 149, 0.55);
+  border-radius: 3px;
 }
 
 .hw-checkbox {
@@ -3631,33 +3672,37 @@ body.cards-dragging {
 }
 
 .hw-vsphere-list {
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 1px solid rgba(99, 128, 142, 0.68);
+  border-radius: 3px;
   overflow: hidden;
-  background: var(--surface);
+  background: #1b3038;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 36px rgba(0, 0, 0, 0.22);
 }
 
 .hw-vsphere-row {
-  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: minmax(260px, 350px) minmax(420px, 1fr);
+  gap: 0;
+  align-items: center;
+  min-height: 56px;
+  border-bottom: 1px solid rgba(99, 128, 142, 0.62);
+  background: linear-gradient(180deg, rgba(42, 66, 75, 0.72), rgba(31, 53, 62, 0.72));
 }
 
 .hw-vsphere-row:last-child {
   border-bottom: 0;
 }
 
-.hw-vsphere-summary {
-  display: grid;
-  grid-template-columns: minmax(260px, 340px) minmax(220px, 1fr);
-  gap: 22px;
-  align-items: center;
-  min-height: 54px;
-  padding: 0 18px;
-  cursor: pointer;
-  list-style: none;
+.hw-vsphere-row:hover {
+  background: linear-gradient(180deg, rgba(48, 76, 87, 0.88), rgba(35, 60, 70, 0.88));
 }
 
-.hw-vsphere-summary::-webkit-details-marker {
-  display: none;
+.hw-vsphere-device {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 22px 0 24px;
 }
 
 .hw-vsphere-name {
@@ -3667,6 +3712,7 @@ body.cards-dragging {
   min-width: 0;
   color: var(--text);
   font-weight: 700;
+  font-size: 15px;
 }
 
 .hw-vsphere-name code {
@@ -3677,45 +3723,108 @@ body.cards-dragging {
 
 .hw-vsphere-chevron {
   display: inline-flex;
-  width: 14px;
-  color: var(--muted);
+  width: 10px;
+  color: #d7e4ea;
   transform-origin: 50% 50%;
-  transition: transform 120ms ease;
+  font-size: 24px;
+  line-height: 1;
 }
 
-.hw-vsphere-row[open] .hw-vsphere-chevron {
-  transform: rotate(90deg);
-}
-
-.hw-vsphere-value {
+.hw-vsphere-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
+  padding: 7px 18px 7px 8px;
+}
+
+.hw-current-value {
+  min-width: 0;
+  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text);
+  color: #d9e5eb;
 }
 
-.hw-vsphere-body {
-  padding: 0 18px 18px 358px;
+.hw-inline-field {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
-.hw-vsphere-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px;
-  max-width: 780px;
+.hw-inline-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
-.hw-vsphere-fields-wide {
-  grid-template-columns: minmax(260px, 1fr) auto;
+.hw-inline-field input,
+.hw-inline-field select,
+.hw-inline-field textarea {
+  min-width: 0;
+  height: 31px;
+  font-size: 15px;
+}
+
+.hw-inline-field textarea {
+  min-height: 52px;
+  height: auto;
+  resize: vertical;
+}
+
+.hw-number-field {
+  width: 116px;
+}
+
+.hw-wide-field {
+  width: 260px;
+}
+
+.hw-extra-wide-field {
+  width: min(520px, 100%);
+}
+
+.hw-select-field {
+  width: 260px;
+}
+
+.hw-textarea-field {
+  align-items: flex-start;
+  width: min(760px, 100%);
+}
+
+.hw-options-list {
+  margin-top: 58px;
+}
+
+.hw-options-list .hw-vsphere-row {
+  grid-template-columns: minmax(250px, 330px) minmax(0, 1fr);
+  min-height: 58px;
+}
+
+.hw-options-list .hw-vsphere-controls {
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+.hw-options-list .hw-current-value {
   max-width: none;
+}
+
+.hw-unit {
+  color: #dce8ee;
+  font-size: 15px;
+  padding: 3px 20px 3px 0;
 }
 
 .hardware-editor-actions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 16px 0 0;
+  padding: 14px 0 0;
 }
 
 @media (max-width: 820px) {
@@ -3752,14 +3861,18 @@ body.cards-dragging {
     width: auto;
   }
 
-  .hw-vsphere-summary {
+  .hw-vsphere-row {
     grid-template-columns: 1fr;
-    gap: 4px;
+    min-height: auto;
+  }
+
+  .hw-vsphere-device,
+  .hw-vsphere-controls {
     padding: 10px 14px;
   }
 
-  .hw-vsphere-body {
-    padding: 0 14px 14px;
+  .hw-vsphere-controls {
+    flex-wrap: wrap;
   }
 }
 

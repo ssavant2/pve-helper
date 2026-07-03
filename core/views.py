@@ -787,8 +787,109 @@ def guest_hardware_edit(request, object_type: str, vmid: int):
         "cdrom": cdrom,
         "cdrom_iso": cdrom_iso,
         "options": options,
+        "vm_options": _vm_settings_options(config),
+        "ostype_options": OSTYPE_LABELS.items(),
+        "bios_options": (("seabios", "SeaBIOS"), ("ovmf", "OVMF (UEFI)")),
+        "machine_options": (("", "Default"), ("q35", "q35"), ("pc", "i440fx / pc")),
+        "scsihw_options": (
+            ("", "Default"),
+            ("virtio-scsi-single", "VirtIO SCSI single"),
+            ("virtio-scsi-pci", "VirtIO SCSI"),
+            ("lsi", "LSI 53C895A"),
+            ("lsi53c810", "LSI 53C810"),
+            ("megasas", "MegaRAID SAS"),
+            ("pvscsi", "VMware PVSCSI"),
+        ),
     }
     return render(request, "core/guest_hardware_edit.html", context)
+
+
+def _config_enabled(config: dict, key: str, *, default: bool = False) -> bool:
+    if key not in config:
+        return default
+    value = str(config.get(key) or "").strip().lower()
+    if not value:
+        return False
+    return value in {"1", "true", "yes", "on"} or value.startswith("1,")
+
+
+def _set_checkbox_update(
+    updates: dict[str, str],
+    config: dict,
+    key: str,
+    enabled: bool,
+    *,
+    default: bool = False,
+) -> None:
+    if enabled != _config_enabled(config, key, default=default):
+        updates[key] = "1" if enabled else "0"
+
+
+def _set_text_update(
+    updates: dict[str, str],
+    delete: list[str],
+    config: dict,
+    key: str,
+    value: str,
+    *,
+    allow_delete: bool = True,
+) -> None:
+    current = str(config.get(key, "") or "")
+    if value == current:
+        return
+    if value or not allow_delete:
+        updates[key] = value
+    elif current:
+        delete.append(key)
+
+
+def _parse_startup_options(value: object) -> dict[str, str]:
+    parsed = {"order": "", "up": "", "down": ""}
+    for part in str(value or "").split(","):
+        key, separator, raw = part.partition("=")
+        if separator and key in parsed:
+            parsed[key] = raw
+    return parsed
+
+
+def _startup_from_post(post) -> str | None:
+    parts = []
+    for form_key, startup_key in (
+        ("startup_order", "order"),
+        ("startup_up", "up"),
+        ("startup_down", "down"),
+    ):
+        raw = post.get(form_key, "").strip()
+        if not raw:
+            continue
+        if not raw.isdigit():
+            return None
+        parts.append(f"{startup_key}={raw}")
+    return ",".join(parts)
+
+
+def _vm_settings_options(config: dict) -> dict[str, object]:
+    startup = _parse_startup_options(config.get("startup"))
+    return {
+        "name": str(config.get("name", "") or ""),
+        "description": str(config.get("description", "") or ""),
+        "onboot": _config_enabled(config, "onboot"),
+        "protection": _config_enabled(config, "protection"),
+        "agent": _config_enabled(config, "agent"),
+        "tablet": _config_enabled(config, "tablet", default=True),
+        "acpi": _config_enabled(config, "acpi", default=True),
+        "localtime": _config_enabled(config, "localtime"),
+        "numa": _config_enabled(config, "numa"),
+        "boot": str(config.get("boot", "") or ""),
+        "ostype": str(config.get("ostype", "") or "l26"),
+        "bios": str(config.get("bios", "") or "seabios"),
+        "machine": str(config.get("machine", "") or ""),
+        "scsihw": str(config.get("scsihw", "") or ""),
+        "cpu": str(config.get("cpu", "") or ""),
+        "startup_order": startup["order"],
+        "startup_up": startup["up"],
+        "startup_down": startup["down"],
+    }
 
 
 def _apply_hardware_edit(request, detail: SimpleNamespace):
@@ -813,6 +914,43 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
     updates: dict[str, str] = {}
     delete: list[str] = []
     resizes: list[tuple[str, str]] = []
+
+    new_name = post.get("vm_name", "").strip()
+    if not new_name:
+        return "VM name is required."
+    _set_text_update(updates, delete, fresh, "name", new_name, allow_delete=False)
+
+    new_description = post.get("vm_description", "").replace("\r\n", "\n").strip()
+    _set_text_update(updates, delete, fresh, "description", new_description)
+
+    for form_field, key, default in (
+        ("vm_onboot", "onboot", False),
+        ("vm_protection", "protection", False),
+        ("vm_agent", "agent", False),
+        ("vm_tablet", "tablet", True),
+        ("vm_acpi", "acpi", True),
+        ("vm_localtime", "localtime", False),
+        ("vm_numa", "numa", False),
+    ):
+        _set_checkbox_update(updates, fresh, key, post.get(form_field) == "on", default=default)
+
+    for form_field, key, implicit_default in (
+        ("vm_boot", "boot", ""),
+        ("vm_ostype", "ostype", "l26"),
+        ("vm_bios", "bios", "seabios"),
+        ("vm_machine", "machine", ""),
+        ("vm_scsihw", "scsihw", ""),
+        ("vm_cpu", "cpu", ""),
+    ):
+        new_value = post.get(form_field, "").strip()
+        if key not in fresh and new_value == implicit_default:
+            continue
+        _set_text_update(updates, delete, fresh, key, new_value)
+
+    startup_value = _startup_from_post(post)
+    if startup_value is None:
+        return "Startup order and delays must be whole numbers."
+    _set_text_update(updates, delete, fresh, "startup", startup_value)
 
     for form_field, key in (("cores", "cores"), ("sockets", "sockets"), ("memory", "memory")):
         raw = post.get(form_field, "").strip()
