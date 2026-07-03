@@ -230,14 +230,24 @@ committed.
 
 ## Proxmox
 
-Create a dedicated API token. The intended baseline role is `PVEAuditor` on `/`, which is
-enough for inventory, storage visibility, and orphan classification.
+Create a dedicated Proxmox user and API token for pve-helper. The normal
+deployment grants the built-in `Administrator` role on `/`, with propagation
+enabled, to both:
 
-If Scheduled Tasks power actions are enabled, add the custom `HelperPower` role with
-`VM.Audit` and `VM.PowerMgmt` on `/vms` to both the user and the
-privilege-separated token. `VM.Audit` is needed for the target picker to list VM/CT
-guests, and `VM.PowerMgmt` is needed to start, stop, shutdown, or reboot them.
-Proxmox reserves the `PVE*` role namespace, so do not name the custom role `PVE...`.
+- user: `pve-helper@pve`
+- privilege-separated token: `pve-helper@pve!pve-helper`
+
+The broader role is intentional. pve-helper is becoming an admin tool rather
+than a read-only scanner: scheduled power actions, VM/CT creation/deletion,
+snapshots, configuration edits, migration, and tag writes should not require
+chasing individual Proxmox privileges one by one. Keep destructive app features
+behind pve-helper confirmation/audit flows instead of trying to model them as
+tiny Proxmox roles.
+
+For a read-only scanner-only deployment, `PVEAuditor` on `/` is still enough for
+inventory, storage visibility, and orphan classification. Older `HelperPower`
+grants on `/vms` can be removed once the dedicated user and token have
+`Administrator` on `/`.
 
 For the full UI walkthrough, see `docs/proxmox-api-token.md`.
 
@@ -257,7 +267,7 @@ SCHEDULED_ACTION_RUN_RETENTION_DAYS=90
 If Proxmox uses an internal CA, set `PVE_CA_BUNDLE` to a mounted internal-CA path.
 
 Set `SCHEDULED_ACTIONS_ENABLED=false` if you want to disable scheduled VM/CT
-power actions at runtime even when the pve-helper token has HelperPower
+power actions at runtime even when the pve-helper token has administrator
 permissions.
 When enabled, `SCHEDULED_ACTION_TIMEOUT_SECONDS` is the max time pve-helper will
 wait for a submitted Proxmox task before marking it timed out.
