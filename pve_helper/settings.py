@@ -189,6 +189,10 @@ TRUENAS_VM_EXPORT = env("TRUENAS_VM_EXPORT", "")
 TRUENAS_FS_CONTAINER_PATH = env("TRUENAS_FS_CONTAINER_PATH", "/storages/truenas-fs")
 TRUENAS_VM_CONTAINER_PATH = env("TRUENAS_VM_CONTAINER_PATH", "/storages/truenas-vm")
 STORAGE_WRITE_ENABLED = env_bool("STORAGE_WRITE_ENABLED", True)
+# Guest (VM/CT) config writes for the VM view's card edit (name, notes, onboot).
+# On by default like the other write gates; needs the Proxmox token to hold
+# VM.Config.Options (otherwise saves fail with a Proxmox 403).
+VM_WRITE_ENABLED = env_bool("VM_WRITE_ENABLED", True)
 STORAGE_UPLOAD_MAX_SIZE_MB = env_int("STORAGE_UPLOAD_MAX_SIZE_MB", 0)
 FILE_UPLOAD_TEMP_DIR = env("FILE_UPLOAD_TEMP_DIR", "") or None
 STORAGE_IMAGE_INFO_ENABLED = env_bool("STORAGE_IMAGE_INFO_ENABLED", True)

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% load guest_labels %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Edit Settings &mdash; {% guest_label guest_identity %}</h1>
+      <p>Virtual hardware. Changes are written to the Proxmox VM configuration.</p>
+    </div>
+    <div class="page-header-actions">
+      <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+    </div>
+  </section>
+
+  <section class="panel panel-spaced guest-edit-panel">
+    <form method="post" action="{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}">
+      {% csrf_token %}
+
+      <div class="hw-section">
+        <h3>CPU</h3>
+        <div class="form-grid">
+          <div class="form-field"><label for="hw-cores">Cores</label><input type="number" min="1" id="hw-cores" name="cores" value="{{ cores }}"></div>
+          <div class="form-field"><label for="hw-sockets">Sockets</label><input type="number" min="1" id="hw-sockets" name="sockets" value="{{ sockets }}"></div>
+          <div class="form-field"><label for="hw-memory">Memory (MB)</label><input type="number" min="1" id="hw-memory" name="memory" value="{{ memory }}"></div>
+        </div>
+      </div>
+
+      <div class="hw-section">
+        <h3>Hard Disks</h3>
+        {% for disk in disks %}
+          <div class="hw-device">
+            <div class="hw-device-label"><code>{{ disk.label }}</code> {{ disk.storage_id }} <span class="muted">({{ disk.size|default:"?" }} {{ disk.format }})</span></div>
+            <label class="hw-inline">Resize to (GB) <input type="number" min="1" name="disk_{{ disk.label }}_size" placeholder="grow only"></label>
+            <label class="hw-inline hw-remove"><input type="checkbox" name="disk_{{ disk.label }}_remove"> Detach</label>
+          </div>
+        {% empty %}
+          <p class="muted">No disks.</p>
+        {% endfor %}
+        <div class="hw-add">
+          <span class="muted">Add disk:</span>
+          <select name="newdisk_storage">
+            <option value="">storage...</option>
+            {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+          </select>
+          <input type="number" min="1" name="newdisk_size" placeholder="GB">
+        </div>
+      </div>
+
+      <div class="hw-section">
+        <h3>Network Devices</h3>
+        {% for nic in nics %}
+          <div class="hw-device">
+            <div class="hw-device-label"><code>{{ nic.label }}</code> <span class="muted">{{ nic.model }} · {{ nic.mac }}</span></div>
+            <label class="hw-inline">Bridge
+              <select name="nic_{{ nic.label }}_bridge">
+                {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
+              </select>
+            </label>
+            <label class="hw-inline">VLAN <input type="number" name="nic_{{ nic.label }}_vlan" value="{{ nic.vlan }}" placeholder="none"></label>
+            <label class="hw-inline hw-remove"><input type="checkbox" name="nic_{{ nic.label }}_remove"> Remove</label>
+          </div>
+        {% empty %}
+          <p class="muted">No network devices.</p>
+        {% endfor %}
+        <div class="hw-add">
+          <span class="muted">Add NIC:</span>
+          <select name="newnic_bridge">
+            <option value="">bridge / vnet...</option>
+            {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+          </select>
+          <input type="number" name="newnic_vlan" placeholder="VLAN (optional)">
+        </div>
+      </div>
+
+      {% if cdrom %}
+        <div class="hw-section">
+          <h3>CD/DVD ({{ cdrom.label }})</h3>
+          <input type="hidden" name="cdrom_key" value="{{ cdrom.label }}">
+          <select name="cdrom_iso">
+            <option value="" {% if not cdrom_iso %}selected{% endif %}>No media (eject)</option>
+            {% for iso in options.isos %}<option value="{{ iso }}" {% if iso == cdrom_iso %}selected{% endif %}>{{ iso }}</option>{% endfor %}
+          </select>
+        </div>
+      {% endif %}
+
+      <p class="muted">USB, PCI, EFI, TPM, Serial, Audio, RNG and Virtiofs devices are not editable here yet.</p>
+
+      <div class="form-actions">
+        <button class="primary-action" type="submit">Save changes</button>
+        <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

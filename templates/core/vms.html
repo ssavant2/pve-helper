@@ -1,0 +1,20 @@
+{% extends "core/guest_workspace.html" %}
+
+{% block workspace_detail %}
+  <section class="guest-detail-empty">
+    <div class="panel">
+      <div class="panel-heading">
+        <h2>{{ guest_count }} guest{{ guest_count|pluralize }}</h2>
+      </div>
+      <p class="muted">
+        {{ running_count }} running. Select a VM or container from the list to view its details.
+      </p>
+      {% if not live_available %}
+        <p>
+          <span class="badge failed">Proxmox API unreachable</span>
+          Showing the last scan{% if inventory_scan_at %} ({{ inventory_scan_at|date:"Y-m-d H:i:s" }}){% endif %}.
+        </p>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

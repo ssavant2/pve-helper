@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, time, timedelta
+import re
+from datetime import datetime, time, timedelta, timezone as dt_timezone
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
@@ -37,9 +39,24 @@ from .models import (
 from .services.file_actions import FileActionRisk, file_action_risk
 from .services.audit_retention_schedule import audit_retention_schedule_state, update_audit_retention_schedule
 from .services.filesystem import storage_space_info
+from .services.guests import (
+    guest_identity,
+    guest_identity_from_inventory,
+    guest_identity_from_scheduled_action,
+    is_template,
+    parse_guest_tags,
+)
+from .services.guest_storage import DISK_BUS_RE, guest_disks, guest_networks
+from .services.guest_create import create_ct, create_options, create_vm
 from .services.partial_scan import refresh_storage_directory
 from .services.permissions import storage_permissions as get_permissions
-from .services.proxmox import LIVE_GUEST_STATUS_CACHE_SECONDS, fetch_live_guest_inventory, fetch_live_guest_status
+from .services.proxmox import (
+    LIVE_GUEST_STATUS_CACHE_SECONDS,
+    ProxmoxAPIError,
+    configured_clients,
+    fetch_live_guest_inventory,
+    fetch_live_guest_status,
+)
 from .services.recent_tasks import recent_task_page, serialize_task_page
 from .services.scan_schedule import scan_schedule_state, update_scan_schedule
 from .services.scheduled_actions import ScheduledActionQueueError, queue_manual_scheduled_action_run
@@ -167,6 +184,1804 @@ def datastores(request):
 
 
 @app_login_required
+def vms_list(request):
+    """Central, cluster-wide VMs & Templates workspace (left list, no selection)."""
+    rows, live_available, scan_at = _guest_rows()
+    context = {
+        **navigation_context("vms"),
+        "guests": rows,
+        "guest_list": rows,
+        "guest_count": len(rows),
+        "running_count": sum(1 for row in rows if row.status == "running"),
+        "live_available": live_available,
+        "inventory_scan_at": scan_at,
+        "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS,
+        "guest_write_enabled": settings.VM_WRITE_ENABLED,
+        "active_object_type": "",
+        "active_vmid": None,
+    }
+    return render(request, "core/vms.html", context)
+
+
+def _guest_rows():
+    """Cluster-wide guest rows: live membership/status/name joined with the
+    latest scan for template flag and tags. Falls back to scan if the API is
+    unreachable. Returns (rows, live_available, scan_timestamp)."""
+    live_guests = fetch_live_guest_inventory()
+    latest_scan = _latest_proxmox_inventory_scan()
+
+    scan_by_key: dict[tuple[str, int], ProxmoxInventory] = {}
+    if latest_scan:
+        for obj in ProxmoxInventory.objects.filter(
+            scan_run=latest_scan,
+            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+            vmid__isnull=False,
+        ):
+            scan_by_key[(obj.object_type, obj.vmid)] = obj
+
+    live_available = bool(live_guests)
+    rows: list[SimpleNamespace] = []
+    if live_available:
+        for guest in live_guests:
+            rows.append(
+                _build_guest_row(
+                    object_type=guest.object_type,
+                    vmid=guest.vmid,
+                    name=guest.name,
+                    status=guest.status,
+                    node=guest.node,
+                    scan_obj=scan_by_key.get((guest.object_type, guest.vmid)),
+                )
+            )
+    else:
+        for (object_type, vmid), scan_obj in scan_by_key.items():
+            rows.append(
+                _build_guest_row(
+                    object_type=object_type,
+                    vmid=vmid,
+                    name=scan_obj.name,
+                    status=scan_obj.status,
+                    node=scan_obj.node,
+                    scan_obj=scan_obj,
+                )
+            )
+
+    rows.sort(key=lambda row: (row.type_sort, row.vmid or 0, row.node))
+    _decorate_guests_with_scheduled_actions(rows)
+    return rows, live_available, _scan_timestamp(latest_scan)
+
+
+def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj) -> SimpleNamespace:
+    config = scan_obj.config if scan_obj is not None and isinstance(scan_obj.config, dict) else {}
+    template = object_type == ProxmoxInventory.ObjectType.VM and is_template(config)
+    if template:
+        type_label, type_filter, type_sort = "Template", "template", 0
+    elif object_type == ProxmoxInventory.ObjectType.CT:
+        type_label, type_filter, type_sort = "CT", "ct", 2
+    else:
+        type_label, type_filter, type_sort = "VM", "vm", 1
+    return SimpleNamespace(
+        object_type=object_type,
+        vmid=vmid,
+        name=name or "",
+        status=status or "",
+        node=node or "",
+        is_template=template,
+        type_label=type_label,
+        type_filter=type_filter,
+        type_sort=type_sort,
+        tags=parse_guest_tags(config),
+        in_scan=scan_obj is not None,
+    )
+
+
+GUEST_OBJECT_TYPES = {"vm": ProxmoxInventory.ObjectType.VM, "ct": ProxmoxInventory.ObjectType.CT}
+
+
+@app_login_required
+def guest_summary(request, object_type: str, vmid: int):
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    detail = _resolve_guest_detail(object_type, vmid)
+    if not detail.found:
+        raise Http404("Guest not found")
+
+    config = detail.config
+    current = detail.current
+    disks, cdroms = guest_disks(config, detail.node, detail.vmid)
+    nets = guest_networks(config)
+
+    related_storages = []
+    seen_storage = set()
+    for disk in disks:
+        if disk["storage_id"] and disk["storage_id"] not in seen_storage:
+            seen_storage.add(disk["storage_id"])
+            related_storages.append({"storage_id": disk["storage_id"], "url": disk["url"], "mounted": disk["mounted"]})
+
+    related_networks = []
+    seen_net = set()
+    for net in nets:
+        key = (net["bridge"], net["vlan"])
+        if net["bridge"] and key not in seen_net:
+            seen_net.add(key)
+            related_networks.append({"bridge": net["bridge"], "vlan": net["vlan"]})
+
+    context = _guest_tab_context(detail, "summary")
+    context.update(
+        {
+            "guest_os_label": _guest_os_label(config),
+            "guest_agent_summary": _guest_agent_summary(detail),
+            "guest_usage": _guest_usage(current, config, detail.object_type),
+            "guest_cpu_topology": _guest_cpu_topology(config, detail.object_type),
+            "related_storages": related_storages,
+            "related_networks": related_networks,
+            "vm_details": _guest_vm_details(detail),
+            "guest_cpu_label": _guest_cpu_label(config, detail.object_type),
+            "guest_memory_label": f"{config.get('memory')} MB" if config.get("memory") else "",
+            "guest_disks": disks,
+            "guest_cdroms": cdroms,
+            "guest_nets": nets,
+            "guest_notes": config.get("description") or "",
+            "guest_current": current,
+            "guest_config": config,
+        }
+    )
+    return render(request, "core/guest_summary.html", context)
+
+
+GUEST_EDIT_FIELDS = ("name", "description", "onboot")
+NET_KEY_RE = re.compile(r"^net\d+$")
+
+
+def _parse_net_value(value: str) -> dict:
+    entry = {"model": "virtio", "mac": "", "bridge": "", "vlan": "", "firewall": False}
+    for token in str(value or "").split(","):
+        if "=" not in token:
+            continue
+        name, val = token.split("=", 1)
+        if name in ("virtio", "e1000", "e1000e", "rtl8139", "vmxnet3"):
+            entry["model"] = name
+            entry["mac"] = val
+        elif name == "bridge":
+            entry["bridge"] = val
+        elif name == "tag":
+            entry["vlan"] = val
+        elif name == "firewall":
+            entry["firewall"] = val == "1"
+    return entry
+
+
+def _next_device_index(config: dict, prefix: str) -> int:
+    used = set()
+    pattern = re.compile(rf"^{prefix}(\d+)$")
+    for key in config:
+        match = pattern.match(key)
+        if match:
+            used.add(int(match.group(1)))
+    index = 0
+    while index in used:
+        index += 1
+    return index
+
+
+@app_login_required
+def guest_hardware_edit(request, object_type: str, vmid: int):
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    if object_type != ProxmoxInventory.ObjectType.VM:
+        # CT hardware model differs; use the simple field editor for now.
+        return redirect(f"{reverse('core:guest_edit', args=[object_type, vmid])}?section=hardware")
+    if not settings.VM_WRITE_ENABLED:
+        messages.error(request, "VM editing is disabled (VM_WRITE_ENABLED is off).")
+        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+
+    detail = _resolve_guest_detail(object_type, vmid)
+    if not detail.found:
+        raise Http404("Guest not found")
+
+    if request.method == "POST":
+        error = _apply_hardware_edit(request, detail)
+        if error is None:
+            return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+        messages.error(request, error)
+
+    config = detail.config
+    disks, cdroms = guest_disks(config, detail.node, detail.vmid)
+    nics = guest_networks(config)
+    options = create_options(object_type, detail.node)
+    cdrom = cdroms[0] if cdroms else None
+    cdrom_iso = ""
+    if cdrom:
+        head = str(config.get(cdrom["label"], "")).split(",")[0]
+        cdrom_iso = "" if head == "none" else head
+
+    context = {
+        **navigation_context("vms"),
+        "guest": detail,
+        "guest_identity": guest_identity(object_type, vmid, detail.name),
+        "cores": config.get("cores", ""),
+        "sockets": config.get("sockets", "") or "1",
+        "memory": config.get("memory", ""),
+        "disks": disks,
+        "nics": nics,
+        "cdrom": cdrom,
+        "cdrom_iso": cdrom_iso,
+        "options": options,
+    }
+    return render(request, "core/guest_hardware_edit.html", context)
+
+
+def _apply_hardware_edit(request, detail: SimpleNamespace):
+    node = detail.node
+    if not node:
+        return "Could not resolve the guest's current node."
+    client = None
+    fresh: dict = {}
+    for candidate in configured_clients():
+        try:
+            fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
+            client = candidate
+            break
+        except ProxmoxAPIError:
+            continue
+    if client is None:
+        return "Could not read the current guest config from Proxmox."
+    if fresh.get("lock"):
+        return f"Guest is locked by another Proxmox operation ({fresh.get('lock')}); edit aborted."
+
+    post = request.POST
+    updates: dict[str, str] = {}
+    delete: list[str] = []
+    resizes: list[tuple[str, str]] = []
+
+    for form_field, key in (("cores", "cores"), ("sockets", "sockets"), ("memory", "memory")):
+        raw = post.get(form_field, "").strip()
+        if raw and raw.isdigit() and int(raw) > 0 and raw != str(fresh.get(key, "") or ""):
+            updates[key] = raw
+
+    for key in [k for k in fresh if DISK_BUS_RE.match(k) and "media=cdrom" not in str(fresh[k])]:
+        if post.get(f"disk_{key}_remove") == "on":
+            delete.append(key)
+            continue
+        new_size = post.get(f"disk_{key}_size", "").strip()
+        if new_size and new_size.isdigit():
+            resizes.append((key, f"{new_size}G"))
+
+    nd_storage = post.get("newdisk_storage", "").strip()
+    nd_size = post.get("newdisk_size", "").strip()
+    if nd_storage and nd_size.isdigit():
+        updates[f"scsi{_next_device_index(fresh, 'scsi')}"] = f"{nd_storage}:{nd_size}"
+
+    for key in [k for k in fresh if NET_KEY_RE.match(k)]:
+        if post.get(f"nic_{key}_remove") == "on":
+            delete.append(key)
+            continue
+        bridge = post.get(f"nic_{key}_bridge", "").strip()
+        vlan = post.get(f"nic_{key}_vlan", "").strip()
+        if not bridge:
+            continue
+        parsed = _parse_net_value(fresh[key])
+        net = f"{parsed['model']}={parsed['mac']}" if parsed["mac"] else parsed["model"]
+        net += f",bridge={bridge}"
+        if vlan:
+            net += f",tag={vlan}"
+        if parsed["firewall"]:
+            net += ",firewall=1"
+        if net != str(fresh[key]):
+            updates[key] = net
+
+    new_bridge = post.get("newnic_bridge", "").strip()
+    if new_bridge:
+        net = f"virtio,bridge={new_bridge}"
+        new_vlan = post.get("newnic_vlan", "").strip()
+        if new_vlan:
+            net += f",tag={new_vlan}"
+        updates[f"net{_next_device_index(fresh, 'net')}"] = net
+
+    cd_key = post.get("cdrom_key", "").strip()
+    if cd_key:
+        iso = post.get("cdrom_iso", "").strip()
+        value = f"{iso},media=cdrom" if iso else "none,media=cdrom"
+        if value != str(fresh.get(cd_key, "") or ""):
+            updates[cd_key] = value
+
+    if not (updates or delete or resizes):
+        return "No changes to save."
+
+    try:
+        if updates or delete:
+            client.set_guest_config(
+                node=node,
+                object_type=detail.object_type,
+                vmid=detail.vmid,
+                updates=updates,
+                delete=delete,
+                digest=fresh.get("digest"),
+            )
+        for disk, size in resizes:
+            client.put(
+                f"nodes/{quote(node, safe='')}/qemu/{detail.vmid}/resize",
+                data={"disk": disk, "size": size},
+            )
+    except ProxmoxAPIError as exc:
+        if "403" in str(exc):
+            return "Proxmox denied the change (403) - the token lacks a required VM.Config.* privilege."
+        return f"Proxmox rejected the change: {exc}"
+
+    _audit_guest(
+        request,
+        detail,
+        "guest.hardware.updated",
+        {"updated": list(updates.keys()), "removed": delete, "resized": [d for d, _ in resizes]},
+    )
+    return None
+
+
+@app_login_required
+def guest_edit(request, object_type: str, vmid: int):
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    if not settings.VM_WRITE_ENABLED:
+        messages.error(request, "VM/CT editing is disabled (VM_WRITE_ENABLED is off).")
+        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+
+    detail = _resolve_guest_detail(object_type, vmid)
+    if not detail.found:
+        raise Http404("Guest not found")
+
+    name_key = "name" if object_type == ProxmoxInventory.ObjectType.VM else "hostname"
+    config = detail.config
+    section = request.POST.get("section") if request.method == "POST" else request.GET.get("section")
+    if section not in ("options", "hardware", "notes", "tags"):
+        section = "options"
+
+    if request.method == "POST":
+        result = _apply_guest_edit(request, detail, name_key)
+        if result is True:
+            return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+        messages.error(request, result)
+        form_values = {
+            "name": request.POST.get("name", ""),
+            "description": request.POST.get("description", ""),
+            "onboot": request.POST.get("onboot") == "on",
+            "tags": request.POST.get("tags", ""),
+            "cores": request.POST.get("cores", ""),
+            "sockets": request.POST.get("sockets", ""),
+            "memory": request.POST.get("memory", ""),
+            "swap": request.POST.get("swap", ""),
+        }
+    else:
+        form_values = {
+            "name": str(config.get(name_key, "") or ""),
+            "description": str(config.get("description", "") or ""),
+            "onboot": str(config.get("onboot", "0")) in ("1", "True", "true"),
+            "tags": " ".join(parse_guest_tags(config)),
+            "cores": str(config.get("cores", "") or ""),
+            "sockets": str(config.get("sockets", "") or ""),
+            "memory": str(config.get("memory", "") or ""),
+            "swap": str(config.get("swap", "") or ""),
+        }
+
+    context = {
+        **navigation_context("vms"),
+        "guest": detail,
+        "guest_identity": guest_identity(object_type, vmid, detail.name),
+        "name_key_label": "Name" if object_type == ProxmoxInventory.ObjectType.VM else "Hostname",
+        "section": section,
+        "is_vm": object_type == ProxmoxInventory.ObjectType.VM,
+        "form_values": form_values,
+    }
+    return render(request, "core/guest_edit.html", context)
+
+
+def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
+    node = detail.node
+    if not node:
+        return "Could not resolve the guest's current node."
+
+    client = None
+    fresh: dict = {}
+    for candidate in configured_clients():
+        try:
+            fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
+            client = candidate
+            break
+        except ProxmoxAPIError:
+            continue
+    if client is None:
+        return "Could not read the current guest config from Proxmox."
+
+    lock = fresh.get("lock")
+    if lock:
+        return f"Guest is locked by another Proxmox operation ({lock}); edit aborted."
+
+    section = request.POST.get("section", "options")
+    updates: dict[str, str] = {}
+    delete: list[str] = []
+    changed: list[str] = []
+
+    if section == "hardware":
+        if detail.object_type == ProxmoxInventory.ObjectType.VM:
+            fields = [("cores", "cores"), ("sockets", "sockets"), ("memory", "memory")]
+        else:
+            fields = [("cores", "cores"), ("memory", "memory"), ("swap", "swap")]
+        for form_field, key in fields:
+            raw = request.POST.get(form_field, "").strip()
+            if raw == "":
+                continue
+            if not raw.isdigit() or (key != "swap" and int(raw) <= 0):
+                return f"{form_field.capitalize()} must be a positive whole number."
+            if raw != str(fresh.get(key, "") or ""):
+                updates[key] = raw
+                changed.append(key)
+    if section == "notes":
+        new_desc = request.POST.get("description", "").replace("\r\n", "\n").strip()
+        cur_desc = str(fresh.get("description", "") or "")
+        if new_desc != cur_desc:
+            if new_desc:
+                updates["description"] = new_desc
+            else:
+                delete.append("description")
+            changed.append("description")
+
+    if section == "tags":
+        new_tags = ";".join(t for t in re.split(r"[;,\s]+", request.POST.get("tags", "").strip()) if t)
+        cur_tags = ";".join(t for t in re.split(r"[;,\s]+", str(fresh.get("tags", "") or "").strip()) if t)
+        if new_tags != cur_tags:
+            if new_tags:
+                updates["tags"] = new_tags
+            else:
+                delete.append("tags")
+            changed.append("tags")
+
+    if section == "options":
+        new_name = request.POST.get("name", "").strip()
+        cur_name = str(fresh.get(name_key, "") or "")
+        if new_name != cur_name:
+            if new_name:
+                updates[name_key] = new_name
+            else:
+                delete.append(name_key)
+            changed.append(name_key)
+
+        new_onboot = "1" if request.POST.get("onboot") == "on" else "0"
+        cur_onboot = "1" if str(fresh.get("onboot", "0")) in ("1", "True", "true") else "0"
+        if new_onboot != cur_onboot:
+            updates["onboot"] = new_onboot
+            changed.append("onboot")
+
+    if not changed:
+        return "No changes to save."
+
+    try:
+        client.set_guest_config(
+            node=node,
+            object_type=detail.object_type,
+            vmid=detail.vmid,
+            updates=updates,
+            delete=delete,
+            digest=fresh.get("digest"),
+        )
+    except ProxmoxAPIError as exc:
+        if "403" in str(exc):
+            return "Proxmox denied the change (403) - the API token lacks the required VM.Config.* privilege."
+        return f"Proxmox rejected the change: {exc}"
+
+    AuditEvent.objects.create(
+        user=request.user if request.user.is_authenticated else None,
+        username=request.user.get_username() if request.user.is_authenticated else "system",
+        action="guest.config.updated",
+        object_type="guest",
+        object_id=f"{detail.object_type}:{detail.vmid}",
+        outcome="success",
+        details={"fields": changed, "node": node, "vmid": detail.vmid, "target_type": detail.object_type, "name": detail.name},
+    )
+    return True
+
+
+CONFIG_SECTIONS = [
+    ("General", ["name", "hostname", "ostype", "arch", "bios", "machine", "boot", "onboot", "startup", "agent", "tablet", "protection", "hotplug"]),
+    ("Processors", ["cores", "sockets", "vcpus", "cpu", "numa", "cpuunits", "cpulimit", "affinity"]),
+    ("Memory", ["memory", "balloon", "shares", "swap"]),
+]
+CONFIG_HIDE = {"digest", "description", "tags", "meta", "smbios1", "vmgenid"}
+
+
+def _guest_config_sections(config: dict) -> list[dict]:
+    shown: set[str] = set()
+    sections: list[dict] = []
+    for title, keys in CONFIG_SECTIONS:
+        rows = [{"key": key, "value": config[key]} for key in keys if key in config]
+        for row in rows:
+            shown.add(row["key"])
+        if rows:
+            sections.append({"title": title, "rows": rows})
+
+    disk_rows = [{"key": key, "value": config[key]} for key in sorted(config) if DISK_BUS_RE.match(key)]
+    shown.update(row["key"] for row in disk_rows)
+    if disk_rows:
+        sections.append({"title": "Disks", "rows": disk_rows})
+
+    net_rows = [{"key": key, "value": config[key]} for key in sorted(config) if re.match(r"^net\d+$", key)]
+    shown.update(row["key"] for row in net_rows)
+    if net_rows:
+        sections.append({"title": "Network", "rows": net_rows})
+
+    other = [
+        {"key": key, "value": config[key]}
+        for key in sorted(config)
+        if key not in shown and key not in CONFIG_HIDE
+    ]
+    if other:
+        sections.append({"title": "Options", "rows": other})
+    return sections
+
+
+def _fmt_bytes(value: float) -> str:
+    number = float(value or 0)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if number < 1024 or unit == "TiB":
+            return f"{int(number)} B" if unit == "B" else f"{number:.1f} {unit}"
+        number /= 1024
+    return f"{number:.1f} TiB"
+
+
+def _rrd_chart(points, keys, *, to_value, fmt, axis_max=None, width=340, height=90):
+    """Build an auto-scaled SVG chart (line + area) for one or more rrddata
+    series. fmt is 'pct' | 'bytes' | 'rate'."""
+    series_values = []
+    global_max = 0.0
+    for key in keys:
+        values = [to_value(point.get(key)) for point in points]
+        series_values.append(values)
+        for value in values:
+            if value and value > global_max:
+                global_max = value
+    axis = axis_max if axis_max else max(global_max * 1.15, 1e-9)
+
+    series = []
+    for values in series_values:
+        count = len(values)
+        step = width / (count - 1) if count > 1 else width
+        coords = []
+        for index, value in enumerate(values):
+            y = height - (min(max(value, 0.0), axis) / axis) * height if axis else height
+            coords.append(f"{index * step:.1f},{y:.1f}")
+        line = " ".join(coords)
+        area = f"0,{height} {line} {width:.1f},{height}" if coords else ""
+        series.append({"line": line, "area": area})
+
+    if fmt == "pct":
+        label = f"{axis:.1f}%"
+    elif fmt == "rate":
+        label = _fmt_bytes(axis) + "/s"
+    else:
+        label = _fmt_bytes(axis)
+    return {"series": series, "axis_max_label": label, "width": width, "height": height}
+
+
+@app_login_required
+def guest_configure(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    actions = list(
+        ScheduledAction.objects.filter(target_type=object_type, target_vmid=vmid).order_by("-enabled", "next_run_at", "name")
+    )
+    for action in actions:
+        action.display_schedule = _scheduled_action_schedule_label(action)
+        action.display_status_class = _scheduled_action_status_class(action.last_status)
+    context = _guest_tab_context(detail, "configure")
+    context["config_sections"] = _guest_config_sections(detail.config)
+    context["scheduled_actions"] = actions
+    context["scheduled_task_create_url"] = (
+        f"{reverse('core:scheduled_task_create')}?{urlencode({'target': f'{object_type}:{vmid}'})}"
+    )
+    return render(request, "core/guest_configure.html", context)
+
+
+@app_login_required
+def guest_datastores(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    disks, _cdroms = guest_disks(detail.config, detail.node, detail.vmid)
+    mounts = {m.storage_id: m for m in StorageMount.objects.all()}
+    by_storage: dict[str, dict] = {}
+    for disk in disks:
+        entry = by_storage.setdefault(
+            disk["storage_id"],
+            {
+                "storage_id": disk["storage_id"],
+                "mounted": disk["mounted"],
+                "url": disk["url"],
+                "display_name": mounts[disk["storage_id"]].display_name if disk["storage_id"] in mounts else disk["storage_id"],
+                "disks": [],
+            },
+        )
+        entry["disks"].append(disk)
+    context = _guest_tab_context(detail, "datastores")
+    context["datastores"] = list(by_storage.values())
+    return render(request, "core/guest_datastores.html", context)
+
+
+@app_login_required
+def guest_networks_view(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    context = _guest_tab_context(detail, "networks")
+    context["nets"] = guest_networks(detail.config)
+    return render(request, "core/guest_networks.html", context)
+
+
+@app_login_required
+def guest_snapshots(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    data, error = _guest_api_get(detail, "snapshot")
+    entries = []
+    if isinstance(data, list):
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            snaptime = entry.get("snaptime")
+            entries.append(
+                {
+                    "name": entry.get("name", ""),
+                    "description": entry.get("description", ""),
+                    "parent": entry.get("parent", "") or "",
+                    "snaptime": datetime.fromtimestamp(int(snaptime), dt_timezone.utc) if snaptime else None,
+                    "vmstate": bool(entry.get("vmstate")),
+                    "is_current": entry.get("name") == "current",
+                }
+            )
+
+    # Build the snapshot tree from the parent links and flatten it depth-first.
+    by_name = {item["name"]: item for item in entries}
+    children: dict[str, list] = {}
+    roots = []
+    for item in entries:
+        parent = item["parent"]
+        if parent and parent in by_name:
+            children.setdefault(parent, []).append(item)
+        else:
+            roots.append(item)
+
+    def _sort_key(item):
+        return item["snaptime"] or datetime.min.replace(tzinfo=dt_timezone.utc)
+
+    ordered = []
+
+    def _walk(node, depth):
+        ordered.append({**node, "depth": depth, "indent": depth * 22})
+        for child in sorted(children.get(node["name"], []), key=_sort_key):
+            _walk(child, depth + 1)
+
+    for root in sorted(roots, key=_sort_key):
+        _walk(root, 0)
+
+    context = _guest_tab_context(detail, "snapshots")
+    context.update(
+        {
+            "snapshot_tree": ordered,
+            "snapshot_count": sum(1 for item in entries if not item["is_current"]),
+            "snapshot_error": error,
+        }
+    )
+    return render(request, "core/guest_snapshots.html", context)
+
+
+@app_login_required
+def guest_monitor(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    timeframe = request.GET.get("timeframe", "hour")
+    if timeframe not in {"hour", "day", "week", "month", "year"}:
+        timeframe = "hour"
+    data, error = _guest_api_get(detail, f"rrddata?timeframe={quote(timeframe)}")
+    points = data if isinstance(data, list) else []
+    last = points[-1] if points else {}
+    maxmem = max((int(p.get("maxmem") or 0) for p in points), default=0) or 1
+    cpu_last = float(last.get("cpu") or 0) * 100
+    mem_last_bytes = int(last.get("mem") or 0)
+
+    charts = []
+    if points:
+        charts = [
+            {
+                "title": "CPU",
+                "current": f"{cpu_last:.1f}%",
+                "legend": [],
+                "chart": _rrd_chart(points, ["cpu"], to_value=lambda v: float(v or 0) * 100, fmt="pct"),
+            },
+            {
+                "title": "Memory",
+                "current": f"{_fmt_bytes(mem_last_bytes)} / {_fmt_bytes(maxmem)}",
+                "legend": [],
+                "chart": _rrd_chart(points, ["mem"], to_value=lambda v: float(v or 0), fmt="bytes", axis_max=maxmem),
+            },
+            {
+                "title": "Network",
+                "current": "",
+                "legend": [{"label": "In", "cls": "s1"}, {"label": "Out", "cls": "s2"}],
+                "chart": _rrd_chart(points, ["netin", "netout"], to_value=lambda v: float(v or 0), fmt="rate"),
+            },
+            {
+                "title": "Disk IO",
+                "current": "",
+                "legend": [{"label": "Read", "cls": "s1"}, {"label": "Write", "cls": "s2"}],
+                "chart": _rrd_chart(points, ["diskread", "diskwrite"], to_value=lambda v: float(v or 0), fmt="rate"),
+            },
+        ]
+
+    context = _guest_tab_context(detail, "monitor")
+    context.update(
+        {
+            "timeframe": timeframe,
+            "timeframes": ["hour", "day", "week", "month"],
+            "monitor_error": error,
+            "has_rrd": bool(points),
+            "charts": charts,
+        }
+    )
+    return render(request, "core/guest_monitor.html", context)
+
+
+@app_login_required
+def guest_permissions(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    acl = None
+    error = ""
+    for client in configured_clients():
+        try:
+            acl = client.get("access/acl")
+            error = ""
+            break
+        except ProxmoxAPIError as exc:
+            error = str(exc)
+    guest_path = f"/vms/{vmid}"
+    entries = []
+    if isinstance(acl, list):
+        for entry in acl:
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path", ""))
+            propagate = str(entry.get("propagate", "1")) in ("1", "True", "true")
+            applies = path == guest_path or (path in ("/", "/vms") and propagate)
+            if not applies:
+                continue
+            entries.append(
+                {
+                    "path": path,
+                    "type": entry.get("type", ""),
+                    "ugid": entry.get("ugid", ""),
+                    "roleid": entry.get("roleid", ""),
+                    "propagate": propagate,
+                    "inherited": path != guest_path,
+                }
+            )
+    entries.sort(key=lambda item: (not item["inherited"], item["ugid"]))
+    context = _guest_tab_context(detail, "permissions")
+    context.update({"acl_entries": entries, "permissions_error": error, "guest_path": guest_path})
+    return render(request, "core/guest_permissions.html", context)
+
+
+@app_login_required
+def guest_agent_view(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    agent_enabled = bool(detail.config.get("agent"))
+    osinfo = None
+    interfaces = []
+    hostname = ""
+    filesystems = []
+    agent_error = ""
+    if agent_enabled and detail.object_type == ProxmoxInventory.ObjectType.VM:
+        host_data, _host_err = _guest_api_get(detail, "agent/get-host-name")
+        if isinstance(host_data, dict):
+            result = host_data.get("result") if isinstance(host_data.get("result"), dict) else host_data
+            hostname = result.get("host-name", "") if isinstance(result, dict) else ""
+        fs_data, _fs_err = _guest_api_get(detail, "agent/get-fsinfo")
+        if isinstance(fs_data, dict):
+            for entry in fs_data.get("result") or []:
+                if not isinstance(entry, dict):
+                    continue
+                filesystems.append(
+                    {
+                        "name": entry.get("name", ""),
+                        "mountpoint": entry.get("mountpoint", ""),
+                        "type": entry.get("type", ""),
+                        "used": entry.get("used-bytes"),
+                        "total": entry.get("total-bytes"),
+                    }
+                )
+        os_data, os_err = _guest_api_get(detail, "agent/get-osinfo")
+        if isinstance(os_data, dict):
+            result = os_data.get("result") if isinstance(os_data.get("result"), dict) else os_data
+            osinfo = [
+                {"label": "Name", "value": result.get("pretty-name") or result.get("name")},
+                {"label": "Version", "value": result.get("version")},
+                {"label": "Kernel", "value": result.get("kernel-release")},
+                {"label": "Arch", "value": result.get("machine")},
+            ]
+            osinfo = [row for row in osinfo if row["value"]]
+        net_data, net_err = _guest_api_get(detail, "agent/network-get-interfaces")
+        if isinstance(net_data, dict):
+            result = net_data.get("result")
+            if isinstance(result, list):
+                for iface in result:
+                    if not isinstance(iface, dict):
+                        continue
+                    addrs = [
+                        a.get("ip-address")
+                        for a in iface.get("ip-addresses", []) or []
+                        if isinstance(a, dict) and a.get("ip-address")
+                    ]
+                    interfaces.append(
+                        {
+                            "name": iface.get("name", ""),
+                            "mac": iface.get("hardware-address", ""),
+                            "addresses": addrs,
+                        }
+                    )
+        agent_error = os_err or net_err or ""
+    context = _guest_tab_context(detail, "guest_agent")
+    context.update(
+        {
+            "agent_enabled": agent_enabled,
+            "agent_osinfo": osinfo,
+            "agent_hostname": hostname,
+            "agent_interfaces": interfaces,
+            "agent_filesystems": filesystems,
+            "agent_error": agent_error,
+        }
+    )
+    return render(request, "core/guest_agent.html", context)
+
+
+@app_login_required
+def guest_cloudinit(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    config = detail.config
+    has_ci = any(str(k).startswith("ci") or str(k).startswith("ipconfig") for k in config) or any(
+        "cloudinit" in str(v) for v in config.values()
+    )
+    rows = []
+    for key in ("ciuser", "citype", "ciupgrade", "nameserver", "searchdomain"):
+        if config.get(key):
+            rows.append({"label": key, "value": config[key]})
+    ipconfigs = [{"label": k, "value": config[k]} for k in sorted(config) if str(k).startswith("ipconfig")]
+    has_password = bool(config.get("cipassword"))
+    has_sshkeys = bool(config.get("sshkeys"))
+    context = _guest_tab_context(detail, "cloudinit")
+    context.update(
+        {
+            "has_cloudinit": has_ci,
+            "ci_rows": rows,
+            "ipconfigs": ipconfigs,
+            "has_ci_password": has_password,
+            "has_ci_sshkeys": has_sshkeys,
+            "ci_values": {
+                "ciuser": config.get("ciuser", ""),
+                "nameserver": config.get("nameserver", ""),
+                "searchdomain": config.get("searchdomain", ""),
+                "ipconfig0": config.get("ipconfig0", ""),
+            },
+        }
+    )
+    return render(request, "core/guest_cloudinit.html", context)
+
+
+@app_login_required
+def guest_backup(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    backups = []
+    backup_storages = []
+    error = ""
+    node = detail.node
+    if node:
+        client = configured_clients()[0] if configured_clients() else None
+        if client:
+            try:
+                storages = client.get(f"nodes/{quote(node, safe='')}/storage")
+            except ProxmoxAPIError as exc:
+                storages, error = [], str(exc)
+            for storage in storages if isinstance(storages, list) else []:
+                if "backup" not in str(storage.get("content", "")).split(","):
+                    continue
+                sid = storage.get("storage")
+                backup_storages.append(sid)
+                try:
+                    content = client.get(
+                        f"nodes/{quote(node, safe='')}/storage/{quote(sid, safe='')}/content?content=backup&vmid={vmid}"
+                    )
+                except ProxmoxAPIError:
+                    continue
+                for entry in content if isinstance(content, list) else []:
+                    backups.append(
+                        {
+                            "volid": entry.get("volid", ""),
+                            "size": entry.get("size"),
+                            "ctime": datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc) if entry.get("ctime") else None,
+                            "notes": entry.get("notes", ""),
+                            "storage": sid,
+                        }
+                    )
+    backups.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
+
+    jobs = []
+    try:
+        raw_jobs = configured_clients()[0].get("cluster/backup") if configured_clients() else []
+        for job in raw_jobs if isinstance(raw_jobs, list) else []:
+            if _backup_job_covers(job, vmid):
+                jobs.append(
+                    {
+                        "id": job.get("id", ""),
+                        "schedule": job.get("schedule", ""),
+                        "storage": job.get("storage", ""),
+                        "enabled": str(job.get("enabled", "1")) in ("1", "True", "true"),
+                        "selection": job.get("all") and "all guests" or job.get("vmid") or job.get("pool") or "-",
+                    }
+                )
+    except ProxmoxAPIError:
+        pass
+
+    context = _guest_tab_context(detail, "backup")
+    context.update({"backups": backups, "backup_jobs": jobs, "backup_error": error, "backup_storages": backup_storages})
+    return render(request, "core/guest_backup.html", context)
+
+
+def _backup_job_covers(job: dict, vmid: int) -> bool:
+    if str(job.get("all", "0")) in ("1", "True", "true"):
+        return True
+    vmids = str(job.get("vmid", ""))
+    return str(vmid) in [v.strip() for v in vmids.split(",") if v.strip()]
+
+
+@app_login_required
+def guest_replication(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    jobs = []
+    error = ""
+    try:
+        raw = configured_clients()[0].get("cluster/replication") if configured_clients() else []
+        for job in raw if isinstance(raw, list) else []:
+            if str(job.get("guest", "")) == str(vmid) or str(job.get("id", "")).startswith(f"{vmid}-"):
+                jobs.append(
+                    {
+                        "id": job.get("id", ""),
+                        "target": job.get("target", ""),
+                        "schedule": job.get("schedule", ""),
+                        "rate": job.get("rate", ""),
+                        "disabled": str(job.get("disable", "0")) in ("1", "True", "true"),
+                        "comment": job.get("comment", ""),
+                    }
+                )
+    except ProxmoxAPIError as exc:
+        error = str(exc)
+    target_nodes = []
+    if configured_clients():
+        target_nodes = [n for n in configured_clients()[0].node_names(fallback="") if n != detail.node]
+    context = _guest_tab_context(detail, "replication")
+    context.update({"replication_jobs": jobs, "replication_error": error, "target_nodes": target_nodes})
+    return render(request, "core/guest_replication.html", context)
+
+
+@app_login_required
+def guest_firewall(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    opts, opts_err = _guest_api_get(detail, "firewall/options")
+    rules, rules_err = _guest_api_get(detail, "firewall/rules")
+    option_rows = []
+    if isinstance(opts, dict):
+        for key in ("enable", "dhcp", "macfilter", "ndp", "ipfilter", "policy_in", "policy_out", "log_level_in", "log_level_out"):
+            if key in opts:
+                option_rows.append({"label": key, "value": opts[key]})
+    rule_list = []
+    if isinstance(rules, list):
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            rule_list.append(
+                {
+                    "pos": rule.get("pos"),
+                    "type": rule.get("type", ""),
+                    "action": rule.get("action", ""),
+                    "enable": str(rule.get("enable", "1")) in ("1", "True", "true"),
+                    "source": rule.get("source", ""),
+                    "dest": rule.get("dest", ""),
+                    "proto": rule.get("proto", ""),
+                    "dport": rule.get("dport", ""),
+                    "comment": rule.get("comment", ""),
+                }
+            )
+    opts_dict = opts if isinstance(opts, dict) else {}
+    context = _guest_tab_context(detail, "firewall")
+    context.update(
+        {
+            "fw_enabled": bool(opts_dict.get("enable")),
+            "fw_options": option_rows,
+            "fw_policy_in": opts_dict.get("policy_in", "DROP"),
+            "fw_policy_out": opts_dict.get("policy_out", "ACCEPT"),
+            "fw_rules": rule_list,
+            "fw_error": opts_err or rules_err or "",
+        }
+    )
+    return render(request, "core/guest_firewall.html", context)
+
+
+def _require_guest(object_type: str, vmid: int) -> SimpleNamespace:
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    detail = _resolve_guest_detail(object_type, vmid)
+    if not detail.found:
+        raise Http404("Guest not found")
+    return detail
+
+
+def _guest_kind(detail: SimpleNamespace) -> str:
+    return "qemu" if detail.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
+
+
+def _guest_post(detail: SimpleNamespace, subpath: str, data: dict | None = None):
+    if not detail.node:
+        return None, "The guest's node could not be resolved."
+    err = "No Proxmox endpoint could reach this guest."
+    for client in configured_clients():
+        try:
+            return client.post(
+                f"nodes/{quote(detail.node, safe='')}/{_guest_kind(detail)}/{detail.vmid}/{subpath}",
+                data=data or {},
+            ), None
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return None, err
+
+
+def _guest_delete(detail: SimpleNamespace, subpath: str):
+    if not detail.node:
+        return None, "The guest's node could not be resolved."
+    err = "No Proxmox endpoint could reach this guest."
+    for client in configured_clients():
+        try:
+            return client.delete(
+                f"nodes/{quote(detail.node, safe='')}/{_guest_kind(detail)}/{detail.vmid}/{subpath}"
+            ), None
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return None, err
+
+
+def _guest_put(detail: SimpleNamespace, subpath: str, data: dict | None = None):
+    if not detail.node:
+        return None, "The guest's node could not be resolved."
+    err = "No Proxmox endpoint could reach this guest."
+    for client in configured_clients():
+        try:
+            return client.put(
+                f"nodes/{quote(detail.node, safe='')}/{_guest_kind(detail)}/{detail.vmid}/{subpath}",
+                data=data or {},
+            ), None
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return None, err
+
+
+def _write_result(request, detail, redirect_name, tab_key, err, ok_msg, audit_action, audit_details=None):
+    if err:
+        if "403" in err:
+            messages.error(request, "Proxmox denied the change (403): the token lacks the required privilege.")
+        else:
+            messages.error(request, f"Failed: {err}")
+    else:
+        _audit_guest(request, detail, audit_action, audit_details)
+    return redirect(redirect_name, object_type=detail.object_type, vmid=detail.vmid)
+
+
+@require_POST
+@app_login_required
+def guest_firewall_options(request, object_type, vmid):
+    detail = _require_guest(object_type, vmid)
+    data = {"enable": "1" if request.POST.get("enable") == "on" else "0"}
+    for key in ("policy_in", "policy_out"):
+        val = request.POST.get(key, "").strip()
+        if val:
+            data[key] = val
+    _d, err = _guest_put(detail, "firewall/options", data)
+    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall options updated.", "guest.firewall.options")
+
+
+@require_POST
+@app_login_required
+def guest_firewall_rule_add(request, object_type, vmid):
+    detail = _require_guest(object_type, vmid)
+    data = {
+        "type": request.POST.get("type", "in"),
+        "action": request.POST.get("action", "ACCEPT"),
+        "enable": "1",
+    }
+    for key in ("source", "dest", "proto", "dport", "sport", "comment", "macro"):
+        val = request.POST.get(key, "").strip()
+        if val:
+            data[key] = val
+    _d, err = _guest_post(detail, "firewall/rules", data)
+    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall rule added.", "guest.firewall.rule_add")
+
+
+@require_POST
+@app_login_required
+def guest_firewall_rule_delete(request, object_type, vmid, pos):
+    detail = _require_guest(object_type, vmid)
+    _d, err = _guest_delete(detail, f"firewall/rules/{pos}")
+    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall rule deleted.", "guest.firewall.rule_delete", {"pos": pos})
+
+
+@require_POST
+@app_login_required
+def guest_firewall_rule_toggle(request, object_type, vmid, pos):
+    detail = _require_guest(object_type, vmid)
+    enable = "1" if request.POST.get("enable") == "1" else "0"
+    _d, err = _guest_put(detail, f"firewall/rules/{pos}", {"enable": enable})
+    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall rule updated.", "guest.firewall.rule_toggle", {"pos": pos, "enable": enable})
+
+
+@require_POST
+@app_login_required
+def guest_cloudinit_edit(request, object_type, vmid):
+    detail = _require_guest(object_type, vmid)
+    if not settings.VM_WRITE_ENABLED:
+        messages.error(request, "Editing is disabled.")
+        return redirect("core:guest_cloudinit", object_type=object_type, vmid=vmid)
+    updates, delete = {}, []
+    for field in ("ciuser", "nameserver", "searchdomain", "ipconfig0"):
+        val = request.POST.get(field, "").strip()
+        if val:
+            updates[field] = val
+        else:
+            delete.append(field)
+    password = request.POST.get("cipassword", "")
+    if password:
+        updates["cipassword"] = password
+    sshkeys = request.POST.get("sshkeys", "").strip()
+    if sshkeys:
+        updates["sshkeys"] = quote(sshkeys, safe="")
+    node = detail.node
+    err = ""
+    try:
+        client = configured_clients()[0]
+        fresh = client.guest_config(node=node, object_type=object_type, vmid=vmid)
+        # only delete keys that currently exist
+        delete = [k for k in delete if k in fresh]
+        client.set_guest_config(node=node, object_type=object_type, vmid=vmid, updates=updates, delete=delete, digest=fresh.get("digest"))
+    except (ProxmoxAPIError, IndexError) as exc:
+        err = str(exc)
+    return _write_result(request, detail, "core:guest_cloudinit", "cloudinit", err, "Cloud-Init updated.", "guest.cloudinit.update")
+
+
+@require_POST
+@app_login_required
+def guest_backup_now(request, object_type, vmid):
+    detail = _require_guest(object_type, vmid)
+    storage = request.POST.get("storage", "").strip()
+    if not storage:
+        messages.error(request, "Select a backup storage.")
+        return redirect("core:guest_backup", object_type=object_type, vmid=vmid)
+    body = {
+        "vmid": vmid,
+        "storage": storage,
+        "mode": request.POST.get("mode", "snapshot"),
+        "compress": request.POST.get("compress", "zstd"),
+        "remove": "0",
+    }
+    err = ""
+    for client in configured_clients():
+        try:
+            client.post(f"nodes/{quote(detail.node, safe='')}/vzdump", data=body)
+            err = ""
+            break
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return _write_result(request, detail, "core:guest_backup", "backup", err, "Backup started.", "guest.backup.run", {"storage": storage})
+
+
+@require_POST
+@app_login_required
+def guest_backup_delete(request, object_type, vmid):
+    detail = _require_guest(object_type, vmid)
+    volid = request.POST.get("volid", "").strip()
+    storage = request.POST.get("storage", "").strip()
+    if not volid or not storage:
+        messages.error(request, "Missing backup reference.")
+        return redirect("core:guest_backup", object_type=object_type, vmid=vmid)
+    err = ""
+    for client in configured_clients():
+        try:
+            client.delete(f"nodes/{quote(detail.node, safe='')}/storage/{quote(storage, safe='')}/content/{quote(volid, safe='')}")
+            err = ""
+            break
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return _write_result(request, detail, "core:guest_backup", "backup", err, "Backup archive deleted.", "guest.backup.delete", {"volid": volid})
+
+
+@require_POST
+@app_login_required
+def guest_replication_create(request, object_type, vmid):
+    detail = _require_guest(object_type, vmid)
+    target = request.POST.get("target", "").strip()
+    if not target:
+        messages.error(request, "Select a target node.")
+        return redirect("core:guest_replication", object_type=object_type, vmid=vmid)
+    body = {"id": f"{vmid}-0", "type": "local", "target": target}
+    schedule = request.POST.get("schedule", "").strip()
+    if schedule:
+        body["schedule"] = schedule
+    err = ""
+    for client in configured_clients():
+        try:
+            client.post("cluster/replication", data=body)
+            err = ""
+            break
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return _write_result(request, detail, "core:guest_replication", "replication", err, "Replication job created.", "guest.replication.create", {"target": target})
+
+
+@require_POST
+@app_login_required
+def guest_replication_delete(request, object_type, vmid):
+    detail = _require_guest(object_type, vmid)
+    job_id = request.POST.get("job_id", "").strip()
+    if not job_id:
+        messages.error(request, "Missing job id.")
+        return redirect("core:guest_replication", object_type=object_type, vmid=vmid)
+    err = ""
+    for client in configured_clients():
+        try:
+            client.delete(f"cluster/replication/{quote(job_id, safe='')}")
+            err = ""
+            break
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return _write_result(request, detail, "core:guest_replication", "replication", err, "Replication job deleted.", "guest.replication.delete", {"job_id": job_id})
+
+
+def _audit_guest(request, detail: SimpleNamespace, action: str, details: dict | None = None) -> None:
+    AuditEvent.objects.create(
+        user=request.user if request.user.is_authenticated else None,
+        username=request.user.get_username() if request.user.is_authenticated else "system",
+        action=action,
+        object_type="guest",
+        object_id=f"{detail.object_type}:{detail.vmid}",
+        outcome="success",
+        details={"node": detail.node, "vmid": detail.vmid, "target_type": detail.object_type, "name": detail.name, **(details or {})},
+    )
+
+
+GUEST_POWER_ACTIONS = {"start", "shutdown", "reboot", "stop"}
+
+
+@require_POST
+@app_login_required
+def guest_power(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    action = request.POST.get("action", "")
+    if action not in GUEST_POWER_ACTIONS:
+        messages.error(request, "Unknown power action.")
+        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+    _data, err = _guest_post(detail, f"status/{action}")
+    if err:
+        if "403" in err:
+            messages.error(request, "Proxmox denied the power action (403) - the token needs VM.PowerMgmt.")
+        else:
+            messages.error(request, f"Power action failed: {err}")
+    else:
+        _audit_guest(request, detail, f"guest.power.{action}")
+    return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+
+
+@require_POST
+@app_login_required
+def guest_snapshot_create(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    name = request.POST.get("snapname", "").strip()
+    if not name:
+        messages.error(request, "Snapshot name is required.")
+        return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+    data = {"snapname": name}
+    description = request.POST.get("description", "").strip()
+    if description:
+        data["description"] = description
+    if request.POST.get("vmstate") == "on":
+        data["vmstate"] = 1
+    _data, err = _guest_post(detail, "snapshot", data)
+    if err:
+        messages.error(request, _snapshot_error(err))
+    else:
+        _audit_guest(request, detail, "guest.snapshot.create", {"snapshot": name})
+    return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+
+
+@require_POST
+@app_login_required
+def guest_snapshot_delete(request, object_type: str, vmid: int, snapname: str):
+    detail = _require_guest(object_type, vmid)
+    _data, err = _guest_delete(detail, f"snapshot/{quote(snapname, safe='')}")
+    if err:
+        messages.error(request, _snapshot_error(err))
+    else:
+        _audit_guest(request, detail, "guest.snapshot.delete", {"snapshot": snapname})
+    return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+
+
+@require_POST
+@app_login_required
+def guest_snapshot_rollback(request, object_type: str, vmid: int, snapname: str):
+    detail = _require_guest(object_type, vmid)
+    _data, err = _guest_post(detail, f"snapshot/{quote(snapname, safe='')}/rollback")
+    if err:
+        messages.error(request, _snapshot_error(err))
+    else:
+        _audit_guest(request, detail, "guest.snapshot.rollback", {"snapshot": snapname})
+    return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+
+
+def _snapshot_error(err: str) -> str:
+    if "403" in err:
+        return "Proxmox denied the snapshot operation (403) - the token needs VM.Snapshot (and VM.Snapshot.Rollback for rollback)."
+    return f"Snapshot operation failed: {err}"
+
+
+@app_login_required
+def guest_create(request, object_type: str):
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    if not settings.VM_WRITE_ENABLED:
+        messages.error(request, "VM/CT creation is disabled (VM_WRITE_ENABLED is off).")
+        return redirect("core:vms")
+
+    is_vm = object_type == ProxmoxInventory.ObjectType.VM
+    node_param = request.POST.get("node") if request.method == "POST" else request.GET.get("node")
+    options = create_options(object_type, node_param)
+    if not options.get("available"):
+        messages.error(request, "Could not load creation options from Proxmox (no reachable node).")
+        return redirect("core:vms")
+
+    if request.method == "POST":
+        error = _create_guest(request, object_type, options)
+        if error is None:
+            return redirect("core:vms")
+        messages.error(request, error)
+        form_values = request.POST
+    else:
+        form_values = {
+            "vmid": options.get("nextid", ""),
+            "cores": "1",
+            "sockets": "1",
+            "memory": "2048" if is_vm else "512",
+            "disk_size": "32" if is_vm else "8",
+            "swap": "512",
+            "ip": "dhcp",
+        }
+
+    context = {
+        **navigation_context("vms"),
+        "object_type": object_type,
+        "is_vm": is_vm,
+        "options": options,
+        "form_values": form_values,
+    }
+    return render(request, "core/guest_create.html", context)
+
+
+def _create_guest(request, object_type: str, options: dict):
+    post = request.POST
+    node = post.get("node", "").strip() or options.get("node", "")
+    vmid = post.get("vmid", "").strip()
+    if not vmid.isdigit():
+        return "VMID must be a whole number."
+    disk_storage = post.get("disk_storage", "").strip()
+    if not disk_storage:
+        return "Select a storage for the disk."
+    bridge = post.get("bridge", "").strip()
+
+    common = {
+        "vmid": vmid,
+        "cores": post.get("cores", "1").strip() or "1",
+        "memory": post.get("memory", "512").strip() or "512",
+        "disk_storage": disk_storage,
+        "disk_size": post.get("disk_size", "8").strip() or "8",
+        "bridge": bridge,
+        "vlan": post.get("vlan", "").strip(),
+        "start": post.get("start") == "on",
+    }
+
+    if object_type == ProxmoxInventory.ObjectType.VM:
+        params = {
+            **common,
+            "name": post.get("name", "").strip(),
+            "ostype": post.get("ostype", "l26").strip() or "l26",
+            "sockets": post.get("sockets", "1").strip() or "1",
+            "iso": post.get("iso", "").strip(),
+        }
+        if not bridge:
+            params["bridge"] = ""
+        _data, err = create_vm(node, params)
+    else:
+        hostname = post.get("hostname", "").strip()
+        if not hostname:
+            return "Hostname is required."
+        ostemplate = post.get("ostemplate", "").strip()
+        if not ostemplate:
+            return "Select an OS template."
+        password = post.get("password", "")
+        ssh_keys = post.get("ssh_keys", "").strip()
+        if not password and not ssh_keys:
+            return "Set a root password or an SSH public key for the container."
+        params = {
+            **common,
+            "hostname": hostname,
+            "ostemplate": ostemplate,
+            "swap": post.get("swap", "0").strip() or "0",
+            "password": password,
+            "ssh_keys": ssh_keys,
+            "ip": post.get("ip", "dhcp").strip() or "dhcp",
+        }
+        _data, err = create_ct(node, params)
+
+    if err:
+        if "403" in err:
+            return "Proxmox denied creation (403) - the token needs VM.Allocate + Datastore.AllocateSpace (+ SDN.Use for the NIC)."
+        return f"Creation failed: {err}"
+
+    AuditEvent.objects.create(
+        user=request.user if request.user.is_authenticated else None,
+        username=request.user.get_username() if request.user.is_authenticated else "system",
+        action="guest.create",
+        object_type="guest",
+        object_id=f"{object_type}:{vmid}",
+        outcome="success",
+        details={"node": node, "vmid": vmid, "target_type": object_type, "name": post.get("name") or post.get("hostname") or ""},
+    )
+    return None
+
+
+@app_login_required
+def storage_api_inventory(request, node: str, storage: str):
+    """Read-only Proxmox API view of a storage's full content, for storages
+    pve-helper does not mount (local-lvm, ZFS, ...). No write controls."""
+    highlight_vmid = _int_or_zero(request.GET.get("vmid")) or None
+
+    content: list = []
+    status: dict = {}
+    error = ""
+    found = False
+    for client in configured_clients():
+        node_q = quote(node, safe="")
+        storage_q = quote(storage, safe="")
+        try:
+            data = client.get(f"nodes/{node_q}/storage/{storage_q}/content")
+        except ProxmoxAPIError as exc:
+            error = str(exc)
+            continue
+        content = data if isinstance(data, list) else []
+        found = True
+        try:
+            status_data = client.get(f"nodes/{node_q}/storage/{storage_q}/status")
+            status = status_data if isinstance(status_data, dict) else {}
+        except ProxmoxAPIError:
+            status = {}
+        break
+
+    volumes = []
+    for entry in content:
+        if not isinstance(entry, dict):
+            continue
+        entry_vmid = entry.get("vmid")
+        volumes.append(
+            {
+                "volid": entry.get("volid", ""),
+                "content": entry.get("content", ""),
+                "format": entry.get("format", ""),
+                "size": entry.get("size"),
+                "used": entry.get("used"),
+                "vmid": entry_vmid,
+                "highlight": highlight_vmid is not None and str(entry_vmid) == str(highlight_vmid),
+            }
+        )
+    volumes.sort(key=lambda item: (str(item["vmid"] or ""), item["volid"]))
+
+    context = {
+        **navigation_context("vms"),
+        "node": node,
+        "storage": storage,
+        "volumes": volumes,
+        "status": status,
+        "highlight_vmid": highlight_vmid,
+        "found": found,
+        "error": error,
+    }
+    return render(request, "core/storage_api_inventory.html", context)
+
+
+def _resolve_guest_detail(object_type: str, vmid: int) -> SimpleNamespace:
+    """Resolve a guest to its current node + live status/config.
+
+    Membership/node come from the live cluster inventory; if the API is
+    unreachable, fall back to the latest scan. Never silently pick one guest
+    when the same type+VMID is ambiguous across multiple nodes.
+    """
+    matches = [g for g in fetch_live_guest_inventory() if g.object_type == object_type and g.vmid == vmid]
+    nodes = {g.node for g in matches if g.node}
+    ambiguous = len(nodes) > 1
+    node = next(iter(matches)).node if matches else ""
+    name = matches[0].name if matches else ""
+    status = matches[0].status if matches else ""
+
+    config: dict = {}
+    current: dict = {}
+    live_ok = False
+    if node and not ambiguous:
+        for client in configured_clients():
+            try:
+                current = client.guest_current(node=node, object_type=object_type, vmid=vmid)
+                config = client.guest_config(node=node, object_type=object_type, vmid=vmid)
+                live_ok = True
+                break
+            except ProxmoxAPIError:
+                continue
+
+    if not config:
+        scan = _latest_proxmox_inventory_scan()
+        if scan:
+            obj = ProxmoxInventory.objects.filter(scan_run=scan, object_type=object_type, vmid=vmid).first()
+            if obj:
+                config = obj.config if isinstance(obj.config, dict) else {}
+                node = node or obj.node
+                name = name or obj.name
+                status = status or obj.status
+
+    return SimpleNamespace(
+        object_type=object_type,
+        vmid=vmid,
+        name=name or "",
+        node=node or "",
+        status=str(current.get("status") or status or ""),
+        config=config,
+        current=current,
+        live_ok=live_ok,
+        ambiguous=ambiguous,
+        ambiguous_nodes=sorted(nodes) if ambiguous else [],
+        found=bool(node or config),
+    )
+
+
+def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
+    is_tmpl = detail.object_type == ProxmoxInventory.ObjectType.VM and is_template(detail.config)
+    if is_tmpl:
+        type_label = "Template"
+    elif detail.object_type == ProxmoxInventory.ObjectType.CT:
+        type_label = "CT"
+    else:
+        type_label = "VM"
+    target = f"{detail.object_type}:{detail.vmid}"
+    guest_list, live_available, scan_at = _guest_rows()
+    return {
+        **navigation_context("vms"),
+        "guest": detail,
+        "guest_identity": guest_identity(detail.object_type, detail.vmid, detail.name),
+        "guest_is_template": is_tmpl,
+        "guest_type_label": type_label,
+        "guest_tags": parse_guest_tags(detail.config),
+        "guest_tabs": _guest_tabs(detail, active_tab),
+        "active_guest_tab": active_tab,
+        "guest_write_enabled": settings.VM_WRITE_ENABLED,
+        "guest_list": guest_list,
+        "live_available": live_available,
+        "inventory_scan_at": scan_at,
+        "active_object_type": detail.object_type,
+        "active_vmid": detail.vmid,
+        "schedule_action_url": f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}",
+        "scheduled_actions_url": f"{reverse('core:scheduled_tasks')}?{urlencode({'target': target})}",
+    }
+
+
+def _guest_tabs(detail: SimpleNamespace, active_tab: str) -> list[dict]:
+    args = [detail.object_type, detail.vmid]
+    tabs = [
+        {"key": "summary", "label": "Summary", "url": reverse("core:guest_summary", args=args)},
+        {"key": "monitor", "label": "Monitor", "url": reverse("core:guest_monitor", args=args)},
+        {"key": "configure", "label": "Configure", "url": reverse("core:guest_configure", args=args)},
+        {"key": "permissions", "label": "Permissions", "url": reverse("core:guest_permissions", args=args)},
+        {"key": "datastores", "label": "Datastores", "url": reverse("core:guest_datastores", args=args)},
+        {"key": "networks", "label": "Networks", "url": reverse("core:guest_networks", args=args)},
+        {"key": "snapshots", "label": "Snapshots", "url": reverse("core:guest_snapshots", args=args)},
+        {"key": "guest_agent", "label": "Guest Agent", "url": reverse("core:guest_agent", args=args)},
+        {"key": "cloudinit", "label": "Cloud-Init", "url": reverse("core:guest_cloudinit", args=args)},
+        {"key": "backup", "label": "Backup", "url": reverse("core:guest_backup", args=args)},
+        {"key": "replication", "label": "Replication", "url": reverse("core:guest_replication", args=args)},
+        {"key": "firewall", "label": "Firewall", "url": reverse("core:guest_firewall", args=args)},
+    ]
+    for tab in tabs:
+        tab["enabled"] = True
+        tab["active"] = tab["key"] == active_tab
+    return tabs
+
+
+def _guest_api_get(detail: SimpleNamespace, subpath: str):
+    """GET a guest-scoped Proxmox path (e.g. 'snapshot', 'rrddata?...',
+    'agent/get-osinfo'); returns (data, error_message)."""
+    kind = "qemu" if detail.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
+    if not detail.node:
+        return None, "The guest's node could not be resolved."
+    err = "No Proxmox endpoint could reach this guest."
+    for client in configured_clients():
+        try:
+            return client.get(f"nodes/{quote(detail.node, safe='')}/{kind}/{detail.vmid}/{subpath}"), None
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    return None, err
+
+
+OSTYPE_LABELS = {
+    "l24": "Linux 2.4 Kernel",
+    "l26": "Linux (modern)",
+    "w2k": "Windows 2000",
+    "w2k3": "Windows Server 2003",
+    "w2k8": "Windows Server 2008",
+    "wvista": "Windows Vista",
+    "win7": "Windows 7",
+    "win8": "Windows 8/2012",
+    "win10": "Windows 10/2016",
+    "win11": "Windows 11/2022",
+    "wxp": "Windows XP",
+    "solaris": "Solaris",
+    "other": "Other",
+}
+
+
+def _guest_os_label(config: dict) -> str:
+    ostype = str(config.get("ostype") or "")
+    return OSTYPE_LABELS.get(ostype, ostype or "Unknown")
+
+
+def _guest_agent_summary(detail: SimpleNamespace) -> dict:
+    """Best-effort guest-agent OS name + IPs for the Summary Guest OS card.
+    Only queries when the agent is enabled; degrades silently otherwise."""
+    config = detail.config
+    if detail.object_type != ProxmoxInventory.ObjectType.VM or not config.get("agent"):
+        return {"enabled": False, "running": False, "os_name": "", "hostname": "", "ips": []}
+    os_name = ""
+    hostname = ""
+    ips: list[str] = []
+    os_data, _err = _guest_api_get(detail, "agent/get-osinfo")
+    if isinstance(os_data, dict):
+        result = os_data.get("result") if isinstance(os_data.get("result"), dict) else os_data
+        if isinstance(result, dict):
+            os_name = result.get("pretty-name") or result.get("name") or ""
+    host_data, _err = _guest_api_get(detail, "agent/get-host-name")
+    if isinstance(host_data, dict):
+        result = host_data.get("result") if isinstance(host_data.get("result"), dict) else host_data
+        if isinstance(result, dict):
+            hostname = result.get("host-name", "")
+    net_data, _err = _guest_api_get(detail, "agent/network-get-interfaces")
+    if isinstance(net_data, dict):
+        for iface in net_data.get("result") or []:
+            if not isinstance(iface, dict) or iface.get("name") == "lo":
+                continue
+            for addr in iface.get("ip-addresses") or []:
+                ip = addr.get("ip-address") if isinstance(addr, dict) else None
+                if ip and not ip.startswith("127.") and ip != "::1":
+                    ips.append(ip)
+    return {"enabled": True, "running": bool(os_name or hostname or ips), "os_name": os_name, "hostname": hostname, "ips": ips[:4]}
+
+
+def _guest_vm_details(detail: SimpleNamespace) -> list[dict]:
+    config = detail.config
+    current = detail.current
+    rows: list[dict] = []
+
+    def add(label, value):
+        if value not in (None, "", "-"):
+            rows.append({"label": label, "value": value})
+
+    add("Guest OS", _guest_os_label(config))
+    add("Node", detail.node or "-")
+    if config.get("bios"):
+        add("Firmware", "UEFI (OVMF)" if config.get("bios") == "ovmf" else "SeaBIOS")
+    if config.get("machine"):
+        add("Machine", config.get("machine"))
+    if config.get("boot"):
+        add("Boot order", str(config.get("boot")).replace("order=", ""))
+    if config.get("agent"):
+        add("Guest agent", "Enabled")
+    uptime = current.get("uptime") if isinstance(current, dict) else None
+    if uptime:
+        add("Uptime", _format_uptime(int(uptime)))
+    return rows
+
+
+def _guest_cpu_label(config: dict, object_type: str) -> str:
+    cores = _int_or_zero(config.get("cores"))
+    if object_type == ProxmoxInventory.ObjectType.VM:
+        sockets = _int_or_zero(config.get("sockets")) or 1
+        total = sockets * cores
+        if not total:
+            return ""
+        return f"{total} vCPU ({sockets} socket x {cores} cores)" if sockets > 1 else f"{total} vCPU"
+    return f"{cores} cores" if cores else ""
+
+
+def _config_mem_bytes(config: dict) -> int:
+    return _int_or_zero(config.get("memory")) * 1024 * 1024
+
+
+def _cpu_count(config: dict, object_type: str) -> int:
+    cores = _int_or_zero(config.get("cores"))
+    if object_type == ProxmoxInventory.ObjectType.VM:
+        return (_int_or_zero(config.get("sockets")) or 1) * cores
+    return cores
+
+
+def _guest_cpu_topology(config: dict, object_type: str) -> dict | None:
+    if object_type != ProxmoxInventory.ObjectType.VM:
+        return None
+    cores = _int_or_zero(config.get("cores"))
+    if not cores:
+        return None
+    sockets = _int_or_zero(config.get("sockets")) or 1
+    return {
+        "vcpus": sockets * cores,
+        "cores": cores,
+        "sockets": sockets,
+        "threads": 1,
+        "numa": str(config.get("numa", "0")) in ("1", "true", "True"),
+    }
+
+
+def _guest_usage(current: dict, config: dict, object_type: str) -> dict:
+    """Always returns usage figures. When the guest is stopped the used values
+    are 0 and the totals come from the config, so the Usage card never vanishes."""
+    running = isinstance(current, dict) and current.get("status") == "running"
+    if running:
+        cpu = float(current.get("cpu") or 0)
+        cpus = _int_or_zero(current.get("cpus")) or _cpu_count(config, object_type)
+        mem = _int_or_zero(current.get("mem"))
+        maxmem = _int_or_zero(current.get("maxmem")) or _config_mem_bytes(config)
+        maxdisk = _int_or_zero(current.get("maxdisk"))
+    else:
+        cpu = 0.0
+        cpus = _cpu_count(config, object_type)
+        mem = 0
+        maxmem = _config_mem_bytes(config)
+        maxdisk = 0
+    return {
+        "running": running,
+        "cpu_pct": round(cpu * 100, 1),
+        "cpus": cpus,
+        "mem": mem,
+        "maxmem": maxmem,
+        "mem_pct": round(mem / maxmem * 100, 1) if maxmem else 0,
+        "maxdisk": maxdisk,
+    }
+
+
+def _int_or_zero(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_uptime(seconds: int) -> str:
+    if seconds <= 0:
+        return "-"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes and not days:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) or "<1m"
+
+
+@app_login_required
 def scheduled_tasks(request):
     target_filter = request.GET.get("target", "")
     target_type, target_vmid = _parse_scheduled_target(target_filter)
@@ -181,6 +1996,7 @@ def scheduled_tasks(request):
 
     for action in actions:
         action.display_target = _scheduled_action_target_label(action)
+        action.guest_identity = guest_identity_from_scheduled_action(action)
         action.display_schedule = _scheduled_action_schedule_label(action)
         action.display_status_class = _scheduled_action_status_class(action.last_status)
         action.display_creator = action.created_by.get_username() if action.created_by else "system"
@@ -2255,19 +4071,11 @@ def _latest_proxmox_inventory_scan() -> ScanRun | None:
 
 
 def _inventory_target_label(obj: ProxmoxInventory) -> str:
-    type_label = "VM" if obj.object_type == ProxmoxInventory.ObjectType.VM else "Container"
-    label = f"{type_label} {obj.vmid}"
-    if obj.name:
-        label = f"{label} ({obj.name})"
-    return label
+    return guest_identity_from_inventory(obj).full_label_with_type
 
 
 def _live_guest_target_label(guest) -> str:
-    type_label = "VM" if guest.object_type == ProxmoxInventory.ObjectType.VM else "Container"
-    label = f"{type_label} {guest.vmid}"
-    if guest.name:
-        label = f"{label} ({guest.name})"
-    return label
+    return guest_identity_from_inventory(guest).full_label_with_type
 
 
 def _scheduled_target_label(target_type: str | None, target_vmid: int | None) -> str:
@@ -2712,10 +4520,7 @@ def _audit_scheduled_action_definition(request, action: str, scheduled_action: S
 
 
 def _scheduled_action_target_label(action: ScheduledAction) -> str:
-    label = f"{action.get_target_type_display()} {action.target_vmid}"
-    if action.target_name_snapshot:
-        label = f"{label} ({action.target_name_snapshot})"
-    return label
+    return guest_identity_from_scheduled_action(action).full_label_with_type
 
 
 def _latest_scheduled_runs(
@@ -2731,17 +4536,19 @@ def _latest_scheduled_runs(
     runs = list(runs_query.order_by("-created_at")[:limit])
     for run in runs:
         run.display_target = _scheduled_action_target_label(run.scheduled_action)
+        run.guest_identity = guest_identity_from_scheduled_action(run.scheduled_action)
         run.display_status_class = _scheduled_run_status_class(run.status)
         run.display_outcome = run.get_outcome_display() if run.outcome else "-"
         run.display_node = _scheduled_run_node_label(run)
     return runs
 
 
-def _serialize_scheduled_run(run: ScheduledActionRun) -> dict[str, str]:
+def _serialize_scheduled_run(run: ScheduledActionRun) -> dict[str, object]:
     return {
         "planned_for": _format_local_datetime(run.planned_for),
         "task": run.scheduled_action.name,
         "target": run.display_target,
+        "target_guest": guest_identity_from_scheduled_action(run.scheduled_action).as_dict(),
         "status": run.get_status_display(),
         "status_class": run.display_status_class,
         "outcome": run.display_outcome,

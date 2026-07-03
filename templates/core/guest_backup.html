@@ -1,0 +1,72 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content">
+    {% if guest_write_enabled %}
+      <div class="panel panel-spaced">
+        <div class="panel-heading"><h2>Back up now</h2></div>
+        <form class="snapshot-form" method="post" action="{% url 'core:guest_backup_now' guest.object_type guest.vmid %}">
+          {% csrf_token %}
+          <select name="storage" required>
+            <option value="">storage...</option>
+            {% for s in backup_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+          </select>
+          <select name="mode"><option value="snapshot">snapshot</option><option value="suspend">suspend</option><option value="stop">stop</option></select>
+          <select name="compress"><option value="zstd">zstd</option><option value="gzip">gzip</option><option value="lzo">lzo</option><option value="0">none</option></select>
+          <button class="primary-action" type="submit">Back up now</button>
+        </form>
+      </div>
+    {% endif %}
+
+    <div class="panel panel-spaced">
+      <div class="panel-heading"><h2>Backup Jobs</h2></div>
+      <table class="data-table compact">
+        <thead><tr><th>Job</th><th>Schedule</th><th>Storage</th><th>Selection</th><th>State</th></tr></thead>
+        <tbody>
+          {% for job in backup_jobs %}
+            <tr>
+              <td>{{ job.id }}</td>
+              <td>{{ job.schedule|default:"-" }}</td>
+              <td>{{ job.storage|default:"-" }}</td>
+              <td>{{ job.selection }}</td>
+              <td>{% if job.enabled %}<span class="badge completed">Enabled</span>{% else %}<span class="badge">Disabled</span>{% endif %}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="empty-state">No backup job covers this guest.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel panel-spaced">
+      <div class="panel-heading"><h2>Backups <span class="muted">({{ backups|length }})</span></h2></div>
+      {% if backup_error %}<p class="panel-meta"><span class="badge failed">Error</span> {{ backup_error }}</p>{% endif %}
+      <table class="data-table compact">
+        <thead><tr><th>Archive</th><th>Storage</th><th>Created</th><th>Size</th><th>Notes</th>{% if guest_write_enabled %}<th></th>{% endif %}</tr></thead>
+        <tbody>
+          {% for b in backups %}
+            <tr>
+              <td><code class="disk-ref">{{ b.volid }}</code></td>
+              <td>{{ b.storage }}</td>
+              <td>{% if b.ctime %}{{ b.ctime|date:"Y-m-d H:i" }}{% else %}-{% endif %}</td>
+              <td>{% if b.size %}{{ b.size|filesizeformat }}{% else %}-{% endif %}</td>
+              <td>{{ b.notes|default:"-" }}</td>
+              {% if guest_write_enabled %}
+                <td class="row-actions">
+                  <form class="inline-action-form" method="post" action="{% url 'core:guest_backup_delete' guest.object_type guest.vmid %}" onsubmit="return confirm('Delete this backup archive?');">
+                    {% csrf_token %}
+                    <input type="hidden" name="volid" value="{{ b.volid }}">
+                    <input type="hidden" name="storage" value="{{ b.storage }}">
+                    <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+                  </form>
+                </td>
+              {% endif %}
+            </tr>
+          {% empty %}
+            <tr><td colspan="{% if guest_write_enabled %}6{% else %}5{% endif %}" class="empty-state">No backup archives for this guest.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

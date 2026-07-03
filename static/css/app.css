@@ -825,6 +825,24 @@ button.tree-node {
   font-weight: 650;
 }
 
+.vs-tabs span.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.guest-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.guest-link:hover {
+  text-decoration: underline;
+}
+
+.data-table tr.row-highlight {
+  background: var(--accent-soft, rgba(59, 130, 246, 0.12));
+}
+
 .datastore-file-manager {
   display: grid;
   grid-template-columns: minmax(250px, 34%) minmax(0, 1fr);
@@ -1691,6 +1709,35 @@ code {
   line-height: 1;
 }
 
+/* Shared guest (VM/CT) label + app-wide VMID display toggle.
+   The toggle only hides the VMID when both the id and a name are present
+   (the .guest-label--full case), so a nameless guest always stays
+   identifiable by its VMID regardless of mode. */
+.guest-label {
+  white-space: nowrap;
+}
+
+.guest-vmid {
+  font-variant-numeric: tabular-nums;
+}
+
+.guest-label--full .guest-name::before {
+  content: " (";
+}
+
+.guest-label--full .guest-name::after {
+  content: ")";
+}
+
+[data-guest-name-style="name-only"] .guest-label--full .guest-vmid {
+  display: none;
+}
+
+[data-guest-name-style="name-only"] .guest-label--full .guest-name::before,
+[data-guest-name-style="name-only"] .guest-label--full .guest-name::after {
+  content: "";
+}
+
 .badge.completed,
 .badge.success {
   background: var(--success-bg);
@@ -2371,4 +2418,864 @@ code {
 
 .usage-bar-fill.danger {
   background: var(--danger_bg, #ef4444);
+}
+
+/* --- VM/CT master-detail workspace --- */
+.guest-workspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.guest-list-pane {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 150px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.guest-list-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guest-list-title {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.guest-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.guest-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.guest-list-item:hover {
+  background: var(--surface_alt, rgba(127, 127, 127, 0.10));
+}
+
+.guest-list-item.active {
+  background: var(--accent-soft, rgba(59, 130, 246, 0.15));
+  font-weight: 600;
+}
+
+.guest-list-item .status-dot {
+  flex: none;
+  background: var(--muted, #9ca3af);
+}
+
+.guest-list-item .status-dot.running {
+  background: var(--status-ok);
+}
+
+.guest-list-icon {
+  flex: none;
+  display: inline-flex;
+  opacity: 0.7;
+}
+
+.guest-list-icon i {
+  width: 15px;
+  height: 15px;
+}
+
+.guest-list-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.guest-list-empty {
+  padding: 12px;
+}
+
+.guest-detail-empty .panel {
+  max-width: 640px;
+}
+
+/* --- vSphere-style summary card grid --- */
+.vm-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.summary-card {
+  margin: 0;
+}
+
+.summary-os {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.summary-os-icon {
+  display: inline-flex;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface_alt, rgba(127, 127, 127, 0.12));
+}
+
+.summary-os-icon i {
+  width: 26px;
+  height: 26px;
+}
+
+.summary-os-name {
+  font-weight: 650;
+  font-size: 15px;
+}
+
+.usage-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-row-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.summary-notes {
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+@media (max-width: 860px) {
+  .guest-workspace {
+    grid-template-columns: 1fr;
+  }
+  .guest-list-pane {
+    position: static;
+    max-height: 320px;
+  }
+}
+
+/* --- Fixes/polish for the VM workspace --- */
+.guest-list-header .datastore-search {
+  flex: none;
+  width: 100%;
+}
+
+.guest-list-pane {
+  align-self: start;
+}
+
+/* vSphere-style two-column stacked label/value pairs inside summary cards */
+.summary-card .details-list {
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 24px;
+}
+
+.summary-card .details-list > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.summary-card .details-list dt {
+  font-size: 12px;
+}
+
+.summary-card .panel-heading {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.summary-card .panel-heading h2 {
+  font-size: 14px;
+}
+
+/* --- design polish v2: full-height sidebar, running icon, draggable cards --- */
+.guest-workspace {
+  gap: 20px;
+}
+
+.guest-list-pane {
+  align-self: start;
+  position: sticky;
+  top: 16px;
+  height: calc(100vh - 128px);
+  box-shadow: 1px 0 0 var(--border);
+}
+
+.guest-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.guest-detail-pane {
+  min-width: 0;
+}
+
+/* running indicator: green play triangle over the screen/box icon */
+.guest-icon-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.guest-icon-wrap.running::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -58%);
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 3px 0 3px 5px;
+  border-color: transparent transparent transparent #22c55e;
+}
+
+.summary-os-icon.guest-icon-wrap.running::after {
+  border-width: 4px 0 4px 7px;
+  transform: translate(-50%, -62%);
+}
+
+/* draggable summary cards */
+.summary-card .panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.card-drag {
+  width: 16px;
+  height: 12px;
+  cursor: grab;
+  flex: none;
+  opacity: 0.35;
+  background-image: radial-gradient(currentColor 1px, transparent 1.4px);
+  background-size: 4px 4px;
+  background-position: center;
+}
+
+.card-drag:active {
+  cursor: grabbing;
+}
+
+.card-drag:hover {
+  opacity: 0.7;
+}
+
+.summary-card.dragging {
+  opacity: 0.5;
+}
+
+.usage-note {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* --- polish v3: dynamic sidebar height, icon sizing, running badge, spacing --- */
+.guest-list-pane {
+  top: 0;
+  height: calc(100vh - 48px - var(--taskbar-height) - 36px);
+}
+
+/* lucide replaces <i> with <svg>; size the svg, not the <i> */
+.guest-list-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.summary-os-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* clear running badge: green circle + white play, only in the left list */
+.guest-icon-wrap.running::after {
+  content: none;
+}
+
+.summary-os-icon.guest-icon-wrap.running::after {
+  content: none;
+}
+
+.guest-list-item .guest-icon-wrap {
+  overflow: visible;
+}
+
+.guest-list-item .guest-icon-wrap.running::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #22c55e url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M4 3 L9 6 L4 9 Z' fill='white'/%3E%3C/svg%3E") no-repeat center / 6px 6px;
+  box-shadow: 0 0 0 1.5px var(--surface);
+}
+
+/* breathing room between the tab bar and the cards */
+.vm-summary-grid {
+  margin-top: 18px;
+}
+
+/* --- Actions card: two centered buttons, compact --- */
+.summary-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+
+.summary-actions .secondary-action {
+  min-width: 200px;
+  justify-content: center;
+  text-align: center;
+}
+
+.summary-actions-note {
+  text-align: center;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+/* --- card edit affordance + guest edit form --- */
+.card-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.card-edit {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.card-edit:hover {
+  text-decoration: underline;
+}
+
+.guest-edit-panel .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  max-width: 560px;
+}
+
+.guest-edit-panel .form-field > label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.guest-edit-panel input[type="text"],
+.guest-edit-panel textarea {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.guest-edit-panel .form-field-inline > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.guest-edit-panel .form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* --- polish v4: green play icon, equal cards, padding, actions, drag hint --- */
+/* running = solid green play icon (replaces the monitor/box icon) */
+.running-icon svg {
+  width: 15px;
+  height: 15px;
+  color: #22c55e;
+  fill: #22c55e;
+}
+
+/* equal-size cards across the grid */
+.vm-summary-grid {
+  align-items: stretch;
+  grid-auto-rows: 1fr;
+}
+
+/* consistent body padding + bottom breathing room (VM Details/Hardware as the template) */
+.summary-os,
+.usage-block,
+.tag-list,
+.summary-notes,
+.summary-actions {
+  padding: 12px 14px 16px;
+}
+
+.summary-notes {
+  margin: 0;
+}
+
+/* Actions: left-aligned, clearly two buttons */
+.summary-actions {
+  align-items: flex-start;
+}
+
+.summary-actions .secondary-action {
+  min-width: 0;
+  width: auto;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+/* drag affordance on cards */
+.summary-card .panel-heading {
+  cursor: move;
+}
+
+.summary-card.dragging {
+  cursor: grabbing;
+  opacity: 0.5;
+}
+
+/* --- guest detail tabs (configure/monitor) --- */
+.monitor-timeframes {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.monitor-timeframes a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.monitor-timeframes a.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.monitor-chart {
+  padding: 10px 14px 16px;
+}
+
+.monitor-chart svg {
+  width: 100%;
+  height: 70px;
+}
+
+.config-list dd code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* --- drag state (pointer-based card reorder) --- */
+body.cards-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
+.summary-card.dragging {
+  opacity: 0.55;
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+/* --- monitor metric charts --- */
+.metric-chart {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px 16px;
+}
+
+.metric-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 52px;
+  text-align: right;
+  padding: 2px 0;
+}
+
+.metric-chart svg {
+  flex: 1 1 auto;
+  height: 90px;
+  border-left: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.metric-area {
+  fill: var(--accent);
+  opacity: 0.14;
+}
+
+.metric-line {
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.metric-line.ms1 {
+  stroke: var(--accent);
+}
+
+.metric-line.ms2 {
+  stroke: #22c55e;
+}
+
+.chart-legend {
+  font-size: 11px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chart-legend::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.chart-legend.s2::before {
+  background: #22c55e;
+}
+
+/* --- card drag placeholder + empty detail spacing --- */
+.card-placeholder {
+  background: transparent !important;
+  border: 2px dashed var(--line) !important;
+  box-shadow: none !important;
+}
+
+.guest-detail-empty p {
+  padding: 12px 16px;
+  margin: 0;
+}
+
+/* --- Actions dropdown (vSphere-style) on cards --- */
+.actions-menu {
+  position: relative;
+}
+
+.actions-menu summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.actions-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.actions-menu summary::after {
+  content: " \25be";
+}
+
+.actions-menu-panel {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 6px;
+  z-index: 50;
+  min-width: 210px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.actions-menu-panel form {
+  margin: 0;
+}
+
+.actions-menu-panel button,
+.actions-menu-panel a {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.actions-menu-panel button:hover,
+.actions-menu-panel a:hover {
+  background: var(--surface_alt, rgba(127, 127, 127, 0.12));
+}
+
+.actions-menu-panel button.danger {
+  color: var(--danger_bg, #ef4444);
+}
+
+/* --- snapshot create form --- */
+.snapshot-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.snapshot-form input[type="text"] {
+  padding: 7px 10px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.snapshot-vmstate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.guest-edit-panel input[type="number"] {
+  width: 160px;
+  padding: 8px 10px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+/* --- create VM/CT form + create menu --- */
+.guest-list-title-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.create-menu summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.create-menu summary::-webkit-details-marker { display: none; }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px 20px;
+  max-width: 780px;
+  margin-bottom: 8px;
+}
+
+.form-grid .form-field {
+  margin-bottom: 0;
+  max-width: none;
+}
+
+.form-grid .form-field-wide {
+  grid-column: 1 / -1;
+}
+
+.guest-edit-panel select,
+.guest-edit-panel input[type="password"] {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.form-grid input[type="number"] {
+  width: 100%;
+}
+
+/* --- more breathing room in edit/create forms --- */
+.guest-edit-panel form {
+  padding: 18px 20px 20px;
+}
+
+.guest-edit-panel .form-field {
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.guest-edit-panel .form-field > label {
+  margin-bottom: 2px;
+}
+
+.guest-edit-panel .form-actions {
+  margin-top: 6px;
+}
+
+/* --- vSphere-style hardware edit --- */
+.hw-section {
+  padding: 0 20px 8px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.hw-section h3 {
+  margin: 14px 0 10px;
+  font-size: 14px;
+}
+
+.hw-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+}
+
+.hw-device-label {
+  min-width: 240px;
+  font-size: 13px;
+}
+
+.hw-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.hw-inline input[type="number"],
+.hw-inline select {
+  padding: 5px 8px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.hw-inline input[type="number"] { width: 110px; }
+
+.hw-remove { color: var(--danger_bg, #ef4444); }
+
+.hw-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 2px;
+}
+
+.hw-add select,
+.hw-add input {
+  padding: 6px 9px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+/* --- tab write forms (firewall) --- */
+.fw-options-form,
+.fw-add-rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.fw-options-form select,
+.fw-add-rule select,
+.fw-add-rule input[type="text"] {
+  padding: 6px 9px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.fw-add-rule input[type="text"] { width: 130px; }
+
+/* --- snapshot tree/chain (Proxmox-style) --- */
+.snapshot-tree .snap-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.snapshot-tree .snap-icon {
+  width: 15px;
+  height: 15px;
+  opacity: 0.7;
+  flex: none;
+}
+
+.snapshot-tree .snap-icon-now {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.snapshot-tree .snap-now-row td {
+  color: var(--muted);
+}
+
+.summary-os-agent {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
 }

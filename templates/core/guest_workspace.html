@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% load guest_labels %}
+
+{% block content %}
+  <div class="guest-workspace">
+    <aside class="guest-list-pane" data-guest-pane>
+      <div class="guest-list-header">
+        <div class="guest-list-title">
+          <span>VMs &amp; Templates</span>
+          <div class="guest-list-title-right">
+            <span class="muted">{{ guest_list|length }}</span>
+            {% if guest_write_enabled %}
+              <details class="actions-menu create-menu">
+                <summary>+ New</summary>
+                <div class="actions-menu-panel">
+                  <a href="{% url 'core:guest_create' 'vm' %}">New VM</a>
+                  <a href="{% url 'core:guest_create' 'ct' %}">New Container</a>
+                </div>
+              </details>
+            {% endif %}
+          </div>
+        </div>
+        <label class="datastore-search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <span class="sr-only">Search guests</span>
+          <input type="search" placeholder="Search" data-guest-filter autocomplete="off">
+        </label>
+      </div>
+      <div class="guest-list" data-guest-list>
+        {% for g in guest_list %}
+          <a class="guest-list-item{% if g.object_type == active_object_type and g.vmid == active_vmid %} active{% endif %}"
+             href="{% url 'core:guest_summary' g.object_type g.vmid %}"
+             data-filter-text="{{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }}">
+            {% if g.status == 'running' %}
+              <span class="guest-list-icon running-icon" title="running"><i data-lucide="play" aria-hidden="true"></i></span>
+            {% else %}
+              <span class="guest-list-icon" title="{{ g.status|default:'unknown' }}"><i data-lucide="{% if g.object_type == 'ct' %}box{% elif g.is_template %}copy{% else %}monitor{% endif %}" aria-hidden="true"></i></span>
+            {% endif %}
+            <span class="guest-list-label">{% guest_label g %}</span>
+          </a>
+        {% empty %}
+          <p class="muted guest-list-empty">No guests found.</p>
+        {% endfor %}
+      </div>
+    </aside>
+    <div class="guest-detail-pane">
+      {% block workspace_detail %}{% endblock %}
+    </div>
+  </div>
+{% endblock %}

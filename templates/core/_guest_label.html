@@ -1,0 +1,3 @@
+{% spaceless %}
+<span class="guest-label{% if guest.vmid_text and guest.has_name %} guest-label--full{% endif %}" title="{{ guest.full_label }}">{% if guest.vmid_text %}<span class="guest-vmid">{{ guest.vmid_text }}</span>{% endif %}{% if guest.has_name %}<span class="guest-name">{{ guest.name }}</span>{% elif not guest.vmid_text %}<span class="guest-name">?</span>{% endif %}</span>
+{% endspaceless %}

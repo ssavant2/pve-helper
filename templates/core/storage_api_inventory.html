@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>{{ storage }} <span class="muted">(read-only)</span></h1>
+      <p>
+        Proxmox API storage inventory on node <strong>{{ node }}</strong>.
+        This storage is not mounted in pve-helper, so it is shown read-only via the Proxmox API &mdash;
+        no upload, move, rename, delete, or trash.
+      </p>
+    </div>
+  </section>
+
+  {% if status %}
+    <section class="panel">
+      <dl class="details-list">
+        {% if status.total %}<div><dt>Total</dt><dd>{{ status.total|filesizeformat }}</dd></div>{% endif %}
+        {% if status.used %}<div><dt>Used</dt><dd>{{ status.used|filesizeformat }}</dd></div>{% endif %}
+        {% if status.avail %}<div><dt>Available</dt><dd>{{ status.avail|filesizeformat }}</dd></div>{% endif %}
+        {% if status.type %}<div><dt>Type</dt><dd>{{ status.type }}</dd></div>{% endif %}
+      </dl>
+    </section>
+  {% endif %}
+
+  <section class="panel panel-spaced">
+    <div class="panel-heading">
+      <h2>Volumes <span class="muted">({{ volumes|length }})</span></h2>
+    </div>
+    {% if not found %}
+      <p class="muted">
+        <span class="badge failed">Unavailable</span>
+        Could not read this storage via the Proxmox API{% if error %} ({{ error }}){% endif %}.
+      </p>
+    {% endif %}
+    <table class="data-table compact">
+      <thead>
+        <tr>
+          <th>Volume</th>
+          <th>VMID</th>
+          <th>Content</th>
+          <th>Format</th>
+          <th>Size</th>
+          <th>Used</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for volume in volumes %}
+          <tr{% if volume.highlight %} class="row-highlight"{% endif %}>
+            <td><code class="disk-ref">{{ volume.volid }}</code></td>
+            <td>{{ volume.vmid|default:"-" }}</td>
+            <td>{{ volume.content|default:"-" }}</td>
+            <td>{{ volume.format|default:"-" }}</td>
+            <td>{% if volume.size %}{{ volume.size|filesizeformat }}{% else %}-{% endif %}</td>
+            <td>{% if volume.used %}{{ volume.used|filesizeformat }}{% else %}-{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="6" class="empty-state">
+              {% if found %}No volumes on this storage.{% else %}No data.{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

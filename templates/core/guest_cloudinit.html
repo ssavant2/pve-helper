@@ -1,0 +1,45 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content">
+    {% if not has_cloudinit and not guest_write_enabled %}
+      <div class="panel"><p class="muted" style="padding:14px;">This guest has no Cloud-Init configuration or drive.</p></div>
+    {% else %}
+      {% if guest_write_enabled %}
+        <div class="panel panel-spaced guest-edit-panel">
+          <div class="panel-heading"><h2>Edit Cloud-Init</h2></div>
+          <form method="post" action="{% url 'core:guest_cloudinit_edit' guest.object_type guest.vmid %}">
+            {% csrf_token %}
+            <div class="form-grid">
+              <div class="form-field"><label>User</label><input type="text" name="ciuser" value="{{ ci_values.ciuser }}" autocomplete="off"></div>
+              <div class="form-field"><label>Password <span class="muted">(leave blank to keep)</span></label><input type="password" name="cipassword" autocomplete="new-password"></div>
+              <div class="form-field"><label>Nameserver</label><input type="text" name="nameserver" value="{{ ci_values.nameserver }}" autocomplete="off"></div>
+              <div class="form-field"><label>Search domain</label><input type="text" name="searchdomain" value="{{ ci_values.searchdomain }}" autocomplete="off"></div>
+              <div class="form-field"><label>IP config (net0)</label><input type="text" name="ipconfig0" value="{{ ci_values.ipconfig0 }}" placeholder="ip=dhcp or ip=1.2.3.4/24,gw=1.2.3.1" autocomplete="off"></div>
+              <div class="form-field form-field-wide"><label>SSH public keys <span class="muted">(leave blank to keep)</span></label><textarea name="sshkeys" rows="2"></textarea></div>
+            </div>
+            <div class="form-actions"><button class="primary-action" type="submit">Save Cloud-Init</button></div>
+          </form>
+        </div>
+      {% endif %}
+    {% endif %}
+    {% if has_cloudinit %}
+      <div class="panel panel-spaced">
+        <div class="panel-heading"><h2>Cloud-Init</h2></div>
+        <dl class="details-list">
+          {% for row in ci_rows %}<div><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>{% endfor %}
+          <div><dt>Password</dt><dd>{% if has_ci_password %}Set{% else %}<span class="muted">Not set</span>{% endif %}</dd></div>
+          <div><dt>SSH keys</dt><dd>{% if has_ci_sshkeys %}Set{% else %}<span class="muted">Not set</span>{% endif %}</dd></div>
+        </dl>
+      </div>
+      {% if ipconfigs %}
+        <div class="panel panel-spaced">
+          <div class="panel-heading"><h2>IP Configuration</h2></div>
+          <dl class="details-list">
+            {% for ip in ipconfigs %}<div><dt>{{ ip.label }}</dt><dd><code class="disk-ref">{{ ip.value }}</code></dd></div>{% endfor %}
+          </dl>
+        </div>
+      {% endif %}
+    {% endif %}
+  </section>
+{% endblock %}

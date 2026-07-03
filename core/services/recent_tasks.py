@@ -8,6 +8,30 @@ from django.utils import timezone
 from django.db.models import Q
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
+from core.services.guests import guest_identity, guest_identity_from_scheduled_action
+
+
+GUEST_TASK_NAMES = {
+    "guest.power.start": "Power on",
+    "guest.power.shutdown": "Shut down guest",
+    "guest.power.reboot": "Restart guest",
+    "guest.power.stop": "Power off",
+    "guest.snapshot.create": "Create snapshot",
+    "guest.snapshot.delete": "Delete snapshot",
+    "guest.snapshot.rollback": "Rollback snapshot",
+    "guest.config.updated": "Reconfigure",
+    "guest.hardware.updated": "Reconfigure hardware",
+    "guest.cloudinit.update": "Update Cloud-Init",
+    "guest.create": "Create guest",
+    "guest.firewall.options": "Firewall options",
+    "guest.firewall.rule_add": "Add firewall rule",
+    "guest.firewall.rule_delete": "Delete firewall rule",
+    "guest.firewall.rule_toggle": "Toggle firewall rule",
+    "guest.backup.run": "Backup",
+    "guest.backup.delete": "Delete backup",
+    "guest.replication.create": "Create replication",
+    "guest.replication.delete": "Delete replication",
+}
 
 
 DEFAULT_TASK_LIMIT = 5
@@ -75,6 +99,7 @@ def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTa
     tasks = [_scan_task(scan, initiators.get(str(scan.id), "system")) for scan in scans]
     tasks.extend(_file_task(event) for event in _visible_file_tasks())
     tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
+    tasks.extend(_guest_task(event) for event in _visible_guest_tasks())
     tasks.sort(key=lambda task: task["sort_at"], reverse=True)
     total = len(tasks)
     return RecentTaskPage(tasks=tasks[offset : offset + limit], page=page, limit=limit, total=total)
@@ -159,6 +184,7 @@ def serialize_task(task: dict[str, object]) -> dict[str, object]:
         "action": str(task.get("action", "")),
         "name": str(task["name"]),
         "target": str(task["target"]),
+        "target_guest": task.get("target_guest") or None,
         "status": str(task["status"]),
         "status_class": str(task["status_class"]),
         "details": str(task["details"]),
@@ -196,6 +222,45 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
         "finished_at": scan.finished_at,
         "server": ", ".join(scan.endpoints_succeeded or scan.endpoints_attempted or []),
         "sort_at": scan.created_at,
+    }
+
+
+def _visible_guest_tasks():
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    return list(
+        AuditEvent.objects.filter(action__startswith="guest.", timestamp__gte=cutoff)
+        .select_related("user")
+        .order_by("-timestamp")
+    )
+
+
+def _guest_task(event: AuditEvent) -> dict[str, object]:
+    details = event.details if isinstance(event.details, dict) else {}
+    identity = guest_identity(details.get("target_type"), details.get("vmid"), details.get("name") or "")
+    failed = event.outcome not in ("success", "", None)
+    extra = ""
+    for key in ("snapshot", "storage", "volid", "job_id", "target"):
+        if details.get(key):
+            extra = str(details[key])
+            break
+    if not extra and details.get("fields"):
+        extra = ", ".join(details["fields"]) if isinstance(details["fields"], list) else str(details["fields"])
+    return {
+        "id": f"guest:{event.id}",
+        "kind": "guest",
+        "action": event.action,
+        "name": GUEST_TASK_NAMES.get(event.action, event.action),
+        "target": identity.full_label_with_type,
+        "target_guest": identity.as_dict(),
+        "status": "Failed" if failed else "Completed",
+        "status_class": "failed" if failed else "completed",
+        "details": extra or "-",
+        "initiator": event.username or (event.user.get_username() if event.user else "system"),
+        "queued_for": "-",
+        "started_at": event.timestamp,
+        "finished_at": event.timestamp,
+        "server": str(details.get("node") or "-"),
+        "sort_at": event.timestamp,
     }
 
 
@@ -261,18 +326,15 @@ def _file_task_name(action: str) -> str:
 def _scheduled_action_task(run: ScheduledActionRun) -> dict[str, object]:
     action = run.scheduled_action
     status, status_class = _scheduled_action_status(run)
-    target_type = action.get_target_type_display()
-    target_name = action.target_name_snapshot or ""
-    target = f"{target_type} {action.target_vmid}"
-    if target_name:
-        target = f"{target} ({target_name})"
+    identity = guest_identity_from_scheduled_action(action)
 
     return {
         "id": f"scheduled_action:{run.id}",
         "kind": "scheduled_action",
         "action": action.action_type,
         "name": f"Scheduled {action.get_action_type_display().lower()}",
-        "target": target,
+        "target": identity.full_label_with_type,
+        "target_guest": identity.as_dict(),
         "status": status,
         "status_class": status_class,
         "details": run.error or _scheduled_action_details(run),

@@ -1,5 +1,6 @@
 (() => {
   const themeKey = "pve-helper-theme";
+  const guestNameStyleKey = "pve-helper-guest-name-style";
   const taskbarKey = "pve-helper-taskbar-collapsed";
   const softContentSelector = "[data-soft-nav-content]";
   const softStatusSelector = "[data-soft-nav-status]";
@@ -129,6 +130,65 @@
       }
       applyTheme(nextTheme);
     });
+  };
+
+  const preferredGuestNameStyle = () => {
+    try {
+      return localStorage.getItem(guestNameStyleKey) === "name-only" ? "name-only" : "id-name";
+    } catch (_error) {
+      return "id-name";
+    }
+  };
+
+  const applyGuestNameStyle = (style) => {
+    const value = style === "name-only" ? "name-only" : "id-name";
+    document.documentElement.dataset.guestNameStyle = value;
+    const showing = value === "id-name";
+    document.querySelectorAll("[data-guest-id-label]").forEach((label) => {
+      label.textContent = showing ? "IDs on" : "IDs off";
+    });
+    const toggle = document.querySelector("[data-guest-id-toggle]");
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", showing ? "true" : "false");
+      toggle.setAttribute("aria-label", showing ? "Hide VM/CT IDs" : "Show VM/CT IDs");
+    }
+  };
+
+  const initGuestNameToggle = () => {
+    const toggle = document.querySelector("[data-guest-id-toggle]");
+    if (!toggle || toggle.dataset.initialized === "true") {
+      return;
+    }
+    toggle.dataset.initialized = "true";
+    toggle.addEventListener("click", () => {
+      const next = document.documentElement.dataset.guestNameStyle === "name-only" ? "id-name" : "name-only";
+      try {
+        localStorage.setItem(guestNameStyleKey, next);
+      } catch (_error) {
+        // Guest-name persistence is optional; the UI still updates for this page.
+      }
+      applyGuestNameStyle(next);
+    });
+  };
+
+  // Client twin of the {% guest_label %} server tag: builds the identical
+  // markup from a JSON {type, vmid, name} so the app-wide VMID toggle applies
+  // to JSON-refreshed rows (Recent Tasks / Latest Runs) too.
+  const renderGuestLabel = (guest) => {
+    const vmid = guest && guest.vmid != null ? String(guest.vmid) : "";
+    const name = guest?.name ? String(guest.name) : "";
+    const full = Boolean(vmid && name);
+    let inner = "";
+    if (vmid) {
+      inner += `<span class="guest-vmid">${escapeHtml(vmid)}</span>`;
+    }
+    if (name) {
+      inner += `<span class="guest-name">${escapeHtml(name)}</span>`;
+    } else if (!vmid) {
+      inner += `<span class="guest-name">?</span>`;
+    }
+    const title = full ? `${vmid} (${name})` : name || vmid || "?";
+    return `<span class="guest-label${full ? " guest-label--full" : ""}" title="${escapeHtml(title)}">${inner}</span>`;
   };
 
   const initTaskbarToggle = () => {
@@ -1013,7 +1073,7 @@
     const taskRowHtml = (task) => `
       <tr>
         <td>${escapeHtml(task.name)}</td>
-        <td>${escapeHtml(task.target)}</td>
+        <td>${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
         <td><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
         <td>${taskDetailsHtml(task)}</td>
         <td>${escapeHtml(task.initiator)}</td>
@@ -1191,7 +1251,7 @@
         <tr>
           <td>${escapeHtml(run.planned_for)}</td>
           <td>${escapeHtml(run.task)}</td>
-          <td>${escapeHtml(run.target)}</td>
+          <td>${run.target_guest ? renderGuestLabel(run.target_guest) : escapeHtml(run.target)}</td>
           <td><span class="badge ${escapeHtml(run.status_class)}">${escapeHtml(run.status)}</span></td>
           <td>${escapeHtml(run.outcome)}</td>
           <td>${escapeHtml(run.started_at)}</td>
@@ -1946,7 +2006,194 @@
     });
   };
 
+  const initGuestListFilter = (root = document) => {
+    root.querySelectorAll("[data-guest-filter]").forEach((input) => {
+      if (input.dataset.initialized === "true") {
+        return;
+      }
+      input.dataset.initialized = "true";
+      const pane = input.closest("[data-guest-pane]");
+      const list = pane ? pane.querySelector("[data-guest-list]") : null;
+      if (!list) {
+        return;
+      }
+      const items = list.querySelectorAll("[data-filter-text]");
+      const apply = () => {
+        const query = input.value.trim().toLowerCase();
+        items.forEach((item) => {
+          const text = item.dataset.filterText || "";
+          item.hidden = query !== "" && !text.includes(query);
+        });
+      };
+      input.addEventListener("input", apply);
+    });
+  };
+
+  const initSummaryCards = (root = document) => {
+    const grid = root.querySelector("[data-summary-cards]");
+    if (!grid || grid.dataset.initialized === "true") {
+      return;
+    }
+    grid.dataset.initialized = "true";
+    const orderKey = "pve-helper-vm-summary-order";
+    const cardList = () => Array.from(grid.querySelectorAll("[data-card-key]"));
+
+    try {
+      const saved = JSON.parse(localStorage.getItem(orderKey) || "[]");
+      if (Array.isArray(saved) && saved.length) {
+        const byKey = new Map(cardList().map((card) => [card.dataset.cardKey, card]));
+        saved.forEach((key) => {
+          const card = byKey.get(key);
+          if (card) {
+            grid.appendChild(card);
+          }
+        });
+      }
+    } catch (_error) {
+      // ignore corrupt saved order
+    }
+
+    const persist = () => {
+      try {
+        localStorage.setItem(orderKey, JSON.stringify(cardList().map((card) => card.dataset.cardKey)));
+      } catch (_error) {
+        // persistence is optional
+      }
+    };
+
+    // Pointer-based drag: the grabbed card floats under the cursor, a
+    // placeholder marks where it will land, and the other cards slide (FLIP).
+    let dragCard = null;
+    let placeholder = null;
+    let startX = 0;
+    let startY = 0;
+    let offsetX = 0;
+    let offsetY = 0;
+    let active = false;
+
+    const flip = (mutate) => {
+      const others = cardList().filter((card) => card !== dragCard);
+      const first = new Map(others.map((card) => [card, card.getBoundingClientRect()]));
+      mutate();
+      others.forEach((card) => {
+        const before = first.get(card);
+        if (!before) {
+          return;
+        }
+        const after = card.getBoundingClientRect();
+        const dx = before.left - after.left;
+        const dy = before.top - after.top;
+        if (!dx && !dy) {
+          return;
+        }
+        card.style.transition = "none";
+        card.style.transform = `translate(${dx}px, ${dy}px)`;
+        requestAnimationFrame(() => {
+          card.style.transition = "transform 0.16s ease";
+          card.style.transform = "";
+        });
+      });
+    };
+
+    const beginDrag = () => {
+      active = true;
+      const rect = dragCard.getBoundingClientRect();
+      offsetX = startX - rect.left;
+      offsetY = startY - rect.top;
+      placeholder = document.createElement("div");
+      placeholder.className = "summary-card card-placeholder";
+      placeholder.style.height = `${rect.height}px`;
+      grid.insertBefore(placeholder, dragCard);
+      dragCard.style.width = `${rect.width}px`;
+      dragCard.style.height = `${rect.height}px`;
+      dragCard.style.position = "fixed";
+      dragCard.style.left = `${rect.left}px`;
+      dragCard.style.top = `${rect.top}px`;
+      dragCard.style.zIndex = "1000";
+      dragCard.style.pointerEvents = "none";
+      dragCard.classList.add("dragging");
+      document.body.classList.add("cards-dragging");
+    };
+
+    const onMove = (event) => {
+      if (!dragCard) {
+        return;
+      }
+      if (!active) {
+        if (Math.hypot(event.clientX - startX, event.clientY - startY) < 6) {
+          return;
+        }
+        beginDrag();
+      }
+      event.preventDefault();
+      dragCard.style.left = `${event.clientX - offsetX}px`;
+      dragCard.style.top = `${event.clientY - offsetY}px`;
+      const under = document.elementFromPoint(event.clientX, event.clientY);
+      const overCard = under?.closest ? under.closest("[data-card-key]") : null;
+      if (overCard && overCard !== dragCard && overCard !== placeholder && overCard.parentElement === grid) {
+        const box = overCard.getBoundingClientRect();
+        const before = event.clientY < box.top + box.height / 2 ? true : event.clientX < box.left + box.width / 2;
+        flip(() => grid.insertBefore(placeholder, before ? overCard : overCard.nextSibling));
+      }
+    };
+
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      if (active && dragCard) {
+        dragCard.style.cssText = "";
+        dragCard.classList.remove("dragging");
+        if (placeholder) {
+          grid.insertBefore(dragCard, placeholder);
+          placeholder.remove();
+        }
+        persist();
+      }
+      document.body.classList.remove("cards-dragging");
+      dragCard = null;
+      placeholder = null;
+      active = false;
+    };
+
+    grid.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      const card = event.target.closest("[data-card-key]");
+      if (!card || card.parentElement !== grid) {
+        return;
+      }
+      // Let clicks on interactive controls behave normally.
+      if (event.target.closest("a, button, input, textarea, select, summary, details, label")) {
+        return;
+      }
+      dragCard = card;
+      startX = event.clientX;
+      startY = event.clientY;
+      active = false;
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  };
+
+  const initNodeReload = (root = document) => {
+    root.querySelectorAll("[data-node-reload]").forEach((select) => {
+      if (select.dataset.initialized === "true") {
+        return;
+      }
+      select.dataset.initialized = "true";
+      select.addEventListener("change", () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set("node", select.value);
+        window.location.href = url.toString();
+      });
+    });
+  };
+
   const initPage = (root = document) => {
+    initGuestListFilter(root);
+    initNodeReload(root);
+    initSummaryCards(root);
     initAutoSubmitForms(root);
     initScanActions(root);
     initStorageFileManagers(root);
@@ -1962,6 +2209,7 @@
 
   const initShell = () => {
     applyTheme(preferredTheme());
+    applyGuestNameStyle(preferredGuestNameStyle());
     try {
       applyTaskbarState(localStorage.getItem(taskbarKey) === "true");
     } catch (_error) {
@@ -1969,6 +2217,7 @@
     }
 
     initThemeToggle();
+    initGuestNameToggle();
     initTaskbarToggle();
     initTreeModules(document);
     initContextMenu();

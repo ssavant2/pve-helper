@@ -1,0 +1,47 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content">
+    <div class="panel-meta monitor-timeframes">
+      Timeframe:
+      {% for tf in timeframes %}
+        <a class="{% if tf == timeframe %}active{% endif %}" href="?timeframe={{ tf }}">{{ tf|capfirst }}</a>
+      {% endfor %}
+    </div>
+    {% if monitor_error %}
+      <div class="panel"><p class="muted" style="padding:14px;"><span class="badge failed">Unavailable</span> {{ monitor_error }}</p></div>
+    {% elif not has_rrd %}
+      <div class="panel"><p class="muted" style="padding:14px;">No metric data for this timeframe.</p></div>
+    {% else %}
+      <div class="vm-summary-grid">
+        {% for c in charts %}
+          <div class="panel summary-card">
+            <div class="panel-heading">
+              <h2>{{ c.title }}</h2>
+              <div class="card-heading-actions">
+                {% for item in c.legend %}<span class="chart-legend {{ item.cls }}">{{ item.label }}</span>{% endfor %}
+                {% if c.current %}<span class="muted">{{ c.current }}</span>{% endif %}
+              </div>
+            </div>
+            <div class="metric-chart">
+              <div class="metric-axis">
+                <span>{{ c.chart.axis_max_label }}</span>
+                <span>0</span>
+              </div>
+              <svg viewBox="0 0 {{ c.chart.width }} {{ c.chart.height }}" preserveAspectRatio="none" role="img" aria-label="{{ c.title }}">
+                {% for s in c.chart.series %}
+                  {% if c.legend %}
+                    <polyline points="{{ s.line }}" fill="none" class="metric-line ms{{ forloop.counter }}"></polyline>
+                  {% else %}
+                    <polygon points="{{ s.area }}" class="metric-area"></polygon>
+                    <polyline points="{{ s.line }}" fill="none" class="metric-line ms1"></polyline>
+                  {% endif %}
+                {% endfor %}
+              </svg>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -1,4 +1,5 @@
 {% extends "core/storage_base.html" %}
+{% load guest_labels %}
 
 {% block storage_content %}
   <section class="storage-tab-content">
@@ -21,8 +22,7 @@
       <table class="data-table compact" data-filterable-table>
         <thead>
           <tr>
-            <th>VMID</th>
-            <th>Name</th>
+            <th>Guest</th>
             <th>Type</th>
             <th>Status</th>
             <th>Node</th>
@@ -34,8 +34,7 @@
         <tbody>
           {% for guest in guests %}
             <tr data-filter-text="{{ guest.vmid }} {{ guest.name|lower }} {{ guest.node|lower }} {{ guest.object_type|lower }} {{ guest.scheduled_action_search_text|lower }}">
-              <td>{{ guest.vmid }}</td>
-              <td>{{ guest.name|default:"-" }}</td>
+              <td>{% guest_label guest %}</td>
               <td>
                 {% if guest.object_type == "vm" %}
                   <span class="badge">VM</span>
@@ -84,7 +83,7 @@
             </tr>
           {% empty %}
             <tr>
-              <td colspan="8" class="empty-state">
+              <td colspan="7" class="empty-state">
                 {% if latest_scan %}
                   No VMs or containers use this storage.
                 {% else %}

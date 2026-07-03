@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load guest_labels %}
 
 {% block content %}
   <section class="page-header">
@@ -66,7 +67,7 @@
               </span>
             </td>
             <td>{{ action.get_action_type_display }}</td>
-            <td>{{ action.display_target }}</td>
+            <td>{% guest_label action.guest_identity %}</td>
             <td>{{ action.display_schedule }}</td>
             <td>{{ action.next_run_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
             <td>
@@ -146,7 +147,7 @@
           <tr>
             <td>{{ run.planned_for|date:"Y-m-d H:i:s" }}</td>
             <td>{{ run.scheduled_action.name }}</td>
-            <td>{{ run.display_target }}</td>
+            <td>{% guest_label run.guest_identity %}</td>
             <td><span class="badge {{ run.display_status_class }}">{{ run.get_status_display }}</span></td>
             <td>{{ run.display_outcome }}</td>
             <td>{{ run.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>

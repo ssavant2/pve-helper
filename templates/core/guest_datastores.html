@@ -1,0 +1,34 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content">
+    {% for store in datastores %}
+      <div class="panel panel-spaced">
+        <div class="panel-heading">
+          <h2>{{ store.display_name }}</h2>
+          <div class="card-heading-actions">
+            {% if store.mounted %}<span class="badge completed">Mounted</span>{% else %}<span class="badge">API only</span>{% endif %}
+            {% if store.url %}<a class="card-edit" href="{{ store.url }}">Open</a>{% endif %}
+          </div>
+        </div>
+        <table class="data-table compact">
+          <thead>
+            <tr><th>Device</th><th>Volume</th><th>Size</th><th>Format</th></tr>
+          </thead>
+          <tbody>
+            {% for disk in store.disks %}
+              <tr>
+                <td>{{ disk.label }}</td>
+                <td><code class="disk-ref">{{ disk.volid }}</code></td>
+                <td>{{ disk.size|default:"-" }}</td>
+                <td>{{ disk.format|default:"-" }}{% if disk.thin %} · thin{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% empty %}
+      <div class="panel"><p class="muted" style="padding:14px;">This guest has no disk volumes.</p></div>
+    {% endfor %}
+  </section>
+{% endblock %}

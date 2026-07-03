@@ -288,6 +288,34 @@ class ProxmoxClient:
     def post(self, path: str, *, data: dict[str, Any] | None = None) -> Any:
         return self._request("POST", path, data=data or {})
 
+    def put(self, path: str, *, data: dict[str, Any] | None = None) -> Any:
+        return self._request("PUT", path, data=data or {})
+
+    def delete(self, path: str) -> Any:
+        return self._request("DELETE", path)
+
+    def set_guest_config(
+        self,
+        *,
+        node: str,
+        object_type: str,
+        vmid: int,
+        updates: dict[str, Any],
+        delete: list[str] | None = None,
+        digest: str | None = None,
+    ) -> Any:
+        if not settings.VM_WRITE_ENABLED:
+            raise ProxmoxAPIError("VM/CT config writes are disabled.")
+        guest_kind = self._guest_kind(object_type)
+        data: dict[str, Any] = dict(updates)
+        if delete:
+            data["delete"] = ",".join(delete)
+        if digest:
+            data["digest"] = digest
+        if not data:
+            return None
+        return self.put(f"nodes/{quote(node, safe='')}/{guest_kind}/{vmid}/config", data=data)
+
     def _guest_kind(self, object_type: str) -> str:
         if object_type == "vm":
             return "qemu"

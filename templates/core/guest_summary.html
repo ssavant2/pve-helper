@@ -1,0 +1,161 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="vm-summary-grid" data-summary-cards>
+    <div class="panel summary-card" data-card-key="guest-os">
+      <div class="panel-heading"><h2>Guest OS</h2><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div>
+      <div class="summary-os">
+        <span class="summary-os-icon guest-icon-wrap{% if guest.status == 'running' %} running{% endif %}"><i data-lucide="{% if guest.object_type == 'ct' %}box{% else %}hard-drive{% endif %}" aria-hidden="true"></i></span>
+        <div>
+          <div class="summary-os-name">{% if guest_agent_summary.os_name %}{{ guest_agent_summary.os_name }}{% else %}{{ guest_os_label }}{% endif %}</div>
+          <div class="muted">
+            {% if guest.status == "running" %}
+              <span class="badge completed">Powered On</span>
+            {% else %}
+              <span class="badge">{{ guest.status|default:"-"|capfirst }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% if guest_agent_summary.enabled %}
+        <dl class="details-list summary-os-agent">
+          {% if guest_agent_summary.hostname %}<div><dt>DNS name</dt><dd>{{ guest_agent_summary.hostname }}</dd></div>{% endif %}
+          {% if guest_agent_summary.ips %}
+            <div><dt>IP addresses</dt><dd>{% for ip in guest_agent_summary.ips %}{{ ip }}{% if not forloop.last %}<br>{% endif %}{% endfor %}</dd></div>
+          {% endif %}
+          <div><dt>Guest agent</dt><dd>{% if guest_agent_summary.running %}<span class="badge completed">Running</span>{% else %}<span class="badge">Not running</span>{% endif %}</dd></div>
+        </dl>
+      {% endif %}
+    </div>
+
+    <div class="panel summary-card" data-card-key="details">
+      <div class="panel-heading">
+        <h2>Virtual Machine Details</h2>
+        <div class="card-heading-actions">
+          <details class="actions-menu">
+            <summary>Actions</summary>
+            <div class="actions-menu-panel">
+              {% if guest.status == "running" %}
+                <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="shutdown"><button type="submit">Shut Down Guest OS</button></form>
+                <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="reboot"><button type="submit">Restart Guest OS</button></form>
+                <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" onsubmit="return confirm('Power off (hard stop) this guest?');">{% csrf_token %}<input type="hidden" name="action" value="stop"><button type="submit" class="danger">Power Off</button></form>
+              {% else %}
+                <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="start"><button type="submit">Power On</button></form>
+              {% endif %}
+              {% if guest_write_enabled %}<a href="{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=options">Edit settings</a>{% endif %}
+            </div>
+          </details>
+          <span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span>
+        </div>
+      </div>
+      <dl class="details-list">
+        <div><dt>Name</dt><dd>{{ guest.name|default:"-" }}</dd></div>
+        <div><dt>VMID</dt><dd>{{ guest.vmid }}</dd></div>
+        <div><dt>Type</dt><dd>{{ guest_type_label }}</dd></div>
+        {% for row in vm_details %}
+          <div><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>
+        {% endfor %}
+      </dl>
+    </div>
+
+    <div class="panel summary-card" data-card-key="hardware">
+      <div class="panel-heading"><h2>{% if guest.object_type == "ct" %}Container Hardware{% else %}VM Hardware{% endif %}</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% if guest.object_type == 'vm' %}{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}{% else %}{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=hardware{% endif %}">Edit</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+      <dl class="details-list">
+        {% if guest_cpu_label %}<div><dt>CPU</dt><dd>{{ guest_cpu_label }}</dd></div>{% endif %}
+        {% if guest_memory_label %}<div><dt>Memory</dt><dd>{{ guest_memory_label }}</dd></div>{% endif %}
+        {% for disk in guest_disks %}
+          <div>
+            <dt>{{ disk.label }}</dt>
+            <dd>
+              {{ disk.size|default:"?" }}{% if disk.format %} {{ disk.format }}{% endif %}{% if disk.thin %} &middot; thin{% endif %}
+              &middot;
+              {% if disk.url %}<a href="{{ disk.url }}">{{ disk.storage_id }}</a>{% else %}{{ disk.storage_id }}{% endif %}
+            </dd>
+          </div>
+        {% endfor %}
+        {% for cd in guest_cdroms %}
+          <div><dt>{{ cd.label }}</dt><dd>{{ cd.value }}</dd></div>
+        {% endfor %}
+        {% for net in guest_nets %}
+          <div>
+            <dt>{{ net.label }}</dt>
+            <dd>
+              {{ net.model }}{% if net.bridge %} &middot; {{ net.bridge }}{% endif %}{% if net.vlan %} (VLAN {{ net.vlan }}){% endif %}{% if net.mac %} &middot; {{ net.mac }}{% endif %}
+            </dd>
+          </div>
+        {% endfor %}
+      </dl>
+    </div>
+
+    {% if guest_cpu_topology %}
+      <div class="panel summary-card" data-card-key="cpu-topology">
+        <div class="panel-heading"><h2>CPU Topology</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% if guest.object_type == 'vm' %}{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}{% else %}{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=hardware{% endif %}">Edit</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+        <dl class="details-list">
+          <div><dt>vCPUs</dt><dd>{{ guest_cpu_topology.vcpus }}</dd></div>
+          <div><dt>Cores per socket</dt><dd>{{ guest_cpu_topology.cores }} <span class="muted">(Sockets: {{ guest_cpu_topology.sockets }})</span></dd></div>
+          <div><dt>Threads per core</dt><dd>{{ guest_cpu_topology.threads }}</dd></div>
+          <div><dt>NUMA</dt><dd>{% if guest_cpu_topology.numa %}Enabled{% else %}Disabled{% endif %}</dd></div>
+        </dl>
+      </div>
+    {% endif %}
+
+    <div class="panel summary-card" data-card-key="related">
+      <div class="panel-heading"><h2>Related Objects</h2><div class="card-heading-actions"><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+      <dl class="details-list">
+        <div><dt>Node</dt><dd>{{ guest.node|default:"-" }}</dd></div>
+        <div>
+          <dt>Networks</dt>
+          <dd>{% for net in related_networks %}{{ net.bridge }}{% if net.vlan %} (VLAN {{ net.vlan }}){% endif %}{% if not forloop.last %}, {% endif %}{% empty %}-{% endfor %}</dd>
+        </div>
+        <div>
+          <dt>Storage</dt>
+          <dd>{% for s in related_storages %}{% if s.url %}<a href="{{ s.url }}">{{ s.storage_id }}</a>{% else %}{{ s.storage_id }}{% endif %}{% if not forloop.last %}, {% endif %}{% empty %}-{% endfor %}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="panel summary-card" data-card-key="usage">
+      <div class="panel-heading"><h2>Usage</h2><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div>
+      <div class="usage-block">
+        <div class="usage-row-label">CPU <span class="muted">{{ guest_usage.cpu_pct }}% of {{ guest_usage.cpus }} vCPU</span></div>
+        <div class="usage-bar-bg"><div class="usage-bar-fill" style="width: {{ guest_usage.cpu_pct }}%;"></div></div>
+        <div class="usage-row-label">Memory <span class="muted">{{ guest_usage.mem|filesizeformat }} / {{ guest_usage.maxmem|filesizeformat }}</span></div>
+        <div class="usage-bar-bg"><div class="usage-bar-fill" style="width: {{ guest_usage.mem_pct }}%;"></div></div>
+        {% if guest_usage.maxdisk %}
+          <div class="usage-row-label">Storage <span class="muted">{{ guest_usage.maxdisk|filesizeformat }} provisioned</span></div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel summary-card" data-card-key="tags">
+      <div class="panel-heading"><h2>Tags</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=tags">Edit</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+      <div class="tag-list">
+        {% for tag in guest_tags %}
+          <span class="badge">{{ tag }}</span>
+        {% empty %}
+          <span class="muted">No tags</span>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="panel summary-card" data-card-key="notes">
+      <div class="panel-heading"><h2>Notes</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=notes">Edit</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+      {% if guest_notes %}
+        <p class="summary-notes">{{ guest_notes|linebreaksbr }}</p>
+      {% else %}
+        <p class="muted summary-notes">No notes.</p>
+      {% endif %}
+    </div>
+
+    <div class="panel summary-card" data-card-key="actions">
+      <div class="panel-heading"><h2>Actions</h2><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div>
+      <div class="summary-actions">
+        <a class="secondary-action" href="{{ schedule_action_url }}">Schedule power action</a>
+        <a class="secondary-action" href="{{ scheduled_actions_url }}">View scheduled tasks</a>
+      </div>
+      {% if not guest.live_ok %}
+        <p class="muted summary-actions-note">Live Proxmox data unavailable; values from last scan.</p>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

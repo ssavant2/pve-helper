@@ -1,4 +1,4 @@
-{% load static %}
+{% load static guest_labels %}
 <!doctype html>
 <html lang="en">
   <head>
@@ -19,10 +19,20 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260629-1">
+    <script>
+      (function () {
+        try {
+          var guestNameStyle = localStorage.getItem("pve-helper-guest-name-style");
+          document.documentElement.dataset.guestNameStyle = guestNameStyle === "name-only" ? "name-only" : "id-name";
+        } catch (error) {
+          document.documentElement.dataset.guestNameStyle = "id-name";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260702-22">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script defer src="{% static 'js/app.js' %}?v=20260630-2"></script>
+    <script defer src="{% static 'js/app.js' %}?v=20260702-22"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -38,6 +48,9 @@
         <div class="user-area">
           <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">
             <span data-theme-label>Theme</span>
+          </button>
+          <button class="theme-toggle" type="button" data-guest-id-toggle aria-pressed="true" aria-label="Hide VM/CT IDs" title="Toggle VM/CT ID display">
+            <span data-guest-id-label>IDs on</span>
           </button>
           {% if request.user.is_authenticated %}
             <span>{{ request.user.get_username }}</span>
@@ -66,13 +79,11 @@
             </div>
           </section>
 
-          <section class="tree-module" aria-label="VMs module">
-            <div class="tree-node module-node disabled">
-              <span class="tree-caret">></span>
-              <span class="tree-icon"><i data-lucide="monitor" aria-hidden="true"></i></span>
-              <span class="tree-label">VMs</span>
-            </div>
-          </section>
+          <a class="tree-node module-node {% if active_nav == 'vms' %}active{% endif %}" href="{% url 'core:vms' %}">
+            <span class="tree-caret"></span>
+            <span class="tree-icon"><i data-lucide="monitor" aria-hidden="true"></i></span>
+            <span class="tree-label">VMs</span>
+          </a>
 
           <section class="tree-module expanded" data-tree-module="storage" aria-label="Storage module">
             <button class="tree-node module-node active-module" type="button" data-tree-toggle aria-expanded="true">
@@ -187,7 +198,7 @@
               {% for task in app_recent_tasks %}
                 <tr>
                   <td>{{ task.name }}</td>
-                  <td>{{ task.target }}</td>
+                  <td>{% if task.target_guest %}{% guest_label task.target_guest %}{% else %}{{ task.target }}{% endif %}</td>
                   <td><span class="badge {{ task.status_class }}">{{ task.status }}</span></td>
                   <td>{{ task.details }}</td>
                   <td>{{ task.initiator }}</td>
