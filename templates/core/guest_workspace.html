@@ -56,9 +56,9 @@
              data-edit-options-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=options"
              data-filter-text="{{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }}">
             {% if g.status == 'running' %}
-              <span class="guest-list-icon running-icon" data-guest-status-icon title="running"><i data-lucide="play" aria-hidden="true"></i></span>
+              <span class="guest-list-icon running-icon" data-guest-status-icon data-current-icon="play" title="running"><i data-lucide="play" aria-hidden="true"></i></span>
             {% else %}
-              <span class="guest-list-icon" data-guest-status-icon title="{{ g.status|default:'unknown' }}"><i data-lucide="{% if g.object_type == 'ct' %}box{% elif g.is_template %}layers{% else %}monitor{% endif %}" aria-hidden="true"></i></span>
+              <span class="guest-list-icon" data-guest-status-icon data-current-icon="{% if g.object_type == 'ct' %}box{% elif g.is_template %}layers{% else %}monitor{% endif %}" title="{{ g.status|default:'unknown' }}"><i data-lucide="{% if g.object_type == 'ct' %}box{% elif g.is_template %}layers{% else %}monitor{% endif %}" aria-hidden="true"></i></span>
             {% endif %}
             <span class="guest-list-label">{% guest_label g %}</span>
           </a>

@@ -1842,8 +1842,12 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+.guest-label--full .guest-name {
+  margin-left: 0.25em;
+}
+
 .guest-label--full .guest-name::before {
-  content: " (";
+  content: "(";
 }
 
 .guest-label--full .guest-name::after {
@@ -1852,6 +1856,10 @@ code {
 
 [data-guest-name-style="name-only"] .guest-label--full .guest-vmid {
   display: none;
+}
+
+[data-guest-name-style="name-only"] .guest-label--full .guest-name {
+  margin-left: 0;
 }
 
 [data-guest-name-style="name-only"] .guest-label--full .guest-name::before,
@@ -2792,6 +2800,10 @@ code {
 .guest-list-icon {
   flex: none;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   opacity: 0.7;
 }
 
@@ -5026,12 +5038,64 @@ html[data-theme="dark"] .hardware-editor-page {
 }
 
 .vm-overview-table {
-  min-width: 1450px;
+  min-width: 1840px;
+  table-layout: fixed;
 }
 
 .vm-overview-table th,
 .vm-overview-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vm-overview-table [data-column="name"] {
+  width: 260px;
+}
+
+.vm-overview-table [data-column="state"] {
+  width: 120px;
+}
+
+.vm-overview-table [data-column="provisioned"],
+.vm-overview-table [data-column="active-mem"] {
+  width: 130px;
+}
+
+.vm-overview-table [data-column="used"],
+.vm-overview-table [data-column="host-mem"],
+.vm-overview-table [data-column="memory-size"],
+.vm-overview-table [data-column="has-snapshot"] {
+  width: 110px;
+}
+
+.vm-overview-table [data-column="cpu"],
+.vm-overview-table [data-column="node"],
+.vm-overview-table [data-column="uptime"] {
+  width: 100px;
+}
+
+.vm-overview-table [data-column="guest-os"] {
+  width: 200px;
+}
+
+.vm-overview-table [data-column="agent"] {
+  width: 120px;
+}
+
+.vm-overview-table [data-column="vmid"],
+.vm-overview-table [data-column="type"],
+.vm-overview-table [data-column="cpus"],
+.vm-overview-table [data-column="nics"],
+.vm-overview-table [data-column="disks"] {
+  width: 80px;
+}
+
+.vm-overview-table [data-column="ip"],
+.vm-overview-table [data-column="mac"],
+.vm-overview-table [data-column="storage"],
+.vm-overview-table [data-column="tags"] {
+  width: 170px;
 }
 
 .vm-overview-table tr.selected td {
@@ -5054,6 +5118,7 @@ html[data-theme="dark"] .hardware-editor-page {
 .vm-select-column {
   width: 36px;
   min-width: 36px;
+  max-width: 36px;
   text-align: center;
 }
 
@@ -5068,8 +5133,22 @@ html[data-theme="dark"] .hardware-editor-page {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  max-width: 100%;
   color: var(--accent);
   text-decoration: none;
+}
+
+.vm-name-link .guest-label,
+.vm-name-link .guest-name,
+.vm-name-link .guest-vmid {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vm-name-link .guest-label {
+  display: inline-flex;
+  max-width: calc(100% - 26px);
 }
 
 .vm-name-link:hover {

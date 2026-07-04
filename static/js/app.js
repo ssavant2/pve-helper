@@ -71,6 +71,71 @@
     window.dispatchEvent(new CustomEvent("pve-helper:update-pending-task", { detail: task }));
   };
 
+  const guestPowerActions = new Set(["start", "shutdown", "reboot", "stop", "reset"]);
+
+  const expectedGuestStatusFromTask = (task) => {
+    if (task.status_class !== "completed") {
+      return "";
+    }
+    const action = String(task.action || "").replace(/^guest\.power\./, "");
+    if (!guestPowerActions.has(action)) {
+      return "";
+    }
+    return ["start", "reboot", "reset"].includes(action) ? "running" : "stopped";
+  };
+
+  const taskGuestTargetCandidates = (task) => {
+    const target = task.target_guest || {};
+    const type = String(target.type || "");
+    const vmid = target.vmid;
+    if (!type || vmid === undefined || vmid === null || vmid === "") {
+      return [];
+    }
+    const base = `${type}:${vmid}`;
+    const server = String(task.server || "");
+    return server && server !== "-" ? [`${base}@${server}`, base] : [base];
+  };
+
+  const applyGuestStatusHintsFromTasks = (tasks, previousTaskStatuses) => {
+    let changed = false;
+    const touchedTargets = new Set();
+    (tasks || []).forEach((task) => {
+      const status = expectedGuestStatusFromTask(task);
+      if (!status) {
+        return;
+      }
+      const previousStatus = previousTaskStatuses.get(task.id);
+      if (!previousStatus || previousStatus === task.status_class) {
+        return;
+      }
+      const targetKey = taskGuestTargetCandidates(task)[0] || "";
+      if (targetKey && touchedTargets.has(targetKey)) {
+        return;
+      }
+      if (targetKey) {
+        touchedTargets.add(targetKey);
+      }
+      document.querySelectorAll("[data-vm-overview]").forEach((overview) => {
+        const row = taskGuestTargetCandidates(task)
+          .map((target) => overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`))
+          .find(Boolean);
+        if (!row || row.dataset.guestStatus === status) {
+          return;
+        }
+        updateVmRowStatus(row, {
+          target: row.dataset.guestTarget || "",
+          status,
+          state_label: status === "running" ? "Powered On" : "Powered Off",
+        });
+        changed = true;
+      });
+    });
+    if (changed) {
+      createIcons();
+    }
+    return changed;
+  };
+
   const taskDateLabel = (date) => {
     const pad = (value) => String(value).padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
@@ -999,6 +1064,7 @@
     let storageReloadPending = false;
     let pendingTasks = [];
     let lastLoadedTasks = [];
+    let taskStatusesById = new Map();
     let lastTaskPageData = {
       page: taskPage,
       total: 0,
@@ -1271,6 +1337,11 @@
               )
           );
         }
+        let previousTaskStatuses = new Map();
+        if (normalizedPage === 0) {
+          previousTaskStatuses = taskStatusesById;
+          taskStatusesById = new Map(loadedTasks.map((task) => [task.id, task.status_class]));
+        }
         if (
           maybeReloadCurrentStorageBrowser(loadedTasks) ||
           maybeReloadCurrentSnapshotView(loadedTasks) ||
@@ -1282,6 +1353,9 @@
         lastTaskPageData = data;
         renderTaskRows(loadedTasks);
         updateTaskControls(data);
+        if (normalizedPage === 0) {
+          applyGuestStatusHintsFromTasks(loadedTasks, previousTaskStatuses);
+        }
       } catch (_error) {
         // Recent task refresh is best effort; the server-rendered rows remain usable.
       } finally {
@@ -1591,9 +1665,13 @@
 
     const statusIcon = row.querySelector("[data-guest-status-icon]");
     if (statusIcon) {
+      const iconName = iconForGuestStatus(row, status);
       statusIcon.classList.toggle("running-icon", status === "running");
       statusIcon.title = status || "unknown";
-      statusIcon.innerHTML = `<i data-lucide="${iconForGuestStatus(row, status)}" aria-hidden="true"></i>`;
+      if (statusIcon.dataset.currentIcon !== iconName) {
+        statusIcon.dataset.currentIcon = iconName;
+        statusIcon.innerHTML = `<i data-lucide="${iconName}" aria-hidden="true"></i>`;
+      }
     }
 
     const activeBadge = row
@@ -1628,8 +1706,8 @@
         return;
       }
 
-      const refresh = async () => {
-        if (!document.body.contains(overview) || document.hidden) {
+      const refresh = async ({ force = false } = {}) => {
+        if (!document.body.contains(overview) || (!force && document.hidden)) {
           return;
         }
         try {
@@ -1665,6 +1743,7 @@
         }
       };
 
+      overview.refreshVmStatus = refresh;
       refresh();
       const intervalId = window.setInterval(refresh, 2500);
       registerPageCleanup(() => window.clearInterval(intervalId));
@@ -2722,10 +2801,13 @@
       }
 
       const applyColumnOrder = () => {
-        const normalizedOrder = [
+        const preferredOrder = [
           ...order.filter((column) => defaultOrder.includes(column)),
           ...defaultOrder.filter((column) => !order.includes(column)),
         ];
+        const normalizedOrder = preferredOrder.includes("name")
+          ? ["name", ...preferredOrder.filter((column) => column !== "name")]
+          : preferredOrder;
         order = normalizedOrder;
         Array.from(table.rows).forEach((row) => {
           const cells = Array.from(row.children);
@@ -2785,6 +2867,7 @@
         if (!label || label.dataset.columnPickerOption === "true") return;
         label.dataset.columnPickerOption = "true";
         label.classList.add("column-picker-option");
+        if (toggle.disabled || toggle.dataset.columnToggle === "name") return;
         const grip = document.createElement("span");
         grip.className = "column-picker-grip";
         grip.dataset.columnDragHandle = "true";
