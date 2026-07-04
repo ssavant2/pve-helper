@@ -270,7 +270,7 @@ class ProxmoxClientTests(SimpleTestCase):
     def test_live_guest_inventory_uses_cluster_resources(self):
         client = Mock()
 
-        def get(path):
+        def get(path, timeout=None):
             if path == "cluster/resources?type=vm":
                 return [
                     {"type": "qemu", "vmid": 500, "name": "Lab VM", "node": "pve1", "status": "running"},
@@ -1845,7 +1845,7 @@ class ViewSmokeTests(TestCase):
                 patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"),
                 patch("core.services.storage_actions.os.geteuid", return_value=999999),
                 patch("core.services.storage_actions.os.getegid", return_value=999999),
-                patch("core.views.async_task", return_value="inflate-task-1") as async_task_mock,
+                patch("core.views.common.async_task", return_value="inflate-task-1") as async_task_mock,
             ):
                 response = self.client.post(
                     reverse("core:storage_inflate_file", args=[storage.storage_id]),
@@ -2861,7 +2861,7 @@ class ViewSmokeTests(TestCase):
                 can_write=False,
             )
 
-            with patch("core.views.storage_space_info", return_value=read_only_info):
+            with patch("core.views.common.storage_space_info", return_value=read_only_info):
                 response = self.client.get(browser_url)
 
             self.assertEqual(response.status_code, 200)
@@ -3216,7 +3216,7 @@ class ViewSmokeTests(TestCase):
 
             response = self.client.post(
                 reverse("core:purge_trash_item", args=[trash_item.id]),
-                {"next": trash_url},
+                {"next": trash_url, "confirm_basic": "yes"},
             )
 
             self.assertRedirects(response, trash_url)
@@ -3224,6 +3224,43 @@ class ViewSmokeTests(TestCase):
             self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.PURGED)
             self.assertFalse(trash_file.exists())
             self.assertEqual(AuditEvent.objects.get(action="file.purged").object_id, "nfs-vm:dump/old.vma.zst")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_trash_item_purge_requires_confirmation(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "storage"
+            trash_file = root / ".trash/pve-helper/20260629T100000000000Z/dump/old.vma.zst"
+            trash_file.parent.mkdir(parents=True)
+            trash_file.write_bytes(b"trash")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            trash_item = TrashItem.objects.create(
+                original_path="dump/old.vma.zst",
+                trash_path=".trash/pve-helper/20260629T100000000000Z/dump/old.vma.zst",
+                moved_by=user,
+                moved_at=timezone.now(),
+                metadata={"storage_id": storage.storage_id},
+            )
+            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+
+            response = self.client.post(
+                reverse("core:purge_trash_item", args=[trash_item.id]),
+                {"next": trash_url},
+            )
+
+            self.assertRedirects(response, trash_url)
+            trash_item.refresh_from_db()
+            self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.TRASHED)
+            self.assertTrue(trash_file.exists())
+            messages = [str(message) for message in get_messages(response.wsgi_request)]
+            self.assertIn("Permanent delete was not confirmed.", messages)
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_trash_item_purge_rejects_path_outside_storage_root(self):
@@ -3253,7 +3290,7 @@ class ViewSmokeTests(TestCase):
 
             response = self.client.post(
                 reverse("core:purge_trash_item", args=[trash_item.id]),
-                {"next": trash_url},
+                {"next": trash_url, "confirm_basic": "yes"},
             )
 
             self.assertRedirects(response, trash_url)
@@ -3929,7 +3966,7 @@ class ViewSmokeTests(TestCase):
         )
 
         with patch(
-            "core.views.storage_space_info",
+            "core.views.common.storage_space_info",
             return_value=StorageSpaceInfo(
                 ok=True,
                 total_bytes=10 * 1024**4,
@@ -3963,7 +4000,7 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Queued scan")
 
         with patch(
-            "core.views.storage_space_info",
+            "core.views.common.storage_space_info",
             return_value=StorageSpaceInfo(
                 ok=True,
                 total_bytes=10 * 1024**4,
@@ -4194,8 +4231,8 @@ class ViewSmokeTests(TestCase):
         self.client.force_login(user)
 
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
-            patch("core.views.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
         ):
             response = self.client.get(reverse("core:vms_overview"))
 
@@ -4219,8 +4256,8 @@ class ViewSmokeTests(TestCase):
         ]
 
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=live_guests),
-            patch("core.views.fetch_live_guest_status", return_value={}),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=live_guests),
+            patch("core.views.common.fetch_live_guest_status", return_value={}),
         ):
             response = self.client.get(reverse("core:vms"))
 
@@ -4249,9 +4286,9 @@ class ViewSmokeTests(TestCase):
                 raise ProxmoxAPIError(path)
 
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
-            patch("core.views.fetch_live_guest_status", return_value={("vm", 500): "running"}),
-            patch("core.views.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:vms_overview_snapshot_info"))
 
@@ -4284,8 +4321,8 @@ class ViewSmokeTests(TestCase):
 
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:guest_snapshots", args=["vm", 500]))
 
@@ -4329,9 +4366,9 @@ class ViewSmokeTests(TestCase):
                 raise ProxmoxAPIError(path)
 
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
-            patch("core.views.fetch_live_guest_status", return_value={("vm", 500): "running"}),
-            patch("core.views.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:vms_overview_agent_info"))
 
@@ -4360,9 +4397,9 @@ class ViewSmokeTests(TestCase):
 
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.fetch_live_guest_status", return_value={("ct", 601): "stopped"}),
-            patch("core.views.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.fetch_live_guest_status", return_value={("ct", 601): "stopped"}),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:guest_summary", args=["ct", 601]))
 
@@ -4387,8 +4424,8 @@ class ViewSmokeTests(TestCase):
 
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
 
@@ -4421,8 +4458,8 @@ class ViewSmokeTests(TestCase):
         ]
 
         with (
-            patch("core.views.fetch_live_guest_inventory", side_effect=AssertionError("guest should not be resolved")),
-            patch("core.views.configured_clients", side_effect=AssertionError("Proxmox should not be called")),
+            patch("core.views.common.fetch_live_guest_inventory", side_effect=AssertionError("guest should not be resolved")),
+            patch("core.views.common.configured_clients", side_effect=AssertionError("Proxmox should not be called")),
         ):
             for route_name, args, post_data, redirect_name in cases:
                 with self.subTest(route_name=route_name):
@@ -4478,8 +4515,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
             patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_hardware_edit", args=["vm", 500]))
@@ -4517,7 +4554,7 @@ class ViewSmokeTests(TestCase):
 
         fake_client = FakeClient()
         with (
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
             patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_create", args=["vm"]))
@@ -4561,8 +4598,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:guest_hardware_edit", args=["vm", 500]),
@@ -4643,8 +4680,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:guest_hardware_edit", args=["vm", 500]),
@@ -4717,8 +4754,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="running")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
             patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_hardware_edit", args=["ct", 601]))
@@ -4774,8 +4811,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:guest_hardware_edit", args=["ct", 601]),
@@ -4918,8 +4955,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -4963,8 +5000,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -5023,8 +5060,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -5075,8 +5112,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(reverse("core:guest_snapshot_delete", args=["vm", 500, "snap-a"]))
 
@@ -5110,8 +5147,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_clone_options", args=["vm", 500]))
 
@@ -5144,8 +5181,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -5187,8 +5224,8 @@ class ViewSmokeTests(TestCase):
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             failed_response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -5249,8 +5286,8 @@ class ViewSmokeTests(TestCase):
             self._live_guest(object_type="vm", vmid=501, name="Other VM", node="pve1", status="stopped"),
         ]
         with (
-            patch("core.views.fetch_live_guest_inventory", return_value=live_guests),
-            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=live_guests),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -5318,7 +5355,7 @@ class ViewSmokeTests(TestCase):
             proxmox_task_node="pve1",
         )
 
-        with patch("core.views.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
+        with patch("core.views.common.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
             response = self.client.get(reverse("core:scheduled_tasks"))
 
         self.assertEqual(response.status_code, 200)
@@ -5334,7 +5371,7 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Latest 10 Runs")
         self.assertContains(response, "Success")
 
-        with patch("core.views.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
+        with patch("core.views.common.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
             response = self.client.get(reverse("core:scheduled_tasks"), {"target": "vm:500"})
 
         self.assertEqual(response.status_code, 200)
@@ -5435,7 +5472,7 @@ class ViewSmokeTests(TestCase):
             name="Lab VM",
         )
 
-        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.get(reverse("core:scheduled_task_create"))
 
         self.assertEqual(response.status_code, 200)
@@ -5452,14 +5489,14 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Weeks")
         self.assertContains(response, "Months")
 
-        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.get(reverse("core:scheduled_task_create"), {"target": "vm:500"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
         self.assertContains(response, 'value="vm:500" data-node="pve1" selected')
 
-        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
                 reverse("core:scheduled_task_create"),
                 {
@@ -5504,7 +5541,7 @@ class ViewSmokeTests(TestCase):
             target_vmid=500,
         )
 
-        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
                 reverse("core:scheduled_task_create"),
                 {
@@ -5532,7 +5569,7 @@ class ViewSmokeTests(TestCase):
             self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1"),
             self._live_guest(object_type="ct", vmid=101, name="Lab CT", node="pve2"),
         ]
-        with patch("core.views.fetch_live_guest_inventory", return_value=live_guests):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=live_guests):
             response = self.client.get(reverse("core:scheduled_task_create"))
 
         self.assertEqual(response.status_code, 200)
@@ -5555,7 +5592,7 @@ class ViewSmokeTests(TestCase):
             name="Lab VM",
         )
 
-        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
                 reverse("core:scheduled_task_create"),
                 {
@@ -5594,7 +5631,7 @@ class ViewSmokeTests(TestCase):
             target_vmid=501,
         )
 
-        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest(vmid=501)]):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(vmid=501)]):
             response = self.client.post(
                 reverse("core:scheduled_task_edit", args=[action.id]),
                 {
@@ -5636,7 +5673,7 @@ class ViewSmokeTests(TestCase):
             next_run_at=timezone.now() + timedelta(hours=1),
         )
 
-        with patch("core.views.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
                 reverse("core:scheduled_task_edit", args=[action.id]),
                 {
