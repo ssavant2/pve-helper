@@ -46,6 +46,7 @@
         <a href="{% url 'core:storage_summary' storage.storage_id %}" {% if active_storage_tab == 'summary' %}class="active"{% endif %}>Summary</a>
         <a href="{% url 'core:storage_monitor' storage.storage_id %}" {% if active_storage_tab == 'monitor' %}class="active"{% endif %}>Monitor</a>
         <a href="{% url 'core:storage_configure' storage.storage_id %}" {% if active_storage_tab == 'configure' %}class="active"{% endif %}>Configuration</a>
+        <a href="{% url 'core:storage_content' storage.storage_id %}" {% if active_storage_tab == 'content' %}class="active"{% endif %}>Content</a>
         <a href="{% url 'core:storage_permissions' storage.storage_id %}" {% if active_storage_tab == 'permissions' %}class="active"{% endif %}>Permissions</a>
         <a href="{% url 'core:storage_browser' storage.storage_id %}" {% if active_storage_tab == 'files' %}class="active"{% endif %}>Files</a>
         <a href="{% url 'core:storage_hosts' storage.storage_id %}" {% if active_storage_tab == 'hosts' %}class="active"{% endif %}>Nodes</a>

@@ -353,6 +353,19 @@ class ProxmoxClient:
             return None
         return self.put(f"nodes/{quote(node, safe='')}/{guest_kind}/{vmid}/config", data=data)
 
+    def set_storage_content(self, storage_id: str, content: list[str]) -> Any:
+        content = [item for index, item in enumerate(content) if item and item not in content[:index]]
+        normalized = ",".join(content)
+        if not normalized:
+            raise ProxmoxAPIError("Storage content cannot be empty.")
+        return self.put(f"storage/{quote(storage_id, safe='')}", data={"content": normalized})
+
+    def storage_config(self, storage_id: str) -> dict[str, Any]:
+        config = self._storage_config_map().get(storage_id)
+        if config is None:
+            raise ProxmoxAPIError(f"Storage '{storage_id}' was not found in Proxmox storage config.")
+        return config
+
     def _guest_kind(self, object_type: str) -> str:
         if object_type == "vm":
             return "qemu"

@@ -16,7 +16,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.core.exceptions import PermissionDenied
 from django.db import connection
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseForbidden, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.shortcuts import render
@@ -39,7 +39,7 @@ from ..models import (
     StorageSpaceSnapshot,
     TrashItem,
 )
-from ..services.classification import extract_disk_references
+from ..services.classification import extract_disk_references, parse_config_value_volid
 from ..services.file_actions import FileActionRisk, file_action_risk
 from ..services.audit_retention_schedule import audit_retention_schedule_state, update_audit_retention_schedule
 from ..services.filesystem import storage_space_info
@@ -409,6 +409,8 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Recycle Bin purge"
     if event.action == "trash.purge.schedule.updated":
         return "Recycle Bin purge schedule updated"
+    if event.action == "storage.content.updated":
+        return "Update storage content"
     if event.action == "audit.retention.purge":
         return "Audit retention purge"
     if event.action == "audit.retention.schedule.updated":

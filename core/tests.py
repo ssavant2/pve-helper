@@ -1137,6 +1137,13 @@ class ViewSmokeTests(TestCase):
             content_category="vm_disk",
             classification=FileInventory.Classification.CLASSIFICATION_BLOCKED,
         )
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve-node-1",
+            object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="nfs-vm",
+            config={"storage": "nfs-vm", "type": "nfs", "content": "images,iso"},
+        )
 
         for name in ["core:dashboard", "core:datastores", "core:orphan_finder"]:
             response = self.client.get(reverse(name))
@@ -1178,6 +1185,137 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, ">Nodes<")
         self.assertContains(response, "Expected Proxmox Nodes")
+
+        with patch("core.views.storage.common.configured_clients", return_value=[]):
+            response = self.client.get(reverse("core:storage_content", args=["nfs-vm"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Disk image")
+        self.assertContains(response, "Container template")
+        self.assertContains(response, "In use: 1")
+
+    def test_storage_content_update_blocks_used_content_type(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="nfs-vm",
+            config={"storage": "nfs-vm", "type": "nfs", "content": "images,iso"},
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/500/vm-500-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_disk",
+        )
+        fake_client = Mock()
+        fake_client.storage_config.return_value = {"content": "images,iso"}
+
+        with (
+            patch("core.views.storage._run_storage_content_preflight_scan", return_value=scan),
+            patch("core.views.storage.common.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:storage_content_update", args=["nfs-vm"]),
+                {"content": ["iso"]},
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        fake_client.set_storage_content.assert_not_called()
+        self.assertFalse(AuditEvent.objects.filter(action="storage.content.updated").exists())
+        self.assertContains(response, "Cannot disable Disk image")
+        self.assertContains(response, "images/500/vm-500-disk-0.qcow2")
+
+    def test_storage_content_update_saves_unused_content_types(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        storage_inventory = ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="nfs-vm",
+            config={"storage": "nfs-vm", "type": "nfs", "content": "images,iso,backup"},
+        )
+        fake_client = Mock()
+        fake_client.storage_config.return_value = {"content": "images,iso,backup"}
+
+        with (
+            patch("core.views.storage._run_storage_content_preflight_scan", return_value=scan),
+            patch("core.views.storage.common.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:storage_content_update", args=["nfs-vm"]),
+                {"content": ["images", "iso"]},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        fake_client.set_storage_content.assert_called_once_with("nfs-vm", ["images", "iso"])
+        event = AuditEvent.objects.get(action="storage.content.updated")
+        self.assertEqual(event.details["old_content"], ["images", "iso", "backup"])
+        self.assertEqual(event.details["new_content"], ["images", "iso"])
+        storage_inventory.refresh_from_db()
+        self.assertEqual(storage_inventory.config["content"], "images,iso")
+
+    def test_storage_content_update_scans_before_checking_usage(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        fake_client = Mock()
+
+        with TemporaryDirectory() as tmp:
+            iso_dir = Path(tmp) / "template" / "iso"
+            iso_dir.mkdir(parents=True)
+            (iso_dir / "hidden.iso").write_text("x", encoding="utf-8")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=tmp,
+            )
+            old_scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            ProxmoxInventory.objects.create(
+                scan_run=old_scan,
+                node="pve1",
+                object_type=ProxmoxInventory.ObjectType.STORAGE,
+                name="nfs-vm",
+                config={"storage": "nfs-vm", "type": "nfs", "content": "images,iso"},
+            )
+            fake_client.storage_config.return_value = {"content": "images,iso"}
+
+            with (
+                patch("core.tasks.sync_runtime_configuration"),
+                patch("core.views.storage.common.configured_clients", return_value=[fake_client]),
+            ):
+                response = self.client.post(
+                    reverse("core:storage_content_update", args=["nfs-vm"]),
+                    {"content": ["images"]},
+                    follow=True,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        fake_client.set_storage_content.assert_not_called()
+        self.assertContains(response, "Cannot disable ISO image")
+        self.assertContains(response, "template/iso/hidden.iso")
+        self.assertTrue(
+            FileInventory.objects.filter(
+                scan_run__target_storage=storage,
+                path="template/iso/hidden.iso",
+                content_category="iso",
+            ).exists()
+        )
 
     def test_storage_monitor_uses_scheduled_space_points_and_recent_activity(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -2557,6 +2695,13 @@ class ViewSmokeTests(TestCase):
         )
         AuditEvent.objects.create(
             username="viewer",
+            action="storage.content.updated",
+            object_type="storage",
+            object_id="nfs-vm",
+            details={"storage_id": "nfs-vm", "old_content": ["images"], "new_content": ["images", "iso"]},
+        )
+        AuditEvent.objects.create(
+            username="viewer",
             action="audit.retention.schedule.updated",
             object_type="audit_retention_schedule",
             object_id="automatic-audit-retention",
@@ -2578,6 +2723,7 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Normalize uploaded disk metadata")
         self.assertContains(response, "Recycle Bin purge")
         self.assertContains(response, "Recycle Bin purge schedule updated")
+        self.assertContains(response, "Update storage content")
         self.assertContains(response, "Audit retention schedule updated")
         self.assertContains(response, "Scan retention purge")
         self.assertContains(response, "Recycle Bin")

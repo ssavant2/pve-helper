@@ -2,6 +2,47 @@ from __future__ import annotations
 
 from .common import *  # noqa: F401,F403
 from . import common
+from ..services.storage import StorageScanner
+
+
+STORAGE_CONTENT_TYPES = [
+    {
+        "key": "images",
+        "label": "Disk image",
+        "description": "VM disks and templates stored as Proxmox disk volumes.",
+    },
+    {
+        "key": "iso",
+        "label": "ISO image",
+        "description": "Install media and other ISO files under template/iso.",
+    },
+    {
+        "key": "vztmpl",
+        "label": "Container template",
+        "description": "LXC templates under template/cache.",
+    },
+    {
+        "key": "backup",
+        "label": "Backup",
+        "description": "VZDUMP backup archives under dump.",
+    },
+    {
+        "key": "rootdir",
+        "label": "Container",
+        "description": "LXC root filesystems and container mount volumes.",
+    },
+    {
+        "key": "snippets",
+        "label": "Snippets",
+        "description": "Hook scripts and Cloud-Init snippets under snippets.",
+    },
+    {
+        "key": "import",
+        "label": "Import",
+        "description": "Imported disk images for VM import workflows.",
+    },
+]
+STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
 
 
 def _storage_tab_context(storage: StorageMount, latest_scan, active_tab: str) -> dict:
@@ -572,6 +613,359 @@ def storage_configure(request, storage_id: str):
 
 
 @app_login_required
+def storage_content(request, storage_id: str):
+    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    _decorate_storage_with_space_info(storage)
+    latest_scan = _latest_storage_result_scan(storage)
+    content_scan = _latest_storage_content_scan(storage) or latest_scan
+    current_content = _live_storage_content_values(storage)
+    context = {
+        **_storage_tab_context(storage, latest_scan, "content"),
+        "content_options": _storage_content_options(storage, content_scan, current_content=current_content),
+        "current_content": current_content,
+    }
+    return render(request, "core/storage_content.html", context)
+
+
+@require_POST
+@app_login_required
+def update_storage_content(request, storage_id: str):
+    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    _decorate_storage_with_space_info(storage)
+    latest_scan = _latest_storage_result_scan(storage)
+    config_scan = latest_scan
+    current_content = _live_storage_content_values(storage)
+    requested_content = _ordered_storage_content(request.POST.getlist("content"), current_content)
+    redirect_to = reverse("core:storage_content", args=[storage.storage_id])
+
+    if not requested_content:
+        messages.error(request, "Select at least one content type.")
+        return redirect(redirect_to)
+
+    try:
+        latest_scan = _run_storage_content_preflight_scan(storage)
+    except Exception as exc:
+        messages.error(request, f"Fresh preflight scan failed; storage content was not changed: {exc}")
+        return redirect(redirect_to)
+
+    preflight_errors = _storage_content_preflight_errors(latest_scan, storage)
+    if preflight_errors:
+        for error in preflight_errors:
+            messages.error(request, error)
+        return redirect(redirect_to)
+
+    removed = [key for key in current_content if key not in requested_content]
+    blockers = _storage_content_blockers(storage, latest_scan, removed)
+    if blockers:
+        for blocker in blockers:
+            examples = ", ".join(blocker["examples"][:3])
+            suffix = f" Examples: {examples}." if examples else ""
+            messages.error(
+                request,
+                f"Cannot disable {blocker['label']} because {blocker['count']} existing item"
+                f"{'' if blocker['count'] == 1 else 's'} use this storage.{suffix}",
+            )
+        return redirect(redirect_to)
+
+    updated = False
+    err = ""
+    for client in common.configured_clients():
+        try:
+            client.set_storage_content(storage.storage_id, requested_content)
+            updated = True
+            err = ""
+            break
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    if not updated:
+        if not err:
+            err = "No configured Proxmox endpoints."
+        messages.error(request, f"Failed to update storage content: {err}")
+        return redirect(redirect_to)
+
+    _update_latest_storage_config_content(storage, config_scan, requested_content)
+    record_audit_event(
+        request,
+        action="storage.content.updated",
+        object_type="storage",
+        object_id=storage.storage_id,
+        details={
+            "storage_id": storage.storage_id,
+            "storage_name": storage.display_name,
+            "old_content": current_content,
+            "new_content": requested_content,
+        },
+    )
+    return redirect(redirect_to)
+
+
+def _run_storage_content_preflight_scan(storage: StorageMount) -> ScanRun:
+    now = tz.now()
+    scan = ScanRun.objects.create(
+        status=ScanRun.Status.RUNNING,
+        started_at=now,
+        queued_task_id="content-preflight",
+        progress_message="Scanning storage content before applying changes.",
+        target_storage=storage,
+        target_label=storage.display_name,
+    )
+
+    scanner = StorageScanner(
+        storage.storage_id,
+        storage.path,
+        ignored_paths=ignored_relative_paths_for_storage(storage),
+    )
+    rows = [
+        FileInventory(
+            scan_run=scan,
+            storage=storage,
+            path=entry.path,
+            derived_volid=entry.derived_volid,
+            content_category=entry.content_category,
+            entry_type=entry.entry_type,
+            size_bytes=entry.size_bytes,
+            modified_at=_storage_content_preflight_timestamp(entry.modified_at),
+        )
+        for entry in scanner.iter_entries()
+    ]
+    FileInventory.objects.bulk_create(rows, batch_size=1000)
+
+    scan.status = ScanRun.Status.COMPLETED
+    scan.finished_at = tz.now()
+    scan.filesystem_scan_at = scan.finished_at
+    scan.summary_counts = {"files": len(rows), "proxmox_objects": 0, "classifications": {}}
+    scan.error_details = (
+        {"storage": {storage.storage_id: {"errors": scanner.errors}}}
+        if scanner.errors
+        else {}
+    )
+    scan.progress_message = (
+        f"Content preflight scan completed with {len(scanner.errors)} warning(s)."
+        if scanner.errors
+        else "Content preflight scan completed."
+    )
+    scan.save(
+        update_fields=[
+            "status",
+            "finished_at",
+            "filesystem_scan_at",
+            "summary_counts",
+            "error_details",
+            "progress_message",
+            "updated_at",
+        ]
+    )
+    return scan
+
+
+def _storage_content_preflight_timestamp(value: float | None):
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value, tz=tz.get_current_timezone())
+
+
+def _storage_content_preflight_errors(scan: ScanRun | None, storage: StorageMount) -> list[str]:
+    if scan is None:
+        return ["Fresh preflight scan did not complete; storage content was not changed."]
+    if scan.status != ScanRun.Status.COMPLETED:
+        return ["Fresh preflight scan did not complete; storage content was not changed."]
+
+    details = scan.error_details if isinstance(scan.error_details, dict) else {}
+    errors: list[str] = []
+    if details.get("proxmox"):
+        errors.append("Fresh preflight scan could not read all Proxmox inventory; storage content was not changed.")
+    storage_errors = (details.get("storage") or {}).get(storage.storage_id)
+    if storage_errors:
+        errors.append("Fresh preflight scan could not read all files on this storage; storage content was not changed.")
+    return errors
+
+
+def _storage_content_values(storage: StorageMount) -> list[str]:
+    content = getattr(getattr(storage, "details", None), "content", "") or ""
+    return [part.strip() for part in str(content).split(",") if part.strip()]
+
+
+def _live_storage_content_values(storage: StorageMount) -> list[str]:
+    for client in common.configured_clients():
+        try:
+            config = client.storage_config(storage.storage_id)
+        except ProxmoxAPIError:
+            continue
+        return _parse_storage_content_values(config.get("content", ""))
+    return _storage_content_values(storage)
+
+
+def _parse_storage_content_values(content) -> list[str]:
+    return [part.strip() for part in str(content or "").split(",") if part.strip()]
+
+
+def _ordered_storage_content(values: list[str], current_content: list[str]) -> list[str]:
+    requested = {value for value in values if value}
+    known = [key for key in STORAGE_CONTENT_ORDER if key in requested]
+    unknown = sorted(key for key in requested if key in current_content and key not in STORAGE_CONTENT_ORDER)
+    return known + unknown
+
+
+def _storage_content_options(
+    storage: StorageMount,
+    latest_scan: ScanRun | None,
+    *,
+    current_content: list[str] | None = None,
+) -> list[dict]:
+    current = current_content if current_content is not None else _storage_content_values(storage)
+    usage = _storage_content_usage(storage, latest_scan)
+    definitions = list(STORAGE_CONTENT_TYPES)
+    for key in sorted(set(current) - set(STORAGE_CONTENT_ORDER)):
+        definitions.append(
+            {
+                "key": key,
+                "label": key,
+                "description": "Unknown content type preserved from the current Proxmox storage configuration.",
+            }
+        )
+    return [
+        {
+            **definition,
+            "selected": definition["key"] in current,
+            "usage_count": usage.get(definition["key"], {"count": 0, "examples": []})["count"],
+            "usage_examples": usage.get(definition["key"], {"count": 0, "examples": []})["examples"][:3],
+        }
+        for definition in definitions
+    ]
+
+
+def _storage_content_blockers(storage: StorageMount, latest_scan: ScanRun | None, removed: list[str]) -> list[dict]:
+    if not removed:
+        return []
+    usage = _storage_content_usage(storage, latest_scan)
+    labels = {item["key"]: item["label"] for item in STORAGE_CONTENT_TYPES}
+    return [
+        {
+            "key": key,
+            "label": labels.get(key, key),
+            "count": usage.get(key, {"count": 0, "examples": []})["count"],
+            "examples": usage.get(key, {"count": 0, "examples": []})["examples"],
+        }
+        for key in removed
+        if usage.get(key, {"count": 0})["count"] > 0
+    ]
+
+
+def _storage_content_usage(storage: StorageMount, latest_scan: ScanRun | None) -> dict[str, dict]:
+    usage = {key: {"items": set(), "examples": []} for key in STORAGE_CONTENT_ORDER}
+    if latest_scan is None:
+        return _finalize_storage_content_usage(usage)
+
+    category_map = {
+        "images": {"vm_disk", "base_image"},
+        "iso": {"iso"},
+        "vztmpl": {"ct_template"},
+        "backup": {"backup"},
+        "rootdir": {"ct_private"},
+        "snippets": {"snippet", "snippets"},
+    }
+    for key, categories in category_map.items():
+        entries = (
+            FileInventory.objects.filter(
+                scan_run=latest_scan,
+                storage=storage,
+                entry_type=FileInventory.EntryType.FILE,
+                content_category__in=categories,
+            )
+            .order_by("path")
+            .values_list("path", flat=True)[:1000]
+        )
+        for path in entries:
+            _add_storage_content_usage(usage, key, path, path)
+
+    inventory = ProxmoxInventory.objects.filter(
+        scan_run=latest_scan,
+        object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+    ).order_by("node", "object_type", "vmid")
+    for obj in inventory:
+        if not isinstance(obj.config, dict):
+            continue
+        for key, value in _iter_config_strings(obj.config):
+            volid = parse_config_value_volid(value)
+            if not volid.startswith(f"{storage.storage_id}:"):
+                continue
+            content_key = _content_type_for_config_reference(obj, key, value, volid)
+            if content_key not in usage:
+                continue
+            label = _guest_reference_label(obj, key)
+            _add_storage_content_usage(usage, content_key, f"{obj.node}:{obj.object_type}:{obj.vmid}:{key}:{volid}", label)
+
+    return _finalize_storage_content_usage(usage)
+
+
+def _iter_config_strings(value, key: str = ""):
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            yield from _iter_config_strings(child_value, str(child_key))
+        return
+    if isinstance(value, list):
+        for child_value in value:
+            yield from _iter_config_strings(child_value, key)
+        return
+    if isinstance(value, str):
+        yield key, value
+
+
+def _content_type_for_config_reference(obj: ProxmoxInventory, key: str, value: str, volid: str) -> str:
+    relative = volid.split(":", 1)[1] if ":" in volid else ""
+    if relative.startswith("snippets/"):
+        return "snippets"
+    if relative.startswith("template/iso/") or "media=cdrom" in value:
+        return "iso"
+    if relative.startswith("template/cache/"):
+        return "vztmpl"
+    if obj.object_type == ProxmoxInventory.ObjectType.CT:
+        return "rootdir"
+    if key.startswith(("ide", "sata", "scsi", "virtio", "efidisk", "tpmstate", "unused")):
+        return "images"
+    return ""
+
+
+def _guest_reference_label(obj: ProxmoxInventory, key: str) -> str:
+    name = obj.name or f"{obj.object_type.upper()} {obj.vmid}"
+    node = f" on {obj.node}" if obj.node else ""
+    return f"{name}{node} ({key})"
+
+
+def _add_storage_content_usage(usage: dict[str, dict], key: str, item: str, example: str) -> None:
+    bucket = usage.setdefault(key, {"items": set(), "examples": []})
+    if item in bucket["items"]:
+        return
+    bucket["items"].add(item)
+    if len(bucket["examples"]) < 10:
+        bucket["examples"].append(example)
+
+
+def _finalize_storage_content_usage(usage: dict[str, dict]) -> dict[str, dict]:
+    return {
+        key: {
+            "count": len(bucket["items"]),
+            "examples": list(bucket["examples"]),
+        }
+        for key, bucket in usage.items()
+    }
+
+
+def _update_latest_storage_config_content(storage: StorageMount, latest_scan: ScanRun | None, content: list[str]) -> None:
+    if latest_scan is None:
+        return
+    for obj in ProxmoxInventory.objects.filter(
+        scan_run=latest_scan,
+        object_type=ProxmoxInventory.ObjectType.STORAGE,
+        name=storage.storage_id,
+    ):
+        config = dict(obj.config or {})
+        config["content"] = ",".join(content)
+        obj.config = config
+        obj.save(update_fields=["config", "updated_at"])
+
+
+@app_login_required
 def storage_permissions_view(request, storage_id: str):
     storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
     _decorate_storage_with_space_info(storage)
@@ -992,8 +1386,18 @@ def _storage_gate_rows(storages: list[StorageMount], result_scan: ScanRun | None
 def _latest_storage_result_scan(storage: StorageMount) -> ScanRun | None:
     return (
         ScanRun.objects.filter(status=ScanRun.Status.COMPLETED)
+        .exclude(queued_task_id="content-preflight")
         .filter(Q(target_storage=storage) | Q(target_storage__isnull=True))
-        .order_by("-filesystem_scan_at", "-finished_at", "-created_at")
+        .order_by(F("filesystem_scan_at").desc(nulls_last=True), F("finished_at").desc(nulls_last=True), "-created_at")
+        .first()
+    )
+
+
+def _latest_storage_content_scan(storage: StorageMount) -> ScanRun | None:
+    return (
+        ScanRun.objects.filter(status=ScanRun.Status.COMPLETED)
+        .filter(Q(target_storage=storage) | Q(target_storage__isnull=True))
+        .order_by(F("filesystem_scan_at").desc(nulls_last=True), F("finished_at").desc(nulls_last=True), "-created_at")
         .first()
     )
 
