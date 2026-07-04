@@ -4512,6 +4512,7 @@ html[data-theme="dark"] .hardware-editor-page {
 .hw-mini input,
 .hw-field input,
 .hw-field select,
+.hw-field textarea,
 .hw-add-fields input,
 .hw-add-fields select,
 .hw-inline-field input,
@@ -4533,11 +4534,20 @@ html[data-theme="dark"] .hardware-editor-page {
   padding-top: 6px;
 }
 
+.hw-field textarea {
+  min-height: 76px;
+  height: auto;
+  padding-top: 6px;
+  overflow: hidden;
+  resize: vertical;
+}
+
 .hw-item-primary input:focus,
 .hw-item-primary select:focus,
 .hw-mini input:focus,
 .hw-field input:focus,
 .hw-field select:focus,
+.hw-field textarea:focus,
 .hw-inline-field input:focus,
 .hw-inline-field select:focus,
 .hw-inline-field textarea:focus {
@@ -4593,6 +4603,33 @@ html[data-theme="dark"] .hardware-editor-page {
   padding: 7px 0;
 }
 
+.hw-field-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
+  column-gap: 28px;
+  row-gap: 0;
+}
+
+.hw-item > .hw-item-body.hw-field-grid-2 {
+  display: none;
+}
+
+.hw-item.is-open > .hw-item-body.hw-field-grid-2 {
+  display: grid;
+}
+
+.hw-field-grid-2 .hw-field {
+  grid-template-columns: 170px minmax(0, 1fr);
+}
+
+.hw-field-wide {
+  grid-template-columns: 190px minmax(0, 760px);
+}
+
+.hw-field-grid-2 .hw-field-wide {
+  grid-column: 1 / -1;
+}
+
 .hw-switch {
   color: var(--vs-text);
 }
@@ -4604,6 +4641,92 @@ html[data-theme="dark"] .hardware-editor-page {
 
 .hw-checkbox {
   color: var(--vs-text) !important;
+}
+
+.hw-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: center;
+  min-height: 32px;
+}
+
+.hw-checkbox-group .hw-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hw-checkbox-group input[type="checkbox"],
+.hw-boot-editor input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+}
+
+.hw-boot-editor {
+  width: min(100%, 980px);
+  border: 1px solid var(--vs-line);
+  background: rgba(4, 13, 18, 0.16);
+}
+
+.hw-boot-head,
+.hw-boot-row {
+  display: grid;
+  grid-template-columns: 40px 86px 130px minmax(240px, 1fr) 76px;
+  align-items: center;
+  gap: 10px;
+  min-height: 35px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--vs-line);
+}
+
+.hw-boot-head {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.hw-boot-row {
+  color: var(--vs-text);
+  cursor: grab;
+}
+
+.hw-boot-row:last-child {
+  border-bottom: 0;
+}
+
+.hw-boot-row.is-dragging {
+  opacity: 0.55;
+}
+
+.hw-boot-row code {
+  color: var(--vs-text);
+  font: inherit;
+  font-weight: 700;
+}
+
+.hw-boot-description {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hw-boot-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+}
+
+.hw-boot-grip {
+  cursor: grab;
+}
+
+.hw-empty-inline {
+  padding: 12px 14px;
+  color: var(--muted);
 }
 
 .hw-danger,
@@ -4695,6 +4818,10 @@ html[data-theme="dark"] .hardware-editor-page {
   .hw-field {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .hw-field-grid-2 {
+    grid-template-columns: 1fr;
   }
 }
 

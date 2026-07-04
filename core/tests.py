@@ -45,6 +45,7 @@ from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_m
 from core.services.proxmox import (
     LIVE_GUEST_INVENTORY_CACHE_SECONDS,
     LIVE_GUEST_STATUS_CACHE_SECONDS,
+    InventoryResult,
     ProxmoxAPIError,
     ProxmoxClient,
     ProxmoxTaskTimeout,
@@ -82,6 +83,7 @@ from core.tasks import (
     purge_expired_audit_events,
     purge_expired_trash,
     record_storage_space_snapshots,
+    run_scan,
 )
 
 
@@ -907,6 +909,47 @@ class ScanRetentionTests(TestCase):
             vmid=100,
             name=name,
         )
+
+
+class ScanTaskTests(TestCase):
+    def test_run_scan_uses_inventory_result_ok_and_audits_completion(self):
+        ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.test:8006")
+        StorageMount.objects.create(storage_id="nfs-fs", display_name="nfs-fs", path="/storage")
+        scan = ScanRun.objects.create(progress_message="Queued")
+
+        class FakeProxmoxClient:
+            def __init__(self, endpoint):
+                self.endpoint = endpoint
+
+            def discover_node_name(self, fallback):
+                return fallback
+
+            def inventory(self, node):
+                return InventoryResult(node=node, ok=True, objects=[], errors=[])
+
+        class EmptyScanner:
+            errors = []
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def iter_entries(self):
+                return iter(())
+
+        with (
+            patch("core.tasks.ProxmoxClient", FakeProxmoxClient),
+            patch("core.tasks.StorageScanner", EmptyScanner),
+            patch("core.tasks.sync_runtime_configuration"),
+            patch("core.tasks._prune_scan_history_after_success"),
+        ):
+            run_scan(scan.id)
+
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.COMPLETED)
+        self.assertEqual(scan.endpoints_succeeded, ["pve1"])
+        event = AuditEvent.objects.get(action="scan.completed", object_id=str(scan.id))
+        self.assertEqual(event.outcome, "success")
+        self.assertEqual(event.details["target_label"], "All storages")
 
 
 class AuditEventTests(TestCase):
@@ -4134,6 +4177,25 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Has snapshot")
         self.assertNotContains(response, "guest-list-pane")
 
+    def test_vms_workspace_guest_list_sorts_by_name(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        live_guests = [
+            self._live_guest(vmid=500, name="ubuntu-test", node="pve1"),
+            self._live_guest(vmid=100, name="pve3-veeam-worker", node="pve1"),
+            self._live_guest(vmid=501, name="SophosTest", node="pve1"),
+        ]
+
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=live_guests),
+            patch("core.views.fetch_live_guest_status", return_value={}),
+        ):
+            response = self.client.get(reverse("core:vms"))
+
+        html = response.content.decode()
+        self.assertLess(html.index('data-guest-name="pve3-veeam-worker"'), html.index('data-guest-name="SophosTest"'))
+        self.assertLess(html.index('data-guest-name="SophosTest"'), html.index('data-guest-name="ubuntu-test"'))
+
     def test_vms_overview_snapshot_info_reports_live_snapshot_state(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -4302,6 +4364,8 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Virtual Hardware")
         self.assertContains(response, "VM Options")
         self.assertContains(response, "Boot Options")
+        self.assertContains(response, 'data-boot-order-editor')
+        self.assertContains(response, 'data-hotplug-editor')
         self.assertContains(response, "scsi0")
         self.assertContains(response, "vmbr0")
 
@@ -4360,7 +4424,10 @@ class ViewSmokeTests(TestCase):
                     "vm_machine": "q35",
                     "vm_scsihw": "virtio-scsi-single",
                     "vm_cpu": "host",
+                    "vm_hotplug": "disk,network,memory",
                     "vm_numa": "on",
+                    "vm_balloon_enabled": "on",
+                    "vm_allow_ksm": "on",
                     "startup_order": "2",
                     "startup_up": "30",
                     "startup_down": "60",
@@ -4386,8 +4453,69 @@ class ViewSmokeTests(TestCase):
                 "machine": "q35",
                 "scsihw": "virtio-scsi-single",
                 "cpu": "host",
+                "hotplug": "disk,network,memory",
                 "numa": "1",
                 "startup": "order=2,up=30,down=60",
+            },
+        )
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_hardware_edit_adds_multiple_devices_of_same_type(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.updates = None
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {
+                    "digest": "abc123",
+                    "name": "Lab VM",
+                    "cores": "2",
+                    "sockets": "1",
+                    "memory": "2048",
+                }
+
+            def set_guest_config(self, *, node, object_type, vmid, updates, delete=None, digest=None):
+                self.updates = updates
+                return None
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:guest_hardware_edit", args=["vm", 500]),
+                {
+                    "vm_name": "Lab VM",
+                    "vm_tablet": "on",
+                    "vm_acpi": "on",
+                    "vm_balloon_enabled": "on",
+                    "vm_allow_ksm": "on",
+                    "cores": "2",
+                    "sockets": "1",
+                    "memory": "2048",
+                    "newdisk_storage": ["nfs-vm", "nfs-vm"],
+                    "newdisk_size": ["10", "20"],
+                    "newnic_bridge": ["vmbr0", "vmbr1"],
+                    "newnic_vlan": ["", "42"],
+                },
+            )
+
+        self.assertRedirects(response, reverse("core:guest_summary", args=["vm", 500]), fetch_redirect_response=False)
+        self.assertEqual(
+            fake_client.updates,
+            {
+                "scsi0": "nfs-vm:10",
+                "scsi1": "nfs-vm:20",
+                "net0": "virtio,bridge=vmbr0",
+                "net1": "virtio,bridge=vmbr1,tag=42",
             },
         )
 

@@ -242,6 +242,7 @@ def run_scan(scan_run_id: int) -> None:
         scan.progress_message = "Scan failed."
         scan.error_details = {"error": exc.__class__.__name__, "message": str(exc)}
         scan.save(update_fields=["status", "finished_at", "progress_message", "error_details", "updated_at"])
+        _audit_scan_terminal(scan, "scan.failed", "failed")
         raise
 
 
@@ -337,7 +338,7 @@ def _run_scan(scan: ScanRun) -> None:
         endpoint_attempts.append(node_name)
         result = client.inventory(node_name)
 
-        if result.success:
+        if result.ok:
             endpoint_successes.append(node_name)
             endpoint.last_health_status = "ok"
             endpoint.last_successful_scan = timezone.now()
@@ -473,7 +474,40 @@ def _run_scan(scan: ScanRun) -> None:
             "updated_at",
         ]
     )
+    _audit_scan_terminal(
+        scan,
+        "scan.completed",
+        "success" if not warning_count else "warning",
+        {"warnings": warning_count},
+    )
     _prune_scan_history_after_success()
+
+
+def _audit_scan_terminal(
+    scan: ScanRun,
+    action: str,
+    outcome: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "target_label": scan.target_label
+        or (scan.target_storage.display_name if scan.target_storage else "All storages"),
+        "progress": scan.progress_message,
+    }
+    if scan.error_details:
+        payload["error_details"] = scan.error_details
+    if scan.summary_counts:
+        payload["summary_counts"] = scan.summary_counts
+    if details:
+        payload.update(details)
+    AuditEvent.objects.create(
+        username="system",
+        action=action,
+        object_type="scan_run",
+        object_id=str(scan.id),
+        outcome=outcome,
+        details=payload,
+    )
 
 
 def _prune_scan_history_after_success() -> None:

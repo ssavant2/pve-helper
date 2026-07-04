@@ -5,6 +5,7 @@ import re
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from typing import Iterable, Iterator
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
@@ -376,7 +377,7 @@ def _guest_rows():
                 )
             )
 
-    rows.sort(key=lambda row: (row.type_sort, row.vmid or 0, row.node))
+    rows.sort(key=lambda row: ((row.name or "").casefold(), row.type_sort, row.vmid or 0, row.node))
     _decorate_guests_with_scheduled_actions(rows)
     return rows, live_available, _scan_timestamp(latest_scan)
 
@@ -677,6 +678,24 @@ def guest_summary(request, object_type: str, vmid: int):
 GUEST_EDIT_FIELDS = ("name", "description", "onboot")
 NET_KEY_RE = re.compile(r"^net\d+$")
 ADVANCED_DEVICE_RE = re.compile(r"^(efidisk0|tpmstate0|rng0|audio0|serial\d+|usb\d+|hostpci\d+|virtiofs\d+)$")
+HOTPLUG_DEFAULT = "disk,network,usb"
+HOTPLUG_OPTIONS = (
+    ("disk", "Disk"),
+    ("network", "Network"),
+    ("usb", "USB"),
+    ("memory", "Memory"),
+    ("cpu", "CPU"),
+)
+CPU_TYPE_OPTIONS = (
+    ("", "Default"),
+    ("host", "host"),
+    ("max", "max"),
+    ("x86-64-v2-AES", "x86-64-v2-AES"),
+    ("x86-64-v3", "x86-64-v3"),
+    ("x86-64-v4", "x86-64-v4"),
+    ("kvm64", "kvm64"),
+    ("qemu64", "qemu64"),
+)
 
 
 def _parse_net_value(value: str) -> dict:
@@ -697,10 +716,10 @@ def _parse_net_value(value: str) -> dict:
     return entry
 
 
-def _next_device_index(config: dict, prefix: str) -> int:
+def _next_device_index(config: dict, prefix: str, extra_keys: Iterable[str] | None = None) -> int:
     used = set()
     pattern = re.compile(rf"^{prefix}(\d+)$")
-    for key in config:
+    for key in list(config) + list(extra_keys or []):
         match = pattern.match(key)
         if match:
             used.add(int(match.group(1)))
@@ -736,6 +755,73 @@ def _advanced_devices(config: dict) -> list[dict]:
         if ADVANCED_DEVICE_RE.match(key):
             devices.append({"key": key, "label": _advanced_device_label(key), "value": config[key]})
     return devices
+
+
+def _cpu_type_options(current: str) -> tuple[tuple[str, str], ...]:
+    options = list(CPU_TYPE_OPTIONS)
+    if current and current not in {value for value, _label in options}:
+        options.insert(1, (current, current))
+    return tuple(options)
+
+
+def _parse_boot_order(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text.startswith("order="):
+        return []
+    return [item for item in text.split("=", 1)[1].split(";") if item]
+
+
+def _boot_device_sort_key(key: str) -> tuple[int, int, str]:
+    match = re.match(r"^([a-z]+)(\d+)$", key)
+    bus_order = {"ide": 0, "sata": 1, "scsi": 2, "virtio": 3, "net": 4}
+    if not match:
+        return (99, 999, key)
+    bus, index = match.groups()
+    return (bus_order.get(bus, 90), int(index), key)
+
+
+def _boot_devices(config: dict, disks: list[dict], cdroms: list[dict], nics: list[dict]) -> list[dict]:
+    configured_order = _parse_boot_order(config.get("boot"))
+    devices: dict[str, dict] = {}
+    for disk in disks:
+        size = f", size={disk['size']}" if disk.get("size") else ""
+        devices[disk["label"]] = {
+            "key": disk["label"],
+            "label": disk["label"],
+            "description": f"{disk.get('volid', '')}{size}",
+        }
+    for cdrom in cdroms:
+        devices[cdrom["label"]] = {
+            "key": cdrom["label"],
+            "label": cdrom["label"],
+            "description": cdrom.get("value") or "CD/DVD Drive",
+        }
+    for nic in nics:
+        bridge = nic.get("bridge") or "not connected"
+        vlan = f", VLAN {nic['vlan']}" if nic.get("vlan") else ""
+        devices[nic["label"]] = {
+            "key": nic["label"],
+            "label": nic["label"],
+            "description": f"{nic.get('model') or 'network'} on {bridge}{vlan}",
+        }
+    for key in configured_order:
+        devices.setdefault(key, {"key": key, "label": key, "description": "Configured boot device"})
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for key in configured_order:
+        if key in devices:
+            rows.append({**devices[key], "enabled": True})
+            seen.add(key)
+    for key in sorted((key for key in devices if key not in seen), key=_boot_device_sort_key):
+        rows.append({**devices[key], "enabled": False})
+    return rows
+
+
+def _hotplug_options(config: dict) -> list[dict]:
+    raw_value = str(config.get("hotplug", HOTPLUG_DEFAULT) if "hotplug" not in config else config.get("hotplug") or "")
+    enabled = {token.strip() for token in raw_value.split(",") if token.strip()}
+    return [{"value": value, "label": label, "enabled": value in enabled} for value, label in HOTPLUG_OPTIONS]
 
 
 @app_login_required
@@ -776,6 +862,7 @@ def guest_hardware_edit(request, object_type: str, vmid: int):
         "guest_identity": guest_identity(object_type, vmid, detail.name),
         "cores": config.get("cores", ""),
         "sockets": config.get("sockets", "") or "1",
+        "cpu_total": _cpu_count(config, object_type),
         "memory": config.get("memory", ""),
         "disks": disks,
         "nics": nics,
@@ -788,6 +875,8 @@ def guest_hardware_edit(request, object_type: str, vmid: int):
         "cdrom_iso": cdrom_iso,
         "options": options,
         "vm_options": _vm_settings_options(config),
+        "boot_devices": _boot_devices(config, disks, cdroms, nics),
+        "hotplug_options": _hotplug_options(config),
         "ostype_options": OSTYPE_LABELS.items(),
         "bios_options": (("seabios", "SeaBIOS"), ("ovmf", "OVMF (UEFI)")),
         "machine_options": (("", "Default"), ("q35", "q35"), ("pc", "i440fx / pc")),
@@ -800,6 +889,20 @@ def guest_hardware_edit(request, object_type: str, vmid: int):
             ("megasas", "MegaRAID SAS"),
             ("pvscsi", "VMware PVSCSI"),
         ),
+        "vga_options": (
+            ("", "Default"),
+            ("std", "Standard VGA"),
+            ("virtio", "VirtIO-GPU"),
+            ("virtio-gl", "VirtIO-GPU GL"),
+            ("qxl", "SPICE/QXL"),
+            ("qxl2", "SPICE/QXL 2 monitors"),
+            ("qxl3", "SPICE/QXL 3 monitors"),
+            ("qxl4", "SPICE/QXL 4 monitors"),
+            ("vmware", "VMware compatible"),
+            ("serial0", "Serial terminal 0"),
+            ("none", "None"),
+        ),
+        "cpu_type_options": _cpu_type_options(str(config.get("cpu", "") or "")),
     }
     return render(request, "core/guest_hardware_edit.html", context)
 
@@ -880,16 +983,60 @@ def _vm_settings_options(config: dict) -> dict[str, object]:
         "acpi": _config_enabled(config, "acpi", default=True),
         "localtime": _config_enabled(config, "localtime"),
         "numa": _config_enabled(config, "numa"),
+        "allow_ksm": _config_enabled(config, "allow-ksm", default=True),
         "boot": str(config.get("boot", "") or ""),
         "ostype": str(config.get("ostype", "") or "l26"),
         "bios": str(config.get("bios", "") or "seabios"),
+        "vga": str(config.get("vga", "") or ""),
         "machine": str(config.get("machine", "") or ""),
         "scsihw": str(config.get("scsihw", "") or ""),
         "cpu": str(config.get("cpu", "") or ""),
+        "vcpus": str(config.get("vcpus", "") or ""),
+        "cpuunits": str(config.get("cpuunits", "") or ""),
+        "cpulimit": str(config.get("cpulimit", "") or ""),
+        "affinity": str(config.get("affinity", "") or ""),
+        "balloon_enabled": str(config.get("balloon", "") or "") != "0",
+        "balloon": str(config.get("balloon", "") or ""),
+        "shares": str(config.get("shares", "") or ""),
+        "hotplug": str(config.get("hotplug", HOTPLUG_DEFAULT) if "hotplug" not in config else config.get("hotplug") or ""),
         "startup_order": startup["order"],
         "startup_up": startup["up"],
         "startup_down": startup["down"],
     }
+
+
+def _field_lists(post, *names: str) -> Iterator[tuple[str, ...]]:
+    values = [post.getlist(name) for name in names]
+    max_len = max((len(items) for items in values), default=0)
+    for index in range(max_len):
+        yield tuple((items[index].strip() if index < len(items) else "") for items in values)
+
+
+def _validate_positive_int(value: str, label: str, *, allow_zero: bool = False) -> str | None:
+    if not value:
+        return None
+    if not value.isdigit():
+        return f"{label} must be a whole number."
+    if int(value) < 0 or (int(value) == 0 and not allow_zero):
+        return f"{label} must be a positive whole number."
+    return None
+
+
+def _set_optional_number_update(
+    updates: dict[str, str],
+    delete: list[str],
+    config: dict,
+    key: str,
+    value: str,
+    label: str,
+    *,
+    allow_zero: bool = False,
+) -> str | None:
+    error = _validate_positive_int(value, label, allow_zero=allow_zero)
+    if error:
+        return error
+    _set_text_update(updates, delete, config, key, value)
+    return None
 
 
 def _apply_hardware_edit(request, detail: SimpleNamespace):
@@ -931,6 +1078,7 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         ("vm_acpi", "acpi", True),
         ("vm_localtime", "localtime", False),
         ("vm_numa", "numa", False),
+        ("vm_allow_ksm", "allow-ksm", True),
     ):
         _set_checkbox_update(updates, fresh, key, post.get(form_field) == "on", default=default)
 
@@ -938,14 +1086,53 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         ("vm_boot", "boot", ""),
         ("vm_ostype", "ostype", "l26"),
         ("vm_bios", "bios", "seabios"),
+        ("vm_vga", "vga", ""),
         ("vm_machine", "machine", ""),
         ("vm_scsihw", "scsihw", ""),
         ("vm_cpu", "cpu", ""),
+        ("vm_affinity", "affinity", ""),
+        ("vm_hotplug", "hotplug", HOTPLUG_DEFAULT),
     ):
         new_value = post.get(form_field, "").strip()
         if key not in fresh and new_value == implicit_default:
             continue
         _set_text_update(updates, delete, fresh, key, new_value)
+
+    for form_field, key, label in (
+        ("vm_vcpus", "vcpus", "VCPUs"),
+        ("vm_cpuunits", "cpuunits", "CPU units"),
+        ("vm_shares", "shares", "Memory shares"),
+    ):
+        error = _set_optional_number_update(
+            updates,
+            delete,
+            fresh,
+            key,
+            post.get(form_field, "").strip(),
+            label,
+            allow_zero=False,
+        )
+        if error:
+            return error
+
+    cpulimit = post.get("vm_cpulimit", "").strip()
+    if cpulimit:
+        try:
+            if float(cpulimit) < 0:
+                return "CPU limit must be zero or higher."
+        except ValueError:
+            return "CPU limit must be a number."
+    _set_text_update(updates, delete, fresh, "cpulimit", cpulimit)
+
+    balloon_enabled = post.get("vm_balloon_enabled") == "on"
+    balloon_value = post.get("vm_balloon", "").strip()
+    if balloon_enabled:
+        error = _validate_positive_int(balloon_value, "Minimum memory", allow_zero=False)
+        if error:
+            return error
+        _set_text_update(updates, delete, fresh, "balloon", balloon_value)
+    elif str(fresh.get("balloon", "") or "") != "0":
+        updates["balloon"] = "0"
 
     startup_value = _startup_from_post(post)
     if startup_value is None:
@@ -965,10 +1152,10 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         if new_size and new_size.isdigit():
             resizes.append((key, f"{new_size}G"))
 
-    nd_storage = post.get("newdisk_storage", "").strip()
-    nd_size = post.get("newdisk_size", "").strip()
-    if nd_storage and nd_size.isdigit():
-        updates[f"scsi{_next_device_index(fresh, 'scsi')}"] = f"{nd_storage}:{nd_size}"
+    for nd_storage, nd_size in _field_lists(post, "newdisk_storage", "newdisk_size"):
+        if nd_storage and nd_size.isdigit():
+            key = f"scsi{_next_device_index(fresh, 'scsi', updates)}"
+            updates[key] = f"{nd_storage}:{nd_size}"
 
     for key in [k for k in fresh if NET_KEY_RE.match(k)]:
         if post.get(f"nic_{key}_remove") == "on":
@@ -988,13 +1175,13 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         if net != str(fresh[key]):
             updates[key] = net
 
-    new_bridge = post.get("newnic_bridge", "").strip()
-    if new_bridge:
+    for new_bridge, new_vlan in _field_lists(post, "newnic_bridge", "newnic_vlan"):
+        if not new_bridge:
+            continue
         net = f"virtio,bridge={new_bridge}"
-        new_vlan = post.get("newnic_vlan", "").strip()
         if new_vlan:
             net += f",tag={new_vlan}"
-        updates[f"net{_next_device_index(fresh, 'net')}"] = net
+        updates[f"net{_next_device_index(fresh, 'net', updates)}"] = net
 
     cd_key = post.get("cdrom_key", "").strip()
     if cd_key:
@@ -1032,35 +1219,42 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         audio_driver = post.get("new_audio_driver", "").strip() or "spice"
         updates["audio0"] = f"device={audio_device},driver={audio_driver}"
 
-    serial_value = post.get("new_serial_value", "").strip()
-    if serial_value:
-        updates[f"serial{_next_device_index(fresh, 'serial')}"] = serial_value
+    for (serial_value,) in _field_lists(post, "new_serial_value"):
+        if serial_value:
+            updates[f"serial{_next_device_index(fresh, 'serial', updates)}"] = serial_value
 
-    usb_target = post.get("new_usb_target", "").strip()
-    if usb_target:
-        usb_key = "mapping" if post.get("new_usb_target_type") == "mapping" else "host"
+    for usb_target_type, usb_target, usb3 in _field_lists(post, "new_usb_target_type", "new_usb_target", "new_usb3"):
+        if not usb_target:
+            continue
+        usb_key = "mapping" if usb_target_type == "mapping" else "host"
         usb_value = f"{usb_key}={usb_target}"
-        if post.get("new_usb3") == "on":
+        if usb3 == "on":
             usb_value += ",usb3=1"
-        updates[f"usb{_next_device_index(fresh, 'usb')}"] = usb_value
+        updates[f"usb{_next_device_index(fresh, 'usb', updates)}"] = usb_value
 
-    pci_target = post.get("new_pci_target", "").strip()
-    if pci_target:
-        pci_key = "mapping" if post.get("new_pci_target_type") == "mapping" else "host"
+    for pci_target_type, pci_target, pci_pcie in _field_lists(post, "new_pci_target_type", "new_pci_target", "new_pci_pcie"):
+        if not pci_target:
+            continue
+        pci_key = "mapping" if pci_target_type == "mapping" else "host"
         pci_value = f"{pci_key}={pci_target}"
-        if post.get("new_pci_pcie") == "on":
+        if pci_pcie == "on":
             pci_value += ",pcie=1"
-        updates[f"hostpci{_next_device_index(fresh, 'hostpci')}"] = pci_value
+        updates[f"hostpci{_next_device_index(fresh, 'hostpci', updates)}"] = pci_value
 
-    virtiofs_dirid = post.get("new_virtiofs_dirid", "").strip()
-    if virtiofs_dirid:
+    for virtiofs_dirid, cache, direct_io in _field_lists(
+        post,
+        "new_virtiofs_dirid",
+        "new_virtiofs_cache",
+        "new_virtiofs_direct_io",
+    ):
+        if not virtiofs_dirid:
+            continue
         virtiofs_value = f"dirid={virtiofs_dirid}"
-        cache = post.get("new_virtiofs_cache", "").strip()
         if cache:
             virtiofs_value += f",cache={cache}"
-        if post.get("new_virtiofs_direct_io") == "on":
+        if direct_io == "on":
             virtiofs_value += ",direct-io=1"
-        updates[f"virtiofs{_next_device_index(fresh, 'virtiofs')}"] = virtiofs_value
+        updates[f"virtiofs{_next_device_index(fresh, 'virtiofs', updates)}"] = virtiofs_value
 
     if not (updates or delete or resizes):
         return "No changes to save."
@@ -4488,6 +4682,16 @@ def _audit_action_label(event: AuditEvent) -> str:
         if target and target != "All storages":
             return f"Manual storage scan ({target})"
         return "Manual full scan"
+    if event.action == "scan.completed":
+        target = details.get("target_label")
+        if target and target != "All storages":
+            return f"Storage scan completed ({target})"
+        return "Full scan completed"
+    if event.action == "scan.failed":
+        target = details.get("target_label")
+        if target and target != "All storages":
+            return f"Storage scan failed ({target})"
+        return "Full scan failed"
     if event.action == "scan.schedule.skipped":
         return "Scheduled scan skipped"
     if event.action == "scan.schedule.updated":

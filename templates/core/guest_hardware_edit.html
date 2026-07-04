@@ -20,7 +20,6 @@
       <div class="hardware-editor-tabs" aria-label="Edit settings tabs">
         <label class="hardware-editor-tab" for="hardware-tab-virtual">Virtual Hardware</label>
         <label class="hardware-editor-tab" for="hardware-tab-options">VM Options</label>
-        <span class="hardware-editor-tab muted disabled">Advanced Parameters</span>
       </div>
 
       <div class="hardware-tab-panel hardware-tab-panel-virtual">
@@ -32,13 +31,13 @@
               <button type="button" class="hw-add-opt" data-add-device="disk">Hard Disk</button>
               {% if cdrom %}<button type="button" class="hw-add-opt" data-add-device="cdrom">CD/DVD Drive</button>{% endif %}
               <div class="hw-add-cat">Controllers and Security</div>
-              {% if not has_efi_disk %}<button type="button" class="hw-add-opt" data-add-device="efi">EFI Disk</button>{% endif %}
-              {% if not has_tpm %}<button type="button" class="hw-add-opt" data-add-device="tpm">Trusted Platform Module</button>{% endif %}
+              {% if not has_efi_disk %}<button type="button" class="hw-add-opt" data-add-device="efi" data-add-singleton>EFI Disk</button>{% endif %}
+              {% if not has_tpm %}<button type="button" class="hw-add-opt" data-add-device="tpm" data-add-singleton>Trusted Platform Module</button>{% endif %}
               <button type="button" class="hw-add-opt" data-add-device="usb">USB Device</button>
               <button type="button" class="hw-add-opt" data-add-device="pci">PCI Device</button>
               <div class="hw-add-cat">Other Devices</div>
-              {% if not has_rng %}<button type="button" class="hw-add-opt" data-add-device="rng">RNG Device</button>{% endif %}
-              {% if not has_audio %}<button type="button" class="hw-add-opt" data-add-device="audio">Audio Device</button>{% endif %}
+              {% if not has_rng %}<button type="button" class="hw-add-opt" data-add-device="rng" data-add-singleton>RNG Device</button>{% endif %}
+              {% if not has_audio %}<button type="button" class="hw-add-opt" data-add-device="audio" data-add-singleton>Audio Device</button>{% endif %}
               <button type="button" class="hw-add-opt" data-add-device="serial">Serial Port</button>
               <button type="button" class="hw-add-opt" data-add-device="virtiofs">Virtiofs Share</button>
               <div class="hw-add-cat">Network</div>
@@ -49,30 +48,119 @@
 
         <div class="hw-list" data-hw-list aria-label="Virtual hardware">
 
-          {# --- CPU (flat) --- #}
-          <div class="hw-item hw-item--flat" data-hw-item id="device-cpu">
+          {# --- CPU / processors --- #}
+          <div class="hw-item" data-hw-item id="device-cpu">
             <div class="hw-item-head">
-              <span class="hw-item-toggle is-static">
-                <span class="hw-chevron hw-chevron--empty" aria-hidden="true"></span>
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
                 <span class="hw-item-name">CPU</span>
-              </span>
+              </button>
               <div class="hw-item-primary">
-                <label class="hw-mini"><span>Cores</span><input type="number" min="1" name="cores" value="{{ cores }}"></label>
-                <label class="hw-mini"><span>Sockets</span><input type="number" min="1" name="sockets" value="{{ sockets }}"></label>
+                <span class="hw-current-value">{{ cpu_total }} total cores{% if sockets %} ({{ sockets }} sockets){% endif %}{% if vm_options.cpu %} · {{ vm_options.cpu }}{% endif %}</span>
+              </div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>Sockets</span><input type="number" min="1" name="sockets" value="{{ sockets }}"></div>
+              <div class="hw-field"><span>Cores</span><input type="number" min="1" name="cores" value="{{ cores }}"></div>
+              <div class="hw-field"><span>Type</span>
+                <select name="vm_cpu">
+                  {% for value, label in cpu_type_options %}<option value="{{ value }}" {% if value == vm_options.cpu %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="hw-field"><span>Total cores</span><span class="hw-static-val">{{ cpu_total }}</span></div>
+              <div class="hw-field"><span>VCPUs</span><input type="number" min="1" name="vm_vcpus" value="{{ vm_options.vcpus }}" placeholder="default"></div>
+              <div class="hw-field"><span>CPU units</span><input type="number" min="1" name="vm_cpuunits" value="{{ vm_options.cpuunits }}" placeholder="default"></div>
+              <div class="hw-field"><span>CPU limit</span><input type="text" name="vm_cpulimit" value="{{ vm_options.cpulimit }}" placeholder="unlimited"></div>
+              <div class="hw-field"><span>CPU affinity</span><input type="text" name="vm_affinity" value="{{ vm_options.affinity }}" placeholder="all cores"></div>
+              <div class="hw-field"><span>Enable NUMA</span><label class="hw-switch"><input type="checkbox" name="vm_numa" {% if vm_options.numa %}checked{% endif %}> NUMA</label></div>
+            </div>
+          </div>
+
+          {# --- Memory --- #}
+          <div class="hw-item" data-hw-item id="device-memory">
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Memory</span>
+              </button>
+              <div class="hw-item-primary">
+                <span class="hw-current-value">{{ memory }} MiB{% if vm_options.balloon %} · min {{ vm_options.balloon }} MiB{% endif %}</span>
+              </div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>Memory (MiB)</span><input type="number" min="1" name="memory" value="{{ memory }}"></div>
+              <div class="hw-field"><span>Minimum memory (MiB)</span><input type="number" min="1" name="vm_balloon" value="{{ vm_options.balloon }}" placeholder="same as memory"></div>
+              <div class="hw-field"><span>Shares</span><input type="number" min="1" name="vm_shares" value="{{ vm_options.shares }}" placeholder="default"></div>
+              <div class="hw-field"><span>Ballooning Device</span><label class="hw-switch"><input type="checkbox" name="vm_balloon_enabled" {% if vm_options.balloon_enabled %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Allow KSM</span><label class="hw-switch"><input type="checkbox" name="vm_allow_ksm" {% if vm_options.allow_ksm %}checked{% endif %}> Enabled</label></div>
+            </div>
+          </div>
+
+          {# --- Firmware and controllers --- #}
+          <div class="hw-item" data-hw-item id="device-bios">
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">BIOS</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ vm_options.bios|default:"Default (SeaBIOS)" }}</span></div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>BIOS</span>
+                <select name="vm_bios">
+                  {% for value, label in bios_options %}<option value="{{ value }}" {% if value == vm_options.bios %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
               </div>
             </div>
           </div>
 
-          {# --- Memory (flat) --- #}
-          <div class="hw-item hw-item--flat" data-hw-item id="device-memory">
+          <div class="hw-item" data-hw-item id="device-display">
             <div class="hw-item-head">
-              <span class="hw-item-toggle is-static">
-                <span class="hw-chevron hw-chevron--empty" aria-hidden="true"></span>
-                <span class="hw-item-name">Memory</span>
-              </span>
-              <div class="hw-item-primary">
-                <input type="number" min="1" name="memory" value="{{ memory }}">
-                <span class="hw-unit-inline">MB</span>
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Display</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ vm_options.vga|default:"Default" }}</span></div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Display</span>
+                <select name="vm_vga">
+                  {% for value, label in vga_options %}<option value="{{ value }}" {% if value == vm_options.vga %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item id="device-machine">
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Machine</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ vm_options.machine|default:"Default" }}</span></div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Machine</span>
+                <select name="vm_machine">
+                  {% for value, label in machine_options %}<option value="{{ value }}" {% if value == vm_options.machine %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item id="device-scsihw">
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">SCSI Controller</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ vm_options.scsihw|default:"Default" }}</span></div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>SCSI Controller</span>
+                <select name="vm_scsihw">
+                  {% for value, label in scsihw_options %}<option value="{{ value }}" {% if value == vm_options.scsihw %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
               </div>
             </div>
           </div>
@@ -181,7 +269,7 @@
           {# ===== Pending "new" devices (revealed by Add New Device) ===== #}
 
           {# New Hard disk #}
-          <div class="hw-item is-new" data-hw-item data-new-device="disk" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="disk" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -207,7 +295,7 @@
           </div>
 
           {# New EFI disk #}
-          <div class="hw-item is-new" data-hw-item data-new-device="efi" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="efi" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -236,7 +324,7 @@
           </div>
 
           {# New TPM #}
-          <div class="hw-item is-new" data-hw-item data-new-device="tpm" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="tpm" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -262,7 +350,7 @@
           </div>
 
           {# New USB device #}
-          <div class="hw-item is-new" data-hw-item data-new-device="usb" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="usb" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -284,7 +372,7 @@
           </div>
 
           {# New PCI device #}
-          <div class="hw-item is-new" data-hw-item data-new-device="pci" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="pci" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -306,7 +394,7 @@
           </div>
 
           {# New RNG device #}
-          <div class="hw-item is-new" data-hw-item data-new-device="rng" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="rng" data-new-template="true" hidden>
             <input type="checkbox" name="new_rng_enable" data-new-input data-new-trigger disabled hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
@@ -326,7 +414,7 @@
           </div>
 
           {# New Audio device #}
-          <div class="hw-item is-new" data-hw-item data-new-device="audio" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="audio" data-new-template="true" hidden>
             <input type="checkbox" name="new_audio_enable" data-new-input data-new-trigger disabled hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
@@ -350,7 +438,7 @@
           </div>
 
           {# New Serial port #}
-          <div class="hw-item is-new" data-hw-item data-new-device="serial" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="serial" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -368,7 +456,7 @@
           </div>
 
           {# New Virtiofs share #}
-          <div class="hw-item is-new" data-hw-item data-new-device="virtiofs" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="virtiofs" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -390,7 +478,7 @@
           </div>
 
           {# New Network adapter #}
-          <div class="hw-item is-new" data-hw-item data-new-device="nic" hidden>
+          <div class="hw-item is-new" data-hw-item data-new-device="nic" data-new-template="true" hidden>
             <div class="hw-item-head">
               <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
                 <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
@@ -417,96 +505,114 @@
       </div>
 
       <div class="hardware-tab-panel hardware-tab-panel-options">
-        <div class="hw-vsphere-list hw-options-list" aria-label="VM options">
-          <div class="hw-vsphere-row">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">General Options</span>
+        <div class="hw-list hw-options-list" aria-label="VM options">
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">General Options</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ vm_options.name }}</span></div>
             </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-inline-field hw-extra-wide-field"><span>VM Name</span><input type="text" name="vm_name" value="{{ vm_options.name }}"></label>
-              <label class="hw-checkbox"><input type="checkbox" name="vm_onboot" {% if vm_options.onboot %}checked{% endif %}> Start at boot</label>
-              <label class="hw-checkbox"><input type="checkbox" name="vm_protection" {% if vm_options.protection %}checked{% endif %}> Protection</label>
-            </div>
-          </div>
-
-          <div class="hw-vsphere-row">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">Notes</span>
-            </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-inline-field hw-textarea-field"><span>Description</span><textarea name="vm_description">{{ vm_options.description }}</textarea></label>
-            </div>
-          </div>
-
-          <div class="hw-vsphere-row">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">Guest Agent</span>
-            </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-checkbox"><input type="checkbox" name="vm_agent" {% if vm_options.agent %}checked{% endif %}> Enable QEMU guest agent</label>
-              <label class="hw-checkbox"><input type="checkbox" name="vm_tablet" {% if vm_options.tablet %}checked{% endif %}> Use tablet pointer</label>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>VM Name</span><input type="text" name="vm_name" value="{{ vm_options.name }}"></div>
+              <div class="hw-field"><span>Start at boot</span><label class="hw-switch"><input type="checkbox" name="vm_onboot" {% if vm_options.onboot %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Protection</span><label class="hw-switch"><input type="checkbox" name="vm_protection" {% if vm_options.protection %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Hotplug</span>
+                <div class="hw-checkbox-group" data-hotplug-editor>
+                  <input type="hidden" name="vm_hotplug" value="{{ vm_options.hotplug }}" data-hotplug-value>
+                  {% for option in hotplug_options %}
+                    <label class="hw-switch"><input type="checkbox" data-hotplug-token="{{ option.value }}" {% if option.enabled %}checked{% endif %}> {{ option.label }}</label>
+                  {% endfor %}
+                </div>
+              </div>
             </div>
           </div>
 
-          <div class="hw-vsphere-row">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">Boot Options</span>
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Notes</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{% if vm_options.description %}Configured{% else %}Empty{% endif %}</span></div>
             </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-inline-field hw-extra-wide-field"><span>Boot Order</span><input type="text" name="vm_boot" value="{{ vm_options.boot }}" placeholder="order=scsi0;ide2;net0"></label>
-              <label class="hw-inline-field hw-select-field">
-                <span>OS Type</span>
+            <div class="hw-item-body">
+              <div class="hw-field hw-field-wide"><span>Description</span><textarea name="vm_description">{{ vm_options.description }}</textarea></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Guest Agent</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{% if vm_options.agent %}Enabled{% else %}Disabled{% endif %}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>QEMU guest agent</span><label class="hw-switch"><input type="checkbox" name="vm_agent" {% if vm_options.agent %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Use tablet pointer</span><label class="hw-switch"><input type="checkbox" name="vm_tablet" {% if vm_options.tablet %}checked{% endif %}> Enabled</label></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Boot Options</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ vm_options.boot|default:"Default" }}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field hw-field-wide"><span>Boot Order</span>
+                <div class="hw-boot-editor" data-boot-order-editor>
+                  <input type="hidden" name="vm_boot" value="{{ vm_options.boot }}" data-boot-order-value>
+                  <div class="hw-boot-head">
+                    <span>#</span>
+                    <span>Enabled</span>
+                    <span>Device</span>
+                    <span>Description</span>
+                    <span></span>
+                  </div>
+                  {% for device in boot_devices %}
+                    <div class="hw-boot-row" data-boot-device="{{ device.key }}" draggable="true">
+                      <button type="button" class="icon-button hw-boot-grip" data-boot-drag title="Drag to reorder" aria-label="Drag {{ device.label }}"><i data-lucide="grip-vertical"></i></button>
+                      <input type="checkbox" data-boot-enabled {% if device.enabled %}checked{% endif %} aria-label="Enable {{ device.label }}">
+                      <code>{{ device.label }}</code>
+                      <span class="hw-boot-description">{{ device.description }}</span>
+                      <span class="hw-boot-actions">
+                        <button type="button" class="icon-button" data-boot-move="up" title="Move up" aria-label="Move {{ device.label }} up"><i data-lucide="arrow-up"></i></button>
+                        <button type="button" class="icon-button" data-boot-move="down" title="Move down" aria-label="Move {{ device.label }} down"><i data-lucide="arrow-down"></i></button>
+                      </span>
+                    </div>
+                  {% empty %}
+                    <div class="hw-empty-inline">No bootable devices found.</div>
+                  {% endfor %}
+                </div>
+              </div>
+              <div class="hw-field"><span>OS Type</span>
                 <select name="vm_ostype">
                   {% for value, label in ostype_options %}<option value="{{ value }}" {% if value == vm_options.ostype %}selected{% endif %}>{{ label }}</option>{% endfor %}
                 </select>
-              </label>
-              <label class="hw-inline-field hw-select-field">
-                <span>BIOS</span>
-                <select name="vm_bios">
-                  {% for value, label in bios_options %}<option value="{{ value }}" {% if value == vm_options.bios %}selected{% endif %}>{{ label }}</option>{% endfor %}
-                </select>
-              </label>
-              <label class="hw-inline-field hw-select-field">
-                <span>Machine</span>
-                <select name="vm_machine">
-                  {% for value, label in machine_options %}<option value="{{ value }}" {% if value == vm_options.machine %}selected{% endif %}>{{ label }}</option>{% endfor %}
-                </select>
-              </label>
-              <label class="hw-inline-field hw-select-field">
-                <span>SCSI Controller</span>
-                <select name="vm_scsihw">
-                  {% for value, label in scsihw_options %}<option value="{{ value }}" {% if value == vm_options.scsihw %}selected{% endif %}>{{ label }}</option>{% endfor %}
-                </select>
-              </label>
+              </div>
             </div>
           </div>
 
-          <div class="hw-vsphere-row">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">Power Management</span>
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Power Management</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{% if vm_options.acpi %}ACPI{% else %}ACPI disabled{% endif %}</span></div>
             </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-checkbox"><input type="checkbox" name="vm_acpi" {% if vm_options.acpi %}checked{% endif %}> ACPI</label>
-              <label class="hw-checkbox"><input type="checkbox" name="vm_localtime" {% if vm_options.localtime %}checked{% endif %}> Use local RTC</label>
-              <label class="hw-inline-field hw-number-field"><span>Start order</span><input type="number" min="0" name="startup_order" value="{{ vm_options.startup_order }}" placeholder="-"></label>
-              <label class="hw-inline-field hw-number-field"><span>Startup delay</span><input type="number" min="0" name="startup_up" value="{{ vm_options.startup_up }}" placeholder="sec"></label>
-              <label class="hw-inline-field hw-number-field"><span>Shutdown delay</span><input type="number" min="0" name="startup_down" value="{{ vm_options.startup_down }}" placeholder="sec"></label>
-            </div>
-          </div>
-
-          <div class="hw-vsphere-row">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">CPU Topology</span>
-            </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-inline-field hw-wide-field"><span>CPU Type</span><input type="text" name="vm_cpu" value="{{ vm_options.cpu }}" placeholder="default or host"></label>
-              <label class="hw-checkbox"><input type="checkbox" name="vm_numa" {% if vm_options.numa %}checked{% endif %}> NUMA</label>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>ACPI</span><label class="hw-switch"><input type="checkbox" name="vm_acpi" {% if vm_options.acpi %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Use local RTC</span><label class="hw-switch"><input type="checkbox" name="vm_localtime" {% if vm_options.localtime %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Start order</span><input type="number" min="0" name="startup_order" value="{{ vm_options.startup_order }}" placeholder="-"></div>
+              <div class="hw-field"><span>Startup delay (sec)</span><input type="number" min="0" name="startup_up" value="{{ vm_options.startup_up }}" placeholder="0"></div>
+              <div class="hw-field"><span>Shutdown delay (sec)</span><input type="number" min="0" name="startup_down" value="{{ vm_options.startup_down }}" placeholder="0"></div>
             </div>
           </div>
         </div>
