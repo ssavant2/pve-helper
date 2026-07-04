@@ -43,6 +43,7 @@ from core.services.classification import categorize_proxmox_path, classify_entry
 from core.services.config import sync_runtime_configuration
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
 from core.services.proxmox import (
+    LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS,
     LIVE_GUEST_INVENTORY_CACHE_SECONDS,
     LIVE_GUEST_STATUS_CACHE_SECONDS,
     InventoryResult,
@@ -51,6 +52,7 @@ from core.services.proxmox import (
     ProxmoxTaskTimeout,
     ProxmoxTaskResult,
     _fetch_live_guest_inventory_uncached,
+    _fetch_live_guest_status_uncached,
 )
 from core.services.recent_tasks import recent_task_page
 from core.services.scan_retention import prune_scan_history
@@ -1300,9 +1302,9 @@ class ViewSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
-        self.assertEqual(LIVE_GUEST_STATUS_CACHE_SECONDS, 1)
+        self.assertEqual(LIVE_GUEST_STATUS_CACHE_SECONDS, 2)
         self.assertEqual(fetch.call_count, 1)
-        self.assertContains(response, "Power state is live data cached for up to 1 second.")
+        self.assertContains(response, "Power state is live data cached for up to 2 seconds.")
         self.assertContains(response, "Disk references are from inventory scanned")
         self.assertContains(response, "running")
         self.assertContains(response, "Scheduled Tasks")
@@ -1311,6 +1313,36 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "target=vm%3A100")
         self.assertContains(second_response, "running")
         cache.clear()
+
+    def test_live_guest_status_fetch_uses_short_cluster_resources_call(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, path, *, timeout=None):
+                self.calls.append((path, timeout))
+                if path == "cluster/resources?type=vm":
+                    return [
+                        {"type": "qemu", "vmid": 500, "node": "pve1", "name": "Lab VM", "status": "running"},
+                        {"type": "lxc", "vmid": 601, "node": "pve1", "name": "Lab CT", "status": "stopped"},
+                    ]
+                raise ProxmoxAPIError(path)
+
+        fake_client = FakeClient()
+        with patch("core.services.proxmox.configured_clients", return_value=[fake_client]):
+            statuses = _fetch_live_guest_status_uncached()
+
+        self.assertEqual(
+            statuses,
+            {
+                ("pve1", "vm", 500): "running",
+                ("pve1", "ct", 601): "stopped",
+            },
+        )
+        self.assertEqual(len(fake_client.calls), 1)
+        self.assertEqual(fake_client.calls[0][0], "cluster/resources?type=vm")
+        self.assertIsNotNone(fake_client.calls[0][1])
+        self.assertLessEqual(fake_client.calls[0][1], LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS)
 
     def test_storage_browser_shows_virtual_and_disk_size_when_image_info_exists(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -4173,7 +4205,7 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, 'data-vm-bulk-form')
         self.assertContains(response, 'data-vm-agent-info-url')
         self.assertEqual(LIVE_GUEST_INVENTORY_CACHE_SECONDS, 30)
-        self.assertContains(response, "Inventory cached for 30 seconds; power state refreshes every 1 second.")
+        self.assertContains(response, "Inventory cached for 30 seconds; power state refreshes every 2 seconds.")
         self.assertContains(response, "Has snapshot")
         self.assertNotContains(response, "guest-list-pane")
 
@@ -4340,6 +4372,67 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "CPU Topology")
         self.assertContains(response, "<dt>vCPUs</dt><dd>2</dd>", html=True)
         self.assertNotContains(response, "Virtual Machine Details")
+
+    @override_settings(VM_WRITE_ENABLED=False)
+    def test_guest_summary_hides_power_actions_when_writes_are_disabled(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM", "memory": "2048", "cores": "2"}
+
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertNotIn(reverse("core:guest_power", args=["vm", 500]), content)
+        self.assertNotContains(response, "Power Off")
+        self.assertNotContains(response, "Shut Down Guest OS")
+        self.assertNotContains(response, "Restart Guest OS")
+
+    @override_settings(VM_WRITE_ENABLED=False)
+    def test_guest_mutation_views_respect_vm_write_gate_before_proxmox_calls(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        cases = [
+            ("core:guest_power", ["vm", 500], {"action": "start"}, "core:guest_summary"),
+            ("core:guest_snapshot_create", ["vm", 500], {"snapname": "snap-a"}, "core:guest_snapshots"),
+            ("core:guest_snapshot_delete", ["vm", 500, "snap-a"], {}, "core:guest_snapshots"),
+            ("core:guest_snapshot_delete_all", ["vm", 500], {}, "core:guest_snapshots"),
+            ("core:guest_snapshot_rollback", ["vm", 500, "snap-a"], {}, "core:guest_snapshots"),
+            ("core:guest_firewall_options", ["vm", 500], {"enable": "on"}, "core:guest_firewall"),
+            ("core:guest_firewall_rule_add", ["vm", 500], {"type": "in", "action": "ACCEPT"}, "core:guest_firewall"),
+            ("core:guest_firewall_rule_delete", ["vm", 500, 0], {}, "core:guest_firewall"),
+            ("core:guest_firewall_rule_toggle", ["vm", 500, 0], {"enable": "0"}, "core:guest_firewall"),
+            ("core:guest_backup_now", ["vm", 500], {"storage": "backup"}, "core:guest_backup"),
+            ("core:guest_backup_delete", ["vm", 500], {"storage": "backup", "volid": "backup:foo"}, "core:guest_backup"),
+            ("core:guest_replication_create", ["vm", 500], {"target": "pve2"}, "core:guest_replication"),
+            ("core:guest_replication_delete", ["vm", 500], {"job_id": "500-0"}, "core:guest_replication"),
+        ]
+
+        with (
+            patch("core.views.fetch_live_guest_inventory", side_effect=AssertionError("guest should not be resolved")),
+            patch("core.views.configured_clients", side_effect=AssertionError("Proxmox should not be called")),
+        ):
+            for route_name, args, post_data, redirect_name in cases:
+                with self.subTest(route_name=route_name):
+                    response = self.client.post(reverse(route_name, args=args), post_data)
+
+                self.assertRedirects(
+                    response,
+                    reverse(redirect_name, args=["vm", 500]),
+                    fetch_redirect_response=False,
+                )
 
     @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_renders_for_vm_disks_and_networks(self):

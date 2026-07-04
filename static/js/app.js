@@ -1565,6 +1565,7 @@
         }
       };
 
+      overview.refreshVmAgentInfo = loadAgentInfo;
       loadAgentInfo();
     });
   };
@@ -1630,6 +1631,7 @@
   };
 
   const updateVmRowStatus = (row, guest) => {
+    const previousStatus = row.dataset.guestStatus || "";
     const status = guest.status || "";
     const stateLabel =
       guest.state_label || (status === "running" ? "Powered On" : status === "stopped" ? "Powered Off" : "-");
@@ -1661,6 +1663,18 @@
     if (activeBadge) {
       activeBadge.textContent = status || "-";
       activeBadge.classList.toggle("completed", status === "running");
+    }
+
+    if (status === "running" && previousStatus !== "running") {
+      const overview = row.closest("[data-vm-overview]");
+      if (overview && typeof overview.refreshVmAgentInfo === "function") {
+        window.setTimeout(() => overview.refreshVmAgentInfo(), 1500);
+      }
+      document.querySelectorAll("[data-guest-agent-summary]").forEach((card) => {
+        card.dataset.agentSummaryStatus = "running";
+        delete card.dataset.agentSummaryInitialized;
+      });
+      window.setTimeout(() => initGuestAgentSummaries(document), 1500);
     }
   };
 
@@ -1713,7 +1727,7 @@
       };
 
       refresh();
-      const intervalId = window.setInterval(refresh, 1000);
+      const intervalId = window.setInterval(refresh, 2500);
       registerPageCleanup(() => window.clearInterval(intervalId));
     });
   };
@@ -1723,12 +1737,12 @@
       if (card.dataset.agentSummaryInitialized === "true") {
         return;
       }
-      card.dataset.agentSummaryInitialized = "true";
       const url = card.dataset.agentSummaryUrl || "";
       const status = card.dataset.agentSummaryStatus || "";
       if (!url || status !== "running") {
         return;
       }
+      card.dataset.agentSummaryInitialized = "true";
 
       const osName = card.querySelector("[data-agent-os-name]");
       const details = card.querySelector("[data-agent-details]");

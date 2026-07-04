@@ -14,8 +14,9 @@ from .classification import extract_disk_references
 
 LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
 LIVE_GUEST_INVENTORY_CACHE_KEY = "pve-helper:live-guest-inventory:v1"
-LIVE_GUEST_STATUS_CACHE_SECONDS = 1
+LIVE_GUEST_STATUS_CACHE_SECONDS = 2
 LIVE_GUEST_INVENTORY_CACHE_SECONDS = 30
+LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS = 2.5
 
 
 @dataclass(frozen=True)
@@ -436,20 +437,42 @@ def clear_live_guest_caches() -> None:
 
 
 def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
-    """Return {(node, object_type, vmid): status} for all guests across all endpoints."""
-    return {
-        (guest.node, guest.object_type, guest.vmid): guest.status
-        for guest in _fetch_live_guest_inventory_uncached()
-        if guest.status
-    }
+    """Return {(node, object_type, vmid): status} for all guests.
+
+    This is the hot display path for power state. Keep it status-only and
+    bounded; safety checks use direct guest APIs elsewhere.
+    """
+    statuses: dict[tuple[str, str, int], str] = {}
+    deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
+    for client in configured_clients():
+        timeout = _remaining_display_timeout(deadline)
+        if timeout is None:
+            break
+        try:
+            resources = client.get("cluster/resources?type=vm", timeout=timeout)
+        except ProxmoxAPIError:
+            continue
+        if not isinstance(resources, list):
+            continue
+        guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
+        for resource in resources:
+            _add_guest_summary(guests_by_key, resource)
+        for guest in guests_by_key.values():
+            if guest.status:
+                statuses[(guest.node, guest.object_type, guest.vmid)] = guest.status
+    return statuses
 
 
 def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
     """Return lightweight guest inventory across all configured endpoints."""
     guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
+    deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
     for client in configured_clients():
+        timeout = _remaining_display_timeout(deadline)
+        if timeout is None:
+            break
         try:
-            resources = client.get("cluster/resources?type=vm")
+            resources = client.get("cluster/resources?type=vm", timeout=timeout)
         except ProxmoxAPIError:
             resources = []
         if isinstance(resources, list):
@@ -459,8 +482,11 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
             if len(guests_by_key) > guest_count_before:
                 continue
 
+        timeout = _remaining_display_timeout(deadline)
+        if timeout is None:
+            break
         try:
-            nodes = client.get("nodes")
+            nodes = client.get("nodes", timeout=timeout)
         except ProxmoxAPIError:
             continue
         if not isinstance(nodes, list):
@@ -471,8 +497,11 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
                 continue
             for resource_type in ("qemu", "lxc"):
                 object_type = "vm" if resource_type == "qemu" else "ct"
+                timeout = _remaining_display_timeout(deadline)
+                if timeout is None:
+                    break
                 try:
-                    guests = client.get(f"nodes/{quote(node)}/{resource_type}")
+                    guests = client.get(f"nodes/{quote(node)}/{resource_type}", timeout=timeout)
                 except ProxmoxAPIError:
                     continue
                 if not isinstance(guests, list):
@@ -480,6 +509,13 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
                 for guest in guests:
                     _add_guest_summary(guests_by_key, guest, node=node, object_type=object_type)
     return sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
+
+
+def _remaining_display_timeout(deadline: float) -> float | None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    return max(0.1, min(remaining, LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS))
 
 
 def _add_guest_summary(

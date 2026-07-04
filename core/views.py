@@ -343,15 +343,13 @@ def _guest_rows():
     live_available = bool(live_guests)
     rows: list[SimpleNamespace] = []
     if live_available:
-        live_status = fetch_live_guest_status()
         for guest in live_guests:
-            status = _live_status_for(live_status, guest.node, guest.object_type, guest.vmid, guest.status)
             rows.append(
                 _build_guest_row(
                     object_type=guest.object_type,
                     vmid=guest.vmid,
                     name=guest.name,
-                    status=status,
+                    status=guest.status,
                     node=guest.node,
                     scan_obj=_scan_obj_for_live_guest(
                         scan_by_key,
@@ -2524,6 +2522,15 @@ def _require_guest(object_type: str, vmid: int, *, node: str = "") -> SimpleName
     return detail
 
 
+def _vm_write_disabled_redirect(request, object_type: str, vmid: int, redirect_name: str):
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    if settings.VM_WRITE_ENABLED:
+        return None
+    messages.error(request, "VM/CT write actions are disabled (VM_WRITE_ENABLED is off).")
+    return redirect(redirect_name, object_type=object_type, vmid=vmid)
+
+
 def _guest_kind(detail: SimpleNamespace) -> str:
     return "qemu" if detail.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
 
@@ -2664,6 +2671,9 @@ def _write_result(request, detail, redirect_name, tab_key, err, ok_msg, audit_ac
 @require_POST
 @app_login_required
 def guest_firewall_options(request, object_type, vmid):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     data = {"enable": "1" if request.POST.get("enable") == "on" else "0"}
     for key in ("policy_in", "policy_out"):
@@ -2677,6 +2687,9 @@ def guest_firewall_options(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_firewall_rule_add(request, object_type, vmid):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     data = {
         "type": request.POST.get("type", "in"),
@@ -2694,6 +2707,9 @@ def guest_firewall_rule_add(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_firewall_rule_delete(request, object_type, vmid, pos):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     _d, err = _guest_delete(detail, f"firewall/rules/{pos}")
     return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall rule deleted.", "guest.firewall.rule_delete", {"pos": pos})
@@ -2702,6 +2718,9 @@ def guest_firewall_rule_delete(request, object_type, vmid, pos):
 @require_POST
 @app_login_required
 def guest_firewall_rule_toggle(request, object_type, vmid, pos):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     enable = "1" if request.POST.get("enable") == "1" else "0"
     _d, err = _guest_put(detail, f"firewall/rules/{pos}", {"enable": enable})
@@ -2744,6 +2763,9 @@ def guest_cloudinit_edit(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_backup_now(request, object_type, vmid):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_backup")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     storage = request.POST.get("storage", "").strip()
     if not storage:
@@ -2770,6 +2792,9 @@ def guest_backup_now(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_backup_delete(request, object_type, vmid):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_backup")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     volid = request.POST.get("volid", "").strip()
     storage = request.POST.get("storage", "").strip()
@@ -2790,6 +2815,9 @@ def guest_backup_delete(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_replication_create(request, object_type, vmid):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_replication")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     target = request.POST.get("target", "").strip()
     if not target:
@@ -2813,6 +2841,9 @@ def guest_replication_create(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_replication_delete(request, object_type, vmid):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_replication")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     job_id = request.POST.get("job_id", "").strip()
     if not job_id:
@@ -2882,6 +2913,9 @@ VM_BULK_ACTIONS = {*GUEST_POWER_ACTIONS, "snapshot", "delete_snapshots", "templa
 @require_POST
 @app_login_required
 def guest_power(request, object_type: str, vmid: int):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_summary")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     action = request.POST.get("action", "")
     if action not in GUEST_POWER_ACTIONS:
@@ -3219,6 +3253,9 @@ def guest_clone_options(request, object_type: str, vmid: int):
 @require_POST
 @app_login_required
 def guest_snapshot_create(request, object_type: str, vmid: int):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     name = request.POST.get("snapname", "").strip()
     if not name:
@@ -3241,6 +3278,9 @@ def guest_snapshot_create(request, object_type: str, vmid: int):
 @require_POST
 @app_login_required
 def guest_snapshot_delete(request, object_type: str, vmid: int, snapname: str):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     _data, err = _guest_delete_wait_task(detail, f"snapshot/{quote(snapname, safe='')}")
     if err:
@@ -3253,10 +3293,10 @@ def guest_snapshot_delete(request, object_type: str, vmid: int, snapname: str):
 @require_POST
 @app_login_required
 def guest_snapshot_delete_all(request, object_type: str, vmid: int):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
-    if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "Snapshot changes are disabled (VM_WRITE_ENABLED is off).")
-        return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
     deleted, err = _delete_all_guest_snapshots(detail)
     if err:
         messages.error(request, _snapshot_error(err))
@@ -3268,6 +3308,9 @@ def guest_snapshot_delete_all(request, object_type: str, vmid: int):
 @require_POST
 @app_login_required
 def guest_snapshot_rollback(request, object_type: str, vmid: int, snapname: str):
+    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
+    if disabled:
+        return disabled
     detail = _require_guest(object_type, vmid)
     _data, err = _guest_post(detail, f"snapshot/{quote(snapname, safe='')}/rollback")
     if err:
