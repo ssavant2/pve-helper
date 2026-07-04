@@ -51,6 +51,7 @@
                 >
                   {% csrf_token %}
                   <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                  <input type="hidden" name="confirm_basic" value="">
                   <button class="icon-button danger" type="submit" aria-label="Delete {{ item.original_path }} permanently" title="Delete permanently">
                     <i data-lucide="trash-2" aria-hidden="true"></i>
                   </button>

@@ -138,10 +138,11 @@ def create_vm(node: str, params: dict):
         "scsi0": f"{params['disk_storage']}:{params['disk_size']}",
         "boot": "order=scsi0;ide2",
     }
-    net = f"virtio,bridge={params['bridge']}"
-    if params.get("vlan"):
-        net += f",tag={params['vlan']}"
-    body["net0"] = net
+    if params.get("bridge"):
+        net = f"virtio,bridge={params['bridge']}"
+        if params.get("vlan"):
+            net += f",tag={params['vlan']}"
+        body["net0"] = net
     if params.get("iso"):
         body["ide2"] = f"{params['iso']},media=cdrom"
     else:
@@ -166,10 +167,11 @@ def create_ct(node: str, params: dict):
         body["password"] = params["password"]
     if params.get("ssh_keys"):
         body["ssh-public-keys"] = params["ssh_keys"]
-    net = f"name=eth0,bridge={params['bridge']},ip={params.get('ip') or 'dhcp'}"
-    if params.get("vlan"):
-        net += f",tag={params['vlan']}"
-    body["net0"] = net
+    if params.get("bridge"):
+        net = f"name=eth0,bridge={params['bridge']},ip={params.get('ip') or 'dhcp'}"
+        if params.get("vlan"):
+            net += f",tag={params['vlan']}"
+        body["net0"] = net
     if params.get("start"):
         body["start"] = 1
     return _post_create(node, "lxc", body)

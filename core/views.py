@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, time, timedelta, timezone as dt_timezone
+from time import monotonic
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Iterable, Iterator
@@ -203,9 +204,15 @@ def vms_overview(request):
     return render(request, "core/vms_overview.html", context)
 
 
+# Total wall-time budget for live Proxmox calls in an overview enrichment XHR.
+# Cached probes stay cheap after it is spent; uncached ones fall back to scan.
+OVERVIEW_ENRICH_BUDGET_SECONDS = 6.0
+
+
 @app_login_required
 def vms_overview_agent_info(request):
     rows, _live_available, _scan_at = _guest_rows()
+    deadline = monotonic() + OVERVIEW_ENRICH_BUDGET_SECONDS
     payload = []
     for row in rows:
         if row.object_type != ProxmoxInventory.ObjectType.VM or not row.agent_enabled:
@@ -218,7 +225,9 @@ def vms_overview_agent_info(request):
             status=row.status,
             config={"agent": 1},
         )
-        summary = _guest_agent_summary(detail, allow_fetch=True)
+        # Cached summaries stay cheap; once the per-request budget is spent we
+        # stop issuing new agent calls and serve only what is already cached.
+        summary = _guest_agent_summary(detail, allow_fetch=monotonic() < deadline)
         if not summary.get("running"):
             continue
         payload.append(
@@ -235,9 +244,10 @@ def vms_overview_agent_info(request):
 @app_login_required
 def vms_overview_snapshot_info(request):
     rows, _live_available, _scan_at = _guest_rows()
+    deadline = monotonic() + OVERVIEW_ENRICH_BUDGET_SECONDS
     payload = []
     for row in rows:
-        has_snapshot = _live_guest_has_snapshot(row)
+        has_snapshot = _live_guest_has_snapshot(row, allow_fetch=monotonic() < deadline)
         if has_snapshot is None:
             has_snapshot = row.has_snapshot
         payload.append(
@@ -503,8 +513,18 @@ def _config_has_snapshots(config: dict) -> bool:
     return False
 
 
-def _live_guest_has_snapshot(row: SimpleNamespace) -> bool | None:
+def _live_guest_has_snapshot(row: SimpleNamespace, *, allow_fetch: bool = True) -> bool | None:
+    """True/False if the live snapshot list could be read (cached ~30 s per
+    guest), or None when unavailable so the caller can fall back to the scan
+    value. When ``allow_fetch`` is False only the cache is consulted — used to
+    keep serving cached probes after a request's live-call budget is spent."""
     if not row.node or row.vmid is None:
+        return None
+    cache_key = f"pve-helper:guest-snapshot-present:v1:{row.node}:{row.object_type}:{row.vmid}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return bool(cached)
+    if not allow_fetch:
         return None
     kind = "qemu" if row.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
     path = f"nodes/{quote(row.node, safe='')}/{kind}/{row.vmid}/snapshot"
@@ -515,10 +535,12 @@ def _live_guest_has_snapshot(row: SimpleNamespace) -> bool | None:
             continue
         if not isinstance(data, list):
             return None
-        return any(
+        result = any(
             isinstance(snapshot, dict) and str(snapshot.get("name") or "") not in {"", "current"}
             for snapshot in data
         )
+        cache.set(cache_key, result, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
+        return result
     return None
 
 
@@ -1628,7 +1650,7 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         updates[f"net{_next_device_index(fresh, 'net', updates)}"] = net
 
     cd_key = post.get("cdrom_key", "").strip()
-    if cd_key:
+    if cd_key and re.match(r"^(ide|sata|scsi)\d+$", cd_key) and "media=cdrom" in str(fresh.get(cd_key, "")):
         iso = post.get("cdrom_iso", "").strip()
         value = f"{iso},media=cdrom" if iso else "none,media=cdrom"
         if value != str(fresh.get(cd_key, "") or ""):
@@ -4799,6 +4821,9 @@ def purge_trash_item(request, trash_item_id: int):
 
     item = get_object_or_404(TrashItem, pk=trash_item_id, restore_status=TrashItem.RestoreStatus.TRASHED)
     redirect_to = _safe_next_url(request)
+    if request.POST.get("confirm_basic") != "yes":
+        messages.error(request, "Permanent delete was not confirmed.")
+        return redirect(redirect_to)
     try:
         result = purge_trash_item_action(item=item)
     except StorageActionError as exc:
