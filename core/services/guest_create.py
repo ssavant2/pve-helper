@@ -9,7 +9,7 @@ from core.services.proxmox import ProxmoxAPIError, configured_clients
 VM_OSTYPES = [
     ("l26", "Linux (modern)"),
     ("l24", "Linux 2.4"),
-    ("win11", "Windows 11/2022"),
+    ("win11", "Windows 11/2022/2025"),
     ("win10", "Windows 10/2016"),
     ("win8", "Windows 8/2012"),
     ("w2k8", "Windows 2008"),

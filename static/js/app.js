@@ -6,7 +6,6 @@
   const softStatusSelector = "[data-soft-nav-status]";
   const softTreeSelector = "[data-soft-nav-tree]";
   const recentTasksRefreshEvent = "pve-helper:recent-tasks-refresh";
-  const summaryCardHeightKey = "pve-helper-summary-card-height-session-v1";
 
   let activeLabel = "";
   let activeVmOverview = null;
@@ -1780,7 +1779,6 @@
             statusBadge.textContent = data.status_label || "Not running";
             statusBadge.classList.toggle("completed", Boolean(data.running));
           }
-          syncSummaryCardHeights(document);
           if (!data.running && attempts < 3) {
             window.setTimeout(refresh, 5000);
           }
@@ -3442,46 +3440,6 @@
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     });
-    let resizeTimer = null;
-    const resizeHandler = () => {
-      window.clearTimeout(resizeTimer);
-      resizeTimer = window.setTimeout(() => syncSummaryCardHeights(document), 120);
-    };
-    window.addEventListener("resize", resizeHandler);
-    registerPageCleanup(() => window.removeEventListener("resize", resizeHandler));
-    syncSummaryCardHeights(root);
-  };
-
-  const syncSummaryCardHeights = (root = document) => {
-    const grid = root.querySelector("[data-summary-cards]");
-    if (!grid) {
-      return;
-    }
-    const cards = Array.from(grid.querySelectorAll(".summary-card:not(.card-placeholder)"));
-    if (!cards.length) {
-      return;
-    }
-
-    grid.style.removeProperty("--summary-card-min-height");
-    cards.forEach((card) => {
-      card.style.removeProperty("min-height");
-    });
-    const measured = Math.ceil(Math.max(...cards.map((card) => card.scrollHeight || card.offsetHeight || 0), 300));
-    let sessionHeight = 0;
-    try {
-      sessionHeight = Number.parseInt(sessionStorage.getItem(summaryCardHeightKey) || "0", 10) || 0;
-    } catch (_error) {
-      sessionHeight = 0;
-    }
-    const height = Math.max(measured, sessionHeight, 300);
-    grid.style.setProperty("--summary-card-min-height", `${height}px`);
-    try {
-      if (height > sessionHeight) {
-        sessionStorage.setItem(summaryCardHeightKey, String(height));
-      }
-    } catch (_error) {
-      // Equal card sizing still works for the current page without storage.
-    }
   };
 
   const initNodeReload = (root = document) => {
@@ -3516,7 +3474,7 @@
 
     const closeAddMenu = (event) => {
       const details = page.querySelector("[data-hw-add]");
-      if (details && (!event || !event.target.closest("[data-hw-add]"))) {
+      if (details && !event?.target.closest("[data-hw-add]")) {
         details.open = false;
       }
     };
@@ -3540,7 +3498,7 @@
       const enabled = Array.from(editor.querySelectorAll("[data-boot-device]"))
         .filter((row) => {
           const checkbox = row.querySelector("[data-boot-enabled]");
-          return checkbox && checkbox.checked;
+          return checkbox?.checked;
         })
         .map((row) => row.dataset.bootDevice)
         .filter(Boolean);
@@ -3578,7 +3536,10 @@
       if (!template) {
         return;
       }
-      if (addBtn && addBtn.hasAttribute("data-add-singleton") && page.querySelector(`[data-new-device="${type}"]:not([hidden]):not([data-new-template="true"])`)) {
+      if (
+        addBtn?.hasAttribute("data-add-singleton") &&
+        page.querySelector(`[data-new-device="${type}"]:not([hidden]):not([data-new-template="true"])`)
+      ) {
         addBtn.disabled = true;
         return;
       }
@@ -3594,7 +3555,7 @@
       item.querySelectorAll("[data-new-trigger]").forEach((el) => {
         el.checked = true;
       });
-      if (addBtn && addBtn.hasAttribute("data-add-singleton")) {
+      if (addBtn?.hasAttribute("data-add-singleton")) {
         addBtn.disabled = true;
       }
       const first = item.querySelector("[data-new-required], [data-new-input]:not([hidden])");
@@ -3611,7 +3572,10 @@
       }
       item.remove();
       const addBtn = page.querySelector(`[data-add-device="${type}"]`);
-      if (addBtn && addBtn.hasAttribute("data-add-singleton") && !page.querySelector(`[data-new-device="${type}"]:not([hidden]):not([data-new-template="true"])`)) {
+      if (
+        addBtn?.hasAttribute("data-add-singleton") &&
+        !page.querySelector(`[data-new-device="${type}"]:not([hidden]):not([data-new-template="true"])`)
+      ) {
         addBtn.disabled = false;
       }
     };
@@ -3671,7 +3635,11 @@
         const row = bootMove.closest("[data-boot-device]");
         const editor = bootMove.closest("[data-boot-order-editor]");
         if (row && editor) {
-          if (bootMove.dataset.bootMove === "up" && row.previousElementSibling && row.previousElementSibling.matches("[data-boot-device]")) {
+          if (
+            bootMove.dataset.bootMove === "up" &&
+            row.previousElementSibling &&
+            row.previousElementSibling.matches("[data-boot-device]")
+          ) {
             row.parentElement.insertBefore(row, row.previousElementSibling);
           } else if (bootMove.dataset.bootMove === "down" && row.nextElementSibling) {
             row.parentElement.insertBefore(row.nextElementSibling, row);
@@ -3762,20 +3730,24 @@
 
     if (form) {
       form.addEventListener("submit", (event) => {
-        page.querySelectorAll("[data-hw-checkbox-shadow]").forEach((shadow) => shadow.remove());
-        page.querySelectorAll('[data-new-device]:not([hidden]) input[type="checkbox"][data-new-input][name]').forEach((checkbox) => {
-          if (!checkbox.checked) {
-            const shadow = document.createElement("input");
-            shadow.type = "hidden";
-            shadow.name = checkbox.name;
-            shadow.value = "";
-            shadow.setAttribute("data-hw-checkbox-shadow", "true");
-            checkbox.before(shadow);
-          }
+        page.querySelectorAll("[data-hw-checkbox-shadow]").forEach((shadow) => {
+          shadow.remove();
         });
+        page
+          .querySelectorAll('[data-new-device]:not([hidden]) input[type="checkbox"][data-new-input][name]')
+          .forEach((checkbox) => {
+            if (!checkbox.checked) {
+              const shadow = document.createElement("input");
+              shadow.type = "hidden";
+              shadow.name = checkbox.name;
+              shadow.value = "";
+              shadow.setAttribute("data-hw-checkbox-shadow", "true");
+              checkbox.before(shadow);
+            }
+          });
 
         let invalid = null;
-        page.querySelectorAll('[data-new-device]:not([hidden]) [data-new-required]').forEach((el) => {
+        page.querySelectorAll("[data-new-device]:not([hidden]) [data-new-required]").forEach((el) => {
           el.classList.remove("hw-invalid");
           if (!invalid && !String(el.value).trim()) {
             invalid = el;

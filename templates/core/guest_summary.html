@@ -51,7 +51,7 @@
 
     <div class="panel summary-card" data-card-key="details">
       <div class="panel-heading">
-        <h2>Virtual Machine Details</h2>
+        <h2>{% if guest.object_type == "ct" %}Container Details{% else %}Virtual Machine Details{% endif %}</h2>
         <div class="card-heading-actions">
           <details class="actions-menu">
             <summary>Actions</summary>
@@ -80,7 +80,7 @@
     </div>
 
     <div class="panel summary-card" data-card-key="hardware">
-      <div class="panel-heading"><h2>{% if guest.object_type == "ct" %}Container Hardware{% else %}VM Hardware{% endif %}</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% if guest.object_type == 'vm' %}{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}{% else %}{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=hardware{% endif %}">Edit Hardware</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+      <div class="panel-heading"><h2>{% if guest.object_type == "ct" %}Container Hardware{% else %}VM Hardware{% endif %}</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}">Edit Hardware</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
       <dl class="details-list">
         {% if guest_cpu_label %}<div><dt>CPU</dt><dd>{{ guest_cpu_label }}</dd></div>{% endif %}
         {% if guest_memory_label %}<div><dt>Memory</dt><dd>{{ guest_memory_label }}</dd></div>{% endif %}
@@ -110,7 +110,7 @@
 
     {% if guest_cpu_topology %}
       <div class="panel summary-card" data-card-key="cpu-topology">
-        <div class="panel-heading"><h2>CPU Topology</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% if guest.object_type == 'vm' %}{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}{% else %}{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=hardware{% endif %}">Edit</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+        <div class="panel-heading"><h2>CPU Topology</h2><div class="card-heading-actions">{% if guest_write_enabled %}<a class="card-edit" href="{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}">Edit</a>{% endif %}<span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
         <dl class="details-list">
           <div><dt>vCPUs</dt><dd>{{ guest_cpu_topology.vcpus }}</dd></div>
           <div><dt>Cores per socket</dt><dd>{{ guest_cpu_topology.cores }} <span class="muted">(Sockets: {{ guest_cpu_topology.sockets }})</span></dd></div>

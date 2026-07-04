@@ -696,6 +696,36 @@ CPU_TYPE_OPTIONS = (
     ("kvm64", "kvm64"),
     ("qemu64", "qemu64"),
 )
+CT_FEATURE_OPTIONS = (
+    ("nesting", "Nesting"),
+    ("keyctl", "keyctl()"),
+    ("fuse", "FUSE"),
+    ("mknod", "mknod()"),
+    ("force_rw_sys", "Force RW /sys"),
+)
+CT_OSTYPE_LABELS = {
+    "alpine": "Alpine Linux",
+    "archlinux": "Arch Linux",
+    "centos": "CentOS",
+    "debian": "Debian",
+    "devuan": "Devuan",
+    "fedora": "Fedora",
+    "gentoo": "Gentoo",
+    "nixos": "NixOS",
+    "opensuse": "openSUSE",
+    "ubuntu": "Ubuntu",
+    "unmanaged": "Unmanaged",
+}
+CT_ARCH_LABELS = {
+    "amd64": "amd64",
+    "arm64": "arm64",
+    "armhf": "armhf",
+    "i386": "i386",
+    "riscv32": "riscv32",
+    "riscv64": "riscv64",
+}
+CT_NET_ORDER = ("name", "bridge", "firewall", "gw", "gw6", "hwaddr", "ip", "ip6", "link_down", "mtu", "rate", "tag", "trunks", "type")
+CT_MOUNT_ORDER = ("mp", "acl", "backup", "quota", "replicate", "ro", "shared", "size", "mountoptions")
 
 
 def _parse_net_value(value: str) -> dict:
@@ -714,6 +744,166 @@ def _parse_net_value(value: str) -> dict:
         elif name == "firewall":
             entry["firewall"] = val == "1"
     return entry
+
+
+def _split_kv_config(value: object) -> tuple[str, dict[str, str]]:
+    head = ""
+    params: dict[str, str] = {}
+    for index, token in enumerate(str(value or "").split(",")):
+        token = token.strip()
+        if not token:
+            continue
+        if index == 0 and "=" not in token:
+            head = token
+            continue
+        key, separator, raw = token.partition("=")
+        if separator:
+            key = key.strip()
+            if key == "volume" and not head:
+                head = raw.strip()
+            else:
+                params[key] = raw.strip()
+    return head, params
+
+
+def _format_kv_config(head: str, params: dict[str, str], order: Iterable[str]) -> str:
+    parts = [head] if head else []
+    used: set[str] = set()
+    for key in order:
+        if key in params and params[key] != "":
+            parts.append(f"{key}={params[key]}")
+            used.add(key)
+    for key in sorted(k for k in params if k not in used and params[k] != ""):
+        parts.append(f"{key}={params[key]}")
+    return ",".join(parts)
+
+
+def _truthy_config_value(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _set_param_bool(params: dict[str, str], key: str, enabled: bool) -> None:
+    if enabled:
+        params[key] = "1"
+    else:
+        params.pop(key, None)
+
+
+def _set_param_text(params: dict[str, str], key: str, value: str) -> None:
+    if value:
+        params[key] = value
+    else:
+        params.pop(key, None)
+
+
+def _ct_mount_summary(head: str, params: dict[str, str]) -> str:
+    mount_path = params.get("mp")
+    size = params.get("size")
+    bits = [head or "unconfigured"]
+    if mount_path:
+        bits.append(mount_path)
+    if size:
+        bits.append(size)
+    return " · ".join(bits)
+
+
+def _disk_size_gib_text(value: object) -> str:
+    text = str(value or "").strip()
+    match = re.match(r"^(\d+)(?:[Gg](?:i?[Bb])?)?$", text)
+    return match.group(1) if match else ""
+
+
+def _ct_mount_rows(config: dict) -> tuple[dict, list[dict]]:
+    root_head, root_params = _split_kv_config(config.get("rootfs"))
+    rootfs = {
+        "key": "rootfs",
+        "source": root_head,
+        "size": root_params.get("size", ""),
+        "size_gb": _disk_size_gib_text(root_params.get("size")),
+        "acl": _truthy_config_value(root_params.get("acl")),
+        "quota": _truthy_config_value(root_params.get("quota")),
+        "ro": _truthy_config_value(root_params.get("ro")),
+        "replicate": _truthy_config_value(root_params.get("replicate")),
+        "shared": _truthy_config_value(root_params.get("shared")),
+        "mountoptions": root_params.get("mountoptions", ""),
+        "summary": _ct_mount_summary(root_head, root_params),
+    }
+    mounts = []
+    for key in sorted((k for k in config if re.match(r"^mp\d+$", k)), key=lambda value: int(value[2:])):
+        head, params = _split_kv_config(config.get(key))
+        mounts.append(
+            {
+                "key": key,
+                "source": head,
+                "path": params.get("mp", ""),
+                "size": params.get("size", ""),
+                "size_gb": _disk_size_gib_text(params.get("size")),
+                "backup": _truthy_config_value(params.get("backup")),
+                "acl": _truthy_config_value(params.get("acl")),
+                "quota": _truthy_config_value(params.get("quota")),
+                "ro": _truthy_config_value(params.get("ro")),
+                "replicate": _truthy_config_value(params.get("replicate")),
+                "shared": _truthy_config_value(params.get("shared")),
+                "mountoptions": params.get("mountoptions", ""),
+                "summary": _ct_mount_summary(head, params),
+            }
+        )
+    return rootfs, mounts
+
+
+def _ct_network_rows(config: dict) -> list[dict]:
+    rows = []
+    for key in sorted((k for k in config if NET_KEY_RE.match(k)), key=lambda value: int(value[3:])):
+        _head, params = _split_kv_config(config.get(key))
+        params.setdefault("type", "veth")
+        rows.append(
+            {
+                "key": key,
+                "name": params.get("name", key.replace("net", "eth")),
+                "bridge": params.get("bridge", ""),
+                "firewall": _truthy_config_value(params.get("firewall")),
+                "gw": params.get("gw", ""),
+                "gw6": params.get("gw6", ""),
+                "hwaddr": params.get("hwaddr", ""),
+                "ip": params.get("ip", ""),
+                "ip6": params.get("ip6", ""),
+                "link_down": _truthy_config_value(params.get("link_down")),
+                "mtu": params.get("mtu", ""),
+                "rate": params.get("rate", ""),
+                "tag": params.get("tag", ""),
+                "trunks": params.get("trunks", ""),
+                "type": params.get("type", "veth"),
+                "summary": " · ".join(part for part in (params.get("name"), params.get("bridge"), params.get("ip")) if part),
+            }
+        )
+    return rows
+
+
+def _ct_features(config: dict) -> dict[str, object]:
+    _head, params = _split_kv_config(config.get("features"))
+    return {
+        "raw": str(config.get("features", "") or ""),
+        "mount": params.get("mount", ""),
+        "flags": {key: _truthy_config_value(params.get(key)) for key, _label in CT_FEATURE_OPTIONS},
+    }
+
+
+def _ct_options(config: dict) -> dict[str, object]:
+    startup = _parse_startup_options(config.get("startup"))
+    return {
+        "hostname": str(config.get("hostname", "") or ""),
+        "description": str(config.get("description", "") or ""),
+        "onboot": _config_enabled(config, "onboot"),
+        "protection": _config_enabled(config, "protection"),
+        "nameserver": str(config.get("nameserver", "") or ""),
+        "searchdomain": str(config.get("searchdomain", "") or ""),
+        "arch": str(config.get("arch", "") or "amd64"),
+        "ostype": str(config.get("ostype", "") or ""),
+        "unprivileged": _config_enabled(config, "unprivileged", default=True),
+        "startup_order": startup["order"],
+        "startup_up": startup["up"],
+        "startup_down": startup["down"],
+    }
 
 
 def _next_device_index(config: dict, prefix: str, extra_keys: Iterable[str] | None = None) -> int:
@@ -828,16 +1018,47 @@ def _hotplug_options(config: dict) -> list[dict]:
 def guest_hardware_edit(request, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    if object_type != ProxmoxInventory.ObjectType.VM:
-        # CT hardware model differs; use the simple field editor for now.
-        return redirect(f"{reverse('core:guest_edit', args=[object_type, vmid])}?section=hardware")
     if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "VM editing is disabled (VM_WRITE_ENABLED is off).")
+        messages.error(request, "VM/CT editing is disabled (VM_WRITE_ENABLED is off).")
         return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
 
     detail = _resolve_guest_detail(object_type, vmid)
     if not detail.found:
         raise Http404("Guest not found")
+
+    if object_type == ProxmoxInventory.ObjectType.CT:
+        if request.method == "POST":
+            error = _apply_ct_hardware_edit(request, detail)
+            if error is None:
+                return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+            messages.error(request, error)
+
+        config = detail.config
+        options = create_options(object_type, detail.node)
+        rootfs, mount_points = _ct_mount_rows(config)
+        context = {
+            **navigation_context("vms"),
+            "guest": detail,
+            "guest_identity": guest_identity(object_type, vmid, detail.name),
+            "cores": config.get("cores", ""),
+            "memory": config.get("memory", ""),
+            "swap": config.get("swap", ""),
+            "cpuunits": config.get("cpuunits", ""),
+            "cpulimit": config.get("cpulimit", ""),
+            "rootfs": rootfs,
+            "mount_points": mount_points,
+            "networks": _ct_network_rows(config),
+            "options": options,
+            "ct_options": _ct_options(config),
+            "ct_features": _ct_features(config),
+            "feature_options": [
+                {"value": value, "label": label, "enabled": _ct_features(config)["flags"].get(value, False)}
+                for value, label in CT_FEATURE_OPTIONS
+            ],
+            "ct_ostype_label": CT_OSTYPE_LABELS.get(str(config.get("ostype", "") or ""), str(config.get("ostype", "") or "") or "Unknown"),
+            "ct_arch_label": CT_ARCH_LABELS.get(str(config.get("arch", "") or "amd64"), str(config.get("arch", "") or "amd64")),
+        }
+        return render(request, "core/guest_ct_hardware_edit.html", context)
 
     if request.method == "POST":
         error = _apply_hardware_edit(request, detail)
@@ -1036,6 +1257,231 @@ def _set_optional_number_update(
     if error:
         return error
     _set_text_update(updates, delete, config, key, value)
+    return None
+
+
+def _set_optional_float_update(
+    updates: dict[str, str],
+    delete: list[str],
+    config: dict,
+    key: str,
+    value: str,
+    label: str,
+) -> str | None:
+    if value:
+        try:
+            if float(value) < 0:
+                return f"{label} must be zero or higher."
+        except ValueError:
+            return f"{label} must be a number."
+    _set_text_update(updates, delete, config, key, value)
+    return None
+
+
+def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
+    node = detail.node
+    if not node:
+        return "Could not resolve the container's current node."
+    client = None
+    fresh: dict = {}
+    for candidate in configured_clients():
+        try:
+            fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
+            client = candidate
+            break
+        except ProxmoxAPIError:
+            continue
+    if client is None:
+        return "Could not read the current container config from Proxmox."
+    if fresh.get("lock"):
+        return f"Container is locked by another Proxmox operation ({fresh.get('lock')}); edit aborted."
+
+    post = request.POST
+    updates: dict[str, str] = {}
+    delete: list[str] = []
+    resizes: list[tuple[str, str]] = []
+
+    hostname = post.get("ct_hostname", "").strip()
+    if not hostname:
+        return "Hostname is required."
+    _set_text_update(updates, delete, fresh, "hostname", hostname, allow_delete=False)
+    _set_text_update(updates, delete, fresh, "description", post.get("ct_description", "").replace("\r\n", "\n").strip())
+    _set_text_update(updates, delete, fresh, "nameserver", post.get("ct_nameserver", "").strip())
+    _set_text_update(updates, delete, fresh, "searchdomain", post.get("ct_searchdomain", "").strip())
+    _set_checkbox_update(updates, fresh, "onboot", post.get("ct_onboot") == "on")
+    _set_checkbox_update(updates, fresh, "protection", post.get("ct_protection") == "on")
+
+    startup_value = _startup_from_post(post)
+    if startup_value is None:
+        return "Startup order and delays must be whole numbers."
+    _set_text_update(updates, delete, fresh, "startup", startup_value)
+
+    for form_field, key, label, allow_zero in (
+        ("cores", "cores", "Cores", False),
+        ("memory", "memory", "Memory", False),
+        ("swap", "swap", "Swap", True),
+        ("ct_cpuunits", "cpuunits", "CPU units", False),
+    ):
+        error = _set_optional_number_update(
+            updates,
+            delete,
+            fresh,
+            key,
+            post.get(form_field, "").strip(),
+            label,
+            allow_zero=allow_zero,
+        )
+        if error:
+            return error
+    error = _set_optional_float_update(updates, delete, fresh, "cpulimit", post.get("ct_cpulimit", "").strip(), "CPU limit")
+    if error:
+        return error
+
+    feature_parts = []
+    for key, _label in CT_FEATURE_OPTIONS:
+        if post.get(f"feature_{key}") == "on":
+            feature_parts.append(f"{key}=1")
+    mount_features = post.get("feature_mount", "").strip()
+    if mount_features:
+        feature_parts.append(f"mount={mount_features}")
+    features_value = ",".join(feature_parts)
+    _set_text_update(updates, delete, fresh, "features", features_value)
+
+    root_head, root_params = _split_kv_config(fresh.get("rootfs"))
+    if root_head:
+        original = _format_kv_config(root_head, root_params, CT_MOUNT_ORDER)
+        root_params_edit = dict(root_params)
+        for param in ("acl", "quota", "ro", "replicate", "shared"):
+            _set_param_bool(root_params_edit, param, post.get(f"rootfs_{param}") == "on")
+        _set_param_text(root_params_edit, "mountoptions", post.get("rootfs_mountoptions", "").strip())
+        new_root_size = post.get("rootfs_size", "").strip()
+        if new_root_size:
+            error = _validate_positive_int(new_root_size, "Root disk size")
+            if error:
+                return error
+            if new_root_size != str(root_params.get("size", "")).rstrip("Gg"):
+                resizes.append(("rootfs", f"{new_root_size}G"))
+        updated = _format_kv_config(root_head, root_params_edit, CT_MOUNT_ORDER)
+        if updated != original:
+            updates["rootfs"] = updated
+
+    for key in [k for k in fresh if re.match(r"^mp\d+$", k)]:
+        if post.get(f"{key}_remove") == "on":
+            delete.append(key)
+            continue
+        head, params = _split_kv_config(fresh.get(key))
+        original = _format_kv_config(head, params, CT_MOUNT_ORDER)
+        params_edit = dict(params)
+        source = post.get(f"{key}_source", "").strip()
+        mount_path = post.get(f"{key}_path", "").strip()
+        if not source:
+            return f"{key} source is required."
+        if not mount_path.startswith("/"):
+            return f"{key} mount path must start with /."
+        for param in ("backup", "acl", "quota", "ro", "replicate", "shared"):
+            _set_param_bool(params_edit, param, post.get(f"{key}_{param}") == "on")
+        _set_param_text(params_edit, "mp", mount_path)
+        _set_param_text(params_edit, "mountoptions", post.get(f"{key}_mountoptions", "").strip())
+        new_size = post.get(f"{key}_size", "").strip()
+        if new_size:
+            error = _validate_positive_int(new_size, f"{key} size")
+            if error:
+                return error
+            if new_size != str(params.get("size", "")).rstrip("Gg"):
+                resizes.append((key, f"{new_size}G"))
+        updated = _format_kv_config(source, params_edit, CT_MOUNT_ORDER)
+        if updated != original:
+            updates[key] = updated
+
+    for storage, size, mount_path in _field_lists(post, "newmp_storage", "newmp_size", "newmp_path"):
+        if not any((storage, size, mount_path)):
+            continue
+        if not storage:
+            return "New mount point storage is required."
+        error = _validate_positive_int(size, "New mount point size")
+        if error:
+            return error
+        if not mount_path.startswith("/"):
+            return "New mount point path must start with /."
+        key = f"mp{_next_device_index(fresh, 'mp', updates)}"
+        updates[key] = f"{storage}:{size},mp={mount_path}"
+
+    for key in [k for k in fresh if NET_KEY_RE.match(k)]:
+        if post.get(f"{key}_remove") == "on":
+            delete.append(key)
+            continue
+        _head, params = _split_kv_config(fresh.get(key))
+        params_edit = dict(params)
+        name = post.get(f"{key}_name", "").strip()
+        if not name:
+            return f"{key} interface name is required."
+        _set_param_text(params_edit, "name", name)
+        _set_param_text(params_edit, "bridge", post.get(f"{key}_bridge", "").strip())
+        _set_param_text(params_edit, "ip", post.get(f"{key}_ip", "").strip())
+        _set_param_text(params_edit, "ip6", post.get(f"{key}_ip6", "").strip())
+        _set_param_text(params_edit, "gw", post.get(f"{key}_gw", "").strip())
+        _set_param_text(params_edit, "gw6", post.get(f"{key}_gw6", "").strip())
+        _set_param_text(params_edit, "hwaddr", post.get(f"{key}_hwaddr", "").strip())
+        _set_param_text(params_edit, "mtu", post.get(f"{key}_mtu", "").strip())
+        _set_param_text(params_edit, "rate", post.get(f"{key}_rate", "").strip())
+        _set_param_text(params_edit, "tag", post.get(f"{key}_tag", "").strip())
+        _set_param_text(params_edit, "trunks", post.get(f"{key}_trunks", "").strip())
+        params_edit["type"] = post.get(f"{key}_type", "").strip() or "veth"
+        _set_param_bool(params_edit, "firewall", post.get(f"{key}_firewall") == "on")
+        _set_param_bool(params_edit, "link_down", post.get(f"{key}_link_down") == "on")
+        updated = _format_kv_config("", params_edit, CT_NET_ORDER)
+        if updated != str(fresh.get(key, "") or ""):
+            updates[key] = updated
+
+    for name, bridge, ip, ip6, vlan, firewall in _field_lists(
+        post,
+        "newnet_name",
+        "newnet_bridge",
+        "newnet_ip",
+        "newnet_ip6",
+        "newnet_vlan",
+        "newnet_firewall",
+    ):
+        if not any((name, bridge, ip, ip6, vlan, firewall)):
+            continue
+        net_name = name or f"eth{_next_device_index(fresh, 'net', updates)}"
+        params = {"name": net_name, "type": "veth"}
+        _set_param_text(params, "bridge", bridge)
+        _set_param_text(params, "ip", ip or "dhcp")
+        _set_param_text(params, "ip6", ip6)
+        _set_param_text(params, "tag", vlan)
+        _set_param_bool(params, "firewall", firewall == "on")
+        updates[f"net{_next_device_index(fresh, 'net', updates)}"] = _format_kv_config("", params, CT_NET_ORDER)
+
+    if not (updates or delete or resizes):
+        return "No changes to save."
+
+    try:
+        if updates or delete:
+            client.set_guest_config(
+                node=node,
+                object_type=detail.object_type,
+                vmid=detail.vmid,
+                updates=updates,
+                delete=delete,
+                digest=fresh.get("digest"),
+            )
+        for disk, size in resizes:
+            client.put(
+                f"nodes/{quote(node, safe='')}/lxc/{detail.vmid}/resize",
+                data={"disk": disk, "size": size},
+            )
+    except ProxmoxAPIError as exc:
+        if "403" in str(exc):
+            return "Proxmox denied the change (403) - the token lacks a required VM.Config.* privilege."
+        return f"Proxmox rejected the change: {exc}"
+
+    _audit_guest(
+        request,
+        detail,
+        "guest.hardware.updated",
+        {"updated": list(updates.keys()), "removed": delete, "resized": [d for d, _ in resizes]},
+    )
     return None
 
 
@@ -3172,7 +3618,7 @@ OSTYPE_LABELS = {
     "win7": "Windows 7",
     "win8": "Windows 8/2012",
     "win10": "Windows 10/2016",
-    "win11": "Windows 11/2022",
+    "win11": "Windows 11/2022/2025",
     "wxp": "Windows XP",
     "solaris": "Solaris",
     "other": "Other",
@@ -3328,11 +3774,17 @@ def _cpu_count(config: dict, object_type: str) -> int:
 
 
 def _guest_cpu_topology(config: dict, object_type: str) -> dict | None:
-    if object_type != ProxmoxInventory.ObjectType.VM:
-        return None
     cores = _int_or_zero(config.get("cores"))
     if not cores:
         return None
+    if object_type == ProxmoxInventory.ObjectType.CT:
+        return {
+            "vcpus": cores,
+            "cores": cores,
+            "sockets": 1,
+            "threads": 1,
+            "numa": False,
+        }
     sockets = _int_or_zero(config.get("sockets")) or 1
     return {
         "vcpus": sockets * cores,

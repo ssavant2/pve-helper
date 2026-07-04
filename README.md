@@ -70,6 +70,29 @@ The compose defaults are for local skeleton verification. Before real internal u
 
 ## Development Checks
 
+The app image copies the source tree at build time. The running `web`/`worker`
+containers do not bind-mount the checkout, so Python/template changes are not
+visible inside `docker compose exec web ...` until the image is rebuilt and the
+container is recreated.
+
+After changing Python, templates, or bundled static assets, rebuild before
+container-based tests:
+
+```bash
+docker compose build web worker
+docker compose run --rm \
+  -e DB_USER="$DB_ADMIN_USER" \
+  -e DB_PASSWORD="$DB_ADMIN_PASSWORD" \
+  web python manage.py test --keepdb
+```
+
+Then restart the running app containers so the browser sees the same code that
+was tested:
+
+```bash
+docker compose up -d web worker
+```
+
 JavaScript linting/formatting runs through Docker, so Node.js does not need to
 be installed on the host:
 

@@ -52,7 +52,7 @@
              data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
              data-clone-options-url="{% url 'core:guest_clone_options' g.object_type g.vmid %}"
              data-edit-tags-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=tags"
-             data-edit-hardware-url="{% if g.object_type == 'vm' %}{% url 'core:guest_hardware_edit' g.object_type g.vmid %}{% else %}{% url 'core:guest_edit' g.object_type g.vmid %}?section=hardware{% endif %}"
+             data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.object_type g.vmid %}"
              data-edit-options-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=options"
              data-filter-text="{{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }}">
             {% if g.status == 'running' %}

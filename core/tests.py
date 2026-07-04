@@ -4310,6 +4310,37 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(payload["ip_label"], "192.0.2.50")
         self.assertEqual(payload["agent"], "Running")
 
+    def test_ct_summary_uses_container_labels_and_cpu_topology_card(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {
+                    "hostname": "ct-lab",
+                    "cores": "2",
+                    "memory": "1024",
+                    "rootfs": "nfs-ct:subvol-601-disk-0,size=8G",
+                }
+
+        live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.fetch_live_guest_status", return_value={("ct", 601): "stopped"}),
+            patch("core.views.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:guest_summary", args=["ct", 601]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Container Details")
+        self.assertContains(response, "Container Hardware")
+        self.assertContains(response, "CPU Topology")
+        self.assertContains(response, "<dt>vCPUs</dt><dd>2</dd>", html=True)
+        self.assertNotContains(response, "Virtual Machine Details")
+
     @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_renders_for_vm_disks_and_networks(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
@@ -4368,6 +4399,38 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, 'data-hotplug-editor')
         self.assertContains(response, "scsi0")
         self.assertContains(response, "vmbr0")
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_create_vm_lists_windows_server_2025_as_win11_family(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def node_names(self, *, fallback=""):
+                return ["pve1"]
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/nextid":
+                    return 500
+                if path == "nodes/pve1/storage":
+                    return [{"storage": "nfs-vm", "content": "images,iso"}]
+                if path == "nodes/pve1/network":
+                    return [{"type": "bridge", "iface": "vmbr0"}]
+                if path == "cluster/sdn/vnets":
+                    return []
+                if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
+                    return []
+                raise ProxmoxAPIError(path)
+
+        fake_client = FakeClient()
+        with (
+            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.get(reverse("core:guest_create", args=["vm"]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<option value="win11">Windows 11/2022/2025</option>', html=True)
 
     @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_updates_vm_options(self):
@@ -4517,6 +4580,176 @@ class ViewSmokeTests(TestCase):
                 "net0": "virtio,bridge=vmbr0",
                 "net1": "virtio,bridge=vmbr1,tag=42",
             },
+        )
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_hardware_edit_renders_for_ct_mounts_and_networks(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def node_names(self, *, fallback=""):
+                return ["pve1"]
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {
+                    "hostname": "ct-lab",
+                    "cores": "2",
+                    "memory": "1024",
+                    "swap": "512",
+                    "rootfs": "nfs-ct:subvol-601-disk-0,size=8G,acl=1",
+                    "mp0": "nfs-ct:4,mp=/srv/data,backup=1,size=4G",
+                    "net0": "name=eth0,bridge=vmbr0,ip=dhcp,firewall=1,type=veth",
+                    "features": "nesting=1,mount=nfs;cifs",
+                    "ostype": "ubuntu",
+                    "arch": "amd64",
+                }
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/nextid":
+                    return 602
+                if path == "nodes/pve1/storage":
+                    return [{"storage": "nfs-ct", "content": "rootdir,vztmpl"}]
+                if path == "nodes/pve1/network":
+                    return [{"type": "bridge", "iface": "vmbr0"}]
+                if path == "cluster/sdn/vnets":
+                    return []
+                if path == "nodes/pve1/storage/nfs-ct/content?content=vztmpl":
+                    return []
+                raise ProxmoxAPIError(path)
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="running")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+            patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.get(reverse("core:guest_hardware_edit", args=["ct", 601]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Container Hardware")
+        self.assertContains(response, "CT Options")
+        self.assertContains(response, "Root Disk")
+        self.assertContains(response, "Mount Point")
+        self.assertContains(response, "Network Adapter")
+        self.assertContains(response, "ct-lab")
+        self.assertContains(response, "nfs;cifs")
+        self.assertContains(response, 'data-add-device="mount"')
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_hardware_edit_updates_ct_config_and_resizes(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.updates = None
+                self.delete = None
+                self.digest = None
+                self.resize_calls = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {
+                    "digest": "ctdigest",
+                    "hostname": "ct-lab",
+                    "cores": "2",
+                    "memory": "1024",
+                    "swap": "512",
+                    "rootfs": "nfs-ct:subvol-601-disk-0,size=8G,acl=1",
+                    "mp0": "nfs-ct:4,mp=/srv/data,backup=1,size=4G",
+                    "net0": "name=eth0,bridge=vmbr0,ip=dhcp,type=veth",
+                    "features": "nesting=1",
+                }
+
+            def set_guest_config(self, *, node, object_type, vmid, updates, delete=None, digest=None):
+                self.updates = updates
+                self.delete = delete or []
+                self.digest = digest
+                return None
+
+            def put(self, path, *, data=None):
+                self.resize_calls.append((path, data or {}))
+                return None
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="stopped")
+        with (
+            patch("core.views.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:guest_hardware_edit", args=["ct", 601]),
+                {
+                    "ct_hostname": "ct-renamed",
+                    "ct_onboot": "on",
+                    "ct_protection": "on",
+                    "ct_nameserver": "192.0.2.1",
+                    "cores": "4",
+                    "memory": "2048",
+                    "swap": "0",
+                    "rootfs_size": "12",
+                    "rootfs_acl": "on",
+                    "feature_nesting": "on",
+                    "feature_fuse": "on",
+                    "feature_mount": "nfs;cifs",
+                    "startup_order": "1",
+                    "startup_up": "10",
+                    "startup_down": "20",
+                    "mp0_source": "nfs-ct:4",
+                    "mp0_path": "/srv/new",
+                    "mp0_backup": "on",
+                    "mp0_size": "6",
+                    "net0_name": "eth0",
+                    "net0_bridge": "vmbr1",
+                    "net0_ip": "192.0.2.60/24",
+                    "net0_ip6": "",
+                    "net0_gw": "192.0.2.1",
+                    "net0_gw6": "",
+                    "net0_hwaddr": "",
+                    "net0_mtu": "",
+                    "net0_rate": "",
+                    "net0_tag": "42",
+                    "net0_trunks": "",
+                    "net0_type": "veth",
+                    "net0_firewall": "on",
+                    "newmp_storage": ["nfs-ct"],
+                    "newmp_size": ["2"],
+                    "newmp_path": ["/opt/app"],
+                    "newnet_name": ["eth1"],
+                    "newnet_bridge": ["vmbr0"],
+                    "newnet_ip": ["dhcp"],
+                    "newnet_ip6": [""],
+                    "newnet_vlan": [""],
+                    "newnet_firewall": ["on"],
+                },
+            )
+
+        self.assertRedirects(response, reverse("core:guest_summary", args=["ct", 601]), fetch_redirect_response=False)
+        self.assertEqual(fake_client.digest, "ctdigest")
+        self.assertEqual(fake_client.delete, [])
+        self.assertEqual(fake_client.updates["hostname"], "ct-renamed")
+        self.assertEqual(fake_client.updates["cores"], "4")
+        self.assertEqual(fake_client.updates["memory"], "2048")
+        self.assertEqual(fake_client.updates["swap"], "0")
+        self.assertEqual(fake_client.updates["features"], "nesting=1,fuse=1,mount=nfs;cifs")
+        self.assertEqual(fake_client.updates["startup"], "order=1,up=10,down=20")
+        self.assertEqual(fake_client.updates["mp0"], "nfs-ct:4,mp=/srv/new,backup=1,size=4G")
+        self.assertEqual(fake_client.updates["net0"], "name=eth0,bridge=vmbr1,firewall=1,gw=192.0.2.1,ip=192.0.2.60/24,tag=42,type=veth")
+        self.assertEqual(fake_client.updates["mp1"], "nfs-ct:2,mp=/opt/app")
+        self.assertEqual(fake_client.updates["net1"], "name=eth1,bridge=vmbr0,firewall=1,ip=dhcp,type=veth")
+        self.assertEqual(
+            fake_client.resize_calls,
+            [
+                ("nodes/pve1/lxc/601/resize", {"disk": "rootfs", "size": "12G"}),
+                ("nodes/pve1/lxc/601/resize", {"disk": "mp0", "size": "6G"}),
+            ],
         )
 
     @override_settings(VM_WRITE_ENABLED=True)

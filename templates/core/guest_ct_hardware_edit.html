@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+{% load guest_labels %}
+
+{% block content %}
+  <section class="hardware-editor-page">
+    <div class="hardware-editor-header">
+      <div class="hardware-editor-title">
+        <h1>Edit Settings</h1>
+        <span class="hardware-title-separator" aria-hidden="true"></span>
+        <span class="hardware-editor-guest">{% guest_label guest_identity %}</span>
+      </div>
+      <a class="hardware-editor-close" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}" aria-label="Close">x</a>
+    </div>
+
+    <form class="hardware-editor-form" method="post" action="{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}">
+      {% csrf_token %}
+      <input class="hardware-tab-input" type="radio" name="hardware_tab" id="hardware-tab-virtual" value="virtual" checked>
+      <input class="hardware-tab-input" type="radio" name="hardware_tab" id="hardware-tab-options" value="options">
+
+      <div class="hardware-editor-tabs" aria-label="Edit settings tabs">
+        <label class="hardware-editor-tab" for="hardware-tab-virtual">Container Hardware</label>
+        <label class="hardware-editor-tab" for="hardware-tab-options">CT Options</label>
+      </div>
+
+      <div class="hardware-tab-panel hardware-tab-panel-virtual">
+        <div class="hardware-editor-toolbar">
+          <details class="hw-add" data-hw-add>
+            <summary>Add New Device</summary>
+            <div class="hw-add-list" role="menu">
+              <div class="hw-add-cat">Storage</div>
+              <button type="button" class="hw-add-opt" data-add-device="mount">Mount Point</button>
+              <div class="hw-add-cat">Network</div>
+              <button type="button" class="hw-add-opt" data-add-device="net">Network Adapter</button>
+            </div>
+          </details>
+        </div>
+
+        <div class="hw-list" data-hw-list aria-label="Container hardware">
+          <div class="hw-item" data-hw-item id="ct-cpu">
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">CPU</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ cores|default:"all host cores" }} cores</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>Cores</span><input type="number" min="1" name="cores" value="{{ cores }}"></div>
+              <div class="hw-field"><span>CPU limit</span><input type="text" name="ct_cpulimit" value="{{ cpulimit }}" placeholder="unlimited"></div>
+              <div class="hw-field"><span>CPU units</span><input type="number" min="1" name="ct_cpuunits" value="{{ cpuunits }}" placeholder="default"></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item id="ct-memory">
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Memory</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ memory|default:"512" }} MiB{% if swap %} · {{ swap }} MiB swap{% endif %}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>Memory (MiB)</span><input type="number" min="16" name="memory" value="{{ memory }}"></div>
+              <div class="hw-field"><span>Swap (MiB)</span><input type="number" min="0" name="swap" value="{{ swap }}"></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item id="ct-rootfs">
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Root Disk<code>rootfs</code></span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ rootfs.summary }}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>Volume</span><span class="hw-static-val">{{ rootfs.source }}</span></div>
+              <div class="hw-field"><span>Grow to (GB)</span><input type="number" min="1" name="rootfs_size" value="{{ rootfs.size_gb }}" placeholder="unchanged"></div>
+              <div class="hw-field"><span>ACL</span><label class="hw-switch"><input type="checkbox" name="rootfs_acl" {% if rootfs.acl %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Quota</span><label class="hw-switch"><input type="checkbox" name="rootfs_quota" {% if rootfs.quota %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Read only</span><label class="hw-switch"><input type="checkbox" name="rootfs_ro" {% if rootfs.ro %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Replicate</span><label class="hw-switch"><input type="checkbox" name="rootfs_replicate" {% if rootfs.replicate %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Shared</span><label class="hw-switch"><input type="checkbox" name="rootfs_shared" {% if rootfs.shared %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Mount options</span><input type="text" name="rootfs_mountoptions" value="{{ rootfs.mountoptions }}" placeholder="no extra options"></div>
+            </div>
+          </div>
+
+          {% for mp in mount_points %}
+            <div class="hw-item" data-hw-item id="ct-{{ mp.key }}">
+              <input type="checkbox" name="{{ mp.key }}_remove" class="hw-remove-flag" hidden>
+              <div class="hw-item-head">
+                <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                  <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                  <span class="hw-item-name">Mount Point<code>{{ mp.key }}</code></span>
+                </button>
+                <div class="hw-item-primary"><span class="hw-current-value">{{ mp.summary }}</span></div>
+                <div class="hw-item-kebab" data-hw-kebab>
+                  <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                  <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-toggle>Remove device</button></div>
+                </div>
+              </div>
+              <div class="hw-item-body hw-field-grid-2">
+                <div class="hw-field"><span>Volume / host path</span><input type="text" name="{{ mp.key }}_source" value="{{ mp.source }}"></div>
+                <div class="hw-field"><span>Mount path</span><input type="text" name="{{ mp.key }}_path" value="{{ mp.path }}" placeholder="/mnt/data"></div>
+                <div class="hw-field"><span>Grow to (GB)</span><input type="number" min="1" name="{{ mp.key }}_size" value="{{ mp.size_gb }}" placeholder="unchanged"></div>
+                <div class="hw-field"><span>Backup</span><label class="hw-switch"><input type="checkbox" name="{{ mp.key }}_backup" {% if mp.backup %}checked{% endif %}> Include</label></div>
+                <div class="hw-field"><span>ACL</span><label class="hw-switch"><input type="checkbox" name="{{ mp.key }}_acl" {% if mp.acl %}checked{% endif %}> Enabled</label></div>
+                <div class="hw-field"><span>Quota</span><label class="hw-switch"><input type="checkbox" name="{{ mp.key }}_quota" {% if mp.quota %}checked{% endif %}> Enabled</label></div>
+                <div class="hw-field"><span>Read only</span><label class="hw-switch"><input type="checkbox" name="{{ mp.key }}_ro" {% if mp.ro %}checked{% endif %}> Enabled</label></div>
+                <div class="hw-field"><span>Replicate</span><label class="hw-switch"><input type="checkbox" name="{{ mp.key }}_replicate" {% if mp.replicate %}checked{% endif %}> Enabled</label></div>
+                <div class="hw-field"><span>Shared</span><label class="hw-switch"><input type="checkbox" name="{{ mp.key }}_shared" {% if mp.shared %}checked{% endif %}> Enabled</label></div>
+                <div class="hw-field"><span>Mount options</span><input type="text" name="{{ mp.key }}_mountoptions" value="{{ mp.mountoptions }}" placeholder="no extra options"></div>
+                <p class="hw-removed-note">This mount point will be removed when you save.</p>
+              </div>
+            </div>
+          {% endfor %}
+
+          {% for net in networks %}
+            <div class="hw-item" data-hw-item id="ct-{{ net.key }}">
+              <input type="checkbox" name="{{ net.key }}_remove" class="hw-remove-flag" hidden>
+              <div class="hw-item-head">
+                <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                  <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                  <span class="hw-item-name">Network Adapter<code>{{ net.key }}</code></span>
+                </button>
+                <div class="hw-item-primary"><span class="hw-current-value">{{ net.summary|default:net.name }}</span></div>
+                <div class="hw-item-kebab" data-hw-kebab>
+                  <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                  <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-toggle>Remove device</button></div>
+                </div>
+              </div>
+              <div class="hw-item-body hw-field-grid-2">
+                <div class="hw-field"><span>Name</span><input type="text" name="{{ net.key }}_name" value="{{ net.name }}"></div>
+                <div class="hw-field"><span>Bridge / VNet</span>
+                  <select name="{{ net.key }}_bridge">
+                    <option value="">Not connected</option>
+                    {% for b in options.bridges %}<option value="{{ b }}" {% if b == net.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
+                  </select>
+                </div>
+                <div class="hw-field"><span>IPv4</span><input type="text" name="{{ net.key }}_ip" value="{{ net.ip }}" placeholder="dhcp, manual, or CIDR"></div>
+                <div class="hw-field"><span>IPv6</span><input type="text" name="{{ net.key }}_ip6" value="{{ net.ip6 }}" placeholder="auto, dhcp, manual, or CIDR"></div>
+                <div class="hw-field"><span>IPv4 gateway</span><input type="text" name="{{ net.key }}_gw" value="{{ net.gw }}"></div>
+                <div class="hw-field"><span>IPv6 gateway</span><input type="text" name="{{ net.key }}_gw6" value="{{ net.gw6 }}"></div>
+                <div class="hw-field"><span>MAC address</span><input type="text" name="{{ net.key }}_hwaddr" value="{{ net.hwaddr }}" placeholder="auto"></div>
+                <div class="hw-field"><span>VLAN tag</span><input type="number" min="1" name="{{ net.key }}_tag" value="{{ net.tag }}" placeholder="none"></div>
+                <div class="hw-field"><span>Trunks</span><input type="text" name="{{ net.key }}_trunks" value="{{ net.trunks }}" placeholder="semicolon separated VLANs"></div>
+                <div class="hw-field"><span>MTU</span><input type="number" min="1" name="{{ net.key }}_mtu" value="{{ net.mtu }}" placeholder="default"></div>
+                <div class="hw-field"><span>Rate limit (Mbps)</span><input type="text" name="{{ net.key }}_rate" value="{{ net.rate }}" placeholder="unlimited"></div>
+                <div class="hw-field"><span>Type</span><span class="hw-static-val">{{ net.type }}</span><input type="hidden" name="{{ net.key }}_type" value="{{ net.type }}"></div>
+                <div class="hw-field"><span>Firewall</span><label class="hw-switch"><input type="checkbox" name="{{ net.key }}_firewall" {% if net.firewall %}checked{% endif %}> Enabled</label></div>
+                <div class="hw-field"><span>Disconnect</span><label class="hw-switch"><input type="checkbox" name="{{ net.key }}_link_down" {% if net.link_down %}checked{% endif %}> Link down</label></div>
+                <p class="hw-removed-note">This adapter will be removed when you save.</p>
+              </div>
+            </div>
+          {% endfor %}
+
+          <div class="hw-item is-new" data-hw-item data-new-device="mount" data-new-template="true" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Mount Point <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Storage</span>
+                <select name="newmp_storage" data-new-input data-new-required disabled>
+                  <option value="">Select storage&hellip;</option>
+                  {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="hw-field"><span>Size (GB)</span><input type="number" min="1" name="newmp_size" data-new-input data-new-required disabled></div>
+              <div class="hw-field"><span>Mount path</span><input type="text" name="newmp_path" placeholder="/mnt/data" data-new-input data-new-required disabled></div>
+            </div>
+          </div>
+
+          <div class="hw-item is-new" data-hw-item data-new-device="net" data-new-template="true" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Network Adapter</span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Name</span><input type="text" name="newnet_name" placeholder="eth0" data-new-input disabled></div>
+              <div class="hw-field"><span>Bridge / VNet</span>
+                <select name="newnet_bridge" data-new-input disabled>
+                  <option value="">Not connected</option>
+                  {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="hw-field"><span>IPv4</span><input type="text" name="newnet_ip" value="dhcp" data-new-input disabled></div>
+              <div class="hw-field"><span>IPv6</span><input type="text" name="newnet_ip6" placeholder="auto, dhcp, manual, or CIDR" data-new-input disabled></div>
+              <div class="hw-field"><span>VLAN tag</span><input type="number" min="1" name="newnet_vlan" placeholder="none" data-new-input disabled></div>
+              <div class="hw-field"><span>Firewall</span><label class="hw-switch"><input type="checkbox" name="newnet_firewall" data-new-input disabled> Enabled</label></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hardware-tab-panel hardware-tab-panel-options">
+        <div class="hw-list hw-options-list" aria-label="Container options">
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">General Options</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ ct_options.hostname }}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>Hostname</span><input type="text" name="ct_hostname" value="{{ ct_options.hostname }}"></div>
+              <div class="hw-field"><span>Start at boot</span><label class="hw-switch"><input type="checkbox" name="ct_onboot" {% if ct_options.onboot %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>Protection</span><label class="hw-switch"><input type="checkbox" name="ct_protection" {% if ct_options.protection %}checked{% endif %}> Enabled</label></div>
+              <div class="hw-field"><span>OS type</span><span class="hw-static-val">{{ ct_ostype_label }}</span></div>
+              <div class="hw-field"><span>Architecture</span><span class="hw-static-val">{{ ct_arch_label }}</span></div>
+              <div class="hw-field"><span>Unprivileged</span><span class="hw-static-val">{% if ct_options.unprivileged %}Yes{% else %}No{% endif %}</span></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Notes</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{% if ct_options.description %}Configured{% else %}Empty{% endif %}</span></div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field hw-field-wide"><span>Description</span><textarea name="ct_description">{{ ct_options.description }}</textarea></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">DNS</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ ct_options.nameserver|default:"host defaults" }}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>DNS servers</span><input type="text" name="ct_nameserver" value="{{ ct_options.nameserver }}" placeholder="host defaults"></div>
+              <div class="hw-field"><span>Search domain</span><input type="text" name="ct_searchdomain" value="{{ ct_options.searchdomain }}" placeholder="host defaults"></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Features</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{{ ct_features.raw|default:"Default" }}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              {% for feature in feature_options %}
+                <div class="hw-field"><span>{{ feature.label }}</span><label class="hw-switch"><input type="checkbox" name="feature_{{ feature.value }}" {% if feature.enabled %}checked{% endif %}> Enabled</label></div>
+              {% endfor %}
+              <div class="hw-field"><span>Allowed mounts</span><input type="text" name="feature_mount" value="{{ ct_features.mount }}" placeholder="nfs;cifs"></div>
+            </div>
+          </div>
+
+          <div class="hw-item" data-hw-item>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">Power Management</span>
+              </button>
+              <div class="hw-item-primary"><span class="hw-current-value">{% if ct_options.startup_order %}order={{ ct_options.startup_order }}{% else %}Default{% endif %}</span></div>
+            </div>
+            <div class="hw-item-body hw-field-grid-2">
+              <div class="hw-field"><span>Start order</span><input type="number" min="0" name="startup_order" value="{{ ct_options.startup_order }}" placeholder="-"></div>
+              <div class="hw-field"><span>Startup delay (sec)</span><input type="number" min="0" name="startup_up" value="{{ ct_options.startup_up }}" placeholder="0"></div>
+              <div class="hw-field"><span>Shutdown delay (sec)</span><input type="number" min="0" name="startup_down" value="{{ ct_options.startup_down }}" placeholder="0"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hardware-editor-actions">
+        <button class="primary-action" type="submit">OK</button>
+        <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
