@@ -3021,9 +3021,9 @@ code {
 .guest-edit-panel textarea {
   width: 100%;
   padding: 8px 10px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   font: inherit;
 }
@@ -3332,7 +3332,7 @@ body.cards-dragging {
 
 .actions-menu-panel button:hover,
 .actions-menu-panel a:hover {
-  background: var(--surface_alt, rgba(127, 127, 127, 0.12));
+  background: var(--surface-alt);
 }
 
 .actions-menu-panel button.danger {
@@ -3350,7 +3350,7 @@ body.cards-dragging {
 
 .snapshot-form input[type="text"] {
   padding: 7px 10px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -3367,7 +3367,7 @@ body.cards-dragging {
 .guest-edit-panel input[type="number"] {
   width: 160px;
   padding: 8px 10px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -3412,7 +3412,7 @@ body.cards-dragging {
 .guest-edit-panel input[type="password"] {
   width: 100%;
   padding: 8px 10px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
