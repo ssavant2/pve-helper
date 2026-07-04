@@ -4235,6 +4235,469 @@ body.cards-dragging {
   }
 }
 
+/* --- vSphere 8 dialog pass: works in light and dark themes --- */
+.hardware-editor-page {
+  --vs-bg: #ffffff;
+  --vs-text: #263a43;
+  --vs-muted: #647780;
+  --vs-faint: #8a9aa2;
+  --vs-line: #d9e2e7;
+  --vs-line-strong: #c4d0d7;
+  --vs-row: #ffffff;
+  --vs-row-hover: #eef5f8;
+  --vs-row-open: #e6f0f5;
+  --vs-panel: #ffffff;
+  --vs-input: #ffffff;
+  --vs-input-border: #a9bac3;
+  --vs-menu: #ffffff;
+  --vs-menu-shadow: rgba(34, 52, 63, 0.24);
+  --vs-menu-hover: #d9e6ec;
+  --vs-accent: #008fc5;
+  --vs-danger: #bb3b31;
+  width: min(1240px, calc(100vw - 28px));
+  min-height: min(820px, calc(100vh - 56px));
+  margin: -10px auto 0;
+  color: var(--vs-text);
+  background: var(--vs-bg);
+  border: 1px solid var(--vs-line-strong);
+  border-radius: 2px;
+  box-shadow: 0 26px 72px rgba(0, 0, 0, 0.26);
+  overflow: hidden;
+}
+
+html[data-theme="dark"] .hardware-editor-page {
+  --vs-bg: #203640;
+  --vs-text: #e8f0f4;
+  --vs-muted: #b2c1c8;
+  --vs-faint: #81949d;
+  --vs-line: rgba(178, 199, 208, 0.25);
+  --vs-line-strong: rgba(188, 207, 216, 0.42);
+  --vs-row: #203640;
+  --vs-row-hover: #284551;
+  --vs-row-open: #263f49;
+  --vs-panel: #1f343d;
+  --vs-input: #203640;
+  --vs-input-border: rgba(204, 222, 230, 0.54);
+  --vs-menu: #203640;
+  --vs-menu-shadow: rgba(0, 0, 0, 0.52);
+  --vs-menu-hover: #dbe6eb;
+  --vs-accent: #47c6f3;
+  --vs-danger: #ff746e;
+  box-shadow: 0 28px 76px rgba(0, 0, 0, 0.5);
+}
+
+.hardware-editor-header {
+  margin: 0;
+  padding: 18px 22px 8px;
+}
+
+.hardware-editor-title h1 {
+  font-size: 34px;
+  font-weight: 300;
+  color: var(--vs-text);
+}
+
+.hardware-title-separator {
+  background: var(--vs-line-strong);
+}
+
+.hardware-editor-guest,
+.hardware-editor-close {
+  color: var(--vs-muted);
+}
+
+.hardware-editor-close:hover {
+  color: var(--vs-text);
+}
+
+.hardware-editor-form {
+  min-height: calc(min(820px, 100vh - 56px) - 62px);
+  padding: 0 22px 76px;
+  background: var(--vs-bg);
+  border-top: 0;
+}
+
+.hardware-editor-tabs {
+  height: 42px;
+  align-items: flex-end;
+  gap: 36px;
+  margin: 0;
+  border-bottom: 1px solid var(--vs-line-strong);
+}
+
+.hardware-editor-tab {
+  padding: 0 2px 10px;
+  color: var(--vs-muted);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+#hardware-tab-virtual:checked ~ .hardware-editor-tabs label[for="hardware-tab-virtual"],
+#hardware-tab-options:checked ~ .hardware-editor-tabs label[for="hardware-tab-options"],
+.hardware-editor-tab.active {
+  color: var(--vs-text);
+  border-bottom-color: var(--vs-accent);
+}
+
+.hardware-editor-toolbar {
+  min-height: 54px;
+  padding: 0;
+}
+
+.hw-add > summary,
+.hw-add-menu summary {
+  color: var(--vs-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.hw-add > summary:hover,
+.hw-add-menu summary:hover {
+  color: var(--vs-text);
+}
+
+.hw-add-list,
+.hw-add-menu-panel,
+.hw-kebab-menu {
+  background: var(--vs-menu);
+  border: 1px solid var(--vs-line-strong);
+  border-radius: 2px;
+  box-shadow: 0 16px 34px var(--vs-menu-shadow);
+}
+
+.hw-add-list {
+  top: calc(100% + 10px);
+  width: min(324px, calc(100vw - 48px));
+  padding: 8px 0;
+}
+
+.hw-add-cat,
+.hw-add-group-title {
+  color: var(--vs-muted);
+  font-weight: 700;
+}
+
+.hw-add-cat {
+  padding: 11px 18px 5px;
+}
+
+.hw-add-opt,
+.hw-kebab-menu button {
+  color: var(--vs-text);
+}
+
+.hw-add-opt {
+  padding: 8px 18px 8px 34px;
+}
+
+.hw-add-opt:hover,
+.hw-kebab-menu button:hover {
+  color: var(--vs-menu-hover-text, #203640);
+  background: var(--vs-menu-hover);
+}
+
+.hw-add-opt:disabled {
+  color: var(--vs-faint);
+  opacity: 0.58;
+}
+
+.hw-list,
+.hw-vsphere-list {
+  margin: 0;
+  border: 1px solid var(--vs-line-strong);
+  border-radius: 0;
+  overflow: hidden;
+  background: var(--vs-panel);
+  box-shadow: none;
+}
+
+.hw-list {
+  min-height: 430px;
+}
+
+.hw-item,
+.hw-vsphere-row {
+  border-bottom: 1px solid var(--vs-line);
+}
+
+.hw-item:last-child,
+.hw-vsphere-row:last-child {
+  border-bottom: 0;
+}
+
+.hw-item-head,
+.hw-vsphere-row {
+  min-height: 41px;
+  background: var(--vs-row);
+}
+
+.hw-item:hover > .hw-item-head,
+.hw-vsphere-row:hover {
+  background: var(--vs-row-hover);
+}
+
+.hw-item.is-open > .hw-item-head,
+.hw-item.is-new > .hw-item-head {
+  background: var(--vs-row-open);
+}
+
+.hw-item-head {
+  gap: 8px;
+  padding-right: 8px;
+}
+
+.hw-item-toggle {
+  min-height: 40px;
+  padding: 6px 8px 6px 22px;
+  color: var(--vs-text);
+}
+
+.hw-chevron,
+.hw-vsphere-chevron {
+  color: var(--vs-muted);
+}
+
+.hw-chevron svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
+.hw-item-name,
+.hw-vsphere-name {
+  color: var(--vs-text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.hw-item-name code,
+.hw-vsphere-name code {
+  color: var(--vs-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.hw-item-primary {
+  flex: 0 1 54%;
+  max-width: 54%;
+  gap: 8px;
+}
+
+.hw-current-value,
+.hw-static-val,
+.hw-unit,
+.hw-unit-inline {
+  color: var(--vs-text);
+}
+
+.hw-current-value {
+  max-width: min(460px, 100%);
+  font-size: 14px;
+}
+
+.hw-mini {
+  gap: 8px;
+}
+
+.hw-mini > span,
+.hw-inline-field > span,
+.hw-field > span:first-child {
+  color: var(--vs-muted);
+  font-size: 12px;
+}
+
+.hw-item-primary input,
+.hw-item-primary select,
+.hw-mini input,
+.hw-field input,
+.hw-field select,
+.hw-add-fields input,
+.hw-add-fields select,
+.hw-inline-field input,
+.hw-inline-field select,
+.hw-inline-field textarea {
+  height: 29px;
+  padding: 2px 8px;
+  color: var(--vs-text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--vs-input-border);
+  border-radius: 0;
+  font: inherit;
+  font-size: 14px;
+}
+
+.hw-inline-field textarea {
+  min-height: 58px;
+  padding-top: 6px;
+}
+
+.hw-item-primary input:focus,
+.hw-item-primary select:focus,
+.hw-mini input:focus,
+.hw-field input:focus,
+.hw-field select:focus,
+.hw-inline-field input:focus,
+.hw-inline-field select:focus,
+.hw-inline-field textarea:focus {
+  outline: 0;
+  border-bottom-color: var(--vs-accent);
+  box-shadow: 0 1px 0 var(--vs-accent);
+}
+
+.hardware-editor-page select option {
+  color: var(--vs-text);
+  background: var(--vs-input);
+}
+
+.hw-item-primary input[type="number"],
+.hw-mini input {
+  width: 76px;
+}
+
+.hw-unit-inline {
+  font-size: 14px;
+}
+
+.hw-kebab-btn {
+  width: 28px;
+  height: 28px;
+  color: var(--vs-muted);
+  border-radius: 2px;
+}
+
+.hw-kebab-btn:hover {
+  color: var(--vs-text);
+  background: var(--vs-row-hover);
+}
+
+.hw-kebab-menu {
+  min-width: 170px;
+  padding: 3px 0;
+}
+
+.hw-kebab-menu button {
+  padding: 8px 14px;
+}
+
+.hw-item-body {
+  padding: 4px 22px 14px 48px;
+  background: var(--vs-panel);
+  border-top: 1px solid var(--vs-line);
+}
+
+.hw-field {
+  grid-template-columns: 190px minmax(0, 430px);
+  gap: 16px;
+  padding: 7px 0;
+}
+
+.hw-switch {
+  color: var(--vs-text);
+}
+
+.hw-switch input,
+.hw-checkbox input {
+  accent-color: var(--vs-accent);
+}
+
+.hw-checkbox {
+  color: var(--vs-text) !important;
+}
+
+.hw-danger,
+.hw-removed-note,
+.hw-item.is-removed > .hw-item-head .hw-item-name {
+  color: var(--vs-danger) !important;
+}
+
+.hw-invalid {
+  border-bottom-color: var(--vs-danger) !important;
+  box-shadow: 0 1px 0 var(--vs-danger);
+}
+
+.hw-options-list {
+  margin-top: 54px;
+}
+
+.hw-options-list .hw-vsphere-row {
+  grid-template-columns: minmax(230px, 340px) minmax(0, 1fr);
+  min-height: 45px;
+  background: var(--vs-row);
+}
+
+.hw-vsphere-device {
+  padding: 0 18px 0 24px;
+}
+
+.hw-vsphere-controls {
+  padding: 6px 18px 6px 8px;
+}
+
+.hardware-editor-actions {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 22px 18px;
+  background: var(--vs-bg);
+  border-top: 1px solid var(--vs-line-strong);
+}
+
+.hardware-editor-actions .primary-action,
+.hardware-editor-actions .secondary-action {
+  min-width: 92px;
+  height: 34px;
+  justify-content: center;
+  border-radius: 2px;
+}
+
+.hardware-editor-actions .secondary-action {
+  color: var(--vs-accent);
+  background: transparent;
+  border: 1px solid var(--vs-accent);
+}
+
+@media (max-width: 820px) {
+  .hardware-editor-page {
+    width: min(100%, calc(100vw - 12px));
+    min-height: calc(100vh - 24px);
+  }
+
+  .hardware-editor-form {
+    min-height: calc(100vh - 96px);
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .hardware-editor-header {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .hw-item-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding-bottom: 6px;
+  }
+
+  .hw-item-primary {
+    flex: 1 1 100%;
+    max-width: none;
+    justify-content: flex-start;
+    padding-left: 46px;
+  }
+
+  .hw-field {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
 /* --- tab write forms (firewall) --- */
 .fw-options-form,
 .fw-add-rule {
