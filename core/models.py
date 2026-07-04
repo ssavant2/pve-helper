@@ -50,6 +50,9 @@ class AuditEvent(models.Model):
     object_type = models.CharField(max_length=120, blank=True)
     object_id = models.CharField(max_length=512, blank=True)
     outcome = models.CharField(max_length=60, default="success")
+    # Denormalized UI category (auth/vms/storage/clusters/network/system) so the
+    # audit-log module filter can query the DB instead of only the rendered page.
+    module = models.CharField(max_length=20, blank=True, db_index=True)
     storage_id = models.CharField(max_length=120, blank=True)
     path = models.CharField(max_length=1024, blank=True)
     target_preallocation = models.CharField(max_length=40, blank=True)

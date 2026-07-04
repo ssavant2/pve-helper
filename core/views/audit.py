@@ -11,11 +11,31 @@ def audit_log(request):
     except ValueError:
         audit_page = 0
     audit_page = max(0, audit_page)
-    event_total = AuditEvent.objects.count()
+
+    valid_modules = {"all", "auth", "clusters", "vms", "storage", "network", "system"}
+    module_filter = request.GET.get("filter", "all")
+    if module_filter not in valid_modules:
+        module_filter = "all"
+    query = request.GET.get("q", "").strip()[:200]
+
+    events_qs = AuditEvent.objects.all()
+    if module_filter != "all":
+        events_qs = events_qs.filter(module=module_filter)
+    if query:
+        events_qs = events_qs.filter(
+            Q(username__icontains=query)
+            | Q(action__icontains=query)
+            | Q(object_id__icontains=query)
+            | Q(object_type__icontains=query)
+            | Q(source_ip__icontains=query)
+            | Q(path__icontains=query)
+        )
+
+    event_total = events_qs.count()
     max_page = (event_total - 1) // AUDIT_PAGE_SIZE if event_total else 0
     audit_page = min(audit_page, max_page)
     event_offset = audit_page * AUDIT_PAGE_SIZE
-    events = list(AuditEvent.objects.order_by("-timestamp")[event_offset:event_offset + AUDIT_PAGE_SIZE])
+    events = list(events_qs.order_by("-timestamp")[event_offset:event_offset + AUDIT_PAGE_SIZE])
     _decorate_audit_events(events)
     context = {
         **navigation_context("audit"),
@@ -26,6 +46,8 @@ def audit_log(request):
         "audit_start": event_offset + 1 if event_total else 0,
         "audit_end": event_offset + len(events),
         "audit_total": event_total,
+        "audit_filter": module_filter,
+        "audit_query": query,
         "audit_retention_schedule": audit_retention_schedule_state(),
         "audit_filters": [
             {"key": "all", "label": "All"},
@@ -52,13 +74,11 @@ def update_audit_retention_schedule_view(request):
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "",
+    record_audit_event(
+        request,
         action="audit.retention.schedule.updated",
         object_type="audit_retention_schedule",
         object_id="automatic-audit-retention",
-        outcome="success",
         details={
             "enabled": state.enabled,
             "retention_days": state.retention_days,

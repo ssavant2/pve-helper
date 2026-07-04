@@ -21,24 +21,25 @@
     </div>
   </section>
 
-  <section class="audit-panel panel" data-audit-log>
+  <section class="audit-panel panel">
     <div class="audit-toolbar">
       <div class="segmented-control" aria-label="Audit module filter">
         {% for filter in audit_filters %}
-          <button class="segmented-button {% if filter.key == 'all' %}active{% endif %}" type="button" data-audit-filter="{{ filter.key }}" aria-pressed="{% if filter.key == 'all' %}true{% else %}false{% endif %}">
+          <a class="segmented-button {% if filter.key == audit_filter %}active{% endif %}" href="?filter={{ filter.key }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}" aria-pressed="{% if filter.key == audit_filter %}true{% else %}false{% endif %}">
             {{ filter.label }}
-          </button>
+          </a>
         {% endfor %}
       </div>
-      <label class="search-control">
+      <form class="search-control" method="get" role="search">
         <span class="sr-only">Search audit log</span>
-        <input type="search" placeholder="Search for anything" data-audit-search autocomplete="off">
-      </label>
-      <span class="audit-count" data-audit-count>{{ events|length }} event{{ events|length|pluralize }}</span>
+        <input type="hidden" name="filter" value="{{ audit_filter }}">
+        <input type="search" name="q" value="{{ audit_query }}" placeholder="Search for anything" autocomplete="off">
+      </form>
+      <span class="audit-count">{{ audit_total }} event{{ audit_total|pluralize }}</span>
       <span class="panel-heading-controls">
-        <a class="page-button{% if not audit_has_prev %} disabled{% endif %}" href="?page={{ audit_page|add:"-1" }}">Previous 200</a>
+        <a class="page-button{% if not audit_has_prev %} disabled{% endif %}" href="?page={{ audit_page|add:"-1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Previous 200</a>
         <span class="page-label">{{ audit_start }}-{{ audit_end }} of {{ audit_total }}</span>
-        <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}">Next 200</a>
+        <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Next 200</a>
       </span>
     </div>
     <table class="data-table">
@@ -54,7 +55,7 @@
       </thead>
       <tbody>
         {% for event in events %}
-          <tr data-context-label="{{ event.object_id }}" data-audit-row data-audit-module="{{ event.display_module_key }}" data-audit-search="{{ event.search_text|lower }}">
+          <tr data-context-label="{{ event.object_id }}">
             <td>{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
             <td>{{ event.display_module }}</td>
             <td>{{ event.username|default:"-" }}</td>
@@ -69,9 +70,11 @@
             <td><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
           </tr>
         {% endfor %}
-        <tr data-audit-empty {% if events %}hidden{% endif %}>
-          <td colspan="6" class="empty-state">{% if events %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
-        </tr>
+        {% if not events %}
+          <tr>
+            <td colspan="6" class="empty-state">{% if audit_filter != 'all' or audit_query %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+          </tr>
+        {% endif %}
       </tbody>
     </table>
   </section>

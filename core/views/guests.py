@@ -57,13 +57,13 @@ def vms_overview_snapshot_info(request):
     payload = []
     for row in rows:
         has_snapshot = _live_guest_has_snapshot(row, allow_fetch=monotonic() < deadline)
-        if has_snapshot is None:
-            has_snapshot = row.has_snapshot
+        # None = probe unavailable/budget spent; keep it unknown ("-") rather
+        # than reporting a misleading "No".
         payload.append(
             {
                 "target": row.target_id,
                 "has_snapshot": bool(has_snapshot),
-                "has_snapshot_label": "Yes" if has_snapshot else "No",
+                "has_snapshot_label": "-" if has_snapshot is None else ("Yes" if has_snapshot else "No"),
             }
         )
     return JsonResponse({"guests": payload})
@@ -286,8 +286,11 @@ def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_gu
         mac_label=", ".join(macs[:3]) if macs else "-",
         storage_label=", ".join(storage_ids) if storage_ids else "-",
         tags_label=", ".join(parse_guest_tags(config)) if parse_guest_tags(config) else "-",
-        has_snapshot=_config_has_snapshots(config),
-        has_snapshot_label="Yes" if _config_has_snapshots(config) else "No",
+        # The scan/config payload has no snapshot data, so presence is unknown
+        # until the live probe (vms_overview_snapshot_info) answers. Render "-"
+        # rather than a misleading "No".
+        has_snapshot=None,
+        has_snapshot_label="-",
     )
 
 
@@ -307,15 +310,6 @@ def _config_disk_count(config: dict) -> int:
             if _is_disk_device_key(key) and isinstance(value, str) and "media=cdrom" not in value
         ]
     )
-
-
-def _config_has_snapshots(config: dict) -> bool:
-    snapshots = (config or {}).get("snapshots")
-    if isinstance(snapshots, dict):
-        return bool(snapshots)
-    if isinstance(snapshots, list):
-        return any(snapshot for snapshot in snapshots if snapshot)
-    return False
 
 
 def _live_guest_has_snapshot(row: SimpleNamespace, *, allow_fetch: bool = True) -> bool | None:
@@ -412,10 +406,6 @@ def _guest_agent_config_enabled(config: dict, object_type: str) -> bool:
 
 def _is_disk_device_key(key: str) -> bool:
     return bool(re.match(r"^(ide|sata|scsi|virtio)\d+$", str(key or "")))
-
-
-def _is_editable_disk_key(key: str) -> bool:
-    return _is_disk_device_key(key)
 
 
 def _disk_config_size_bytes(value: str) -> int:
@@ -837,7 +827,7 @@ def guest_hardware_edit(request, object_type: str, vmid: int):
 
     config = detail.config
     disks, cdroms = guest_disks(config, detail.node, detail.vmid)
-    disks = [disk for disk in disks if _is_editable_disk_key(disk["label"])]
+    disks = [disk for disk in disks if _is_disk_device_key(disk["label"])]
     nics = guest_networks(config)
     options = create_options(object_type, detail.node)
     cdrom = cdroms[0] if cdroms else None
@@ -1242,7 +1232,7 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
             )
     except ProxmoxAPIError as exc:
         if "403" in str(exc):
-            return "Proxmox denied the change (403) - the token lacks a required VM.Config.* privilege."
+            return proxmox_permission_hint("a VM.Config.* privilege")
         return f"Proxmox rejected the change: {exc}"
 
     _audit_guest(
@@ -1359,7 +1349,7 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         if raw and raw.isdigit() and int(raw) > 0 and raw != str(fresh.get(key, "") or ""):
             updates[key] = raw
 
-    for key in [k for k in fresh if _is_editable_disk_key(k) and "media=cdrom" not in str(fresh[k])]:
+    for key in [k for k in fresh if _is_disk_device_key(k) and "media=cdrom" not in str(fresh[k])]:
         if post.get(f"disk_{key}_remove") == "on":
             delete.append(key)
             continue
@@ -1491,7 +1481,7 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
             )
     except ProxmoxAPIError as exc:
         if "403" in str(exc):
-            return "Proxmox denied the change (403) - the token lacks a required VM.Config.* privilege."
+            return proxmox_permission_hint("a VM.Config.* privilege")
         return f"Proxmox rejected the change: {exc}"
 
     _audit_guest(
@@ -1650,17 +1640,16 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
         )
     except ProxmoxAPIError as exc:
         if "403" in str(exc):
-            return "Proxmox denied the change (403) - the API token lacks the required VM.Config.* privilege."
+            return proxmox_permission_hint("a VM.Config.* privilege")
         return f"Proxmox rejected the change: {exc}"
 
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "system",
+    record_audit_event(
+        request,
         action="guest.config.updated",
         object_type="guest",
         object_id=f"{detail.object_type}:{detail.vmid}",
-        outcome="success",
         details={"fields": changed, "node": node, "vmid": detail.vmid, "target_type": detail.object_type, "name": detail.name},
+        system_username="system",
     )
     return True
 
@@ -1985,7 +1974,7 @@ def guest_monitor(request, object_type: str, vmid: int):
     context.update(
         {
             "timeframe": timeframe,
-            "timeframes": ["hour", "day", "week", "month"],
+            "timeframes": ["hour", "day", "week", "month", "year"],
             "monitor_error": error,
             "has_rrd": bool(points),
             "charts": charts,
@@ -2412,10 +2401,10 @@ def _guest_put(detail: SimpleNamespace, subpath: str, data: dict | None = None):
     return None, err
 
 
-def _write_result(request, detail, redirect_name, tab_key, err, ok_msg, audit_action, audit_details=None):
+def _write_result(request, detail, redirect_name, err, audit_action, audit_details=None):
     if err:
         if "403" in err:
-            messages.error(request, "Proxmox denied the change (403): the token lacks the required privilege.")
+            messages.error(request, proxmox_permission_hint("the required privilege"))
         else:
             messages.error(request, f"Failed: {err}")
     else:
@@ -2436,7 +2425,7 @@ def guest_firewall_options(request, object_type, vmid):
         if val:
             data[key] = val
     _d, err = _guest_put(detail, "firewall/options", data)
-    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall options updated.", "guest.firewall.options")
+    return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.options")
 
 
 @require_POST
@@ -2456,7 +2445,7 @@ def guest_firewall_rule_add(request, object_type, vmid):
         if val:
             data[key] = val
     _d, err = _guest_post(detail, "firewall/rules", data)
-    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall rule added.", "guest.firewall.rule_add")
+    return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.rule_add")
 
 
 @require_POST
@@ -2467,7 +2456,7 @@ def guest_firewall_rule_delete(request, object_type, vmid, pos):
         return disabled
     detail = _require_guest(object_type, vmid)
     _d, err = _guest_delete(detail, f"firewall/rules/{pos}")
-    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall rule deleted.", "guest.firewall.rule_delete", {"pos": pos})
+    return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.rule_delete", {"pos": pos})
 
 
 @require_POST
@@ -2479,7 +2468,7 @@ def guest_firewall_rule_toggle(request, object_type, vmid, pos):
     detail = _require_guest(object_type, vmid)
     enable = "1" if request.POST.get("enable") == "1" else "0"
     _d, err = _guest_put(detail, f"firewall/rules/{pos}", {"enable": enable})
-    return _write_result(request, detail, "core:guest_firewall", "firewall", err, "Firewall rule updated.", "guest.firewall.rule_toggle", {"pos": pos, "enable": enable})
+    return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.rule_toggle", {"pos": pos, "enable": enable})
 
 
 @require_POST
@@ -2512,7 +2501,7 @@ def guest_cloudinit_edit(request, object_type, vmid):
         client.set_guest_config(node=node, object_type=object_type, vmid=vmid, updates=updates, delete=delete, digest=fresh.get("digest"))
     except (ProxmoxAPIError, IndexError) as exc:
         err = str(exc)
-    return _write_result(request, detail, "core:guest_cloudinit", "cloudinit", err, "Cloud-Init updated.", "guest.cloudinit.update")
+    return _write_result(request, detail, "core:guest_cloudinit", err, "guest.cloudinit.update")
 
 
 @require_POST
@@ -2541,7 +2530,7 @@ def guest_backup_now(request, object_type, vmid):
             break
         except ProxmoxAPIError as exc:
             err = str(exc)
-    return _write_result(request, detail, "core:guest_backup", "backup", err, "Backup started.", "guest.backup.run", {"storage": storage})
+    return _write_result(request, detail, "core:guest_backup", err, "guest.backup.run", {"storage": storage})
 
 
 @require_POST
@@ -2564,7 +2553,7 @@ def guest_backup_delete(request, object_type, vmid):
             break
         except ProxmoxAPIError as exc:
             err = str(exc)
-    return _write_result(request, detail, "core:guest_backup", "backup", err, "Backup archive deleted.", "guest.backup.delete", {"volid": volid})
+    return _write_result(request, detail, "core:guest_backup", err, "guest.backup.delete", {"volid": volid})
 
 
 @require_POST
@@ -2590,7 +2579,7 @@ def guest_replication_create(request, object_type, vmid):
             break
         except ProxmoxAPIError as exc:
             err = str(exc)
-    return _write_result(request, detail, "core:guest_replication", "replication", err, "Replication job created.", "guest.replication.create", {"target": target})
+    return _write_result(request, detail, "core:guest_replication", err, "guest.replication.create", {"target": target})
 
 
 @require_POST
@@ -2612,18 +2601,18 @@ def guest_replication_delete(request, object_type, vmid):
             break
         except ProxmoxAPIError as exc:
             err = str(exc)
-    return _write_result(request, detail, "core:guest_replication", "replication", err, "Replication job deleted.", "guest.replication.delete", {"job_id": job_id})
+    return _write_result(request, detail, "core:guest_replication", err, "guest.replication.delete", {"job_id": job_id})
 
 
 def _audit_guest(request, detail: SimpleNamespace, action: str, details: dict | None = None, *, outcome: str = "success") -> AuditEvent:
-    return AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "system",
+    return record_audit_event(
+        request,
         action=action,
         object_type="guest",
         object_id=f"{detail.object_type}:{detail.vmid}",
         outcome=outcome,
         details={"node": detail.node, "vmid": detail.vmid, "target_type": detail.object_type, "name": detail.name, **(details or {})},
+        system_username="system",
     )
 
 
@@ -2675,7 +2664,7 @@ def guest_power(request, object_type: str, vmid: int):
     data, err, client = _guest_post_with_client(detail, f"status/{action}")
     if err:
         if "403" in err:
-            messages.error(request, "Proxmox denied the power action (403) - the token needs VM.PowerMgmt.")
+            messages.error(request, proxmox_permission_hint("VM.PowerMgmt"))
         else:
             messages.error(request, f"Power action failed: {err}")
     else:
@@ -3016,7 +3005,8 @@ def guest_snapshot_create(request, object_type: str, vmid: int):
     description = request.POST.get("description", "").strip()
     if description:
         data["description"] = description
-    if request.POST.get("vmstate") == "on":
+    # vmstate (include RAM) only exists for QEMU VMs; LXC has no such option.
+    if object_type == ProxmoxInventory.ObjectType.VM and request.POST.get("vmstate") == "on":
         data["vmstate"] = 1
     _data, err = _guest_post_wait_task(detail, "snapshot", data)
     if err:
@@ -3073,7 +3063,7 @@ def guest_snapshot_rollback(request, object_type: str, vmid: int, snapname: str)
 
 def _snapshot_error(err: str) -> str:
     if "403" in err:
-        return "Proxmox denied the snapshot operation (403) - the token needs VM.Snapshot (and VM.Snapshot.Rollback for rollback)."
+        return proxmox_permission_hint("VM.Snapshot (and VM.Snapshot.Rollback for rollback)")
     return f"Snapshot operation failed: {err}"
 
 
@@ -3179,17 +3169,16 @@ def _create_guest(request, object_type: str, options: dict):
 
     if err:
         if "403" in err:
-            return "Proxmox denied creation (403) - the token needs VM.Allocate + Datastore.AllocateSpace (+ SDN.Use for the NIC)."
+            return proxmox_permission_hint("VM.Allocate + Datastore.AllocateSpace (+ SDN.Use for the NIC)")
         return f"Creation failed: {err}"
 
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "system",
+    record_audit_event(
+        request,
         action="guest.create",
         object_type="guest",
         object_id=f"{object_type}:{vmid}",
-        outcome="success",
         details={"node": node, "vmid": vmid, "target_type": object_type, "name": post.get("name") or post.get("hostname") or ""},
+        system_username="system",
     )
     return None
 

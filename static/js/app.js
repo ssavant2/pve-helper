@@ -1391,60 +1391,6 @@
     });
   };
 
-  const initAuditLogs = (root = document) => {
-    root.querySelectorAll("[data-audit-log]").forEach((auditLog) => {
-      if (auditLog.dataset.initialized === "true") {
-        return;
-      }
-
-      auditLog.dataset.initialized = "true";
-      const filterButtons = auditLog.querySelectorAll("[data-audit-filter]");
-      const searchInput = auditLog.querySelector("[data-audit-search]");
-      const rows = auditLog.querySelectorAll("[data-audit-row]");
-      const emptyRow = auditLog.querySelector("[data-audit-empty]");
-      const countLabel = auditLog.querySelector("[data-audit-count]");
-      let activeFilter = "all";
-
-      const applyAuditFilters = () => {
-        const query = (searchInput?.value || "").trim().toLowerCase();
-        let visibleCount = 0;
-
-        rows.forEach((row) => {
-          const moduleMatches = activeFilter === "all" || row.dataset.auditModule === activeFilter;
-          const searchMatches = !query || (row.dataset.auditSearch || "").includes(query);
-          const visible = moduleMatches && searchMatches;
-          row.hidden = !visible;
-          if (visible) {
-            visibleCount += 1;
-          }
-        });
-
-        if (emptyRow) {
-          emptyRow.hidden = visibleCount > 0;
-        }
-        if (countLabel) {
-          countLabel.textContent = `${visibleCount} event${visibleCount === 1 ? "" : "s"}`;
-        }
-      };
-
-      filterButtons.forEach((button) => {
-        button.addEventListener("click", () => {
-          activeFilter = button.dataset.auditFilter || "all";
-          filterButtons.forEach((item) => {
-            const active = item === button;
-            item.classList.toggle("active", active);
-            item.setAttribute("aria-pressed", active ? "true" : "false");
-          });
-          applyAuditFilters();
-        });
-      });
-
-      if (searchInput) {
-        searchInput.addEventListener("input", applyAuditFilters);
-      }
-    });
-  };
-
   const vmOverviewRows = (overview) => Array.from(overview.querySelectorAll("[data-vm-overview-row]"));
 
   const visibleVmOverviewRows = (overview) => vmOverviewRows(overview).filter((row) => !row.hidden);
@@ -3796,7 +3742,6 @@
     initConfirmForms(root);
     initScheduledTaskForms(root);
     initScheduledRuns(root);
-    initAuditLogs(root);
     initSpaceCharts(root);
     initTableFilters(root);
     initColumnPickers(root);

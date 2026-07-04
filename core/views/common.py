@@ -303,9 +303,13 @@ def _audit_guest_identity(event: AuditEvent):
 
 
 def _audit_module_key(event: AuditEvent) -> str:
-    details = event.details if isinstance(event.details, dict) else {}
-    action = event.action or ""
-    object_type = event.object_type or ""
+    return _audit_module_key_for(event.action, event.object_type, event.details)
+
+
+def _audit_module_key_for(action: str, object_type: str, details) -> str:
+    details = details if isinstance(details, dict) else {}
+    action = action or ""
+    object_type = object_type or ""
 
     if action.startswith("auth."):
         return "auth"
@@ -655,6 +659,57 @@ def _scheduled_action_status_class(status: str) -> str:
         ScheduledAction.LastStatus.SKIPPED: "warning",
         ScheduledAction.LastStatus.MISSED: "warning",
     }.get(status, "")
+
+
+def proxmox_permission_hint(privilege: str) -> str:
+    """Consistent 403 hint text; ``privilege`` names the missing Proxmox right."""
+    return f"Proxmox denied the operation (403) - the token needs {privilege}."
+
+
+def _client_ip(request) -> str | None:
+    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip() or None
+    return request.META.get("REMOTE_ADDR") or None
+
+
+def _audit_actor(request):
+    """Resolve (user, username) for an audit record from the request."""
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        return user, user.get_username()
+    return None, ""
+
+
+def record_audit_event(
+    request,
+    *,
+    action: str,
+    object_type: str = "",
+    object_id: str = "",
+    outcome: str = "success",
+    details: dict | None = None,
+    system_username: str = "",
+) -> AuditEvent:
+    """Single entry point for writing an AuditEvent from a request-handling view.
+
+    Derives user/username/source_ip once so every domain records them the same
+    way (previously ~10 inline blocks re-derived these and only file actions set
+    source_ip). ``system_username`` is used when the request is unauthenticated.
+    """
+    user, username = _audit_actor(request)
+    details = details or {}
+    return AuditEvent.objects.create(
+        user=user,
+        username=username if user is not None else system_username,
+        source_ip=_client_ip(request),
+        action=action,
+        object_type=object_type,
+        object_id=object_id,
+        outcome=outcome,
+        module=_audit_module_key_for(action, object_type, details),
+        details=details,
+    )
 
 
 _PATCHABLE_TEST_DEPS = {

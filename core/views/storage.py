@@ -52,7 +52,7 @@ def datastores(request):
 
 
 def _live_status_for(statuses: dict, node: str, object_type: str, vmid: int, default: str = "") -> str:
-    return statuses.get((node or "", object_type, vmid), statuses.get((object_type, vmid), default))
+    return statuses.get((node or "", object_type, vmid), default)
 
 
 @app_login_required
@@ -262,14 +262,11 @@ def download_storage_file(request, storage_id: str):
     )
     absolute_path = _resolve_storage_file(storage, entry.path)
 
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "",
-        source_ip=_client_ip(request),
+    record_audit_event(
+        request,
         action="file.downloaded",
         object_type="file",
         object_id=f"{storage.storage_id}:{entry.path}",
-        outcome="success",
         details={
             "storage_id": storage.storage_id,
             "storage_name": storage.display_name,
@@ -922,13 +919,11 @@ def update_trash_purge_schedule_view(request):
         messages.error(request, str(exc))
         return redirect("core:dashboard")
 
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "",
+    record_audit_event(
+        request,
         action="trash.purge.schedule.updated",
         object_type="trash_purge_schedule",
         object_id="automatic-trash-purge",
-        outcome="success",
         details={
             "enabled": state.enabled,
             "max_age_days": state.max_age_days,
@@ -1069,14 +1064,11 @@ def _storage_directory_or_404(storage: StorageMount, latest_scan: ScanRun | None
 
 
 def _audit_file_action(request, *, action: str, storage: StorageMount, path: str, details: dict[str, object]) -> None:
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "",
-        source_ip=_client_ip(request),
+    record_audit_event(
+        request,
         action=action,
         object_type="file",
         object_id=f"{storage.storage_id}:{path}",
-        outcome="success",
         details={
             "storage_id": storage.storage_id,
             "storage_name": storage.display_name,
@@ -1288,13 +1280,6 @@ def _normalize_browser_path(raw_path: str) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise Http404("Invalid storage path.")
     return PurePosixPath(*parts).as_posix()
-
-
-def _client_ip(request) -> str | None:
-    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip() or None
-    return request.META.get("REMOTE_ADDR") or None
 
 
 def _parent_path(path: str) -> str:

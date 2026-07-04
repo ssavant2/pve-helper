@@ -15,7 +15,7 @@
           {% csrf_token %}
           <input type="text" name="snapname" placeholder="Snapshot name" pattern="[A-Za-z0-9_\-]+" title="Letters, digits, _ and - only" required autocomplete="off">
           <input type="text" name="description" placeholder="Description (optional)" autocomplete="off">
-          <label class="snapshot-vmstate"><input type="checkbox" name="vmstate"> Include RAM</label>
+          {% if guest.object_type == 'vm' %}<label class="snapshot-vmstate"><input type="checkbox" name="vmstate"> Include RAM</label>{% endif %}
           <button class="primary-action" type="submit">Take snapshot</button>
         </form>
       </div>

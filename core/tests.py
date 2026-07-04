@@ -1296,7 +1296,7 @@ class ViewSmokeTests(TestCase):
             last_status=ScheduledAction.LastStatus.NEVER_RUN,
         )
 
-        with patch("core.services.proxmox._fetch_live_guest_status_uncached", return_value={("vm", 100): "running"}) as fetch:
+        with patch("core.services.proxmox._fetch_live_guest_status_uncached", return_value={("pve-node-1", "vm", 100): "running"}) as fetch:
             response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
             second_response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
 
@@ -2451,8 +2451,25 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Authentication, storage scans, and file actions")
         self.assertContains(response, "Login")
         self.assertContains(response, "Auth")
-        self.assertContains(response, 'data-audit-filter="storage"')
-        self.assertContains(response, 'data-audit-search')
+        self.assertContains(response, "?filter=storage")
+        self.assertContains(response, 'name="q"')
+        # The auth.login event is categorized server-side into the vms/auth module.
+        self.assertEqual(event.module, "auth")
+
+    def test_audit_log_module_filter_is_server_side(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        AuditEvent.objects.all().delete()  # force_login emits its own auth.login event
+        AuditEvent.objects.create(action="file.trashed", object_type="file", module="storage")
+        AuditEvent.objects.create(action="auth.login", object_type="user", module="auth")
+
+        storage_only = self.client.get(reverse("core:audit_log"), {"filter": "storage"})
+        self.assertEqual(storage_only.context["audit_total"], 1)
+        self.assertEqual([e.action for e in storage_only.context["events"]], ["file.trashed"])
+
+        auth_only = self.client.get(reverse("core:audit_log"), {"filter": "auth"})
+        self.assertEqual(auth_only.context["audit_total"], 1)
+        self.assertEqual([e.action for e in auth_only.context["events"]], ["auth.login"])
 
     def test_scheduled_scan_audit_shows_interval_and_readable_labels(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -4297,6 +4314,26 @@ class ViewSmokeTests(TestCase):
             response.json()["guests"],
             [{"target": "vm:500@pve1", "has_snapshot": True, "has_snapshot_label": "Yes"}],
         )
+
+    def test_vms_overview_snapshot_info_reports_unknown_when_probe_unavailable(self):
+        cache.clear()  # the snapshot probe caches per guest; isolate from siblings
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def get(self, path, *, timeout=None):
+                raise ProxmoxAPIError(path)
+
+        with (
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:vms_overview_snapshot_info"))
+
+        self.assertEqual(response.status_code, 200)
+        # Probe could not answer -> unknown "-", never a misleading "No".
+        self.assertEqual(response.json()["guests"][0]["has_snapshot_label"], "-")
 
     @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_snapshots_orders_current_after_real_snapshots_and_shows_delete_all(self):

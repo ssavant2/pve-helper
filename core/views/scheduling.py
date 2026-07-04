@@ -179,13 +179,11 @@ def update_scan_schedule_view(request):
         messages.error(request, str(exc))
         return redirect("core:dashboard")
 
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "",
+    record_audit_event(
+        request,
         action="scan.schedule.updated",
         object_type="scan_schedule",
         object_id="automatic-storage-scan",
-        outcome="success",
         details={
             "enabled": state.enabled,
             "interval_minutes": state.interval_minutes,
@@ -202,9 +200,8 @@ def start_scan(request):
     redirect_to = _safe_next_url(request)
     active_scan = _active_scan()
     if active_scan:
-        AuditEvent.objects.create(
-            user=request.user if request.user.is_authenticated else None,
-            username=request.user.get_username() if request.user.is_authenticated else "",
+        record_audit_event(
+            request,
             action="scan.manual.skipped",
             object_type="scan_run",
             object_id=str(active_scan.id),
@@ -223,13 +220,11 @@ def start_scan(request):
     scan.queued_task_id = task_id
     scan.save(update_fields=["queued_task_id", "updated_at"])
 
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "",
+    record_audit_event(
+        request,
         action="scan.queued",
         object_type="scan_run",
         object_id=str(scan.id),
-        outcome="success",
         details={
             "task_id": task_id,
             "target_storage": target_storage.storage_id if target_storage else "",
@@ -419,7 +414,9 @@ def _live_guest_for_target(
 
 def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[str]:
     errors: list[str] = []
-    name = post.get("name", "").strip()
+    # Truncate to the model limit before the uniqueness check so two names that
+    # only collide after truncation surface as a form error, not an IntegrityError.
+    name = post.get("name", "").strip()[:160]
     if not name:
         errors.append("Name is required.")
     elif ScheduledAction.objects.filter(name=name).exclude(pk=action.pk).exists():
@@ -468,7 +465,7 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     if errors:
         return errors
 
-    action.name = name[:160]
+    action.name = name
     action.enabled = post.get("enabled") == "on"
     action.action_type = action_type
     action.action_timeout_seconds = timeout_seconds
@@ -786,13 +783,11 @@ def _posted_datetime_parts(post, prefix: str) -> dict[str, str]:
 
 
 def _audit_scheduled_action_definition(request, action: str, scheduled_action: ScheduledAction) -> None:
-    AuditEvent.objects.create(
-        user=request.user if request.user.is_authenticated else None,
-        username=request.user.get_username() if request.user.is_authenticated else "",
+    record_audit_event(
+        request,
         action=action,
         object_type="scheduled_action",
         object_id=str(scheduled_action.id),
-        outcome="success",
         details={
             "scheduled_action_id": scheduled_action.id,
             "scheduled_action_name": scheduled_action.name,
