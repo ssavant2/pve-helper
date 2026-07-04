@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,30 @@ LIVE_GUEST_INVENTORY_CACHE_KEY = "pve-helper:live-guest-inventory:v1"
 LIVE_GUEST_STATUS_CACHE_SECONDS = 2
 LIVE_GUEST_INVENTORY_CACHE_SECONDS = 30
 LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS = 2.5
+
+
+_http_client: httpx.Client | None = None
+_http_client_lock = threading.Lock()
+
+
+def _shared_http_client() -> httpx.Client:
+    """Process-wide pooled HTTP client so Proxmox calls reuse keep-alive TLS
+    connections instead of doing a fresh handshake on every request (inventory
+    loops and polling endpoints issue many small calls to the same hosts)."""
+    global _http_client
+    client = _http_client
+    if client is None:
+        with _http_client_lock:
+            client = _http_client
+            if client is None:
+                verify: bool | str = settings.PVE_CA_BUNDLE or settings.PVE_VERIFY_TLS
+                client = httpx.Client(
+                    verify=verify,
+                    timeout=15,
+                    limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+                )
+                _http_client = client
+    return client
 
 
 @dataclass(frozen=True)
@@ -336,25 +361,18 @@ class ProxmoxClient:
         raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
 
     def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
-        verify: bool | str = settings.PVE_VERIFY_TLS
-        if settings.PVE_CA_BUNDLE:
-            verify = settings.PVE_CA_BUNDLE
-
         headers = {}
         token_id = settings.PVE_API_TOKEN_ID
         token_secret = settings.PVE_API_TOKEN_SECRET
         if token_id and token_secret:
             headers["Authorization"] = f"PVEAPIToken={token_id}={token_secret}"
 
+        url = f"{self.endpoint}/api2/json/{path.lstrip('/')}"
+        request_kwargs: dict[str, Any] = {"headers": headers, "data": data}
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
         try:
-            response = httpx.request(
-                method,
-                f"{self.endpoint}/api2/json/{path.lstrip('/')}",
-                headers=headers,
-                data=data,
-                timeout=timeout or 15,
-                verify=verify,
-            )
+            response = _shared_http_client().request(method, url, **request_kwargs)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise ProxmoxAPIError(f"{exc.response.status_code} from {path}") from exc

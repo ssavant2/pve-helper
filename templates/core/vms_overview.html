@@ -30,7 +30,6 @@
           <div class="column-picker-panel">
             <label><input type="checkbox" data-column-toggle="name" checked disabled> Name</label>
             <label><input type="checkbox" data-column-toggle="state" checked> State</label>
-            <label><input type="checkbox" data-column-toggle="health" checked> Status</label>
             <label><input type="checkbox" data-column-toggle="provisioned" checked> Provisioned Space</label>
             <label><input type="checkbox" data-column-toggle="used" checked> Used Space</label>
             <label><input type="checkbox" data-column-toggle="cpu" checked> Host CPU</label>
@@ -87,7 +86,6 @@
               </th>
               <th data-column="name" data-sort="text">Name</th>
               <th data-column="state" data-sort="text">State</th>
-              <th data-column="health" data-sort="text">Status</th>
               <th data-column="provisioned" data-sort="number">Provisioned Space</th>
               <th data-column="used" data-sort="number">Used Space</th>
               <th data-column="cpu" data-sort="number">Host CPU</th>
@@ -140,7 +138,6 @@
                   </a>
                 </td>
                 <td data-column="state" data-guest-state-cell data-sort-value="{{ g.state_label }}">{{ g.state_label }}</td>
-                <td data-column="health" data-guest-health-cell data-sort-value="{{ g.health_label }}"><span class="status-normal">OK</span> {{ g.health_label }}</td>
                 <td data-column="provisioned" data-sort-value="{{ g.provisioned_bytes }}">{{ g.provisioned_label }}</td>
                 <td data-column="used" data-sort-value="{{ g.used_bytes }}">{{ g.used_label }}</td>
                 <td data-column="cpu" data-sort-value="{{ g.cpu_value }}">{{ g.cpu_label }}</td>

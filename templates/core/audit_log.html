@@ -42,12 +42,22 @@
         <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Next 200</a>
       </span>
     </div>
-    <table class="data-table">
+    <table class="data-table audit-table">
+      <colgroup>
+        <col class="audit-col-time">
+        <col class="audit-col-module">
+        <col class="audit-col-user">
+        <col class="audit-col-source">
+        <col class="audit-col-action">
+        <col class="audit-col-object">
+        <col class="audit-col-outcome">
+      </colgroup>
       <thead>
         <tr>
           <th>Time</th>
           <th>Module</th>
           <th>User</th>
+          <th>Source IP</th>
           <th>Action</th>
           <th>Object</th>
           <th>Outcome</th>
@@ -59,6 +69,7 @@
             <td>{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
             <td>{{ event.display_module }}</td>
             <td>{{ event.username|default:"-" }}</td>
+            <td>{{ event.source_ip|default:"-" }}</td>
             <td>{{ event.display_action }}</td>
             <td>
               {% if event.guest_identity %}
@@ -72,7 +83,7 @@
         {% endfor %}
         {% if not events %}
           <tr>
-            <td colspan="6" class="empty-state">{% if audit_filter != 'all' or audit_query %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+            <td colspan="7" class="empty-state">{% if audit_filter != 'all' or audit_query %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
           </tr>
         {% endif %}
       </tbody>

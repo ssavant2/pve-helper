@@ -77,7 +77,6 @@ def vms_status(request):
             "target": _guest_target_value(object_type, vmid, node),
             "status": status,
             "state_label": _guest_state_label(status),
-            "health_label": "Normal" if status else "Unknown",
         }
         for (node, object_type, vmid), status in sorted(statuses.items(), key=lambda item: (item[0][1], item[0][2], item[0][0]))
     ]
@@ -247,7 +246,6 @@ def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_gu
         guest_identity=identity,
         status=status or "",
         state_label=_guest_state_label(status),
-        health_label="Normal" if status else "Unknown",
         node=node or "",
         is_template=template,
         type_label=type_label,

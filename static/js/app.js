@@ -1581,19 +1581,12 @@
     const status = guest.status || "";
     const stateLabel =
       guest.state_label || (status === "running" ? "Powered On" : status === "stopped" ? "Powered Off" : "-");
-    const healthLabel = guest.health_label || (status ? "Normal" : "Unknown");
     row.dataset.guestStatus = status;
 
     const stateCell = row.querySelector("[data-guest-state-cell]");
     if (stateCell) {
       stateCell.textContent = stateLabel;
       stateCell.dataset.sortValue = stateLabel;
-    }
-
-    const healthCell = row.querySelector("[data-guest-health-cell]");
-    if (healthCell) {
-      healthCell.innerHTML = `<span class="status-normal">OK</span> ${healthLabel}`;
-      healthCell.dataset.sortValue = healthLabel;
     }
 
     const statusIcon = row.querySelector("[data-guest-status-icon]");

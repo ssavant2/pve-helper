@@ -229,11 +229,12 @@ class ProxmoxClientTests(SimpleTestCase):
     def test_power_action_refuses_when_disabled(self):
         client = ProxmoxClient("https://pve.example.com:8006")
 
-        with patch("core.services.proxmox.httpx.request") as request_mock:
+        mock_http = Mock()
+        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
             with self.assertRaisesMessage(ProxmoxAPIError, "disabled"):
                 client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
 
-        request_mock.assert_not_called()
+        mock_http.request.assert_not_called()
 
     @override_settings(
         SCHEDULED_ACTIONS_ENABLED=True,
@@ -246,12 +247,14 @@ class ProxmoxClientTests(SimpleTestCase):
         client = ProxmoxClient("https://pve.example.com:8006")
         upid = "UPID:pve1:00000001:00000002:00000003:qmstart:100:root@pam:"
 
-        with patch("core.services.proxmox.httpx.request", return_value=self._response(upid)) as request_mock:
+        mock_http = Mock()
+        mock_http.request.return_value = self._response(upid)
+        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
             result = client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
 
         self.assertEqual(result, upid)
-        request_mock.assert_called_once()
-        args, kwargs = request_mock.call_args
+        mock_http.request.assert_called_once()
+        args, kwargs = mock_http.request.call_args
         self.assertEqual(args[0], "POST")
         self.assertEqual(args[1], "https://pve.example.com:8006/api2/json/nodes/pve1/qemu/100/status/start")
         self.assertEqual(kwargs["data"], {})
@@ -261,11 +264,12 @@ class ProxmoxClientTests(SimpleTestCase):
     def test_power_action_rejects_unsupported_action(self):
         client = ProxmoxClient("https://pve.example.com:8006")
 
-        with patch("core.services.proxmox.httpx.request") as request_mock:
+        mock_http = Mock()
+        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
             with self.assertRaisesMessage(ProxmoxAPIError, "Unsupported power action"):
                 client.power_action(node="pve1", object_type="vm", vmid=100, action="suspend")
 
-        request_mock.assert_not_called()
+        mock_http.request.assert_not_called()
 
     def test_live_guest_inventory_uses_cluster_resources(self):
         client = Mock()

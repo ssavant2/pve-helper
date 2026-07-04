@@ -1671,6 +1671,26 @@ button.tree-node {
   font-size: 12px;
 }
 
+/* Fixed layout so column widths stay identical across filters/searches
+   instead of reflowing to whatever content the current result set has. */
+.audit-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.audit-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+}
+
+.audit-col-time { width: 158px; }
+.audit-col-module { width: 92px; }
+.audit-col-user { width: 130px; }
+.audit-col-source { width: 122px; }
+.audit-col-outcome { width: 96px; }
+/* action + object share the remaining width equally */
+
 .details-list {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
