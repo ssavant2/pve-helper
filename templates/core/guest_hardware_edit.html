@@ -25,241 +25,395 @@
 
       <div class="hardware-tab-panel hardware-tab-panel-virtual">
         <div class="hardware-editor-toolbar">
-          <details class="hw-add-menu">
+          <details class="hw-add" data-hw-add>
             <summary>Add New Device</summary>
-            <div class="hw-add-menu-panel">
-              <div class="hw-add-group">
-                <div class="hw-add-group-title">Disks, Drives and Storage</div>
-                <div class="hw-add-fields">
-                  <label>
-                    <span>Hard Disk Storage</span>
-                    <select name="newdisk_storage">
-                      <option value="">No new disk</option>
-                      {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Hard Disk Size (GB)</span>
-                    <input type="number" min="1" name="newdisk_size" placeholder="GB">
-                  </label>
-                </div>
-                {% if cdrom %}<a class="hw-add-menu-link" href="#device-{{ cdrom.label }}">CD/DVD Drive</a>{% endif %}
-              </div>
-
-              <div class="hw-add-group">
-                <div class="hw-add-group-title">Controllers and Security</div>
-                {% if not has_efi_disk %}
-                  <div class="hw-add-fields">
-                    <label>
-                      <span>EFI Disk Storage</span>
-                      <select name="new_efi_storage">
-                        <option value="">No EFI disk</option>
-                        {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-                      </select>
-                    </label>
-                    <label>
-                      <span>EFI Type</span>
-                      <select name="new_efi_type">
-                        <option value="4m">4m</option>
-                        <option value="2m">2m</option>
-                      </select>
-                    </label>
-                    <label class="hw-checkbox"><input type="checkbox" name="new_efi_pre_enrolled" checked> Pre-enrolled keys</label>
-                  </div>
-                {% endif %}
-                {% if not has_tpm %}
-                  <div class="hw-add-fields">
-                    <label>
-                      <span>TPM Storage</span>
-                      <select name="new_tpm_storage">
-                        <option value="">No TPM state</option>
-                        {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-                      </select>
-                    </label>
-                    <label>
-                      <span>TPM Version</span>
-                      <select name="new_tpm_version">
-                        <option value="v2.0">v2.0</option>
-                        <option value="v1.2">v1.2</option>
-                      </select>
-                    </label>
-                  </div>
-                {% endif %}
-              </div>
-
-              <div class="hw-add-group">
-                <div class="hw-add-group-title">Other Devices</div>
-                {% if not has_rng %}
-                  <div class="hw-add-fields">
-                    <label class="hw-checkbox"><input type="checkbox" name="new_rng_enable"> RNG Device</label>
-                    <label><span>Source</span><input type="text" name="new_rng_source" value="/dev/urandom"></label>
-                    <label><span>Max bytes</span><input type="number" min="0" name="new_rng_max_bytes" value="1024"></label>
-                  </div>
-                {% endif %}
-                {% if not has_audio %}
-                  <div class="hw-add-fields">
-                    <label class="hw-checkbox"><input type="checkbox" name="new_audio_enable"> Audio Device</label>
-                    <label>
-                      <span>Device</span>
-                      <select name="new_audio_device">
-                        <option value="ich9-intel-hda">ich9-intel-hda</option>
-                        <option value="intel-hda">intel-hda</option>
-                        <option value="AC97">AC97</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Driver</span>
-                      <select name="new_audio_driver">
-                        <option value="spice">spice</option>
-                        <option value="none">none</option>
-                      </select>
-                    </label>
-                  </div>
-                {% endif %}
-                <div class="hw-add-fields">
-                  <label><span>Serial Port</span><input type="text" name="new_serial_value" placeholder="socket or /dev/ttyS0"></label>
-                  <label>
-                    <span>USB Target Type</span>
-                    <select name="new_usb_target_type">
-                      <option value="host">host</option>
-                      <option value="mapping">mapping</option>
-                    </select>
-                  </label>
-                  <label><span>USB Target</span><input type="text" name="new_usb_target" placeholder="spice, 1-2, abcd:1234"></label>
-                  <label class="hw-checkbox"><input type="checkbox" name="new_usb3"> USB3</label>
-                </div>
-                <div class="hw-add-fields">
-                  <label>
-                    <span>PCI Target Type</span>
-                    <select name="new_pci_target_type">
-                      <option value="host">host</option>
-                      <option value="mapping">mapping</option>
-                    </select>
-                  </label>
-                  <label><span>PCI Target</span><input type="text" name="new_pci_target" placeholder="0000:00:02.0 or mapping id"></label>
-                  <label class="hw-checkbox"><input type="checkbox" name="new_pci_pcie" checked> PCIe</label>
-                </div>
-                <div class="hw-add-fields">
-                  <label><span>Virtiofs Mapping</span><input type="text" name="new_virtiofs_dirid" placeholder="directory mapping id"></label>
-                  <label>
-                    <span>Virtiofs Cache</span>
-                    <select name="new_virtiofs_cache">
-                      <option value="">auto</option>
-                      <option value="always">always</option>
-                      <option value="metadata">metadata</option>
-                      <option value="never">never</option>
-                    </select>
-                  </label>
-                  <label class="hw-checkbox"><input type="checkbox" name="new_virtiofs_direct_io"> Direct I/O</label>
-                </div>
-              </div>
-
-              <div class="hw-add-group">
-                <div class="hw-add-group-title">Network</div>
-                <div class="hw-add-fields">
-                  <label>
-                    <span>Network Adapter Bridge</span>
-                    <select name="newnic_bridge">
-                      <option value="">No new NIC</option>
-                      {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
-                    </select>
-                  </label>
-                  <label><span>VLAN</span><input type="number" name="newnic_vlan" placeholder="none"></label>
-                </div>
-              </div>
+            <div class="hw-add-list" role="menu">
+              <div class="hw-add-cat">Disks, Drives and Storage</div>
+              <button type="button" class="hw-add-opt" data-add-device="disk">Hard Disk</button>
+              {% if cdrom %}<button type="button" class="hw-add-opt" data-add-device="cdrom">CD/DVD Drive</button>{% endif %}
+              <div class="hw-add-cat">Controllers and Security</div>
+              {% if not has_efi_disk %}<button type="button" class="hw-add-opt" data-add-device="efi">EFI Disk</button>{% endif %}
+              {% if not has_tpm %}<button type="button" class="hw-add-opt" data-add-device="tpm">Trusted Platform Module</button>{% endif %}
+              <button type="button" class="hw-add-opt" data-add-device="usb">USB Device</button>
+              <button type="button" class="hw-add-opt" data-add-device="pci">PCI Device</button>
+              <div class="hw-add-cat">Other Devices</div>
+              {% if not has_rng %}<button type="button" class="hw-add-opt" data-add-device="rng">RNG Device</button>{% endif %}
+              {% if not has_audio %}<button type="button" class="hw-add-opt" data-add-device="audio">Audio Device</button>{% endif %}
+              <button type="button" class="hw-add-opt" data-add-device="serial">Serial Port</button>
+              <button type="button" class="hw-add-opt" data-add-device="virtiofs">Virtiofs Share</button>
+              <div class="hw-add-cat">Network</div>
+              <button type="button" class="hw-add-opt" data-add-device="nic">Network Adapter</button>
             </div>
           </details>
         </div>
 
-        <div class="hw-vsphere-list" aria-label="Virtual hardware">
-        <div class="hw-vsphere-row" id="device-cpu">
-          <div class="hw-vsphere-device">
-            <span class="hw-vsphere-chevron">&rsaquo;</span>
-            <span class="hw-vsphere-name">CPU</span>
-          </div>
-          <div class="hw-vsphere-controls">
-            <label class="hw-inline-field hw-number-field"><span>Cores</span><input type="number" min="1" id="hw-cores" name="cores" value="{{ cores }}"></label>
-            <label class="hw-inline-field hw-number-field"><span>Sockets</span><input type="number" min="1" id="hw-sockets" name="sockets" value="{{ sockets }}"></label>
-          </div>
-        </div>
+        <div class="hw-list" data-hw-list aria-label="Virtual hardware">
 
-        <div class="hw-vsphere-row" id="device-memory">
-          <div class="hw-vsphere-device">
-            <span class="hw-vsphere-chevron">&rsaquo;</span>
-            <span class="hw-vsphere-name">Memory</span>
-          </div>
-          <div class="hw-vsphere-controls">
-            <label class="hw-inline-field hw-number-field hw-wide-field"><span>Memory</span><input type="number" min="1" id="hw-memory" name="memory" value="{{ memory }}"></label>
-            <span class="hw-unit">MB</span>
-          </div>
-        </div>
-
-        {% for disk in disks %}
-          <div class="hw-vsphere-row" id="device-{{ disk.label }}">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">Hard Disk {{ forloop.counter }} <code>{{ disk.label }}</code></span>
-            </div>
-            <div class="hw-vsphere-controls">
-              <span class="hw-current-value">{{ disk.size|default:"?" }}{% if disk.format %} {{ disk.format }}{% endif %}{% if disk.storage_id %} on {{ disk.storage_id }}{% endif %}</span>
-              <label class="hw-inline-field hw-number-field"><span>Grow to GB</span><input type="number" min="1" name="disk_{{ disk.label }}_size" placeholder="-"></label>
-              <label class="hw-checkbox hw-danger"><input type="checkbox" name="disk_{{ disk.label }}_remove"> Detach</label>
+          {# --- CPU (flat) --- #}
+          <div class="hw-item hw-item--flat" data-hw-item id="device-cpu">
+            <div class="hw-item-head">
+              <span class="hw-item-toggle is-static">
+                <span class="hw-chevron hw-chevron--empty" aria-hidden="true"></span>
+                <span class="hw-item-name">CPU</span>
+              </span>
+              <div class="hw-item-primary">
+                <label class="hw-mini"><span>Cores</span><input type="number" min="1" name="cores" value="{{ cores }}"></label>
+                <label class="hw-mini"><span>Sockets</span><input type="number" min="1" name="sockets" value="{{ sockets }}"></label>
+              </div>
             </div>
           </div>
-        {% endfor %}
 
-        {% for nic in nics %}
-          <div class="hw-vsphere-row" id="device-{{ nic.label }}">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">Network Adapter {{ forloop.counter }} <code>{{ nic.label }}</code></span>
+          {# --- Memory (flat) --- #}
+          <div class="hw-item hw-item--flat" data-hw-item id="device-memory">
+            <div class="hw-item-head">
+              <span class="hw-item-toggle is-static">
+                <span class="hw-chevron hw-chevron--empty" aria-hidden="true"></span>
+                <span class="hw-item-name">Memory</span>
+              </span>
+              <div class="hw-item-primary">
+                <input type="number" min="1" name="memory" value="{{ memory }}">
+                <span class="hw-unit-inline">MB</span>
+              </div>
             </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-inline-field hw-select-field">
-                <span>Bridge / VNet</span>
-                <select name="nic_{{ nic.label }}_bridge">
-                  {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
+          </div>
+
+          {# --- Hard disks --- #}
+          {% for disk in disks %}
+            <div class="hw-item" data-hw-item id="device-{{ disk.label }}">
+              <input type="checkbox" name="disk_{{ disk.label }}_remove" class="hw-remove-flag" hidden>
+              <div class="hw-item-head">
+                <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                  <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                  <span class="hw-item-name">Hard disk {{ forloop.counter }}<code>{{ disk.label }}</code></span>
+                </button>
+                <div class="hw-item-primary">
+                  <span class="hw-current-value">{{ disk.size|default:"?" }}{% if disk.storage_id %} &middot; {{ disk.storage_id }}{% endif %}</span>
+                </div>
+                <div class="hw-item-kebab" data-hw-kebab>
+                  <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                  <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-toggle>Remove device</button></div>
+                </div>
+              </div>
+              <div class="hw-item-body">
+                <div class="hw-field"><span>Grow to (GB)</span><input type="number" min="1" name="disk_{{ disk.label }}_size" placeholder="unchanged"></div>
+                {% if disk.format %}<div class="hw-field"><span>Format</span><span class="hw-static-val">{{ disk.format }}</span></div>{% endif %}
+                <p class="hw-removed-note">This disk will be detached when you save.</p>
+              </div>
+            </div>
+          {% endfor %}
+
+          {# --- Network adapters --- #}
+          {% for nic in nics %}
+            <div class="hw-item" data-hw-item id="device-{{ nic.label }}">
+              <input type="checkbox" name="nic_{{ nic.label }}_remove" class="hw-remove-flag" hidden>
+              <div class="hw-item-head">
+                <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                  <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                  <span class="hw-item-name">Network adapter {{ forloop.counter }}<code>{{ nic.label }}</code></span>
+                </button>
+                <div class="hw-item-primary">
+                  <span class="hw-current-value">{{ nic.model }}{% if nic.bridge %} &middot; {{ nic.bridge }}{% endif %}</span>
+                </div>
+                <div class="hw-item-kebab" data-hw-kebab>
+                  <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                  <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-toggle>Remove device</button></div>
+                </div>
+              </div>
+              <div class="hw-item-body">
+                <div class="hw-field"><span>Bridge / VNet</span>
+                  <select name="nic_{{ nic.label }}_bridge">
+                    {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
+                  </select>
+                </div>
+                <div class="hw-field"><span>VLAN tag</span><input type="number" name="nic_{{ nic.label }}_vlan" value="{{ nic.vlan }}" placeholder="none"></div>
+                {% if nic.mac %}<div class="hw-field"><span>MAC address</span><span class="hw-static-val">{{ nic.mac }}</span></div>{% endif %}
+                <p class="hw-removed-note">This adapter will be removed when you save.</p>
+              </div>
+            </div>
+          {% endfor %}
+
+          {# --- CD/DVD --- #}
+          {% if cdrom %}
+            <div class="hw-item" data-hw-item id="device-cdrom">
+              <div class="hw-item-head">
+                <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                  <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                  <span class="hw-item-name">CD/DVD drive<code>{{ cdrom.label }}</code></span>
+                </button>
+                <div class="hw-item-primary">
+                  <span class="hw-current-value">{% if cdrom_iso %}{{ cdrom_iso }}{% else %}No media{% endif %}</span>
+                </div>
+              </div>
+              <div class="hw-item-body">
+                <input type="hidden" name="cdrom_key" value="{{ cdrom.label }}">
+                <div class="hw-field"><span>ISO image</span>
+                  <select name="cdrom_iso">
+                    <option value="" {% if not cdrom_iso %}selected{% endif %}>No media (eject)</option>
+                    {% for iso in options.isos %}<option value="{{ iso }}" {% if iso == cdrom_iso %}selected{% endif %}>{{ iso }}</option>{% endfor %}
+                  </select>
+                </div>
+              </div>
+            </div>
+          {% endif %}
+
+          {# --- Advanced / passthrough devices --- #}
+          {% for device in advanced_devices %}
+            <div class="hw-item" data-hw-item id="device-{{ device.key }}">
+              <input type="checkbox" name="adv_{{ device.key }}_remove" class="hw-remove-flag" hidden>
+              <div class="hw-item-head">
+                <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+                  <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                  <span class="hw-item-name">{{ device.label }}<code>{{ device.key }}</code></span>
+                </button>
+                <div class="hw-item-primary"><span class="hw-current-value">{{ device.value }}</span></div>
+                <div class="hw-item-kebab" data-hw-kebab>
+                  <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                  <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-toggle>Remove device</button></div>
+                </div>
+              </div>
+              <div class="hw-item-body">
+                <div class="hw-field"><span>Configuration</span><input type="text" name="adv_{{ device.key }}_value" value="{{ device.value }}"></div>
+                <p class="hw-removed-note">This device will be removed when you save.</p>
+              </div>
+            </div>
+          {% endfor %}
+
+          {# ===== Pending "new" devices (revealed by Add New Device) ===== #}
+
+          {# New Hard disk #}
+          <div class="hw-item is-new" data-hw-item data-new-device="disk" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Hard disk <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary">
+                <input type="number" min="1" name="newdisk_size" placeholder="Size" data-new-input data-new-required disabled>
+                <span class="hw-unit-inline">GB</span>
+              </div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Storage</span>
+                <select name="newdisk_storage" data-new-input data-new-required disabled>
+                  <option value="">Select storage&hellip;</option>
+                  {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
                 </select>
-              </label>
-              <label class="hw-inline-field hw-number-field"><span>VLAN</span><input type="number" name="nic_{{ nic.label }}_vlan" value="{{ nic.vlan }}" placeholder="-"></label>
-              <span class="hw-current-value">{{ nic.model }}{% if nic.mac %} {{ nic.mac }}{% endif %}</span>
-              <label class="hw-checkbox hw-danger"><input type="checkbox" name="nic_{{ nic.label }}_remove"> Remove</label>
+              </div>
             </div>
           </div>
-        {% endfor %}
 
-        {% if cdrom %}
-          <div class="hw-vsphere-row" id="device-{{ cdrom.label }}">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">CD/DVD Drive <code>{{ cdrom.label }}</code></span>
+          {# New EFI disk #}
+          <div class="hw-item is-new" data-hw-item data-new-device="efi" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New EFI Disk <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
             </div>
-            <div class="hw-vsphere-controls">
-              <input type="hidden" name="cdrom_key" value="{{ cdrom.label }}">
-              <label class="hw-inline-field hw-select-field hw-extra-wide-field">
-                <span>ISO Image</span>
-                <select name="cdrom_iso">
-                  <option value="" {% if not cdrom_iso %}selected{% endif %}>No media (eject)</option>
-                  {% for iso in options.isos %}<option value="{{ iso }}" {% if iso == cdrom_iso %}selected{% endif %}>{{ iso }}</option>{% endfor %}
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Storage</span>
+                <select name="new_efi_storage" data-new-input data-new-required disabled>
+                  <option value="">Select storage&hellip;</option>
+                  {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
                 </select>
-              </label>
+              </div>
+              <div class="hw-field"><span>EFI type</span>
+                <select name="new_efi_type" data-new-input disabled><option value="4m">4m</option><option value="2m">2m</option></select>
+              </div>
+              <div class="hw-field"><span>Pre-enrolled keys</span>
+                <label class="hw-switch"><input type="checkbox" name="new_efi_pre_enrolled" data-new-input data-default-checked checked disabled> Include Secure Boot keys</label>
+              </div>
             </div>
           </div>
-        {% endif %}
 
-        {% for device in advanced_devices %}
-          <div class="hw-vsphere-row" id="device-{{ device.key }}">
-            <div class="hw-vsphere-device">
-              <span class="hw-vsphere-chevron">&rsaquo;</span>
-              <span class="hw-vsphere-name">{{ device.label }} <code>{{ device.key }}</code></span>
+          {# New TPM #}
+          <div class="hw-item is-new" data-hw-item data-new-device="tpm" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Trusted Platform Module <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
             </div>
-            <div class="hw-vsphere-controls">
-              <label class="hw-inline-field hw-extra-wide-field"><span>Configuration</span><input type="text" name="adv_{{ device.key }}_value" value="{{ device.value }}"></label>
-              <label class="hw-checkbox hw-danger"><input type="checkbox" name="adv_{{ device.key }}_remove"> Remove</label>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Storage</span>
+                <select name="new_tpm_storage" data-new-input data-new-required disabled>
+                  <option value="">Select storage&hellip;</option>
+                  {% for s in options.disk_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="hw-field"><span>Version</span>
+                <select name="new_tpm_version" data-new-input disabled><option value="v2.0">v2.0</option><option value="v1.2">v1.2</option></select>
+              </div>
             </div>
           </div>
-        {% endfor %}
-      </div>
+
+          {# New USB device #}
+          <div class="hw-item is-new" data-hw-item data-new-device="usb" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New USB Device <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Target type</span>
+                <select name="new_usb_target_type" data-new-input disabled><option value="host">host</option><option value="mapping">mapping</option></select>
+              </div>
+              <div class="hw-field"><span>Target</span><input type="text" name="new_usb_target" placeholder="spice, 1-2, abcd:1234" data-new-input data-new-required disabled></div>
+              <div class="hw-field"><span>USB 3</span><label class="hw-switch"><input type="checkbox" name="new_usb3" data-new-input disabled> Use USB 3.0</label></div>
+            </div>
+          </div>
+
+          {# New PCI device #}
+          <div class="hw-item is-new" data-hw-item data-new-device="pci" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New PCI Device <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Target type</span>
+                <select name="new_pci_target_type" data-new-input disabled><option value="host">host</option><option value="mapping">mapping</option></select>
+              </div>
+              <div class="hw-field"><span>Target</span><input type="text" name="new_pci_target" placeholder="0000:00:02.0 or mapping id" data-new-input data-new-required disabled></div>
+              <div class="hw-field"><span>PCI Express</span><label class="hw-switch"><input type="checkbox" name="new_pci_pcie" data-new-input data-default-checked checked disabled> Expose as PCIe</label></div>
+            </div>
+          </div>
+
+          {# New RNG device #}
+          <div class="hw-item is-new" data-hw-item data-new-device="rng" hidden>
+            <input type="checkbox" name="new_rng_enable" data-new-input data-new-trigger disabled hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New RNG Device</span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Source</span><input type="text" name="new_rng_source" value="/dev/urandom" data-new-input disabled></div>
+              <div class="hw-field"><span>Max bytes</span><input type="number" min="0" name="new_rng_max_bytes" value="1024" data-new-input disabled></div>
+            </div>
+          </div>
+
+          {# New Audio device #}
+          <div class="hw-item is-new" data-hw-item data-new-device="audio" hidden>
+            <input type="checkbox" name="new_audio_enable" data-new-input data-new-trigger disabled hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Audio Device</span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Device</span>
+                <select name="new_audio_device" data-new-input disabled><option value="ich9-intel-hda">ich9-intel-hda</option><option value="intel-hda">intel-hda</option><option value="AC97">AC97</option></select>
+              </div>
+              <div class="hw-field"><span>Driver</span>
+                <select name="new_audio_driver" data-new-input disabled><option value="spice">spice</option><option value="none">none</option></select>
+              </div>
+            </div>
+          </div>
+
+          {# New Serial port #}
+          <div class="hw-item is-new" data-hw-item data-new-device="serial" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Serial Port <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Port</span><input type="text" name="new_serial_value" placeholder="socket or /dev/ttyS0" data-new-input data-new-required disabled></div>
+            </div>
+          </div>
+
+          {# New Virtiofs share #}
+          <div class="hw-item is-new" data-hw-item data-new-device="virtiofs" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Virtiofs Share <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Directory mapping</span><input type="text" name="new_virtiofs_dirid" placeholder="directory mapping id" data-new-input data-new-required disabled></div>
+              <div class="hw-field"><span>Cache</span>
+                <select name="new_virtiofs_cache" data-new-input disabled><option value="">auto</option><option value="always">always</option><option value="metadata">metadata</option><option value="never">never</option></select>
+              </div>
+              <div class="hw-field"><span>Direct I/O</span><label class="hw-switch"><input type="checkbox" name="new_virtiofs_direct_io" data-new-input disabled> Enable direct I/O</label></div>
+            </div>
+          </div>
+
+          {# New Network adapter #}
+          <div class="hw-item is-new" data-hw-item data-new-device="nic" hidden>
+            <div class="hw-item-head">
+              <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+                <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+                <span class="hw-item-name">New Network adapter <span class="hw-req">*</span></span>
+              </button>
+              <div class="hw-item-primary"></div>
+              <div class="hw-item-kebab" data-hw-kebab>
+                <button type="button" class="hw-kebab-btn" data-hw-kebab-toggle aria-label="Device options"><i data-lucide="more-vertical" aria-hidden="true"></i></button>
+                <div class="hw-kebab-menu" hidden><button type="button" data-hw-remove-new>Remove device</button></div>
+              </div>
+            </div>
+            <div class="hw-item-body">
+              <div class="hw-field"><span>Bridge / VNet</span>
+                <select name="newnic_bridge" data-new-input data-new-required disabled>
+                  <option value="">Select bridge&hellip;</option>
+                  {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="hw-field"><span>VLAN tag</span><input type="number" name="newnic_vlan" placeholder="none" data-new-input disabled></div>
+            </div>
+          </div>
+
+        </div>
       </div>
 
       <div class="hardware-tab-panel hardware-tab-panel-options">

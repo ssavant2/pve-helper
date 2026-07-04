@@ -3498,7 +3498,163 @@
     });
   };
 
+  const initHardwareEditor = (root = document) => {
+    const page = root.querySelector ? root.querySelector(".hardware-editor-page") : null;
+    if (!page || page.dataset.hwInit === "true") {
+      return;
+    }
+    page.dataset.hwInit = "true";
+    const form = page.querySelector(".hardware-editor-form");
+
+    const closeKebabs = (except) => {
+      page.querySelectorAll(".hw-kebab-menu").forEach((menu) => {
+        if (menu !== except) {
+          menu.hidden = true;
+        }
+      });
+    };
+
+    const activateDevice = (type, addBtn) => {
+      if (type === "cdrom") {
+        const cd = page.querySelector("#device-cdrom");
+        if (cd) {
+          cd.classList.add("is-open");
+          const toggle = cd.querySelector("[data-hw-toggle]");
+          if (toggle) {
+            toggle.setAttribute("aria-expanded", "true");
+          }
+          cd.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+        return;
+      }
+      const item = page.querySelector(`[data-new-device="${type}"]`);
+      if (!item) {
+        return;
+      }
+      item.hidden = false;
+      item.classList.add("is-open");
+      item.querySelectorAll("[data-new-input]").forEach((el) => {
+        el.disabled = false;
+      });
+      item.querySelectorAll("[data-new-trigger]").forEach((el) => {
+        el.checked = true;
+      });
+      if (addBtn) {
+        addBtn.disabled = true;
+      }
+      const first = item.querySelector("[data-new-required], [data-new-input]:not([hidden])");
+      if (first) {
+        first.focus();
+      }
+      item.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+
+    const deactivateNew = (item) => {
+      item.hidden = true;
+      item.classList.remove("is-open");
+      item.querySelectorAll("[data-new-input]").forEach((el) => {
+        if (el.type === "checkbox") {
+          el.checked = el.hasAttribute("data-default-checked");
+        } else {
+          el.value = "";
+        }
+        el.classList.remove("hw-invalid");
+        el.disabled = true;
+      });
+      const type = item.dataset.newDevice;
+      const addBtn = page.querySelector(`[data-add-device="${type}"]`);
+      if (addBtn) {
+        addBtn.disabled = false;
+      }
+    };
+
+    page.addEventListener("click", (event) => {
+      const toggle = event.target.closest("[data-hw-toggle]");
+      if (toggle) {
+        const item = toggle.closest("[data-hw-item]");
+        const open = item.classList.toggle("is-open");
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        return;
+      }
+
+      const kebabBtn = event.target.closest("[data-hw-kebab-toggle]");
+      if (kebabBtn) {
+        const menu = kebabBtn.parentElement.querySelector(".hw-kebab-menu");
+        const willOpen = menu.hidden;
+        closeKebabs();
+        menu.hidden = !willOpen;
+        event.stopPropagation();
+        return;
+      }
+
+      const removeToggle = event.target.closest("[data-hw-remove-toggle]");
+      if (removeToggle) {
+        const item = removeToggle.closest("[data-hw-item]");
+        const flag = item.querySelector(".hw-remove-flag");
+        const removed = item.classList.toggle("is-removed");
+        if (flag) {
+          flag.checked = removed;
+        }
+        removeToggle.textContent = removed ? "Restore device" : "Remove device";
+        closeKebabs();
+        return;
+      }
+
+      const removeNew = event.target.closest("[data-hw-remove-new]");
+      if (removeNew) {
+        deactivateNew(removeNew.closest("[data-hw-item]"));
+        closeKebabs();
+        return;
+      }
+
+      const addBtn = event.target.closest("[data-add-device]");
+      if (addBtn) {
+        activateDevice(addBtn.dataset.addDevice, addBtn);
+        const details = page.querySelector("[data-hw-add]");
+        if (details) {
+          details.open = false;
+        }
+        return;
+      }
+
+      closeKebabs();
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!page.contains(event.target)) {
+        closeKebabs();
+        const details = page.querySelector("[data-hw-add]");
+        if (details && !details.contains(event.target)) {
+          details.open = false;
+        }
+      }
+    });
+
+    if (form) {
+      form.addEventListener("submit", (event) => {
+        let invalid = null;
+        page.querySelectorAll('[data-new-device]:not([hidden]) [data-new-required]').forEach((el) => {
+          el.classList.remove("hw-invalid");
+          if (!invalid && !String(el.value).trim()) {
+            invalid = el;
+          }
+        });
+        if (invalid) {
+          event.preventDefault();
+          const virtualTab = document.getElementById("hardware-tab-virtual");
+          if (virtualTab) {
+            virtualTab.checked = true;
+          }
+          invalid.closest("[data-hw-item]").classList.add("is-open");
+          invalid.classList.add("hw-invalid");
+          invalid.focus();
+        }
+      });
+    }
+  };
+
   const initPage = (root = document) => {
+    initHardwareEditor(root);
     initGuestListFilter(root);
     initNodeReload(root);
     initSummaryCards(root);
