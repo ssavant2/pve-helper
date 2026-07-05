@@ -37,6 +37,9 @@ GUEST_TASK_NAMES = {
     "guest.backup.delete": "Delete backup",
     "guest.replication.create": "Create replication",
     "guest.replication.delete": "Delete replication",
+    "guest.console.opened": "Open console",
+    "guest.console.closed": "Close console",
+    "guest.console.failed": "Console failed",
 }
 
 

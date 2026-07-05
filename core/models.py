@@ -103,6 +103,59 @@ class ProxmoxEndpoint(TimestampedModel):
         return self.name
 
 
+class ConsoleSession(TimestampedModel):
+    class TargetType(models.TextChoices):
+        VM = "vm", "VM"
+        CT = "ct", "Container"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        CONNECTING = "connecting", "Connecting"
+        CONNECTED = "connected", "Connected"
+        CLOSED = "closed", "Closed"
+        FAILED = "failed", "Failed"
+        EXPIRED = "expired", "Expired"
+
+    token_hash = models.CharField(max_length=64, unique=True)
+    target_type = models.CharField(max_length=20, choices=TargetType.choices)
+    target_vmid = models.PositiveIntegerField()
+    target_node = models.CharField(max_length=120, blank=True)
+    target_name_snapshot = models.CharField(max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="pve_helper_console_sessions",
+    )
+    username = models.CharField(max_length=255, blank=True)
+    source_ip = models.GenericIPAddressField(null=True, blank=True)
+    expires_at = models.DateTimeField(db_index=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    connected_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.PENDING, db_index=True)
+    proxmox_endpoint = models.URLField(blank=True)
+    proxmox_node = models.CharField(max_length=120, blank=True)
+    proxmox_upid = models.CharField(max_length=255, blank=True)
+    proxmox_port = models.CharField(max_length=20, blank=True)
+    proxmox_ticket = models.TextField(blank=True)
+    proxmox_password = models.CharField(max_length=255, blank=True)
+    close_reason = models.CharField(max_length=255, blank=True)
+    error = models.TextField(blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["target_type", "target_vmid"], name="core_console_target_idx"),
+            models.Index(fields=["status", "expires_at"], name="core_console_status_exp_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.target_type}:{self.target_vmid} console {self.status}"
+
+
 class StorageMount(TimestampedModel):
     storage_id = models.CharField(max_length=120, unique=True)
     display_name = models.CharField(max_length=160)

@@ -194,6 +194,9 @@ STORAGE_WRITE_ENABLED = env_bool("STORAGE_WRITE_ENABLED", True)
 # cloud-init. On by default like the other write gates; needs the Proxmox token
 # to hold the relevant VM.* privileges (otherwise the writes fail with a 403).
 VM_WRITE_ENABLED = env_bool("VM_WRITE_ENABLED", True)
+CONSOLE_ENABLED = env_bool("CONSOLE_ENABLED", True)
+CONSOLE_SESSION_TTL_SECONDS = env_int("CONSOLE_SESSION_TTL_SECONDS", 30)
+CONSOLE_CONNECT_TIMEOUT_SECONDS = env_int("CONSOLE_CONNECT_TIMEOUT_SECONDS", 10)
 STORAGE_UPLOAD_MAX_SIZE_MB = env_int("STORAGE_UPLOAD_MAX_SIZE_MB", 0)
 FILE_UPLOAD_TEMP_DIR = env("FILE_UPLOAD_TEMP_DIR", "") or None
 STORAGE_IMAGE_INFO_ENABLED = env_bool("STORAGE_IMAGE_INFO_ENABLED", True)

@@ -3806,6 +3806,246 @@
     page.querySelectorAll("[data-boot-order-editor]").forEach(syncBootOrder);
   };
 
+  const initConsolePages = (root) => {
+    root.querySelectorAll("[data-console-page]").forEach((page) => {
+      if (page.dataset.initialized === "true") {
+        return;
+      }
+      page.dataset.initialized = "true";
+
+      const connectButton = page.querySelector("[data-console-connect]");
+      const disconnectButton = page.querySelector("[data-console-disconnect]");
+      const frame = page.querySelector("[data-console-frame]");
+      const sideMenu = page.querySelector("[data-console-side-menu]");
+      const screen = page.querySelector("[data-console-screen]");
+      const status = page.querySelector("[data-console-status]");
+      let rfb = null;
+      let resizeObserver = null;
+
+      const applySetting = (input) => {
+        if (!rfb) {
+          return;
+        }
+        const key = input.dataset.consoleSetting;
+        if (!key) {
+          return;
+        }
+        if (input.type === "checkbox") {
+          rfb[key] = input.checked;
+        } else {
+          rfb[key] = Number(input.value);
+        }
+      };
+
+      const applySettings = () => {
+        page.querySelectorAll("[data-console-setting]").forEach(applySetting);
+      };
+
+      const nudgeConsoleResize = () => {
+        if (!rfb) {
+          return;
+        }
+        const scaleInput = page.querySelector('[data-console-setting="scaleViewport"]');
+        if (scaleInput) {
+          rfb.scaleViewport = scaleInput.checked;
+        }
+        window.dispatchEvent(new Event("resize"));
+      };
+
+      const setStatus = (message, connected = false) => {
+        if (status) {
+          status.textContent = message;
+        }
+        page.classList.toggle("console-connected", connected);
+        if (connectButton) {
+          connectButton.disabled = connected;
+        }
+        if (disconnectButton) {
+          disconnectButton.disabled = !connected;
+        }
+      };
+
+      const hidePanels = () => {
+        page.querySelectorAll("[data-console-panel]").forEach((panel) => {
+          panel.hidden = true;
+        });
+        page.querySelectorAll("[data-console-panel-toggle]").forEach((button) => {
+          button.classList.remove("active");
+        });
+      };
+
+      const disconnect = () => {
+        if (rfb) {
+          rfb.disconnect();
+          rfb = null;
+        }
+        if (screen) {
+          screen.innerHTML = "";
+        }
+        setStatus("Disconnected", false);
+      };
+
+      const connect = async () => {
+        if (!screen || !page.dataset.sessionUrl || !page.dataset.novncUrl) {
+          return;
+        }
+
+        setStatus("Creating console session...", false);
+        try {
+          const response = await fetch(new URL(page.dataset.sessionUrl, window.location.origin), {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "X-CSRFToken": page.dataset.csrfToken || "",
+            },
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.error || "Console session failed.");
+          }
+
+          const module = await import(page.dataset.novncUrl);
+          const RFB = module.default;
+          const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+          const wsUrl = new URL(payload.websocket_url, window.location.origin);
+          wsUrl.protocol = protocol;
+
+          screen.innerHTML = "";
+          rfb = new RFB(screen, wsUrl.href, { credentials: { password: payload.password || "" } });
+          applySettings();
+          rfb.focusOnClick = true;
+          rfb.addEventListener("connect", () => {
+            setStatus("Connected", true);
+            nudgeConsoleResize();
+          });
+          rfb.addEventListener("disconnect", (event) => {
+            rfb = null;
+            const clean = event.detail && event.detail.clean;
+            setStatus(clean ? "Disconnected" : "Console disconnected", false);
+          });
+          rfb.addEventListener("securityfailure", (event) => {
+            setStatus(event.detail?.reason || "Console security negotiation failed.", false);
+          });
+          setStatus("Connecting...", true);
+          nudgeConsoleResize();
+        } catch (error) {
+          disconnect();
+          setStatus(error.message || "Console connection failed.", false);
+        }
+      };
+
+      const submitPowerAction = async (action) => {
+        if (!page.dataset.powerUrl) {
+          return;
+        }
+        const body = new URLSearchParams();
+        body.set("action", action);
+        setStatus(`Submitting ${action}...`, Boolean(rfb));
+        const response = await fetch(new URL(page.dataset.powerUrl, window.location.origin), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-CSRFToken": page.dataset.csrfToken || "",
+            "X-Requested-With": "fetch",
+          },
+          body,
+        });
+        if (!response.ok) {
+          setStatus(`${action} failed`, Boolean(rfb));
+          return;
+        }
+        setStatus(`${action} submitted`, Boolean(rfb));
+        window.dispatchEvent(new Event(recentTasksRefreshEvent));
+      };
+
+      sideMenu?.querySelector("[data-console-menu-tab]")?.addEventListener("click", () => {
+        sideMenu.classList.toggle("collapsed");
+        hidePanels();
+      });
+
+      sideMenu?.querySelectorAll("[data-console-panel-toggle]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const targetPanel = page.querySelector(`[data-console-panel="${CSS.escape(button.dataset.consolePanelToggle || "")}"]`);
+          const shouldOpen = !targetPanel || targetPanel.hidden;
+          hidePanels();
+          if (targetPanel && shouldOpen) {
+            targetPanel.hidden = false;
+            button.classList.add("active");
+          }
+        });
+      });
+
+      page.querySelectorAll("[data-console-setting]").forEach((input) => {
+        input.addEventListener("input", () => applySetting(input));
+        input.addEventListener("change", () => applySetting(input));
+      });
+
+      page.querySelectorAll("[data-console-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const action = button.dataset.consoleAction;
+          if (action === "disconnect") {
+            disconnect();
+            return;
+          }
+          if (action === "reload") {
+            disconnect();
+            hidePanels();
+            await connect();
+            return;
+          }
+          if (action === "fullscreen" && frame) {
+            if (document.fullscreenElement) {
+              await document.exitFullscreen();
+            } else {
+              await frame.requestFullscreen();
+            }
+            return;
+          }
+          if (!rfb) {
+            return;
+          }
+          if (action === "ctrl-alt-del") {
+            rfb.sendCtrlAltDel();
+            hidePanels();
+            return;
+          }
+          if (action === "paste-clipboard" && navigator.clipboard) {
+            const text = await navigator.clipboard.readText();
+            if (text) {
+              rfb.clipboardPasteFrom(text);
+            }
+            hidePanels();
+          }
+        });
+      });
+
+      page.querySelectorAll("[data-console-power-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          hidePanels();
+          await submitPowerAction(button.dataset.consolePowerAction || "");
+        });
+      });
+
+      const closePanelsOnOutsideClick = (event) => {
+        if (sideMenu && !sideMenu.contains(event.target)) {
+          hidePanels();
+        }
+      };
+      document.addEventListener("click", closePanelsOnOutsideClick);
+      registerPageCleanup(() => document.removeEventListener("click", closePanelsOnOutsideClick));
+
+      disconnectButton?.addEventListener("click", disconnect);
+      registerPageCleanup(disconnect);
+      if (frame && window.ResizeObserver) {
+        resizeObserver = new ResizeObserver(nudgeConsoleResize);
+        resizeObserver.observe(frame);
+        registerPageCleanup(() => resizeObserver?.disconnect());
+      }
+
+      connectButton?.addEventListener("click", connect);
+    });
+  };
+
   const initPage = (root = document) => {
     initHardwareEditor(root);
     initGuestListFilter(root);
@@ -3827,6 +4067,7 @@
     initVmOverviewSnapshotInfo(root);
     initVmStatusRefresh(root);
     initGuestAgentSummaries(root);
+    initConsolePages(root);
     createIcons();
   };
 

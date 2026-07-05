@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .common import *  # noqa: F401,F403
 from . import common
+from core.services.console_sessions import create_vm_console_session
 
 
 @app_login_required
@@ -483,6 +484,58 @@ def guest_summary(request, object_type: str, vmid: int):
         }
     )
     return render(request, "core/guest_summary.html", context)
+
+
+@app_login_required
+def guest_console(request, object_type: str, vmid: int):
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    detail = _resolve_guest_detail(object_type, vmid)
+    if not detail.found:
+        raise Http404("Guest not found")
+
+    context = _guest_tab_context(detail, "console")
+    context.update(
+        {
+            "console_enabled": settings.CONSOLE_ENABLED,
+            "console_supported": detail.object_type == ProxmoxInventory.ObjectType.VM,
+            "console_session_url": reverse("core:guest_console_session", args=[object_type, vmid]),
+            "console_novnc_url": "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js",
+            "console_require_running": detail.status != "running",
+        }
+    )
+    return render(request, "core/guest_console.html", context)
+
+
+@require_POST
+@app_login_required
+def guest_console_session(request, object_type: str, vmid: int):
+    if object_type not in GUEST_OBJECT_TYPES:
+        return JsonResponse({"error": "Unknown guest type."}, status=404)
+    detail = _resolve_guest_detail(object_type, vmid)
+    if not detail.found:
+        return JsonResponse({"error": "Guest not found."}, status=404)
+
+    try:
+        result = create_vm_console_session(request=request, detail=detail)
+    except ProxmoxAPIError as exc:
+        _audit_guest(request, detail, "guest.console.failed", {"error": str(exc)}, outcome="failed")
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    _audit_guest(
+        request,
+        detail,
+        "guest.console.opened",
+        {"console_session_id": result.session.id, "proxmox_task_upid": result.session.proxmox_upid},
+    )
+    return JsonResponse(
+        {
+            "token": result.token,
+            "password": result.password,
+            "websocket_url": f"/console/ws/{result.token}/",
+            "expires_at": result.session.expires_at.isoformat(),
+        }
+    )
 
 
 def _parse_net_value(value: str) -> dict:
@@ -3292,6 +3345,7 @@ def _guest_tabs(detail: SimpleNamespace, active_tab: str) -> list[dict]:
     args = [detail.object_type, detail.vmid]
     tabs = [
         {"key": "summary", "label": "Summary", "url": reverse("core:guest_summary", args=args)},
+        {"key": "console", "label": "Console", "url": reverse("core:guest_console", args=args)},
         {"key": "monitor", "label": "Monitor", "url": reverse("core:guest_monitor", args=args)},
         {"key": "configure", "label": "Configure", "url": reverse("core:guest_configure", args=args)},
         {"key": "permissions", "label": "Permissions", "url": reverse("core:guest_permissions", args=args)},

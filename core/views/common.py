@@ -441,6 +441,9 @@ def _audit_action_label(event: AuditEvent) -> str:
         "guest.backup.delete": "Delete backup",
         "guest.replication.create": "Create replication job",
         "guest.replication.delete": "Delete replication job",
+        "guest.console.opened": "Open console",
+        "guest.console.closed": "Close console",
+        "guest.console.failed": "Console failed",
     }
     if event.action in guest_action_labels:
         return guest_action_labels[event.action]
