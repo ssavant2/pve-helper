@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from django.templatetags.static import static
+
 from .common import *  # noqa: F401,F403
 from . import common
 from core.services.console_sessions import create_guest_console_session
@@ -500,10 +502,12 @@ def guest_console(request, object_type: str, vmid: int):
             "console_enabled": settings.CONSOLE_ENABLED,
             "console_supported": detail.object_type in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT},
             "console_session_url": reverse("core:guest_console_session", args=[object_type, vmid]),
-            "console_novnc_url": "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js",
-            "console_xterm_js_url": "https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.min.js",
-            "console_xterm_fit_url": "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.min.js",
-            "console_xterm_css_url": "https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.min.css",
+            # Locally vendored (no CDN). Pinned versions + update steps:
+            # static/vendor/README.md.
+            "console_novnc_url": static("vendor/novnc/rfb.esm.js"),
+            "console_xterm_js_url": static("vendor/xterm/xterm.min.js"),
+            "console_xterm_fit_url": static("vendor/xterm/addon-fit.min.js"),
+            "console_xterm_css_url": static("vendor/xterm/xterm.min.css"),
             "console_require_running": detail.status != "running",
         }
     )
