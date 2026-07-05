@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .common import *  # noqa: F401,F403
 from . import common
-from core.services.console_sessions import create_vm_console_session
+from core.services.console_sessions import create_guest_console_session
 
 
 @app_login_required
@@ -498,9 +498,12 @@ def guest_console(request, object_type: str, vmid: int):
     context.update(
         {
             "console_enabled": settings.CONSOLE_ENABLED,
-            "console_supported": detail.object_type == ProxmoxInventory.ObjectType.VM,
+            "console_supported": detail.object_type in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT},
             "console_session_url": reverse("core:guest_console_session", args=[object_type, vmid]),
             "console_novnc_url": "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js",
+            "console_xterm_js_url": "https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.min.js",
+            "console_xterm_fit_url": "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.min.js",
+            "console_xterm_css_url": "https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.min.css",
             "console_require_running": detail.status != "running",
         }
     )
@@ -517,7 +520,7 @@ def guest_console_session(request, object_type: str, vmid: int):
         return JsonResponse({"error": "Guest not found."}, status=404)
 
     try:
-        result = create_vm_console_session(request=request, detail=detail)
+        result = create_guest_console_session(request=request, detail=detail)
     except ProxmoxAPIError as exc:
         _audit_guest(request, detail, "guest.console.failed", {"error": str(exc)}, outcome="failed")
         return JsonResponse({"error": str(exc)}, status=400)
@@ -532,6 +535,7 @@ def guest_console_session(request, object_type: str, vmid: int):
         {
             "token": result.token,
             "password": result.password,
+            "console_type": result.console_type,
             "websocket_url": f"/console/ws/{result.token}/",
             "expires_at": result.session.expires_at.isoformat(),
         }

@@ -4,9 +4,13 @@
   <section
     class="console-page"
     data-console-page
+    data-guest-type="{{ guest.object_type }}"
     data-session-url="{{ console_session_url }}"
     data-power-url="{% url 'core:guest_power' guest.object_type guest.vmid %}"
     data-novnc-url="{{ console_novnc_url }}"
+    data-xterm-js-url="{{ console_xterm_js_url }}"
+    data-xterm-fit-url="{{ console_xterm_fit_url }}"
+    data-xterm-css-url="{{ console_xterm_css_url }}"
     data-csrf-token="{{ csrf_token }}"
   >
     <div class="console-toolbar">
@@ -14,6 +18,11 @@
         <h2>Console</h2>
       </div>
       <div class="console-actions">
+        <label class="console-keepalive-control">
+          <span>Keep inactive sessions alive for</span>
+          <input type="number" min="1" max="99" value="10" data-console-keepalive-minutes>
+          <span>min</span>
+        </label>
         <button type="button" data-console-connect {% if not console_enabled or not console_supported or console_require_running %}disabled{% endif %}>
           Connect
         </button>
@@ -26,9 +35,9 @@
     {% if not console_enabled %}
       <div class="warning">Console access is disabled by CONSOLE_ENABLED.</div>
     {% elif not console_supported %}
-      <div class="warning">Integrated console is currently implemented for VMs only. CT terminal support will use a separate xterm-style frontend.</div>
+      <div class="warning">Integrated console is currently implemented for VMs and containers only.</div>
     {% elif console_require_running %}
-      <div class="warning">Start this VM before opening the console.</div>
+      <div class="warning">Start this guest before opening the console.</div>
     {% endif %}
 
     <div class="console-frame" data-console-frame>
@@ -71,7 +80,7 @@
         <div class="console-menu-panel" data-console-panel="settings" hidden>
           <h3>Settings</h3>
           <label><input type="checkbox" data-console-setting="scaleViewport" checked> Scale display</label>
-          <label><input type="checkbox" data-console-setting="resizeSession" checked> Resize guest display</label>
+          <label><input type="checkbox" data-console-setting="resizeSession" {% if guest.object_type != "ct" %}checked{% endif %}> Resize guest display</label>
           <label><input type="checkbox" data-console-setting="viewOnly"> View only</label>
           <label><input type="checkbox" data-console-setting="clipViewport"> Clip viewport</label>
           <label>

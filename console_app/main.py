@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import ssl
 from urllib.parse import quote, urlparse
@@ -40,6 +41,10 @@ async def console_ws(websocket: WebSocket):
         upstream_url = _upstream_url(session)
         headers = _proxmox_headers()
         ssl_context = _websocket_ssl_context(upstream_url)
+        console_type = str((session.details or {}).get("console_type") or "novnc")
+        connect_kwargs = {}
+        if console_type == "xterm":
+            connect_kwargs["subprotocols"] = ["binary"]
         async with ws_connect(
             upstream_url,
             additional_headers=headers,
@@ -48,10 +53,19 @@ async def console_ws(websocket: WebSocket):
             ping_interval=30,
             ping_timeout=30,
             max_size=None,
+            **connect_kwargs,
         ) as upstream:
-            await websocket.accept()
-            await _mark_session(session.id, ConsoleSession.Status.CONNECTED, connected_at=timezone.now())
-            await _relay(websocket, upstream)
+            if console_type == "xterm":
+                initial_output = await _authenticate_xterm_session(session, upstream)
+                await websocket.accept()
+                if initial_output:
+                    await websocket.send_bytes(initial_output)
+                await _mark_session(session.id, ConsoleSession.Status.CONNECTED, connected_at=timezone.now())
+                await _relay_xterm(websocket, upstream)
+            else:
+                await websocket.accept()
+                await _mark_session(session.id, ConsoleSession.Status.CONNECTED, connected_at=timezone.now())
+                await _relay(websocket, upstream)
             await _mark_session(session.id, ConsoleSession.Status.CLOSED, closed_at=timezone.now(), close_reason="closed")
             await _audit_session(session.id, "guest.console.closed", "success")
     except Exception as exc:
@@ -92,6 +106,76 @@ async def _relay(websocket: WebSocket, upstream):
                 await websocket.send_text(message)
 
     tasks = {asyncio.create_task(browser_to_upstream()), asyncio.create_task(upstream_to_browser())}
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        task.result()
+
+
+async def _authenticate_xterm_session(session: ConsoleSession, upstream) -> bytes:
+    user = str((session.details or {}).get("proxmox_user") or "")
+    ticket = session.proxmox_ticket
+    if not user or not ticket:
+        raise RuntimeError("Missing xterm console credentials.")
+    await upstream.send(f"{user}:{ticket}\n")
+    answer = await asyncio.wait_for(upstream.recv(), timeout=max(settings.CONSOLE_CONNECT_TIMEOUT_SECONDS, 1))
+    if isinstance(answer, str):
+        answer_bytes = answer.encode("utf-8", errors="replace")
+    else:
+        answer_bytes = bytes(answer)
+    if not answer_bytes.startswith(b"OK"):
+        raise RuntimeError("xterm console authentication failed.")
+    return answer_bytes[2:]
+
+
+async def _relay_xterm(websocket: WebSocket, upstream):
+    async def browser_to_upstream():
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                await upstream.close()
+                break
+            if message["type"] != "websocket.receive":
+                continue
+            payload = message.get("text")
+            if payload is None and message.get("bytes") is not None:
+                payload = message["bytes"].decode("utf-8", errors="replace")
+            if not payload:
+                continue
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                data = payload
+                await upstream.send(f"0:{len(data.encode('utf-8'))}:{data}")
+                continue
+            if decoded.get("type") == "resize":
+                cols = max(1, int(decoded.get("cols") or 80))
+                rows = max(1, int(decoded.get("rows") or 24))
+                await upstream.send(f"1:{cols}:{rows}:")
+            elif decoded.get("type") == "data":
+                data = str(decoded.get("data") or "")
+                await upstream.send(f"0:{len(data.encode('utf-8'))}:{data}")
+            elif decoded.get("type") == "ping":
+                await upstream.send("2")
+
+    async def upstream_to_browser():
+        async for message in upstream:
+            if isinstance(message, bytes):
+                await websocket.send_bytes(message)
+            else:
+                await websocket.send_text(message)
+
+    async def ping_upstream():
+        while True:
+            await asyncio.sleep(30)
+            await upstream.send("2")
+
+    tasks = {
+        asyncio.create_task(browser_to_upstream()),
+        asyncio.create_task(upstream_to_browser()),
+        asyncio.create_task(ping_upstream()),
+    }
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
         task.cancel()
@@ -158,8 +242,9 @@ def _upstream_url(session: ConsoleSession) -> str:
     endpoint = session.proxmox_endpoint.rstrip("/")
     parsed = urlparse(endpoint)
     scheme = "wss" if parsed.scheme == "https" else "ws"
+    proxmox_kind = "qemu" if session.target_type == ConsoleSession.TargetType.VM else "lxc"
     path = (
-        f"/api2/json/nodes/{quote(session.proxmox_node, safe='')}/qemu/{session.target_vmid}/vncwebsocket"
+        f"/api2/json/nodes/{quote(session.proxmox_node, safe='')}/{proxmox_kind}/{session.target_vmid}/vncwebsocket"
         f"?port={quote(session.proxmox_port, safe='')}&vncticket={quote(session.proxmox_ticket, safe='')}"
     )
     return f"{scheme}://{parsed.netloc}{path}"

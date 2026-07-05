@@ -2201,6 +2201,21 @@ code {
   white-space: nowrap;
 }
 
+.console-keepalive-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.console-keepalive-control input {
+  width: 62px;
+  min-height: 34px;
+  padding: 4px 8px;
+  text-align: right;
+}
+
 .console-frame {
   position: relative;
   flex: 1 1 auto;
@@ -2220,13 +2235,26 @@ code {
 }
 
 .console-screen > * {
-  width: 100%;
-  height: 100%;
   background: #000;
 }
 
 .console-screen canvas {
   outline: none;
+}
+
+.console-page[data-guest-type="ct"] .console-screen {
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: auto;
+}
+
+.console-screen.xterm-screen {
+  display: block;
+  padding: 10px;
+}
+
+.console-screen.xterm-screen .xterm {
+  height: 100%;
 }
 
 .console-placeholder {
@@ -2283,6 +2311,11 @@ code {
   margin-bottom: 6px;
 }
 
+.console-page[data-guest-type="ct"] .console-menu-rail::before {
+  content: "xterm";
+  line-height: 1;
+}
+
 .console-menu-rail button,
 .console-menu-tab,
 .console-menu-panel button {
@@ -2327,8 +2360,7 @@ code {
 .console-menu-tab {
   position: absolute;
   top: 50%;
-  left: 88px;
-  order: 2;
+  left: 100%;
   width: 25px;
   height: 80px;
   transform: translateY(-50%);
@@ -2350,10 +2382,6 @@ code {
 
 .console-side-menu.collapsed {
   transform: translate(-88px, -50%);
-}
-
-.console-side-menu.collapsed .console-menu-tab {
-  left: 88px;
 }
 
 .console-side-menu.collapsed .console-menu-tab span {
@@ -2417,8 +2445,22 @@ code {
   width: 110px;
 }
 
+.console-menu-panel input[type="number"] {
+  width: 64px;
+  min-height: 34px;
+  padding: 4px 8px;
+  text-align: right;
+}
+
 .console-menu-panel input[type="checkbox"] {
   accent-color: var(--accent);
+}
+
+.console-number-setting span:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .messages {

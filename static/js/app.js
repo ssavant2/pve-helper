@@ -6,6 +6,8 @@
   const softStatusSelector = "[data-soft-nav-status]";
   const softTreeSelector = "[data-soft-nav-tree]";
   const recentTasksRefreshEvent = "pve-helper:recent-tasks-refresh";
+  const consoleKeepaliveKey = "pve-helper-console-keepalive-minutes";
+  const consoleReconnectPrefix = "pve-helper-console-reconnect";
 
   let activeLabel = "";
   let activeVmOverview = null;
@@ -3819,8 +3821,85 @@
       const sideMenu = page.querySelector("[data-console-side-menu]");
       const screen = page.querySelector("[data-console-screen]");
       const status = page.querySelector("[data-console-status]");
+      const keepaliveInput = page.querySelector("[data-console-keepalive-minutes]");
       let rfb = null;
+      let terminal = null;
+      let terminalFitAddon = null;
+      let terminalSocket = null;
       let resizeObserver = null;
+      let connectedAtLeastOnce = false;
+
+      const reconnectKey = `${consoleReconnectPrefix}:${page.dataset.sessionUrl || window.location.pathname}`;
+      const keepaliveMinutes = () => {
+        const parsed = Number.parseInt(keepaliveInput?.value || "10", 10);
+        return Number.isNaN(parsed) ? 10 : Math.min(99, Math.max(1, parsed));
+      };
+
+      const saveKeepaliveMinutes = () => {
+        if (!keepaliveInput) {
+          return;
+        }
+        const minutes = keepaliveMinutes();
+        keepaliveInput.value = String(minutes);
+        try {
+          localStorage.setItem(consoleKeepaliveKey, String(minutes));
+        } catch (_error) {
+          // Local storage can be unavailable in restrictive browser modes.
+        }
+      };
+
+      const restoreKeepaliveMinutes = () => {
+        if (!keepaliveInput) {
+          return;
+        }
+        try {
+          const stored = Number.parseInt(localStorage.getItem(consoleKeepaliveKey) || "", 10);
+          if (!Number.isNaN(stored)) {
+            keepaliveInput.value = String(Math.min(99, Math.max(1, stored)));
+          }
+        } catch (_error) {
+          // Keep the template default.
+        }
+      };
+
+      const rememberReconnectWindow = () => {
+        if (!connectedAtLeastOnce) {
+          return;
+        }
+        try {
+          localStorage.setItem(
+            reconnectKey,
+            JSON.stringify({ until: Date.now() + keepaliveMinutes() * 60 * 1000 })
+          );
+        } catch (_error) {
+          // Local storage can be unavailable in restrictive browser modes.
+        }
+      };
+
+      const clearReconnectWindow = () => {
+        try {
+          localStorage.removeItem(reconnectKey);
+        } catch (_error) {
+          // Local storage can be unavailable in restrictive browser modes.
+        }
+      };
+
+      const shouldAutoReconnect = () => {
+        try {
+          const raw = localStorage.getItem(reconnectKey);
+          if (!raw) {
+            return false;
+          }
+          const record = JSON.parse(raw);
+          if (!record || Number(record.until) <= Date.now()) {
+            localStorage.removeItem(reconnectKey);
+            return false;
+          }
+          return true;
+        } catch (_error) {
+          return false;
+        }
+      };
 
       const applySetting = (input) => {
         if (!rfb) {
@@ -3841,8 +3920,58 @@
         page.querySelectorAll("[data-console-setting]").forEach(applySetting);
       };
 
+      const loadStylesheetOnce = (url) =>
+        new Promise((resolve, reject) => {
+          if (!url) {
+            resolve();
+            return;
+          }
+          const existing = document.querySelector(`link[data-console-css="${CSS.escape(url)}"]`);
+          if (existing) {
+            resolve();
+            return;
+          }
+          const link = document.createElement("link");
+          link.rel = "stylesheet";
+          link.href = url;
+          link.dataset.consoleCss = url;
+          link.addEventListener("load", resolve, { once: true });
+          link.addEventListener("error", reject, { once: true });
+          document.head.appendChild(link);
+        });
+
+      const loadScriptOnce = (url) =>
+        new Promise((resolve, reject) => {
+          if (!url) {
+            reject(new Error("Missing console script URL."));
+            return;
+          }
+          const existing = document.querySelector(`script[data-console-script="${CSS.escape(url)}"]`);
+          if (existing) {
+            if (existing.dataset.loaded === "true") {
+              resolve();
+            } else {
+              existing.addEventListener("load", resolve, { once: true });
+              existing.addEventListener("error", reject, { once: true });
+            }
+            return;
+          }
+          const script = document.createElement("script");
+          script.src = url;
+          script.dataset.consoleScript = url;
+          script.addEventListener("load", () => {
+            script.dataset.loaded = "true";
+            resolve();
+          }, { once: true });
+          script.addEventListener("error", reject, { once: true });
+          document.head.appendChild(script);
+        });
+
       const nudgeConsoleResize = () => {
         if (!rfb) {
+          if (terminalFitAddon && terminalSocket?.readyState === WebSocket.OPEN) {
+            terminalFitAddon.fit();
+          }
           return;
         }
         const scaleInput = page.querySelector('[data-console-setting="scaleViewport"]');
@@ -3874,15 +4003,180 @@
         });
       };
 
-      const disconnect = () => {
+      const disconnect = ({ remember = false } = {}) => {
+        if (remember) {
+          rememberReconnectWindow();
+        } else {
+          clearReconnectWindow();
+        }
         if (rfb) {
           rfb.disconnect();
           rfb = null;
         }
+        if (terminalSocket) {
+          terminalSocket.close();
+          terminalSocket = null;
+        }
+        if (terminal) {
+          terminal.dispose();
+          terminal = null;
+          terminalFitAddon = null;
+        }
         if (screen) {
           screen.innerHTML = "";
+          screen.classList.remove("xterm-screen");
         }
         setStatus("Disconnected", false);
+      };
+
+      const buildConsoleWebSocketUrl = (payload) => {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = new URL(payload.websocket_url, window.location.origin);
+        wsUrl.protocol = protocol;
+        return wsUrl;
+      };
+
+      const markConnected = () => {
+        connectedAtLeastOnce = true;
+        rememberReconnectWindow();
+        setStatus("Connected", true);
+        nudgeConsoleResize();
+      };
+
+      const resizeTerminal = () => {
+        if (!terminalFitAddon || !terminal || terminalSocket?.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        terminalFitAddon.fit();
+        terminalSocket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+      };
+
+      const connectXterm = async (payload) => {
+        await loadStylesheetOnce(page.dataset.xtermCssUrl || "");
+        await loadScriptOnce(page.dataset.xtermJsUrl || "");
+        await loadScriptOnce(page.dataset.xtermFitUrl || "");
+        const TerminalCtor = window.Terminal?.Terminal || window.Terminal;
+        const FitAddonCtor = window.FitAddon?.FitAddon || window.FitAddon;
+        if (!TerminalCtor || !FitAddonCtor) {
+          throw new Error("xterm.js failed to load.");
+        }
+        screen.innerHTML = "";
+        screen.classList.add("xterm-screen");
+        terminal = new TerminalCtor({
+          cursorBlink: true,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+          fontSize: 14,
+          scrollback: 5000,
+          convertEol: true,
+          theme: {
+            background: "#000000",
+            foreground: "#d8d8d8",
+            cursor: "#e5edf3",
+            selectionBackground: "#2d5d8f",
+          },
+        });
+        terminalFitAddon = new FitAddonCtor();
+        terminal.loadAddon(terminalFitAddon);
+        terminal.open(screen);
+        terminal.onData((data) => {
+          if (terminalSocket?.readyState === WebSocket.OPEN) {
+            terminalSocket.send(JSON.stringify({ type: "data", data }));
+          }
+        });
+        terminal.onResize((size) => {
+          if (terminalSocket?.readyState === WebSocket.OPEN) {
+            terminalSocket.send(JSON.stringify({ type: "resize", cols: size.cols, rows: size.rows }));
+          }
+        });
+        terminalSocket = new WebSocket(buildConsoleWebSocketUrl(payload).href);
+        terminalSocket.binaryType = "arraybuffer";
+        terminalSocket.addEventListener("open", () => {
+          markConnected();
+          window.setTimeout(() => {
+            resizeTerminal();
+            terminal?.focus();
+          }, 50);
+        });
+        terminalSocket.addEventListener("message", (event) => {
+          if (event.data instanceof ArrayBuffer) {
+            terminal?.write(new Uint8Array(event.data));
+          } else {
+            terminal?.write(String(event.data || ""));
+          }
+        });
+        terminalSocket.addEventListener("close", () => {
+          terminalSocket = null;
+          setStatus("Disconnected", false);
+        });
+        terminalSocket.addEventListener("error", () => {
+          setStatus("Console disconnected", false);
+        });
+      };
+
+      const connectNovnc = async (payload) => {
+        const module = await import(page.dataset.novncUrl);
+        const RFB = module.default;
+
+        screen.innerHTML = "";
+        screen.classList.remove("xterm-screen");
+        rfb = new RFB(screen, buildConsoleWebSocketUrl(payload).href, { credentials: { password: payload.password || "" } });
+        applySettings();
+        rfb.focusOnClick = true;
+        rfb.addEventListener("connect", markConnected);
+        rfb.addEventListener("disconnect", (event) => {
+          rfb = null;
+          const clean = event.detail && event.detail.clean;
+          setStatus(clean ? "Disconnected" : "Console disconnected", false);
+        });
+        rfb.addEventListener("securityfailure", (event) => {
+          setStatus(event.detail?.reason || "Console security negotiation failed.", false);
+        });
+      };
+
+      const readClipboardText = async () => {
+        if (navigator.clipboard?.readText) {
+          try {
+            return await navigator.clipboard.readText();
+          } catch (_error) {
+            // Fall back below when the browser blocks clipboard permissions.
+          }
+        }
+        return window.prompt("Paste text") || "";
+      };
+
+      const sendNoVncText = async (text) => {
+        if (!rfb || !text) {
+          return;
+        }
+        const keysyms = {
+          "\n": 0xff0d,
+          "\r": 0xff0d,
+          "\t": 0xff09,
+          "\b": 0xff08,
+          "\u001b": 0xff1b,
+        };
+        for (const char of text) {
+          const keysym = keysyms[char] || char.codePointAt(0);
+          if (!keysym) {
+            continue;
+          }
+          rfb.sendKey(keysym);
+          await new Promise((resolve) => window.setTimeout(resolve, 3));
+        }
+      };
+
+      const pasteClipboard = async () => {
+        const text = await readClipboardText();
+        if (!text) {
+          return;
+        }
+        if (terminalSocket?.readyState === WebSocket.OPEN) {
+          terminalSocket.send(JSON.stringify({ type: "data", data: text }));
+          return;
+        }
+        if (rfb) {
+          await sendNoVncText(text);
+        }
       };
 
       const connect = async () => {
@@ -3904,28 +4198,11 @@
             throw new Error(payload.error || "Console session failed.");
           }
 
-          const module = await import(page.dataset.novncUrl);
-          const RFB = module.default;
-          const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-          const wsUrl = new URL(payload.websocket_url, window.location.origin);
-          wsUrl.protocol = protocol;
-
-          screen.innerHTML = "";
-          rfb = new RFB(screen, wsUrl.href, { credentials: { password: payload.password || "" } });
-          applySettings();
-          rfb.focusOnClick = true;
-          rfb.addEventListener("connect", () => {
-            setStatus("Connected", true);
-            nudgeConsoleResize();
-          });
-          rfb.addEventListener("disconnect", (event) => {
-            rfb = null;
-            const clean = event.detail && event.detail.clean;
-            setStatus(clean ? "Disconnected" : "Console disconnected", false);
-          });
-          rfb.addEventListener("securityfailure", (event) => {
-            setStatus(event.detail?.reason || "Console security negotiation failed.", false);
-          });
+          if (payload.console_type === "xterm") {
+            await connectXterm(payload);
+          } else {
+            await connectNovnc(payload);
+          }
           setStatus("Connecting...", true);
           nudgeConsoleResize();
         } catch (error) {
@@ -3979,6 +4256,9 @@
         input.addEventListener("input", () => applySetting(input));
         input.addEventListener("change", () => applySetting(input));
       });
+      restoreKeepaliveMinutes();
+      keepaliveInput?.addEventListener("input", saveKeepaliveMinutes);
+      keepaliveInput?.addEventListener("change", saveKeepaliveMinutes);
 
       page.querySelectorAll("[data-console-action]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -3988,7 +4268,7 @@
             return;
           }
           if (action === "reload") {
-            disconnect();
+            disconnect({ remember: true });
             hidePanels();
             await connect();
             return;
@@ -4009,11 +4289,8 @@
             hidePanels();
             return;
           }
-          if (action === "paste-clipboard" && navigator.clipboard) {
-            const text = await navigator.clipboard.readText();
-            if (text) {
-              rfb.clipboardPasteFrom(text);
-            }
+          if (action === "paste-clipboard") {
+            await pasteClipboard();
             hidePanels();
           }
         });
@@ -4034,8 +4311,8 @@
       document.addEventListener("click", closePanelsOnOutsideClick);
       registerPageCleanup(() => document.removeEventListener("click", closePanelsOnOutsideClick));
 
-      disconnectButton?.addEventListener("click", disconnect);
-      registerPageCleanup(disconnect);
+      disconnectButton?.addEventListener("click", () => disconnect());
+      registerPageCleanup(() => disconnect({ remember: true }));
       if (frame && window.ResizeObserver) {
         resizeObserver = new ResizeObserver(nudgeConsoleResize);
         resizeObserver.observe(frame);
@@ -4043,6 +4320,9 @@
       }
 
       connectButton?.addEventListener("click", connect);
+      if (shouldAutoReconnect() && connectButton && !connectButton.disabled) {
+        window.setTimeout(connect, 50);
+      }
     });
   };
 
