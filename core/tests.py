@@ -217,6 +217,60 @@ class RuntimeConfigurationTests(TestCase):
         self.assertEqual(details.options, "vers=4.2,nconnect=4")
 
 
+class LocalDatastoreNavTests(TestCase):
+    """Sidebar 'Local Datastores' tree is built from the latest scan's
+    non-shared storage inventory, grouped by node."""
+
+    def test_groups_local_storages_by_node_and_excludes_shared(self):
+        from core.services.local_datastores import local_datastore_nav
+
+        cache.clear()
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="local-lvm", config={"type": "lvmthin", "shared": 0, "total": 100, "used": 40, "avail": 60, "active": 1},
+        )
+        ProxmoxInventory.objects.create(
+            scan_run=scan, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="local", config={"type": "dir", "shared": 0, "total": 200, "used": 50, "avail": 150},
+        )
+        ProxmoxInventory.objects.create(
+            scan_run=scan, node="pve2", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="local", config={"type": "dir", "shared": 0, "total": 0},
+        )
+        # Shared storage must NOT appear under Local Datastores.
+        ProxmoxInventory.objects.create(
+            scan_run=scan, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="TrueNAS-VM", config={"type": "nfs", "shared": 1},
+        )
+
+        tree = local_datastore_nav(use_cache=False)
+        nodes = {entry["node"]: entry["storages"] for entry in tree}
+        self.assertEqual(sorted(nodes), ["pve1", "pve2"])
+        pve1 = {s["storage_id"]: s for s in nodes["pve1"]}
+        self.assertEqual(sorted(pve1), ["local", "local-lvm"])
+        self.assertNotIn("TrueNAS-VM", pve1)
+        self.assertEqual(pve1["local-lvm"]["used_pct"], 40)  # 40/100
+        self.assertIsNone(nodes["pve2"][0]["used_pct"])  # total 0 -> no percentage
+
+
+class ApiStorageContentTests(SimpleTestCase):
+    """Local-storage content editor blocker/options logic (API-volume based)."""
+
+    def test_blocker_flags_content_types_in_use(self):
+        from core.views.storage import _api_content_blockers, _api_content_options
+
+        usage = {"images": {"count": 3, "examples": ["local-lvm:vm-100-disk-0"]}}
+        # Removing a type volumes still use is blocked; an unused type is fine.
+        self.assertTrue(_api_content_blockers(usage, ["images"]))
+        self.assertFalse(_api_content_blockers(usage, ["iso"]))
+
+        options = {o["key"]: o for o in _api_content_options(["images", "rootdir"], usage)}
+        self.assertTrue(options["images"]["selected"])
+        self.assertEqual(options["images"]["usage_count"], 3)
+        self.assertFalse(options["iso"]["selected"])
+
+
 class StickyTabUrlTests(SimpleTestCase):
     """Tab-persistent object switching (nav_tags.sticky_object_url)."""
 
@@ -6095,7 +6149,10 @@ class ViewSmokeTests(TestCase):
                 used_bytes=500,
             )
 
-            created = record_storage_space_snapshots(retention_days=8)
+            # No Proxmox endpoints -> only the mounted storage is sampled here;
+            # local (API) capacity recording is covered separately.
+            with patch("core.tasks.configured_clients", return_value=[]):
+                created = record_storage_space_snapshots(retention_days=8)
 
         self.assertEqual(created, 1)
         self.assertFalse(StorageSpaceSnapshot.objects.filter(pk=old_snapshot.pk).exists())
@@ -6103,6 +6160,29 @@ class ViewSmokeTests(TestCase):
         self.assertIsNone(snapshot.scan_run)
         self.assertGreater(snapshot.total_bytes, 0)
         self.assertFalse(StorageSpaceSnapshot.objects.filter(storage=disabled_storage).exists())
+
+    def test_record_storage_space_snapshots_records_local_api_storages(self):
+        class FakeClient:
+            def get(self, path, *, timeout=None):
+                if path == "nodes":
+                    return [{"node": "pve1"}]
+                if path == "nodes/pve1/storage":
+                    return [
+                        {"storage": "local-lvm", "shared": 0, "total": 1000, "used": 400, "avail": 600},
+                        {"storage": "cephfs", "shared": 1, "total": 5000, "used": 100, "avail": 4900},
+                    ]
+                raise AssertionError(path)
+
+        with patch("core.tasks.configured_clients", return_value=[FakeClient()]):
+            created = record_storage_space_snapshots()
+
+        locals_ = StorageSpaceSnapshot.objects.filter(storage__isnull=True)
+        self.assertEqual(created, 1)  # only the non-shared storage; shared is skipped
+        self.assertEqual(locals_.count(), 1)
+        snap = locals_.get()
+        self.assertEqual((snap.node, snap.api_storage_id), ("pve1", "local-lvm"))
+        self.assertEqual(snap.used_bytes, 400)
+        self.assertIsNone(snap.storage)
 
     def test_start_scan_is_silent_and_scan_status_updates_button_state(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

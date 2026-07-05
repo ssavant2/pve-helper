@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 from django.db import transaction
 from django.db.models import Count, Q
@@ -24,7 +25,13 @@ from .services.config import sync_runtime_configuration
 from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
-from .services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout, clear_live_guest_caches
+from .services.proxmox import (
+    ProxmoxAPIError,
+    ProxmoxClient,
+    ProxmoxTaskTimeout,
+    clear_live_guest_caches,
+    configured_clients,
+)
 from .services.scan_schedule import scan_schedule_state
 from .services.scan_retention import prune_scan_history
 from .services.scheduled_actions import dispatch_due_scheduled_actions, execute_scheduled_action_run
@@ -186,8 +193,72 @@ def record_storage_space_snapshots(retention_days: int = SPACE_SNAPSHOT_RETENTIO
     recorded_at = timezone.now()
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
     created = _record_space_snapshots(None, storages, recorded_at)
+    created += _record_local_space_snapshots(recorded_at)
     cutoff = recorded_at - timedelta(days=retention_days)
     StorageSpaceSnapshot.objects.filter(recorded_at__lt=cutoff).delete()
+    return created
+
+
+def _snapshot_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def _record_local_space_snapshots(recorded_at: datetime) -> int:
+    """Record capacity for local (non-shared) storages via the Proxmox API, so
+    the local-storage Monitor tab gets the same 2x/day time series as the
+    mounted ones. Cheap: a couple of calls per node, deduped across endpoints."""
+    created = 0
+    seen: set[tuple[str, str]] = set()
+    truthy = {"1", "true", "yes", "on"}
+    for client in configured_clients():
+        try:
+            nodes = client.get("nodes")
+        except ProxmoxAPIError:
+            continue
+        if not isinstance(nodes, list):
+            continue
+        for node_entry in nodes:
+            node = str((node_entry or {}).get("node") or "")
+            if not node:
+                continue
+            try:
+                storages = client.get(f"nodes/{quote(node, safe='')}/storage")
+            except ProxmoxAPIError:
+                continue
+            for entry in storages or []:
+                if not isinstance(entry, dict):
+                    continue
+                sid = str(entry.get("storage") or "")
+                if not sid or str(entry.get("shared") or "0").lower() in truthy:
+                    continue
+                key = (node, sid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                total = _snapshot_int(entry.get("total"))
+                if total is None:
+                    continue
+                avail = _snapshot_int(entry.get("avail"))
+                used = _snapshot_int(entry.get("used"))
+                if used is None and avail is not None:
+                    used = total - avail
+                StorageSpaceSnapshot.objects.create(
+                    storage=None,
+                    node=node,
+                    api_storage_id=sid,
+                    scan_run=None,
+                    recorded_at=recorded_at,
+                    total_bytes=total,
+                    available_bytes=avail if avail is not None else 0,
+                    used_bytes=used if used is not None else 0,
+                )
+                created += 1
     return created
 
 

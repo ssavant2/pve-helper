@@ -1,0 +1,28 @@
+{% extends "core/storage_api/base.html" %}
+
+{% block api_storage_content %}
+  <section class="storage-tab-content">
+    <div class="panel">
+      <div class="panel-heading">Disk Space (7 days)</div>
+      {% if capacity.total %}
+        <div class="api-capacity">
+          <div class="usage-bar-bg" role="img" aria-label="{{ capacity.used_pct|default:0 }}% used">
+            <div class="usage-bar-fill{% if capacity.used_pct >= 90 %} danger{% elif capacity.used_pct >= 75 %} warning{% endif %}" style="width: {{ capacity.used_pct|default:0 }}%;"></div>
+          </div>
+          <div class="api-capacity-legend">
+            <span><strong>{{ capacity.used|filesizeformat }}</strong> used{% if capacity.used_pct != None %} ({{ capacity.used_pct }}%){% endif %}</span>
+            <span><strong>{{ capacity.avail|filesizeformat }}</strong> free</span>
+            <span><strong>{{ capacity.total|filesizeformat }}</strong> total</span>
+          </div>
+        </div>
+      {% endif %}
+      {% if space_chart_data_json != "[]" %}
+        <div class="space-chart-container">
+          <svg data-space-chart data-chart-data='{{ space_chart_data_json }}' width="100%" height="200" preserveAspectRatio="none"></svg>
+        </div>
+      {% else %}
+        <p class="muted panel-empty-note">No historical data yet. Local storage capacity is sampled every 12 hours via the Proxmox API.</p>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

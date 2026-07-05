@@ -451,7 +451,13 @@ class TrashItem(TimestampedModel):
 
 
 class StorageSpaceSnapshot(TimestampedModel):
-    storage = models.ForeignKey(StorageMount, on_delete=models.CASCADE, related_name="space_snapshots")
+    # Either a mounted StorageMount (shared/file storages) OR a local API-only
+    # storage identified by (node, storage_id). Exactly one of these is set.
+    storage = models.ForeignKey(
+        StorageMount, on_delete=models.CASCADE, related_name="space_snapshots", null=True, blank=True
+    )
+    node = models.CharField(max_length=120, blank=True)
+    api_storage_id = models.CharField(max_length=120, blank=True)
     scan_run = models.ForeignKey(
         ScanRun,
         on_delete=models.CASCADE,
@@ -468,7 +474,9 @@ class StorageSpaceSnapshot(TimestampedModel):
         ordering = ["-recorded_at"]
         indexes = [
             models.Index(fields=["storage", "recorded_at"]),
+            models.Index(fields=["node", "api_storage_id", "recorded_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.storage.storage_id} @ {self.recorded_at:%Y-%m-%d %H:%M}"
+        label = self.storage.storage_id if self.storage_id else f"{self.node}/{self.api_storage_id}"
+        return f"{label} @ {self.recorded_at:%Y-%m-%d %H:%M}"

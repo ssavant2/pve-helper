@@ -96,35 +96,84 @@ def _live_status_for(statuses: dict, node: str, object_type: str, vmid: int, def
     return statuses.get((node or "", object_type, vmid), default)
 
 
-@app_login_required
-def storage_api_inventory(request, node: str, storage: str):
-    """Read-only Proxmox API view of a storage's full content, for storages
-    pve-helper does not mount (local-lvm, ZFS, ...). No write controls."""
-    highlight_vmid = _int_or_zero(request.GET.get("vmid")) or None
+# ---------------------------------------------------------------------------
+# Local / API-only storages (local, local-lvm, ZFS, ...): read-only tabbed view
+# built entirely from the Proxmox API since pve-helper cannot mount them.
+# ---------------------------------------------------------------------------
 
-    content: list = []
-    status: dict = {}
-    error = ""
-    found = False
-    for client in common.configured_clients():
-        node_q = quote(node, safe="")
-        storage_q = quote(storage, safe="")
+_API_STORAGE_TABS = [
+    ("summary", "Summary", "core:api_storage_summary"),
+    ("monitor", "Monitor", "core:api_storage_monitor"),
+    ("volumes", "Volumes", "core:api_storage_volumes"),
+    ("vms", "VMs/CTs", "core:api_storage_vms"),
+    ("content", "Content", "core:api_storage_content"),
+    ("configure", "Configuration", "core:api_storage_configure"),
+]
+
+
+def _api_num(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         try:
-            data = client.get(f"nodes/{node_q}/storage/{storage_q}/content")
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def _api_storage_get(node: str, storage: str, subpath: str):
+    """GET nodes/{node}/storage/{storage}/{subpath}. Returns (data, found, error)."""
+    node_q = quote(node, safe="")
+    storage_q = quote(storage, safe="")
+    error = ""
+    for client in common.configured_clients():
+        try:
+            data = client.get(f"nodes/{node_q}/storage/{storage_q}/{subpath}")
         except ProxmoxAPIError as exc:
             error = str(exc)
             continue
-        content = data if isinstance(data, list) else []
-        found = True
-        try:
-            status_data = client.get(f"nodes/{node_q}/storage/{storage_q}/status")
-            status = status_data if isinstance(status_data, dict) else {}
-        except ProxmoxAPIError:
-            status = {}
-        break
+        return data, True, ""
+    return None, False, error
 
+
+def _api_storage_context(node: str, storage: str, active_tab: str, *, status=None, found=None, error=""):
+    if status is None:
+        status, found, error = _api_storage_get(node, storage, "status")
+        status = status if isinstance(status, dict) else {}
+    total = _api_num(status.get("total"))
+    used = _api_num(status.get("used"))
+    avail = _api_num(status.get("avail"))
+    if used is None and total is not None and avail is not None:
+        used = total - avail
+    used_pct = round(used / total * 100) if total and used is not None and total > 0 else None
+    content_types = [c for c in str(status.get("content") or "").split(",") if c]
+    tabs = [
+        {"key": key, "label": label, "url": reverse(name, args=[node, storage]), "active": key == active_tab}
+        for key, label, name in _API_STORAGE_TABS
+    ]
+    return {
+        **navigation_context("datastores"),
+        "node": node,
+        "storage": storage,
+        "status": status,
+        "found": bool(found),
+        "error": error,
+        "capacity": {"total": total, "used": used, "avail": avail, "used_pct": used_pct},
+        "content_types": content_types,
+        "storage_type": status.get("type") or "",
+        "storage_active": str(status.get("active") or "") in ("1", "True", "true"),
+        "storage_enabled": str(status.get("enabled") or "1") in ("1", "True", "true"),
+        "api_storage_tabs": tabs,
+        "active_api_tab": active_tab,
+        "active_api_node": node,
+        "active_api_storage": storage,
+    }
+
+
+def _api_storage_volumes(node: str, storage: str, highlight_vmid=None):
+    content, found, error = _api_storage_get(node, storage, "content")
     volumes = []
-    for entry in content:
+    for entry in content or []:
         if not isinstance(entry, dict):
             continue
         entry_vmid = entry.get("vmid")
@@ -140,18 +189,222 @@ def storage_api_inventory(request, node: str, storage: str):
             }
         )
     volumes.sort(key=lambda item: (str(item["vmid"] or ""), item["volid"]))
+    return volumes, found, error
 
-    context = {
-        **navigation_context("vms"),
-        "node": node,
-        "storage": storage,
-        "volumes": volumes,
-        "status": status,
-        "highlight_vmid": highlight_vmid,
-        "found": found,
-        "error": error,
-    }
-    return render(request, "core/storage_api_inventory.html", context)
+
+@app_login_required
+def storage_api_inventory(request, node: str, storage: str):
+    """Backward-compatible entry point; redirects to the Summary tab, keeping the
+    optional ?vmid highlight used by the guest Datastores tab."""
+    url = reverse("core:api_storage_summary", args=[node, storage])
+    vmid = request.GET.get("vmid")
+    if vmid:
+        url = f"{url}?vmid={quote(str(vmid))}"
+    return redirect(url)
+
+
+@app_login_required
+def api_storage_summary(request, node: str, storage: str):
+    context = _api_storage_context(node, storage, "summary")
+    volumes, _found, _error = _api_storage_volumes(node, storage)
+    vmids = {str(v["vmid"]) for v in volumes if v.get("vmid")}
+    context.update({"volume_count": len(volumes), "guest_count": len(vmids)})
+    return render(request, "core/storage_api/summary.html", context)
+
+
+@app_login_required
+def api_storage_volumes(request, node: str, storage: str):
+    highlight_vmid = _int_or_zero(request.GET.get("vmid")) or None
+    volumes, found, error = _api_storage_volumes(node, storage, highlight_vmid)
+    context = _api_storage_context(node, storage, "volumes")
+    context.update({"volumes": volumes, "found": found or context["found"], "error": error or context["error"], "highlight_vmid": highlight_vmid})
+    return render(request, "core/storage_api/volumes.html", context)
+
+
+@app_login_required
+def api_storage_vms(request, node: str, storage: str):
+    scan = _latest_result_scan()
+    guests = []
+    if scan:
+        prefix = f"{storage}:"
+        for obj in ProxmoxInventory.objects.filter(
+            scan_run=scan,
+            node=node,
+            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+        ).order_by("object_type", "vmid"):
+            matching = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
+            if matching:
+                obj.matching_disk_references = matching
+                guests.append(obj)
+    if guests:
+        live_status = common.fetch_live_guest_status()
+        for guest in guests:
+            guest.status = _live_status_for(live_status, guest.node or "", guest.object_type, guest.vmid, guest.status)
+        _decorate_guests_with_scheduled_actions(guests)
+    context = _api_storage_context(node, storage, "vms")
+    context.update({"guests": guests, "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS})
+    return render(request, "core/storage_api/vms.html", context)
+
+
+def _api_live_content_values(storage: str) -> list[str]:
+    for client in common.configured_clients():
+        try:
+            config = client.storage_config(storage)
+        except ProxmoxAPIError:
+            continue
+        return _parse_storage_content_values(config.get("content", ""))
+    return []
+
+
+def _api_content_usage(node: str, storage: str) -> dict[str, dict]:
+    """Count volumes per content type from the API volume list, so we can block
+    removing a content type that is still in use (the local analog of the
+    filesystem-scan blocker used for mounted storages)."""
+    volumes, _found, _error = _api_storage_volumes(node, storage)
+    usage: dict[str, dict] = {}
+    for volume in volumes:
+        key = str(volume.get("content") or "").strip()
+        if not key:
+            continue
+        bucket = usage.setdefault(key, {"count": 0, "examples": []})
+        bucket["count"] += 1
+        if len(bucket["examples"]) < 3 and volume.get("volid"):
+            bucket["examples"].append(volume["volid"])
+    return usage
+
+
+def _api_content_options(current: list[str], usage: dict[str, dict]) -> list[dict]:
+    definitions = list(STORAGE_CONTENT_TYPES)
+    for key in sorted(set(current) - set(STORAGE_CONTENT_ORDER)):
+        definitions.append(
+            {
+                "key": key,
+                "label": key,
+                "description": "Unknown content type preserved from the current Proxmox storage configuration.",
+            }
+        )
+    return [
+        {
+            **definition,
+            "selected": definition["key"] in current,
+            "usage_count": usage.get(definition["key"], {}).get("count", 0),
+            "usage_examples": usage.get(definition["key"], {}).get("examples", [])[:3],
+        }
+        for definition in definitions
+    ]
+
+
+def _api_content_blockers(usage: dict[str, dict], removed: list[str]) -> list[dict]:
+    labels = {item["key"]: item["label"] for item in STORAGE_CONTENT_TYPES}
+    return [
+        {
+            "key": key,
+            "label": labels.get(key, key),
+            "count": usage.get(key, {}).get("count", 0),
+            "examples": usage.get(key, {}).get("examples", []),
+        }
+        for key in removed
+        if usage.get(key, {}).get("count", 0) > 0
+    ]
+
+
+@app_login_required
+def api_storage_content(request, node: str, storage: str):
+    context = _api_storage_context(node, storage, "content")
+    current = _api_live_content_values(storage)
+    usage = _api_content_usage(node, storage)
+    context.update(
+        {
+            "content_options": _api_content_options(current, usage),
+            "current_content": current,
+            "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
+        }
+    )
+    return render(request, "core/storage_api/content.html", context)
+
+
+@require_POST
+@app_login_required
+def update_api_storage_content(request, node: str, storage: str):
+    redirect_to = reverse("core:api_storage_content", args=[node, storage])
+    if not settings.STORAGE_WRITE_ENABLED:
+        return _storage_write_disabled_response()
+
+    current = _api_live_content_values(storage)
+    requested = _ordered_storage_content(request.POST.getlist("content"), current)
+    if not requested:
+        messages.error(request, "Select at least one content type.")
+        return redirect(redirect_to)
+
+    usage = _api_content_usage(node, storage)
+    removed = [key for key in current if key not in requested]
+    blockers = _api_content_blockers(usage, removed)
+    if blockers:
+        for blocker in blockers:
+            examples = ", ".join(blocker["examples"][:3])
+            suffix = f" Examples: {examples}." if examples else ""
+            messages.error(
+                request,
+                f"Cannot disable {blocker['label']} because {blocker['count']} volume"
+                f"{'' if blocker['count'] == 1 else 's'} on this storage use it.{suffix}",
+            )
+        return redirect(redirect_to)
+
+    updated = False
+    err = ""
+    for client in common.configured_clients():
+        try:
+            client.set_storage_content(storage, requested)
+            updated = True
+            err = ""
+            break
+        except ProxmoxAPIError as exc:
+            err = str(exc)
+    if not updated:
+        messages.error(request, f"Failed to update storage content: {err or 'No configured Proxmox endpoints.'}")
+        return redirect(redirect_to)
+
+    record_audit_event(
+        request,
+        action="storage.content.updated",
+        object_type="storage",
+        object_id=storage,
+        details={"storage_id": storage, "node": node, "old_content": current, "new_content": requested},
+    )
+    return redirect(redirect_to)
+
+
+@app_login_required
+def api_storage_monitor(request, node: str, storage: str):
+    context = _api_storage_context(node, storage, "monitor")
+    chart_data = _api_storage_space_chart_data(node, storage, tz.now())
+    context["space_chart_data_json"] = json.dumps(chart_data)
+    return render(request, "core/storage_api/monitor.html", context)
+
+
+@app_login_required
+def api_storage_configure(request, node: str, storage: str):
+    context = _api_storage_context(node, storage, "configure")
+    scan = _latest_result_scan()
+    config = {}
+    if scan:
+        row = (
+            ProxmoxInventory.objects.filter(
+                scan_run=scan, node=node, object_type=ProxmoxInventory.ObjectType.STORAGE, name=storage
+            ).first()
+        )
+        if row and isinstance(row.config, dict):
+            config = row.config
+    # Present the interesting config keys in a stable order; skip the nested
+    # node_status blob and empty values.
+    skip = {"node_status", "storage", "total", "used", "avail", "used_fraction"}
+    config_rows = [
+        {"key": key, "value": config[key]}
+        for key in sorted(config)
+        if key not in skip and config[key] not in ("", None, [])
+    ]
+    context.update({"storage_config": config, "config_rows": config_rows})
+    return render(request, "core/storage_api/configure.html", context)
 
 
 def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan: ScanRun | None) -> None:
@@ -567,17 +820,25 @@ def storage_monitor(request, storage_id: str):
 
 
 def _storage_space_chart_data(storage: StorageMount, now) -> list[dict[str, object]]:
+    return _space_chart_from_queryset(StorageSpaceSnapshot.objects.filter(storage=storage), now)
+
+
+def _api_storage_space_chart_data(node: str, storage_id: str, now) -> list[dict[str, object]]:
+    return _space_chart_from_queryset(
+        StorageSpaceSnapshot.objects.filter(storage__isnull=True, node=node, api_storage_id=storage_id), now
+    )
+
+
+def _space_chart_from_queryset(base_qs, now) -> list[dict[str, object]]:
     cutoff = now - timedelta(days=SPACE_CHART_DAYS)
     scheduled_history = list(
-        StorageSpaceSnapshot.objects.filter(
-            storage=storage,
+        base_qs.filter(
             scan_run__isnull=True,
             recorded_at__gte=cutoff,
         ).order_by("recorded_at")
     )
     history = scheduled_history or list(
-        StorageSpaceSnapshot.objects.filter(
-            storage=storage,
+        base_qs.filter(
             recorded_at__gte=cutoff,
         ).order_by("recorded_at")
     )

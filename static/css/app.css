@@ -397,6 +397,44 @@ button.tree-node {
   padding-left: 7px;
 }
 
+/* Nested datastore groups (Local / Shared, and per-node hosts) */
+.tree-group > .tree-children {
+  margin-left: 14px;
+}
+
+.tree-subhead {
+  display: flex;
+  align-items: center;
+  min-height: 29px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.tree-subhead .tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-leaf .tree-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-leaf-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .tree-caret {
   width: 12px;
   text-align: center;
@@ -2725,6 +2763,19 @@ code {
 
 .usage-bar-fill.danger {
   background: var(--danger_bg, #ef4444);
+}
+
+.api-capacity {
+  padding: 14px 14px 4px;
+}
+
+.api-capacity-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 /* --- VM/CT master-detail workspace --- */
