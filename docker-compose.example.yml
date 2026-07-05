@@ -11,8 +11,6 @@ services:
     volumes:
       - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
       - postgres_data:/var/lib/postgresql
-    networks:
-      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -47,8 +45,6 @@ services:
       - ./docker/nginx/templates:/etc/nginx/templates:ro
       - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}:ro
       - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}:ro
-    networks:
-      - backend
     read_only: true
     tmpfs:
       - /etc/nginx/conf.d
@@ -142,8 +138,6 @@ services:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
       - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
       - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
-    networks:
-      - backend
     read_only: true
     tmpfs:
       - /tmp
@@ -194,8 +188,6 @@ services:
       TZ: ${TZ:-Europe/Stockholm}
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
-    networks:
-      - backend
     read_only: true
     tmpfs:
       - /tmp
@@ -280,8 +272,12 @@ services:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
       - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
       - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
-    networks:
-      - backend
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/worker_healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     read_only: true
     tmpfs:
       - /tmp
@@ -305,4 +301,5 @@ volumes:
   postgres_data:
 
 networks:
-  backend:
+  default:
+    name: pve-helper

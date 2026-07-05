@@ -5,6 +5,7 @@ services:
     image: node:22-alpine
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
+    network_mode: bridge
     command: sh -lc "npm install --no-audit --no-fund && npm run check"
     environment:
       NPM_CONFIG_UPDATE_NOTIFIER: "false"
@@ -15,6 +16,7 @@ services:
     image: node:22-alpine
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
+    network_mode: bridge
     command: sh -lc "npm install --no-audit --no-fund && npm run format"
     environment:
       NPM_CONFIG_UPDATE_NOTIFIER: "false"
