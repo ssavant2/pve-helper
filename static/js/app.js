@@ -8,6 +8,7 @@
   const recentTasksRefreshEvent = "pve-helper:recent-tasks-refresh";
   const consoleKeepaliveKey = "pve-helper-console-keepalive-minutes";
   const consoleReconnectPrefix = "pve-helper-console-reconnect";
+  const consoleLayoutKey = "pve-helper-console-keyboard-layout";
 
   let activeLabel = "";
   let activeVmOverview = null;
@@ -3808,6 +3809,136 @@
     page.querySelectorAll("[data-boot-order-editor]").forEach(syncBootOrder);
   };
 
+  // Physical-key paste for noVNC: map pasted characters to hardware keys and
+  // send them via the QEMU Extended Key Event (scancode) path, bypassing
+  // QEMU's own VNC keymap so national characters land correctly on the guest.
+  const CONSOLE_MODIFIER_KEYSYMS = {
+    ShiftLeft: 0xffe1,
+    AltRight: 0xffea,
+  };
+
+  const CONSOLE_LETTER_ROWS = "abcdefghijklmnopqrstuvwxyz"
+    .split("")
+    .map((letter) => [`Key${letter.toUpperCase()}`, letter, letter.toUpperCase()]);
+
+  // German QWERTZ: y/z swapped, plus @ EUR MU on AltGr.
+  const CONSOLE_LETTER_ROWS_DE = CONSOLE_LETTER_ROWS.map((row) => {
+    const overrides = {
+      KeyY: ["KeyY", "z", "Z"],
+      KeyZ: ["KeyZ", "y", "Y"],
+      KeyQ: ["KeyQ", "q", "Q", "@"],
+      KeyE: ["KeyE", "e", "E", "€"],
+      KeyM: ["KeyM", "m", "M", "µ"],
+    };
+    return overrides[row[0]] || row;
+  });
+
+  // Nordic layouts share this digit row + the key right of "0".
+  const CONSOLE_NORDIC_DIGITS = [
+    ["Digit1", "1", "!"], ["Digit2", "2", "\"", "@"], ["Digit3", "3", "#", "£"],
+    ["Digit4", "4", "¤", "$"], ["Digit5", "5", "%", "€"], ["Digit6", "6", "&"],
+    ["Digit7", "7", "/", "{"], ["Digit8", "8", "(", "["], ["Digit9", "9", ")", "]"],
+    ["Digit0", "0", "=", "}"],
+    ["Minus", "+", "?", "\\"],
+  ];
+
+  // Each row: [DOM code, base char, shifted char?, AltGr char?]
+  const CONSOLE_KEY_ROWS = {
+    "en-us": [
+      ...CONSOLE_LETTER_ROWS,
+      ["Digit1", "1", "!"], ["Digit2", "2", "@"], ["Digit3", "3", "#"],
+      ["Digit4", "4", "$"], ["Digit5", "5", "%"], ["Digit6", "6", "^"],
+      ["Digit7", "7", "&"], ["Digit8", "8", "*"], ["Digit9", "9", "("],
+      ["Digit0", "0", ")"],
+      ["Minus", "-", "_"], ["Equal", "=", "+"],
+      ["BracketLeft", "[", "{"], ["BracketRight", "]", "}"], ["Backslash", "\\", "|"],
+      ["Semicolon", ";", ":"], ["Quote", "'", "\""], ["Backquote", "`", "~"],
+      ["Comma", ",", "<"], ["Period", ".", ">"], ["Slash", "/", "?"],
+      ["Space", " "],
+    ],
+    "en-gb": [
+      ...CONSOLE_LETTER_ROWS,
+      ["Digit1", "1", "!"], ["Digit2", "2", "\""], ["Digit3", "3", "£"],
+      ["Digit4", "4", "$", "€"], ["Digit5", "5", "%"], ["Digit6", "6", "^"],
+      ["Digit7", "7", "&"], ["Digit8", "8", "*"], ["Digit9", "9", "("],
+      ["Digit0", "0", ")"],
+      ["Minus", "-", "_"], ["Equal", "=", "+"],
+      ["BracketLeft", "[", "{"], ["BracketRight", "]", "}"], ["Backslash", "#", "~"],
+      ["Semicolon", ";", ":"], ["Quote", "'", "@"], ["Backquote", "`", "¬"],
+      ["Comma", ",", "<"], ["Period", ".", ">"], ["Slash", "/", "?"],
+      ["IntlBackslash", "\\", "|"],
+      ["Space", " "],
+    ],
+    de: [
+      ...CONSOLE_LETTER_ROWS_DE,
+      ["Digit1", "1", "!"], ["Digit2", "2", "\""], ["Digit3", "3", "§"],
+      ["Digit4", "4", "$"], ["Digit5", "5", "%"], ["Digit6", "6", "&"],
+      ["Digit7", "7", "/", "{"], ["Digit8", "8", "(", "["], ["Digit9", "9", ")", "]"],
+      ["Digit0", "0", "=", "}"],
+      ["Minus", "ß", "?", "\\"],
+      ["BracketLeft", "ü", "Ü"], ["BracketRight", "+", "*", "~"],
+      ["Semicolon", "ö", "Ö"], ["Quote", "ä", "Ä"], ["Backslash", "#", "'"],
+      ["IntlBackslash", "<", ">", "|"],
+      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Space", " "],
+    ],
+    sv: [
+      ...CONSOLE_LETTER_ROWS,
+      ...CONSOLE_NORDIC_DIGITS,
+      ["BracketLeft", "å", "Å"],
+      ["Semicolon", "ö", "Ö"], ["Quote", "ä", "Ä"], ["Backslash", "'", "*"],
+      ["IntlBackslash", "<", ">", "|"],
+      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Backquote", "§", "½"],
+      ["Space", " "],
+    ],
+    no: [
+      ...CONSOLE_LETTER_ROWS,
+      ...CONSOLE_NORDIC_DIGITS,
+      ["BracketLeft", "å", "Å"],
+      ["Semicolon", "ø", "Ø"], ["Quote", "æ", "Æ"], ["Backslash", "'", "*"],
+      ["IntlBackslash", "<", ">"],
+      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Backquote", "|", "§"],
+      ["Space", " "],
+    ],
+    da: [
+      ...CONSOLE_LETTER_ROWS,
+      ...CONSOLE_NORDIC_DIGITS,
+      ["BracketLeft", "å", "Å"],
+      ["Semicolon", "æ", "Æ"], ["Quote", "ø", "Ø"], ["Backslash", "'", "*"],
+      ["IntlBackslash", "<", ">", "\\"],
+      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Backquote", "½", "§"],
+      ["Space", " "],
+    ],
+  };
+
+  // Finnish uses the same physical layout as Swedish.
+  CONSOLE_KEY_ROWS.fi = CONSOLE_KEY_ROWS.sv;
+
+  const buildConsoleKeyIndex = (rows) => {
+    const index = {};
+    rows.forEach(([code, base, shift, altgr]) => {
+      if (altgr) index[altgr] = { code, mods: ["AltRight"] };
+      if (shift) index[shift] = { code, mods: ["ShiftLeft"] };
+      if (base) index[base] = { code, mods: [] };
+    });
+    return index;
+  };
+
+  const CONSOLE_KEY_INDEX = Object.fromEntries(
+    Object.entries(CONSOLE_KEY_ROWS).map(([id, rows]) => [id, buildConsoleKeyIndex(rows)])
+  );
+
+  const CONSOLE_CONTROL_KEYS = {
+    "\n": [0xff0d, "Enter"],
+    "\r": [0xff0d, "Enter"],
+    "\t": [0xff09, "Tab"],
+    "\b": [0xff08, "Backspace"],
+    "\u001b": [0xff1b, "Escape"],
+  };
+
   const initConsolePages = (root) => {
     root.querySelectorAll("[data-console-page]").forEach((page) => {
       if (page.dataset.initialized === "true") {
@@ -3822,6 +3953,7 @@
       const screen = page.querySelector("[data-console-screen]");
       const status = page.querySelector("[data-console-status]");
       const keepaliveInput = page.querySelector("[data-console-keepalive-minutes]");
+      const layoutSelect = page.querySelector("[data-console-keyboard-layout]");
       let rfb = null;
       let terminal = null;
       let terminalFitAddon = null;
@@ -3856,6 +3988,33 @@
           const stored = Number.parseInt(localStorage.getItem(consoleKeepaliveKey) || "", 10);
           if (!Number.isNaN(stored)) {
             keepaliveInput.value = String(Math.min(99, Math.max(1, stored)));
+          }
+        } catch (_error) {
+          // Keep the template default.
+        }
+      };
+
+      const currentKeyboardLayout = () => {
+        const value = layoutSelect?.value || "";
+        return CONSOLE_KEY_INDEX[value] ? value : "sv";
+      };
+
+      const saveKeyboardLayout = () => {
+        try {
+          localStorage.setItem(consoleLayoutKey, currentKeyboardLayout());
+        } catch (_error) {
+          // Local storage can be unavailable in restrictive browser modes.
+        }
+      };
+
+      const restoreKeyboardLayout = () => {
+        if (!layoutSelect) {
+          return;
+        }
+        try {
+          const stored = localStorage.getItem(consoleLayoutKey) || "";
+          if (CONSOLE_KEY_INDEX[stored]) {
+            layoutSelect.value = stored;
           }
         } catch (_error) {
           // Keep the template default.
@@ -4144,24 +4303,39 @@
         return window.prompt("Paste text") || "";
       };
 
+      const sendNoVncKeyStroke = (spec, keysym) => {
+        const mods = spec.mods || [];
+        mods.forEach((code) => rfb.sendKey(CONSOLE_MODIFIER_KEYSYMS[code], code, true));
+        rfb.sendKey(keysym, spec.code, true);
+        rfb.sendKey(keysym, spec.code, false);
+        mods
+          .slice()
+          .reverse()
+          .forEach((code) => rfb.sendKey(CONSOLE_MODIFIER_KEYSYMS[code], code, false));
+      };
+
       const sendNoVncText = async (text) => {
         if (!rfb || !text) {
           return;
         }
-        const keysyms = {
-          "\n": 0xff0d,
-          "\r": 0xff0d,
-          "\t": 0xff09,
-          "\b": 0xff08,
-          "\u001b": 0xff1b,
-        };
+        const index = CONSOLE_KEY_INDEX[currentKeyboardLayout()] || CONSOLE_KEY_INDEX.sv;
         for (const char of text) {
-          const keysym = keysyms[char] || char.codePointAt(0);
-          if (!keysym) {
-            continue;
+          const control = CONSOLE_CONTROL_KEYS[char];
+          if (control) {
+            rfb.sendKey(control[0], control[1]);
+          } else {
+            const cp = char.codePointAt(0);
+            const keysym = cp > 0xff ? 0x01000000 + cp : cp;
+            const spec = index[char];
+            if (spec) {
+              // Physical-key path: bypasses QEMU's VNC keymap entirely.
+              sendNoVncKeyStroke(spec, keysym);
+            } else if (keysym) {
+              // Fallback for unmapped characters (e.g. dead-key glyphs).
+              rfb.sendKey(keysym);
+            }
           }
-          rfb.sendKey(keysym);
-          await new Promise((resolve) => window.setTimeout(resolve, 3));
+          await new Promise((resolve) => window.setTimeout(resolve, 5));
         }
       };
 
@@ -4259,6 +4433,8 @@
       restoreKeepaliveMinutes();
       keepaliveInput?.addEventListener("input", saveKeepaliveMinutes);
       keepaliveInput?.addEventListener("change", saveKeepaliveMinutes);
+      restoreKeyboardLayout();
+      layoutSelect?.addEventListener("change", saveKeyboardLayout);
 
       page.querySelectorAll("[data-console-action]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -4281,11 +4457,10 @@
             }
             return;
           }
-          if (!rfb) {
-            return;
-          }
           if (action === "ctrl-alt-del") {
-            rfb.sendCtrlAltDel();
+            if (rfb) {
+              rfb.sendCtrlAltDel();
+            }
             hidePanels();
             return;
           }
