@@ -3996,7 +3996,7 @@
 
       const currentKeyboardLayout = () => {
         const value = layoutSelect?.value || "";
-        return CONSOLE_KEY_INDEX[value] ? value : "sv";
+        return CONSOLE_KEY_INDEX[value] ? value : "en-us";
       };
 
       const saveKeyboardLayout = () => {
@@ -4318,7 +4318,7 @@
         if (!rfb || !text) {
           return;
         }
-        const index = CONSOLE_KEY_INDEX[currentKeyboardLayout()] || CONSOLE_KEY_INDEX.sv;
+        const index = CONSOLE_KEY_INDEX[currentKeyboardLayout()] || CONSOLE_KEY_INDEX["en-us"];
         for (const char of text) {
           const control = CONSOLE_CONTROL_KEYS[char];
           if (control) {
