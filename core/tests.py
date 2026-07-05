@@ -14,7 +14,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.apps import apps
 from django.db import IntegrityError, transaction
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.contrib.messages import get_messages
@@ -215,6 +215,43 @@ class RuntimeConfigurationTests(TestCase):
         details = storage_details(storage, scan, StorageSpaceInfo(ok=False))
 
         self.assertEqual(details.options, "vers=4.2,nconnect=4")
+
+
+class StickyTabUrlTests(SimpleTestCase):
+    """Tab-persistent object switching (nav_tags.sticky_object_url)."""
+
+    def _sticky(self, current_path, summary_url):
+        from core.templatetags.nav_tags import sticky_object_url
+
+        context = {"request": RequestFactory().get(current_path)}
+        return sticky_object_url(context, summary_url)
+
+    def test_keeps_tab_when_switching_guest(self):
+        # On guest 506's Networks tab, switching to 501 stays on Networks.
+        self.assertEqual(
+            self._sticky("/vms/vm/506/networks/", "/vms/ct/501/summary/"),
+            "/vms/ct/501/networks/",
+        )
+
+    def test_keeps_tab_when_switching_storage(self):
+        self.assertEqual(
+            self._sticky("/storage/nfs-a/monitor/", "/storage/nfs-b/summary/"),
+            "/storage/nfs-b/monitor/",
+        )
+
+    def test_falls_back_to_summary_across_object_families(self):
+        # A storage leaf viewed while on a guest tab has no matching tab.
+        self.assertEqual(
+            self._sticky("/vms/vm/506/networks/", "/storage/nfs-b/summary/"),
+            "/storage/nfs-b/summary/",
+        )
+
+    def test_falls_back_when_no_active_tab(self):
+        # A list/overview page (no per-object tab) resolves to Summary.
+        self.assertEqual(
+            self._sticky("/vms/", "/vms/vm/500/summary/"),
+            "/vms/vm/500/summary/",
+        )
 
 
 class ProxmoxClientTests(SimpleTestCase):

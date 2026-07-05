@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load guest_labels %}
+{% load guest_labels nav_tags %}
 
 {% block content %}
   <div
@@ -39,8 +39,10 @@
       </div>
       <div class="guest-list" data-guest-list>
         {% for g in guest_list %}
+          {% url 'core:guest_summary' g.object_type g.vmid as guest_summary_url %}
+          {% sticky_object_url guest_summary_url as guest_sticky_url %}
           <a class="guest-list-item{% if g.object_type == active_object_type and g.vmid == active_vmid %} active{% endif %}"
-             href="{% url 'core:guest_summary' g.object_type g.vmid %}"
+             href="{{ guest_sticky_url }}"
              data-vm-overview-row
              data-guest-target="{{ g.target_id }}"
              data-guest-type="{{ g.object_type }}"
@@ -48,7 +50,7 @@
              data-guest-status="{{ g.status }}"
              data-guest-label="{{ g.guest_identity.full_label_with_type }}"
              data-guest-name="{{ g.name }}"
-             data-detail-url="{% url 'core:guest_summary' g.object_type g.vmid %}"
+             data-detail-url="{{ guest_sticky_url }}"
              data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
              data-clone-options-url="{% url 'core:guest_clone_options' g.object_type g.vmid %}"
              data-edit-tags-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=tags"
