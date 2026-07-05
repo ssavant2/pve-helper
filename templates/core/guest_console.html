@@ -12,9 +12,6 @@
     <div class="console-toolbar">
       <div>
         <h2>Console</h2>
-        <p>
-          Browser traffic stays on pve-helper; the console gateway connects to Proxmox on your behalf.
-        </p>
       </div>
       <div class="console-actions">
         <button type="button" data-console-connect {% if not console_enabled or not console_supported or console_require_running %}disabled{% endif %}>
