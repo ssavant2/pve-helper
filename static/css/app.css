@@ -2740,13 +2740,25 @@ code {
   padding: 5px 8px;
   color: var(--text);
   border: 1px solid var(--border);
+  border-radius: 3px;
 }
 
-/* Only the text input gets an explicit background — setting one on the <select>
-   forces the browser into author styling and renders a light option popup, so
-   the select relies on the global color-scheme rule for a themed dropdown. */
 .dest-picker-field input {
   background: var(--panel);
+}
+
+/* Flatten the closed control to match the inputs, but keep the background
+   transparent (an opaque background forces a light option popup) so the global
+   color-scheme rule still themes the dropdown. Custom chevron since appearance
+   is removed. */
+.dest-picker-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2390a4b0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 30px;
 }
 
 .move-picker-header,
