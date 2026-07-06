@@ -1362,35 +1362,114 @@ def move_storage_file_view(request, storage_id: str):
     latest_scan = _latest_storage_result_scan(storage)
     entries = _selected_storage_file_entries(request, storage=storage, latest_scan=latest_scan)
 
+    dest_storage_id = request.POST.get("dest_storage", "").strip()
+    dest_storage = storage
+    if dest_storage_id:
+        dest_storage = StorageMount.objects.filter(storage_id=dest_storage_id, enabled=True).first()
+        if dest_storage is None:
+            messages.error(request, "Unknown destination storage.")
+            return redirect(redirect_to)
+
     try:
         _require_file_action_confirmations_for_entries(request, entries)
-        results = [
-            move_storage_file(
-                storage=storage,
-                entry=entry,
-                new_path=request.POST.get("new_path", ""),
-            )
-            for entry in entries
-        ]
+        if dest_storage_id:
+            dest_directory = request.POST.get("dest_directory", "")
+            results = [
+                transfer_storage_file(
+                    source_storage=storage,
+                    entry=entry,
+                    dest_storage=dest_storage,
+                    dest_directory=dest_directory,
+                    keep_source=False,
+                )
+                for entry in entries
+            ]
+        else:
+            results = [
+                move_storage_file(storage=storage, entry=entry, new_path=request.POST.get("new_path", ""))
+                for entry in entries
+            ]
     except PermissionDenied:
         raise
     except StorageActionError as exc:
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
-    refresh_directories = set()
+    refresh: dict[tuple[str, str], tuple[StorageMount, str]] = {}
     for result in results:
-        _audit_file_action(
-            request,
-            action="file.moved",
-            storage=storage,
-            path=str(result["new_path"]),
-            details={"old_path": result["old_path"]},
+        if dest_storage_id:
+            _audit_file_action(
+                request,
+                action="file.moved",
+                storage=dest_storage,
+                path=str(result["dest_path"]),
+                details={"old_path": result["source_path"], "source_storage": storage.storage_id},
+            )
+            refresh[(storage.storage_id, str(result["source_directory_path"]))] = (storage, str(result["source_directory_path"]))
+            refresh[(dest_storage.storage_id, str(result["dest_directory_path"]))] = (dest_storage, str(result["dest_directory_path"]))
+        else:
+            _audit_file_action(
+                request,
+                action="file.moved",
+                storage=storage,
+                path=str(result["new_path"]),
+                details={"old_path": result["old_path"]},
+            )
+            refresh[(storage.storage_id, str(result["source_directory_path"]))] = (storage, str(result["source_directory_path"]))
+            refresh[(storage.storage_id, str(result["target_directory_path"]))] = (storage, str(result["target_directory_path"]))
+    for st, directory_path in refresh.values():
+        _refresh_latest_storage_directory(st, directory_path)
+    return redirect(redirect_to)
+
+
+@require_POST
+@app_login_required
+def copy_storage_file_view(request, storage_id: str):
+    if not settings.STORAGE_WRITE_ENABLED:
+        return _storage_write_disabled_response()
+
+    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    redirect_to = _safe_next_url(request)
+    latest_scan = _latest_storage_result_scan(storage)
+    requested_path = _normalize_browser_path(request.POST.get("path", ""))
+    entry = get_object_or_404(
+        FileInventory,
+        scan_run=latest_scan,
+        storage=storage,
+        path=requested_path,
+        entry_type=FileInventory.EntryType.FILE,
+    )
+    dest_storage = StorageMount.objects.filter(
+        storage_id=request.POST.get("dest_storage", "").strip(), enabled=True
+    ).first()
+    if dest_storage is None:
+        messages.error(request, "Unknown destination storage.")
+        return redirect(redirect_to)
+
+    try:
+        result = transfer_storage_file(
+            source_storage=storage,
+            entry=entry,
+            dest_storage=dest_storage,
+            dest_directory=request.POST.get("dest_directory", ""),
+            dest_name=request.POST.get("dest_name", ""),
+            keep_source=True,
         )
-        refresh_directories.add(str(result["source_directory_path"]))
-        refresh_directories.add(str(result["target_directory_path"]))
-    for directory_path in refresh_directories:
-        _refresh_latest_storage_directory(storage, directory_path)
+    except PermissionDenied:
+        raise
+    except StorageActionError as exc:
+        messages.error(request, str(exc))
+        return redirect(redirect_to)
+
+    _audit_file_action(
+        request,
+        action="file.copied",
+        storage=dest_storage,
+        path=str(result["dest_path"]),
+        details={"source_storage": storage.storage_id, "source_path": result["source_path"]},
+    )
+    _refresh_latest_storage_directory(dest_storage, str(result["dest_directory_path"]))
+    messages.success(request, f"Copied to [{dest_storage.storage_id}] {result['dest_path']}.")
     return redirect(redirect_to)
 
 

@@ -486,6 +486,76 @@ def move_storage_file(
     }
 
 
+def transfer_storage_file(
+    *,
+    source_storage: StorageMount,
+    entry: FileInventory,
+    dest_storage: StorageMount,
+    dest_directory: str,
+    dest_name: str = "",
+    keep_source: bool,
+) -> dict[str, object]:
+    """Copy (``keep_source``) or move a file to any storage/folder.
+
+    Never overwrites: a destination file with the same name is refused. A move
+    within one export is an atomic rename; across exports it falls back to copy
+    then delete. Copy leaves the source untouched.
+    """
+    require_storage_write_access(dest_storage)
+    if entry.entry_type != FileInventory.EntryType.FILE:
+        raise StorageActionError("Only files can be copied or moved.")
+    if not keep_source:
+        require_storage_write_access(source_storage)
+        _require_file_not_blocked(entry)
+
+    source_root = _storage_root(source_storage)
+    source_path = _storage_existing_file(_normalize_relative_path(entry.path), root=source_root)
+
+    dest_root = _storage_root(dest_storage)
+    name = (dest_name or "").strip() or source_path.name
+    if "/" in name or "\\" in name or name in {".", ".."}:
+        raise StorageActionError("Invalid destination file name.")
+    dest_directory = _normalize_relative_path(dest_directory)
+    dest_relative = _join_relative(dest_directory, name) if dest_directory else name
+    dest_path = _storage_child_path(dest_relative, root=dest_root)
+    if not dest_path.parent.is_dir():
+        raise StorageActionError("Destination directory does not exist.")
+    if dest_path == source_path:
+        raise StorageActionError("Source and destination are the same file.")
+    if dest_path.exists():
+        raise StorageActionError("A file with that name already exists in the destination.")
+
+    if keep_source:
+        try:
+            shutil.copy2(source_path, dest_path)
+        except OSError as exc:
+            raise StorageActionError("Copy failed.") from exc
+    else:
+        try:
+            source_path.rename(dest_path)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise StorageActionError("Move failed.") from exc
+            try:
+                shutil.copy2(source_path, dest_path)
+                source_path.unlink()
+            except OSError as inner:
+                dest_path.unlink(missing_ok=True)
+                raise StorageActionError("Move failed.") from inner
+
+    # Ownership/mode are left as copied; the PVE node reads as root regardless,
+    # so (unlike uploads) no root-only chown normalisation is needed here.
+    source_relative = _normalize_relative_path(entry.path)
+    return {
+        "source_path": source_relative,
+        "source_directory_path": _parent_relative(source_relative),
+        "dest_storage_id": dest_storage.storage_id,
+        "dest_path": dest_relative,
+        "dest_directory_path": _parent_relative(dest_relative),
+        "kept_source": keep_source,
+    }
+
+
 def validate_inflate_storage_file(
     *,
     storage: StorageMount,

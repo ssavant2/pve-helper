@@ -85,6 +85,7 @@ from ..services.storage_actions import (
     purge_trash_item as purge_trash_item_action,
     rename_storage_file,
     restore_trash_item,
+    transfer_storage_file,
     upload_to_storage,
     upload_folder_to_storage,
 )

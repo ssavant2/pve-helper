@@ -71,6 +71,7 @@ urlpatterns = [
     path("storage/<str:storage_id>/trash/", views.storage_trash, name="storage_trash"),
     path("storage/<str:storage_id>/trash-file/", views.trash_storage_file, name="storage_trash_file"),
     path("storage/<str:storage_id>/move-file/", views.move_storage_file_view, name="storage_move_file"),
+    path("storage/<str:storage_id>/copy-file/", views.copy_storage_file_view, name="storage_copy_file"),
     path("storage/<str:storage_id>/rename-file/", views.rename_storage_file_view, name="storage_rename_file"),
     path("storage/<str:storage_id>/inflate-file/", views.inflate_storage_file_view, name="storage_inflate_file"),
     path("trash/<int:trash_item_id>/restore/", views.restore_storage_file, name="storage_restore_file"),
