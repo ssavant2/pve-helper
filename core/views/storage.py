@@ -1444,7 +1444,10 @@ def move_storage_file_view(request, storage_id: str):
                 details={"old_path": result["source_path"], "source_storage": storage.storage_id},
             )
             refresh[(storage.storage_id, str(result["source_directory_path"]))] = (storage, str(result["source_directory_path"]))
-            refresh[(dest_storage.storage_id, str(result["dest_directory_path"]))] = (dest_storage, str(result["dest_directory_path"]))
+            dest_dir = str(result["dest_directory_path"])
+            refresh[(dest_storage.storage_id, dest_dir)] = (dest_storage, dest_dir)
+            dest_parent = dest_dir.rsplit("/", 1)[0] if "/" in dest_dir else ""
+            refresh[(dest_storage.storage_id, dest_parent)] = (dest_storage, dest_parent)
         else:
             _audit_file_action(
                 request,
@@ -1506,8 +1509,12 @@ def copy_storage_file_view(request, storage_id: str):
         path=str(result["dest_path"]),
         details={"source_storage": storage.storage_id, "source_path": result["source_path"]},
     )
-    _refresh_latest_storage_directory(dest_storage, str(result["dest_directory_path"]))
-    messages.success(request, f"Copied to [{dest_storage.storage_id}] {result['dest_path']}.")
+    dest_directory = str(result["dest_directory_path"])
+    _refresh_latest_storage_directory(dest_storage, dest_directory)
+    # Also refresh the parent so a newly created destination folder shows up.
+    if "/" in dest_directory or dest_directory:
+        _refresh_latest_storage_directory(dest_storage, dest_directory.rsplit("/", 1)[0] if "/" in dest_directory else "")
+    # No success toast — the outcome is recorded as file.copied in the audit log.
     return redirect(redirect_to)
 
 
