@@ -193,9 +193,8 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
             outcome="success",
             details={"vmid": params["vmid"], "name": params["name"], "volid": volid, "node": node},
         )
-        messages.success(
-            request, f"VM {params['vmid']} ({params['name']}) created from the adopted disk."
-        )
+        # No success toast — the outcome is in Recent Tasks / audit and the new
+        # VM appears in the list.
         return None
 
     # import
@@ -234,8 +233,6 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
     )
     event.details = {**event.details, "poll_task_id": task_id}
     event.save(update_fields=["details"])
-    messages.success(
-        request,
-        f"Importing disk into VM {params['vmid']} ({params['name']}); watch Recent Tasks for progress.",
-    )
+    # No success toast — the import runs in the worker and is tracked in Recent
+    # Tasks / audit.
     return None
