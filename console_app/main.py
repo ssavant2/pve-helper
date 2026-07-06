@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse  # noqa: E402
 from starlette.routing import Route, WebSocketRoute  # noqa: E402
 from starlette.websockets import WebSocket  # noqa: E402
 from websockets.asyncio.client import connect as ws_connect  # noqa: E402
+from websockets.exceptions import ConnectionClosed  # noqa: E402
 
 from core.models import AuditEvent, ConsoleSession  # noqa: E402
 from core.services.console_sessions import console_token_hash  # noqa: E402
@@ -116,7 +117,12 @@ async def _relay(websocket: WebSocket, upstream):
     for task in pending:
         task.cancel()
     for task in done:
-        task.result()
+        try:
+            task.result()
+        except ConnectionClosed:
+            # Either side closing the console (incl. no close frame from the
+            # upstream) is a normal end of session, not a failure.
+            pass
 
 
 async def _authenticate_xterm_session(session: ConsoleSession, upstream) -> bytes:
@@ -186,7 +192,12 @@ async def _relay_xterm(websocket: WebSocket, upstream):
     for task in pending:
         task.cancel()
     for task in done:
-        task.result()
+        try:
+            task.result()
+        except ConnectionClosed:
+            # Either side closing the console (incl. no close frame from the
+            # upstream) is a normal end of session, not a failure.
+            pass
 
 
 @sync_to_async(thread_sensitive=True)
