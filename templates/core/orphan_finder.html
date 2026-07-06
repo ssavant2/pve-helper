@@ -34,7 +34,7 @@
             <td>{{ file.classification_reason|default:"-" }}</td>
             <td class="row-actions">
               {% if file.derived_volid and "-disk-" in file.derived_volid %}
-                <a class="icon-button" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}" title="Adopt into a new VM" aria-label="Adopt {{ file.path }} into a new VM">
+                <a class="icon-button" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}" title="Register as a new VM" aria-label="Register {{ file.path }} as a new VM">
                   <i data-lucide="package-plus" aria-hidden="true"></i>
                 </a>
               {% endif %}

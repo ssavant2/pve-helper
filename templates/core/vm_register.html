@@ -4,7 +4,7 @@
   <section class="hardware-editor-page vm-register-page" data-vm-register>
     <div class="hardware-editor-header">
       <div class="hardware-editor-title">
-        <h1>{% if mode == "adopt" %}Adopt Disk into New VM{% else %}Import Disk as New VM{% endif %}</h1>
+        <h1>{% if mode == "adopt" %}Register VM from Disk{% else %}Import Disk as New VM{% endif %}</h1>
         <span class="hardware-title-separator" aria-hidden="true"></span>
         <span class="hardware-editor-guest">{{ form_values.name|default:"New virtual machine" }}</span>
       </div>
@@ -29,7 +29,7 @@
         <span class="vmreg-source-icon" aria-hidden="true"><i data-lucide="hard-drive"></i></span>
         <div class="vmreg-source-main">
           <span class="badge {% if mode == 'adopt' %}infrastructure{% else %}completed{% endif %}">
-            {% if mode == "adopt" %}Adopt &middot; reuse in place{% else %}Import &middot; copy to storage{% endif %}
+            {% if mode == "adopt" %}Register &middot; use disk in place{% else %}Import &middot; copy to storage{% endif %}
           </span>
           <div class="vmreg-source-path">
             {% if mode == "adopt" %}{{ form_values.volid }}{% elif form_values.source_volid %}{{ form_values.source_volid }}{% else %}{{ form_values.source_storage }}:{{ form_values.source_path }}{% endif %}
@@ -45,7 +45,7 @@
             <li><strong>Chipset.</strong> i440fx is the most compatible; q35 (modern, PCIe) is what newer / Windows&nbsp;11 images often expect.</li>
             <li><strong>If it doesn't boot,</strong> it's usually a BIOS / machine / disk-bus mismatch — change those and reboot, no re-import needed.</li>
             {% if mode == "adopt" %}
-              <li><strong>Adopt</strong> reuses the orphan disk in place (no copy) and takes over its VMID — make sure no other VM references it.</li>
+              <li><strong>Register</strong> uses the disk in place (no copy) and takes over its VMID — make sure no other VM references it.</li>
             {% else %}
               <li><strong>Import</strong> copies the disk into the target storage (can take a while for large images); the source file is left untouched.</li>
             {% endif %}
@@ -236,7 +236,7 @@
       </template>
 
       <div class="hardware-editor-actions">
-        <button class="primary-action" type="submit">{% if mode == "adopt" %}Adopt &amp; Create{% else %}Import &amp; Create{% endif %}</button>
+        <button class="primary-action" type="submit">{% if mode == "adopt" %}Register VM{% else %}Import &amp; Create{% endif %}</button>
         <a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a>
       </div>
     </form>

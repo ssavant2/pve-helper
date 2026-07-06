@@ -58,7 +58,12 @@
           <span class="file-icon"><i data-lucide="file" aria-hidden="true"></i></span>
           <span class="browser-entry-name">{{ entry.name }}</span>
           {% if entry.name|is_disk_image and entry.classification != "referenced" %}
-            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=import&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM" aria-label="Import {{ entry.name }} as a new VM">
+            {% if entry.derived_volid and "-disk-" in entry.derived_volid %}
+              <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ entry.derived_volid|urlencode }}" title="Register as a new VM (use this disk in place, no copy)" aria-label="Register {{ entry.name }} as a new VM">
+                <i data-lucide="box" aria-hidden="true"></i>
+              </a>
+            {% endif %}
+            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=import&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM (copies the disk to a target storage)" aria-label="Import {{ entry.name }} as a new VM">
               <i data-lucide="package-plus" aria-hidden="true"></i>
             </a>
           {% endif %}
