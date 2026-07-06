@@ -815,6 +815,11 @@
             if (actionKind === "rename") {
               return row.dataset.entryType === "file" && row.dataset.canRename === "true";
             }
+            if (actionKind === "copy") {
+              // Copy is read-only on the source, so it is safe for any file
+              // (incl. a referenced/in-use disk).
+              return row.dataset.entryType === "file";
+            }
             if (actionKind === "move") {
               return row.dataset.entryType === "file" && row.dataset.canAction === "true";
             }
