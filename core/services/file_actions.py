@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 
 from core.models import FileInventory, ProxmoxInventory
@@ -117,7 +117,18 @@ def guest_objects_for_entry(entry: FileInventory) -> list[ReferencedObject]:
             continue
         seen.add(key)
         deduped.append(item)
-    return deduped
+    # Override each scanned status with the live status so an action-time
+    # warning ("belongs to a running guest") is honest, not stale from the last
+    # scan. Live status is cached and falls back to the scanned value on error.
+    from core.services.proxmox import fetch_live_guest_status
+
+    live = fetch_live_guest_status()
+    return [
+        replace(item, status=live.get((item.node or "", item.object_type, item.vmid), item.status))
+        if item.vmid is not None
+        else item
+        for item in deduped
+    ]
 
 
 def _referenced_objects(entry: FileInventory) -> list[ReferencedObject]:
