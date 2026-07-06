@@ -2739,6 +2739,14 @@ code {
 .dest-picker-field input {
   min-height: 34px;
   padding: 5px 8px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.dest-picker-field option {
+  color: var(--text);
+  background: var(--panel);
 }
 
 .move-picker-header,

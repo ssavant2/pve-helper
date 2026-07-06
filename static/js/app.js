@@ -574,7 +574,9 @@
       if (dirInput) dirInput.value = cleanDir();
       if (isCopy && nameInput) nameInput.value = name;
       dialog.close();
-      completeConfirmedFileAction(form, options);
+      // Copy is read-only on the source, so it never needs the destructive-action
+      // risk confirmation (e.g. "belongs to a running guest").
+      completeConfirmedFileAction(form, isCopy ? { ...options, requiresRiskConfirmation: false } : options);
     };
     if (cancel) cancel.onclick = () => dialog.close();
     dialog.showModal();

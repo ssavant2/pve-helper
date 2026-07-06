@@ -518,8 +518,10 @@ def transfer_storage_file(
     dest_directory = _normalize_relative_path(dest_directory)
     dest_relative = _join_relative(dest_directory, name) if dest_directory else name
     dest_path = _storage_child_path(dest_relative, root=dest_root)
-    if not dest_path.parent.is_dir():
-        raise StorageActionError("Destination directory does not exist.")
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StorageActionError("Could not create the destination folder.") from exc
     if dest_path == source_path:
         raise StorageActionError("Source and destination are the same file.")
     if dest_path.exists():
