@@ -3809,6 +3809,62 @@
     page.querySelectorAll("[data-boot-order-editor]").forEach(syncBootOrder);
   };
 
+  const initVmRegister = (root = document) => {
+    const page = root.querySelector ? root.querySelector("[data-vm-register]") : null;
+    if (!page || page.dataset.initialized === "true") {
+      return;
+    }
+    page.dataset.initialized = "true";
+
+    // Firmware: reveal the EFI fields for OVMF and keep the summary in sync.
+    const bios = page.querySelector("[data-vmreg-bios]");
+    const machine = page.querySelector("select[name='machine']");
+    const efi = page.querySelector("[data-vmreg-efi]");
+    const summary = page.querySelector("[data-vmreg-firmware-summary]");
+    const optionLabel = (select) => select?.options[select.selectedIndex]?.textContent.trim() || "";
+    const syncFirmware = () => {
+      if (efi) {
+        efi.hidden = bios?.value !== "ovmf";
+      }
+      if (summary) {
+        summary.textContent = `${optionLabel(bios)} · ${optionLabel(machine)}`;
+      }
+    };
+    bios?.addEventListener("change", syncFirmware);
+    machine?.addEventListener("change", syncFirmware);
+    syncFirmware();
+
+    // Network adapters: add / remove rows and keep names contiguous (nic0_*, ...).
+    const nics = page.querySelector("[data-vmreg-nics]");
+    const template = page.querySelector("[data-vmreg-nic-template]");
+    const reindexNics = () => {
+      const fields = ["model", "bridge", "vlan"];
+      nics?.querySelectorAll("[data-vmreg-nic]").forEach((row, index) => {
+        row.querySelectorAll("select, input").forEach((control, position) => {
+          if (fields[position]) {
+            control.name = `nic${index}_${fields[position]}`;
+          }
+        });
+      });
+    };
+
+    page.addEventListener("click", (event) => {
+      const addButton = event.target.closest("[data-vmreg-add-nic]");
+      if (addButton && template && nics) {
+        nics.appendChild(template.content.cloneNode(true));
+        reindexNics();
+        createIcons();
+        return;
+      }
+      const removeButton = event.target.closest("[data-vmreg-remove-nic]");
+      if (removeButton) {
+        removeButton.closest("[data-vmreg-nic]")?.remove();
+        reindexNics();
+      }
+    });
+    reindexNics();
+  };
+
   // Physical-key paste for noVNC: map pasted characters to hardware keys and
   // send them via the QEMU Extended Key Event (scancode) path, bypassing
   // QEMU's own VNC keymap so national characters land correctly on the guest.
@@ -4503,6 +4559,7 @@
 
   const initPage = (root = document) => {
     initHardwareEditor(root);
+    initVmRegister(root);
     initGuestListFilter(root);
     initNodeReload(root);
     initSummaryCards(root);

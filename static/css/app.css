@@ -4334,6 +4334,160 @@ body.cards-dragging {
   padding: 14px 0 0;
 }
 
+/* ---- Register / import VM wizard ---- */
+.vmreg-source {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+}
+
+.vmreg-source-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.vmreg-source-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.vmreg-source-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.vmreg-source-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.vmreg-help {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  max-width: 340px;
+}
+
+.vmreg-help summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.vmreg-help ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.vmreg-help strong {
+  color: var(--text);
+}
+
+.hw-hint {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.hw-optional {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.vmreg-nics {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.vmreg-nic {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 0.7fr auto;
+  gap: 10px;
+  align-items: end;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+
+.vmreg-nic .hw-field {
+  padding: 0;
+}
+
+.vmreg-nic-remove {
+  align-self: end;
+  margin-bottom: 4px;
+}
+
+.vmreg-add-nic {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vmreg-add-nic svg {
+  width: 15px;
+  height: 15px;
+}
+
+.browser-import-action {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.browser-import-action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.file-row:hover .browser-import-action,
+.browser-import-action:focus-visible {
+  opacity: 1;
+}
+
+.browser-import-action:hover {
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .vmreg-source {
+    flex-wrap: wrap;
+  }
+  .vmreg-help {
+    max-width: none;
+  }
+  .vmreg-nic {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 @media (max-width: 820px) {
   .hardware-editor-page {
     width: min(100%, calc(100vw - 20px));

@@ -55,6 +55,11 @@
         <span class="browser-entry">
           <span class="file-icon"><i data-lucide="file" aria-hidden="true"></i></span>
           <span class="browser-entry-name">{{ entry.name }}</span>
+          {% if entry.virtual_size_bytes != None %}
+            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=import&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM" aria-label="Import {{ entry.name }} as a new VM">
+              <i data-lucide="package-plus" aria-hidden="true"></i>
+            </a>
+          {% endif %}
         </span>
       {% endif %}
     </td>

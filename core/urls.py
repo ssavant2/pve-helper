@@ -14,6 +14,7 @@ urlpatterns = [
     path("vms/bulk-action/", views.vms_bulk_action, name="vms_bulk_action"),
     path("vms/", views.vms_list, name="vms"),
     path("vms/create/<str:object_type>/", views.guest_create, name="guest_create"),
+    path("vms/register/", views.register_vm, name="register_vm"),
     path("vms/<str:object_type>/<int:vmid>/summary/", views.guest_summary, name="guest_summary"),
     path("vms/<str:object_type>/<int:vmid>/console/", views.guest_console, name="guest_console"),
     path("vms/<str:object_type>/<int:vmid>/console/session/", views.guest_console_session, name="guest_console_session"),

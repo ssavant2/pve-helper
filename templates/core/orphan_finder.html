@@ -33,6 +33,11 @@
             <td>{% if file.size_bytes != None %}{{ file.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
             <td>{{ file.classification_reason|default:"-" }}</td>
             <td class="row-actions">
+              {% if file.derived_volid and "-disk-" in file.derived_volid %}
+                <a class="icon-button" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}" title="Adopt into a new VM" aria-label="Adopt {{ file.path }} into a new VM">
+                  <i data-lucide="package-plus" aria-hidden="true"></i>
+                </a>
+              {% endif %}
               {% if file.storage.storage_actions_enabled and file.can_trash %}
                 <form
                   class="inline-action-form"

@@ -103,6 +103,52 @@ def poll_guest_audit_task(
     clear_live_guest_caches()
 
 
+def register_import_vm_task(
+    audit_event_id: int,
+    node: str,
+    params: dict,
+    source_storage_id: str,
+    source_path: str,
+) -> None:
+    """Worker task: import a disk image into a new VM and record the outcome.
+
+    Stages the source image, creates the VM via ``import-from``, waits for the
+    import task, and cleans up the stage. The result updates the audit row that
+    the view created with ``outcome="running"`` so it flows through Recent Tasks.
+    """
+    from .services.vm_register import VmRegisterError, import_disk_as_vm
+
+    event = AuditEvent.objects.filter(pk=audit_event_id).first()
+    details = dict(event.details) if event and isinstance(event.details, dict) else {}
+    upid = ""
+    error: str | None = None
+    try:
+        storage = StorageMount.objects.get(storage_id=source_storage_id, enabled=True)
+        upid, error = import_disk_as_vm(
+            node, params, source_storage=storage, source_path=source_path
+        )
+    except StorageMount.DoesNotExist:
+        error = "Source storage is no longer available."
+    except VmRegisterError as exc:
+        error = str(exc)
+    except Exception as exc:  # noqa: BLE001 - surface any failure into the audit row
+        error = f"{type(exc).__name__}: {exc}"
+
+    if event is not None:
+        if upid:
+            details["proxmox_task_upid"] = upid
+            details["proxmox_task_node"] = node
+        if error:
+            event.outcome = "failed"
+            details["error"] = error
+        else:
+            event.outcome = "success"
+        details["finished_at"] = timezone.now().isoformat()
+        event.details = details
+        event.save(update_fields=["outcome", "details"])
+    clear_live_guest_caches()
+
+
 def enqueue_scheduled_scan() -> int | None:
     schedule_state = scan_schedule_state()
     active_scan = ScanRun.objects.filter(

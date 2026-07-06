@@ -6237,3 +6237,100 @@ class ViewSmokeTests(TestCase):
 
         task_page = recent_task_page()
         self.assertEqual(task_page.tasks[0]["target"], "nfs-fs")
+
+
+class VmRegisterServiceTests(SimpleTestCase):
+    def test_vmid_from_volid(self):
+        from core.services.vm_register import vmid_from_volid
+
+        self.assertEqual(vmid_from_volid("TrueNAS-VM:9999/vm-9999-disk-0.qcow2"), 9999)
+        self.assertEqual(vmid_from_volid("stor:100/base-100-disk-1.raw"), 100)
+        self.assertIsNone(vmid_from_volid("stor:iso/foo.iso"))
+        self.assertIsNone(vmid_from_volid(""))
+
+    def test_base_body_omits_i440fx_but_sets_q35(self):
+        from core.services.vm_register import _base_body
+
+        body = _base_body({"vmid": "101", "name": "x", "machine": "i440fx", "bios": "seabios", "nics": []})
+        self.assertNotIn("machine", body)  # i440fx is the default; sending it 400s
+        self.assertEqual(body["bios"], "seabios")
+        self.assertEqual(body["ide2"], "none,media=cdrom")
+
+        body_q35 = _base_body({"vmid": "1", "name": "x", "machine": "q35", "bios": "seabios", "nics": []})
+        self.assertEqual(body_q35["machine"], "q35")
+
+    def test_base_body_ovmf_efidisk_fresh_and_imported(self):
+        from core.services.vm_register import _base_body
+
+        fresh = _base_body({"vmid": "1", "name": "x", "bios": "ovmf", "efidisk_storage": "S", "nics": []})
+        self.assertEqual(fresh["efidisk0"], "S:1,efitype=4m,pre-enrolled-keys=1")
+
+        imported = _base_body(
+            {"vmid": "1", "name": "x", "bios": "ovmf", "efidisk_storage": "S", "efidisk_source": "S:9/vm-9-disk-0.raw", "nics": []}
+        )
+        self.assertIn("import-from=S:9/vm-9-disk-0.raw", imported["efidisk0"])
+
+    def test_base_body_multiple_nics(self):
+        from core.services.vm_register import _base_body
+
+        body = _base_body(
+            {
+                "vmid": "1",
+                "name": "x",
+                "nics": [
+                    {"model": "e1000", "bridge": "vmbr0"},
+                    {"model": "virtio", "bridge": "vmbr1", "vlan": "5"},
+                    {"model": "e1000", "bridge": ""},  # skipped (no bridge)
+                ],
+            }
+        )
+        self.assertEqual(body["net0"], "e1000,bridge=vmbr0")
+        self.assertEqual(body["net1"], "virtio,bridge=vmbr1,tag=5")
+        self.assertNotIn("net2", body)
+
+
+@override_settings(VM_WRITE_ENABLED=True)
+class VmRegisterViewTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user("vmreg-tester", is_staff=True, is_superuser=True)
+        self.client.force_login(self.user)
+
+    _OPTS = {
+        "available": True,
+        "node": "pve3",
+        "nextid": "101",
+        "disk_storages": ["TrueNAS-VM"],
+        "bridges": ["vmbr0"],
+        "ostypes": [("l26", "Linux (modern)")],
+    }
+
+    @patch("core.views.vm_register.create_options")
+    def test_get_import_shows_target_storage(self, mock_opts):
+        mock_opts.return_value = dict(self._OPTS)
+        resp = self.client.get(
+            "/vms/register/?mode=import&storage=TrueNAS-FS&path=disk.qcow2", SERVER_NAME="localhost"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'name="target_storage"')
+        self.assertContains(resp, "vmreg-source")
+
+    @patch("core.views.vm_register.create_options")
+    def test_get_adopt_hides_target_storage(self, mock_opts):
+        mock_opts.return_value = dict(self._OPTS)
+        resp = self.client.get(
+            "/vms/register/?mode=adopt&volid=TrueNAS-VM:9/vm-9-disk-0.qcow2", SERVER_NAME="localhost"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'name="target_storage"')
+        self.assertContains(resp, "vm-9-disk-0")
+
+    @patch("core.views.vm_register.create_options")
+    def test_post_rejects_bad_vmid(self, mock_opts):
+        mock_opts.return_value = dict(self._OPTS)
+        resp = self.client.post(
+            "/vms/register/",
+            {"mode": "adopt", "node": "pve3", "volid": "TrueNAS-VM:9/vm-9-disk-0.qcow2", "vmid": "abc", "name": "n"},
+            SERVER_NAME="localhost",
+        )
+        self.assertEqual(resp.status_code, 200)  # re-rendered with an error message
+        self.assertContains(resp, "VMID must be a whole number")
