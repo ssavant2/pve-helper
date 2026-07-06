@@ -434,6 +434,8 @@ def _audit_action_label(event: AuditEvent) -> str:
         "guest.hardware.updated": "Update guest hardware",
         "guest.cloudinit.update": "Update Cloud-Init",
         "guest.create": "Create guest",
+        "guest.register.adopt": "Register VM from disk",
+        "guest.register.import": "Import VM from disk",
         "guest.firewall.options": "Update firewall options",
         "guest.firewall.rule_add": "Add firewall rule",
         "guest.firewall.rule_delete": "Delete firewall rule",

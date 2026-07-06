@@ -42,7 +42,7 @@
             <li><strong>Bootable disk.</strong> The selected image must be the guest's bootable OS disk — a data-only disk will attach but won't boot.</li>
             <li><strong>VirtIO needs drivers.</strong> SCSI/VirtIO disk and the VirtIO NIC are faster but require the guest to already have VirtIO drivers (Linux usually does; Windows often doesn't).</li>
             <li><strong>UEFI images</strong> need BIOS&nbsp;=&nbsp;OVMF. A fresh EFI vars disk with Secure Boot keys is created automatically; point to your own EFI vars file only if the image needs it.</li>
-            <li><strong>Chipset.</strong> i440fx is the most compatible; q35 (modern, PCIe) is what newer / Windows&nbsp;11 images often expect.</li>
+            <li><strong>Chipset.</strong> i440fx is the most compatible and boots almost any image; q35 (modern, PCIe) is what many newer OS images expect.</li>
             <li><strong>If it doesn't boot,</strong> it's usually a BIOS / machine / disk-bus mismatch — change those and reboot, no re-import needed.</li>
             {% if mode == "adopt" %}
               <li><strong>Register</strong> uses the disk in place (no copy) and takes over its VMID — make sure no other VM references it.</li>
@@ -115,7 +115,7 @@
               <select name="machine">
                 {% for value, label in options.machine_choices %}<option value="{{ value }}" {% if value == form_values.machine %}selected{% endif %}>{{ label }}</option>{% endfor %}
               </select>
-              <small class="hw-hint">i440fx = most compatible; q35 for newer / Windows 11.</small>
+              <small class="hw-hint">i440fx boots almost any image; q35 is the modern PCIe chipset newer OSes may prefer.</small>
             </div>
             <div class="hw-field hw-field-wide vmreg-efi" data-vmreg-efi {% if form_values.bios != "ovmf" %}hidden{% endif %}>
               <div class="hw-field-grid-2">

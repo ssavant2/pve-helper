@@ -29,6 +29,8 @@ GUEST_TASK_NAMES = {
     "guest.hardware.updated": "Reconfigure hardware",
     "guest.cloudinit.update": "Update Cloud-Init",
     "guest.create": "Create guest",
+    "guest.register.adopt": "Register VM from disk",
+    "guest.register.import": "Import VM from disk",
     "guest.firewall.options": "Firewall options",
     "guest.firewall.rule_add": "Add firewall rule",
     "guest.firewall.rule_delete": "Delete firewall rule",

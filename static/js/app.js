@@ -210,6 +210,32 @@
     }
   };
 
+  // Re-order the guest list to match how it is labelled: when VMIDs are shown
+  // the natural key is the numeric VMID; when they are hidden it is the name.
+  const sortGuestList = (showingIds) => {
+    document.querySelectorAll("[data-guest-list]").forEach((list) => {
+      const items = Array.from(list.querySelectorAll("[data-guest-target]"));
+      if (items.length < 2) {
+        return;
+      }
+      items
+        .sort((a, b) => {
+          if (showingIds) {
+            const av = parseInt(a.dataset.guestVmid || "", 10);
+            const bv = parseInt(b.dataset.guestVmid || "", 10);
+            if (Number.isNaN(av) && Number.isNaN(bv)) return 0;
+            if (Number.isNaN(av)) return 1;
+            if (Number.isNaN(bv)) return -1;
+            return av - bv;
+          }
+          return (a.dataset.guestName || "").localeCompare(b.dataset.guestName || "", undefined, {
+            sensitivity: "base",
+          });
+        })
+        .forEach((item) => list.appendChild(item));
+    });
+  };
+
   const applyGuestNameStyle = (style) => {
     const value = style === "name-only" ? "name-only" : "id-name";
     document.documentElement.dataset.guestNameStyle = value;
@@ -222,6 +248,7 @@
       toggle.setAttribute("aria-pressed", showing ? "true" : "false");
       toggle.setAttribute("aria-label", showing ? "Hide VM/CT IDs" : "Show VM/CT IDs");
     }
+    sortGuestList(showing);
   };
 
   const initGuestNameToggle = () => {
@@ -4621,6 +4648,7 @@
     initHardwareEditor(root);
     initVmRegister(root);
     initGuestListFilter(root);
+    sortGuestList(document.documentElement.dataset.guestNameStyle !== "name-only");
     initNodeReload(root);
     initSummaryCards(root);
     initAutoSubmitForms(root);

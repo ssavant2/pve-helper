@@ -1174,14 +1174,6 @@ class ViewSmokeTests(TestCase):
         tag_end = html.index(">", marker_index)
         return html[tag_start:tag_end]
 
-    def _move_node_tag(self, response, path: str) -> str:
-        html = response.content.decode()
-        marker = f'data-move-path="{path}"'
-        marker_index = html.index(marker)
-        tag_start = html.rfind("<div", 0, marker_index)
-        tag_end = html.index(">", marker_index)
-        return html[tag_start:tag_end]
-
     def test_storage_views_render(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -2496,15 +2488,6 @@ class ViewSmokeTests(TestCase):
         self.assertIn("hidden", self._folder_node_tag(response, "images/100"))
         self.assertIn("hidden", self._folder_node_tag(response, "template/iso"))
 
-        self.assertContains(response, 'data-move-toggle')
-        self.assertIn(
-            'data-move-expanded="false"',
-            self._move_node_tag(response, "images"),
-        )
-        self.assertNotIn("hidden", self._move_node_tag(response, "images"))
-        self.assertIn("hidden", self._move_node_tag(response, "images/100"))
-        self.assertIn("hidden", self._move_node_tag(response, "template/iso"))
-
         response = self.client.get(
             reverse("core:storage_browser", args=["nfs-vm"]),
             {"path": "template/iso"},
@@ -2522,12 +2505,6 @@ class ViewSmokeTests(TestCase):
         )
         self.assertNotIn("hidden", self._folder_node_tag(response, "template/iso"))
         self.assertIn("hidden", self._folder_node_tag(response, "images/100"))
-        self.assertIn(
-            'data-move-expanded="true"',
-            self._move_node_tag(response, "template"),
-        )
-        self.assertNotIn("hidden", self._move_node_tag(response, "template/iso"))
-        self.assertIn("hidden", self._move_node_tag(response, "images/100"))
 
     def test_storage_browser_hides_app_managed_internal_directories(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

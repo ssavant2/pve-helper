@@ -20,6 +20,7 @@ from django_q.tasks import async_task
 
 from core.models import StorageMount
 from core.services.guest_create import create_options
+from core.services.proxmox import clear_live_guest_caches
 from core.services import vm_register as reg
 
 from .common import app_login_required, navigation_context, record_audit_event
@@ -193,8 +194,17 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
             object_type="guest",
             object_id=f"vm:{params['vmid']}",
             outcome="success",
-            details={"vmid": params["vmid"], "name": params["name"], "volid": volid, "node": node},
+            details={
+                "target_type": "vm",
+                "vmid": params["vmid"],
+                "name": params["name"],
+                "volid": volid,
+                "node": node,
+            },
         )
+        # Drop the cached live inventory so the freshly registered VM (with its
+        # name) shows up on the next list load instead of after the cache TTL.
+        clear_live_guest_caches()
         # No success toast — the outcome is in Recent Tasks / audit and the new
         # VM appears in the list.
         return None
@@ -220,6 +230,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         object_id=f"vm:{params['vmid']}",
         outcome="running",
         details={
+            "target_type": "vm",
             "vmid": params["vmid"],
             "name": params["name"],
             "node": node,
