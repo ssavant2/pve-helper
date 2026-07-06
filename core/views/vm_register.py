@@ -127,13 +127,15 @@ def register_vm(request):
         }
     else:
         path = request.GET.get("path", "")
+        volid = request.GET.get("volid", "")
         form_values = {
             **_defaults(),
             "mode": "import",
+            "source_volid": volid,
             "source_storage": request.GET.get("storage", ""),
             "source_path": path,
             "vmid": options.get("nextid", ""),
-            "name": _sanitize_name(path),
+            "name": _sanitize_name(volid.split("/")[-1] if volid else path),
             "node": options.get("node", ""),
             "target_storage": (options.get("disk_storages") or [""])[0],
         }
@@ -197,13 +199,15 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         # VM appears in the list.
         return None
 
-    # import
+    # import — source is either a browsable file (storage + path) or a ready volid
+    source_volid = post.get("source_volid", "").strip()
     storage_id = post.get("source_storage", "").strip()
     source_path = post.get("source_path", "").strip()
-    if not storage_id or not source_path:
-        return "Missing source image."
-    if not StorageMount.objects.filter(storage_id=storage_id, enabled=True).exists():
-        return "Unknown source storage."
+    if not source_volid:
+        if not storage_id or not source_path:
+            return "Missing source image."
+        if not StorageMount.objects.filter(storage_id=storage_id, enabled=True).exists():
+            return "Unknown source storage."
     params["target_storage"] = post.get("target_storage", "").strip()
     if not params["target_storage"]:
         return "Select a target storage for the imported disk."
@@ -219,7 +223,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
             "vmid": params["vmid"],
             "name": params["name"],
             "node": node,
-            "source": f"{storage_id}:{source_path}",
+            "source": source_volid or f"{storage_id}:{source_path}",
             "target_storage": params["target_storage"],
         },
     )
@@ -230,6 +234,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         params,
         storage_id,
         source_path,
+        source_volid,
     )
     event.details = {**event.details, "poll_task_id": task_id}
     event.save(update_fields=["details"])

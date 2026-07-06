@@ -21,7 +21,10 @@
         <tbody>
           {% for volume in volumes %}
             <tr{% if volume.highlight %} class="row-highlight"{% endif %}>
-              <td><code class="disk-ref">{{ volume.volid }}</code></td>
+              <td>
+                <code class="disk-ref">{{ volume.volid }}</code>
+                {% if volume.importable %}<a class="api-import-link" href="{% url 'core:register_vm' %}?mode=import&amp;volid={{ volume.volid|urlencode }}" title="Import as a new VM"><i data-lucide="package-plus" aria-hidden="true"></i> Import as VM</a>{% endif %}
+              </td>
               <td>{{ volume.vmid|default:"-" }}</td>
               <td>{{ volume.content|default:"-" }}</td>
               <td>{{ volume.format|default:"-" }}</td>

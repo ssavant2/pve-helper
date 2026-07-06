@@ -109,24 +109,28 @@ def register_import_vm_task(
     params: dict,
     source_storage_id: str,
     source_path: str,
+    source_volid: str = "",
 ) -> None:
     """Worker task: import a disk image into a new VM and record the outcome.
 
-    Stages the source image, creates the VM via ``import-from``, waits for the
-    import task, and cleans up the stage. The result updates the audit row that
+    A browsable source is staged then imported; a ready volid (e.g. a local
+    import-content image) is imported directly. The result updates the audit row
     the view created with ``outcome="running"`` so it flows through Recent Tasks.
     """
-    from .services.vm_register import VmRegisterError, import_disk_as_vm
+    from .services.vm_register import VmRegisterError, import_disk_as_vm, import_volid_as_vm
 
     event = AuditEvent.objects.filter(pk=audit_event_id).first()
     details = dict(event.details) if event and isinstance(event.details, dict) else {}
     upid = ""
     error: str | None = None
     try:
-        storage = StorageMount.objects.get(storage_id=source_storage_id, enabled=True)
-        upid, error = import_disk_as_vm(
-            node, params, source_storage=storage, source_path=source_path
-        )
+        if source_volid:
+            upid, error = import_volid_as_vm(node, params, source_volid=source_volid)
+        else:
+            storage = StorageMount.objects.get(storage_id=source_storage_id, enabled=True)
+            upid, error = import_disk_as_vm(
+                node, params, source_storage=storage, source_path=source_path
+            )
     except StorageMount.DoesNotExist:
         error = "Source storage is no longer available."
     except VmRegisterError as exc:

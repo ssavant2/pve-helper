@@ -5903,3 +5903,18 @@ html[data-theme="dark"] .hardware-editor-page {
   color: var(--muted);
   font-size: 13px;
 }
+
+.api-import-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.api-import-link svg {
+  width: 14px;
+  height: 14px;
+}

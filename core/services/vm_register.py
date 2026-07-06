@@ -231,6 +231,29 @@ def _remove_stage(staging_dir: Path) -> None:
         pass
 
 
+def _create_vm_importing(node: str, params: dict[str, Any], import_volid: str) -> tuple[str, str | None]:
+    """Create a VM whose boot disk is imported from ``import_volid`` (a volid)."""
+    client = _client()
+    bus_key = _bus_key(params.get("disk_bus", "sata"))
+    if params.get("disk_bus") == "scsi":
+        params.setdefault("scsihw", "virtio-scsi-single")
+    body = _base_body(params)
+    body[bus_key] = (
+        f"{params['target_storage']}:0,import-from={import_volid},format={params.get('format', 'qcow2')}"
+    )
+    body["boot"] = f"order={bus_key}"
+    if params.get("start"):
+        body["start"] = 1
+    try:
+        upid = client.post(f"nodes/{quote(node, safe='')}/qemu", data=body)
+    except ProxmoxAPIError as exc:
+        return "", str(exc)
+    exit_status = _poll_task(client, node, upid)
+    if exit_status not in ("OK", ""):
+        return upid, f"Import failed: {exit_status}"
+    return upid, None
+
+
 def import_disk_as_vm(
     node: str,
     params: dict[str, Any],
@@ -238,32 +261,19 @@ def import_disk_as_vm(
     source_storage: StorageMount,
     source_path: str,
 ) -> tuple[str, str | None]:
-    """Stage the source image, create a VM importing it, then clean up.
+    """Stage a browsable image as a volume, import it into a new VM, then clean up.
 
-    Intended to run in the worker (the import task can take minutes). The
-    staging hardlink is removed only after the import task finishes.
+    Intended to run in the worker (the import can take minutes); the staging
+    hardlink is removed only after the import task finishes.
     """
-    client = _client()
-    bus_key = _bus_key(params.get("disk_bus", "sata"))
-    if params.get("disk_bus") == "scsi":
-        params.setdefault("scsihw", "virtio-scsi-single")
-    target_storage = params["target_storage"]
-    fmt = params.get("format", "qcow2")
-
     staging_volid, staging_dir = _stage_source(source_storage, source_path)
     try:
-        body = _base_body(params)
-        body[bus_key] = f"{target_storage}:0,import-from={staging_volid},format={fmt}"
-        body["boot"] = f"order={bus_key}"
-        if params.get("start"):
-            body["start"] = 1
-        try:
-            upid = client.post(f"nodes/{quote(node, safe='')}/qemu", data=body)
-        except ProxmoxAPIError as exc:
-            return "", str(exc)
-        exit_status = _poll_task(client, node, upid)
-        if exit_status not in ("OK", ""):
-            return upid, f"Import failed: {exit_status}"
-        return upid, None
+        return _create_vm_importing(node, params, staging_volid)
     finally:
         _remove_stage(staging_dir)
+
+
+def import_volid_as_vm(node: str, params: dict[str, Any], *, source_volid: str) -> tuple[str, str | None]:
+    """Import an already-catalogued volume (e.g. a local ``import``-content image)
+    into a new VM. No staging needed — the volid is passed straight to import-from."""
+    return _create_vm_importing(node, params, source_volid)

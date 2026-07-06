@@ -172,19 +172,26 @@ def _api_storage_context(node: str, storage: str, active_tab: str, *, status=Non
 
 def _api_storage_volumes(node: str, storage: str, highlight_vmid=None):
     content, found, error = _api_storage_get(node, storage, "content")
+    import_content, _imp_found, _imp_error = _api_storage_get(node, storage, "content?content=import")
     volumes = []
-    for entry in content or []:
+    seen: set[str] = set()
+    for entry in list(content or []) + list(import_content or []):
         if not isinstance(entry, dict):
             continue
+        volid = entry.get("volid", "")
+        if volid in seen:
+            continue
+        seen.add(volid)
         entry_vmid = entry.get("vmid")
         volumes.append(
             {
-                "volid": entry.get("volid", ""),
+                "volid": volid,
                 "content": entry.get("content", ""),
                 "format": entry.get("format", ""),
                 "size": entry.get("size"),
                 "used": entry.get("used"),
                 "vmid": entry_vmid,
+                "importable": entry.get("content") == "import",
                 "highlight": highlight_vmid is not None and str(entry_vmid) == str(highlight_vmid),
             }
         )

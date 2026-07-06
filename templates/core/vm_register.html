@@ -17,6 +17,8 @@
       <input type="hidden" name="node" value="{{ form_values.node }}">
       {% if mode == "adopt" %}
         <input type="hidden" name="volid" value="{{ form_values.volid }}">
+      {% elif form_values.source_volid %}
+        <input type="hidden" name="source_volid" value="{{ form_values.source_volid }}">
       {% else %}
         <input type="hidden" name="source_storage" value="{{ form_values.source_storage }}">
         <input type="hidden" name="source_path" value="{{ form_values.source_path }}">
@@ -30,7 +32,7 @@
             {% if mode == "adopt" %}Adopt &middot; reuse in place{% else %}Import &middot; copy to storage{% endif %}
           </span>
           <div class="vmreg-source-path">
-            {% if mode == "adopt" %}{{ form_values.volid }}{% else %}{{ form_values.source_storage }}:{{ form_values.source_path }}{% endif %}
+            {% if mode == "adopt" %}{{ form_values.volid }}{% elif form_values.source_volid %}{{ form_values.source_volid }}{% else %}{{ form_values.source_storage }}:{{ form_values.source_path }}{% endif %}
           </div>
         </div>
         <details class="vmreg-help">
