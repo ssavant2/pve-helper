@@ -2235,7 +2235,6 @@ code {
   min-height: 34px;
   padding: 4px 8px;
   color: var(--text);
-  background: var(--panel);
   border: 1px solid var(--border);
 }
 
@@ -2740,12 +2739,13 @@ code {
   min-height: 34px;
   padding: 5px 8px;
   color: var(--text);
-  background: var(--panel);
   border: 1px solid var(--border);
 }
 
-.dest-picker-field option {
-  color: var(--text);
+/* Only the text input gets an explicit background — setting one on the <select>
+   forces the browser into author styling and renders a light option popup, so
+   the select relies on the global color-scheme rule for a themed dropdown. */
+.dest-picker-field input {
   background: var(--panel);
 }
 
