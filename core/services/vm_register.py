@@ -18,9 +18,11 @@ VM, polls the resulting UPID, then cleans up the stage.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -164,6 +166,24 @@ def _storage_from_volid(volid: str) -> str:
 # --------------------------------------------------------------------------- #
 # Import: stage a loose image as a volume, then import-from it.
 # --------------------------------------------------------------------------- #
+def _detect_image_format(path: Path) -> str:
+    """Return the on-disk image format (qcow2/raw/vmdk) via qemu-img."""
+    try:
+        result = subprocess.run(
+            ["qemu-img", "info", "--output=json", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+        fmt = str(json.loads(result.stdout).get("format", "")).lower()
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise VmRegisterError(f"Could not detect the image format: {exc}") from exc
+    if fmt not in {"qcow2", "raw", "vmdk"}:
+        raise VmRegisterError(f"Unsupported image format: {fmt or 'unknown'}")
+    return fmt
+
+
 def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, Path]:
     """Hardlink ``relative_path`` into ``images/<tmpid>/`` on the same mount.
 
@@ -177,9 +197,11 @@ def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, Path]
     if root not in source.parents:
         raise VmRegisterError("Source image is outside the storage mount.")
 
-    ext = source.suffix.lstrip(".").lower() or "raw"
+    ext = source.suffix.lstrip(".").lower()
     if ext not in {"qcow2", "raw", "vmdk"}:
-        raise VmRegisterError(f"Unsupported image format: .{ext}")
+        # .img and other/blank extensions: detect the real on-disk format so the
+        # staged volume gets a name Proxmox recognises (its content, unchanged).
+        ext = _detect_image_format(source)
 
     for _ in range(10):
         tmpid = secrets.randbelow(9000) + 90000  # 90000-98999, well clear of real VMIDs
