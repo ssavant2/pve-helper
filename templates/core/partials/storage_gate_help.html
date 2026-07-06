@@ -1,8 +1,9 @@
-<section class="help-panel" aria-label="Storage gate help">
-  <div class="help-panel-title">Storage gate</div>
+<section class="help-panel" aria-label="Shared storage gate help">
+  <div class="help-panel-title">Shared storage gate</div>
   <p>
-    A storage is gated until every expected Proxmox consumer has been inventoried.
-    If a consumer is missing, pve-helper blocks orphan classification instead of
-    guessing from incomplete data.
+    Shared storages are gated until every expected Proxmox node that can consume
+    that storage has been inventoried. If a consumer is missing, pve-helper
+    blocks orphan classification instead of guessing from incomplete data.
+    Local/API-only storages are not part of this shared-storage gate.
   </p>
 </section>
