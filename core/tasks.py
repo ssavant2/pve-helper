@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import quote
 
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from django_q.tasks import async_task
 
@@ -146,7 +146,38 @@ def register_import_vm_task(
         details["finished_at"] = timezone.now().isoformat()
         event.details = details
         event.save(update_fields=["outcome", "details"])
+    if not error:
+        # Refresh the target storage's inventory so the freshly created
+        # images/<vmid>/ folder and disk show up in the browser immediately.
+        _refresh_import_target_inventory(
+            str(params.get("target_storage", "")), str(params.get("vmid", ""))
+        )
     clear_live_guest_caches()
+
+
+def _refresh_import_target_inventory(target_storage_id: str, vmid: str) -> None:
+    storage = StorageMount.objects.filter(storage_id=target_storage_id, enabled=True).first()
+    if storage is None:
+        return
+    scan = (
+        ScanRun.objects.filter(status=ScanRun.Status.COMPLETED)
+        .exclude(queued_task_id="content-preflight")
+        .filter(Q(target_storage=storage) | Q(target_storage__isnull=True))
+        .order_by(
+            F("filesystem_scan_at").desc(nulls_last=True),
+            F("finished_at").desc(nulls_last=True),
+            "-created_at",
+        )
+        .first()
+    )
+    if scan is None:
+        return
+    directories = ["images"] + ([f"images/{vmid}"] if vmid else [])
+    for directory_path in directories:
+        try:
+            refresh_storage_directory(storage=storage, scan=scan, directory_path=directory_path)
+        except Exception:  # noqa: BLE001 - best-effort inventory refresh
+            pass
 
 
 def enqueue_scheduled_scan() -> int | None:
