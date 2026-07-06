@@ -37,6 +37,7 @@ async def console_ws(websocket: WebSocket):
         await websocket.close(code=1008)
         return
 
+    marked_closed = False
     try:
         upstream_url = _upstream_url(session)
         headers = _proxmox_headers()
@@ -68,7 +69,12 @@ async def console_ws(websocket: WebSocket):
                 await _relay(websocket, upstream)
             await _mark_session(session.id, ConsoleSession.Status.CLOSED, closed_at=timezone.now(), close_reason="closed")
             await _audit_session(session.id, "guest.console.closed", "success")
+            marked_closed = True
     except Exception as exc:
+        if marked_closed:
+            # The relay already ended cleanly; this is teardown noise from the
+            # upstream closing without a close frame. Keep the CLOSED outcome.
+            return
         await _mark_session(
             session.id,
             ConsoleSession.Status.FAILED,

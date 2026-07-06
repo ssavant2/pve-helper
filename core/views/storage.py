@@ -488,6 +488,36 @@ def storage_browser(request, storage_id: str):
 
     file_total = len(entries)
     entries = entries[file_offset:file_offset + FILE_BROWSER_BATCH_SIZE]
+
+    # Link each referenced disk image to the VM/CT that owns it.
+    from django.db.models import Max
+
+    from core.services.classification import extract_vmid_from_image_path
+
+    guest_scan_id = ProxmoxInventory.objects.filter(
+        object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT]
+    ).aggregate(latest=Max("scan_run_id"))["latest"]
+    guest_map: dict[int, ProxmoxInventory] = {}
+    if guest_scan_id:
+        for obj in ProxmoxInventory.objects.filter(
+            scan_run_id=guest_scan_id,
+            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+            vmid__isnull=False,
+        ):
+            guest_map.setdefault(obj.vmid, obj)
+    for entry in entries:
+        entry.referenced_guest = None
+        if (
+            entry.entry_type == FileInventory.EntryType.FILE
+            and entry.classification == FileInventory.Classification.REFERENCED
+        ):
+            guest = guest_map.get(extract_vmid_from_image_path(entry.path) or -1)
+            if guest is not None:
+                entry.referenced_guest = {
+                    "name": guest.name or f"VM {guest.vmid}",
+                    "url": reverse("core:guest_summary", args=[guest.object_type, guest.vmid]),
+                }
+
     file_next_offset = file_offset + FILE_BROWSER_BATCH_SIZE
     file_has_next = file_next_offset < file_total
     file_next_url = (

@@ -14,6 +14,7 @@
     <td>-</td>
     <td>Directory</td>
     <td>-</td>
+    <td>-</td>
     <td>{% if parent_path %}[{{ storage.storage_id }}] {{ parent_path }}{% else %}[{{ storage.storage_id }}] /{% endif %}</td>
   </tr>
 {% endif %}
@@ -99,11 +100,12 @@
     <td>{{ entry.modified_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
     <td>{{ entry.category_label }}</td>
     <td><span class="badge {{ entry.classification_class }}">{{ entry.classification_label }}</span></td>
+    <td>{% if entry.referenced_guest %}<a href="{{ entry.referenced_guest.url }}">{{ entry.referenced_guest.name }}</a>{% else %}-{% endif %}</td>
     <td class="truncate-cell" title="[{{ storage.storage_id }}] {{ entry.path }}">[{{ storage.storage_id }}] {{ entry.path }}</td>
   </tr>
 {% empty %}
   <tr>
-    <td colspan="9" class="empty-state">
+    <td colspan="10" class="empty-state">
       {% if latest_scan %}
         {% if file_query %}
           No files in this directory match "{{ file_query }}".
@@ -119,7 +121,7 @@
 
 {% if file_has_next %}
   <tr class="file-load-more-row" data-file-load-more-row>
-    <td colspan="9">
+    <td colspan="10">
       <a class="file-load-more" href="{{ file_next_url }}" data-file-load-more data-no-soft-navigation>
         Load next {{ file_batch_size }}
       </a>

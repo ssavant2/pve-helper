@@ -54,6 +54,11 @@ def guest_disks(config: dict, node: str, vmid: int) -> tuple[list[dict], list[di
             continue
         fmt = "qcow2" if volume.endswith(".qcow2") else "raw" if volume.endswith(".raw") else params.get("format", "")
         mounted, url, link_label = _storage_link(storage_id, node, vmid, mounted_ids)
+        if mounted and url and "/" in volume:
+            # Land in the folder that holds the disk, e.g. images/<vmid>/.
+            disk_dir = volume.split("/", 1)[0]
+            url = f"{url}?{urlencode({'path': f'images/{disk_dir}'})}"
+            link_label = "Browse disk folder"
         disks.append(
             {
                 "label": key,
