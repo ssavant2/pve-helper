@@ -537,6 +537,7 @@ def storage_browser(request, storage_id: str):
         "parent_path": parent_path,
         "breadcrumbs": _browser_breadcrumbs(current_path),
         "folder_tree": folder_tree,
+        "dest_storages": StorageMount.objects.filter(enabled=True).order_by("display_name"),
         "entries": entries,
         "current_entry": current_entry,
         "file_query": file_query,

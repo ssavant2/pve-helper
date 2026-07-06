@@ -528,6 +528,59 @@
     return true;
   };
 
+  const openDestPicker = (form, mode, options) => {
+    const manager = form.closest("[data-storage-file-manager]");
+    const dialog = manager?.querySelector("[data-dest-picker]");
+    if (!dialog || typeof dialog.showModal !== "function") {
+      return false;
+    }
+    const storageInput = form.querySelector("[data-dest-storage]");
+    const dirInput = form.querySelector("[data-dest-directory]");
+    const nameInput = form.querySelector("[data-dest-name]");
+    const storageSelect = dialog.querySelector("[data-dest-picker-storage]");
+    const folderField = dialog.querySelector("[data-dest-picker-folder]");
+    const nameRow = dialog.querySelector("[data-dest-picker-name-row]");
+    const nameField = dialog.querySelector("[data-dest-picker-name]");
+    const title = dialog.querySelector("[data-dest-title]");
+    const submit = dialog.querySelector("[data-dest-picker-submit]");
+    const cancel = dialog.querySelector("[data-dest-cancel]");
+    const selection = dialog.querySelector("[data-dest-picker-selection]");
+    const isCopy = mode === "copy";
+    const sourceName = (form.querySelector("[data-selected-path-input]")?.value || "").split("/").pop() || "";
+
+    if (title) title.textContent = isCopy ? "Copy To" : "Move To";
+    if (storageSelect && manager?.dataset.storageId) storageSelect.value = manager.dataset.storageId;
+    if (folderField) folderField.value = manager?.dataset.currentPath || "";
+    if (nameRow) nameRow.hidden = !isCopy;
+    if (nameField) nameField.value = sourceName;
+
+    const cleanDir = () => (folderField?.value || "").trim().replace(/^\/+|\/+$/g, "");
+    const refresh = () => {
+      const namePart = isCopy ? ` / ${(nameField?.value || sourceName).trim()}` : "";
+      if (selection) selection.textContent = `→ [${storageSelect?.value || ""}] ${cleanDir() || "/"}${namePart}`;
+    };
+    if (storageSelect) storageSelect.oninput = refresh;
+    if (folderField) folderField.oninput = refresh;
+    if (nameField) nameField.oninput = refresh;
+    refresh();
+
+    submit.onclick = () => {
+      const name = (nameField?.value || sourceName).trim();
+      if (isCopy && !name) {
+        window.alert("Enter a file name for the copy.");
+        return;
+      }
+      if (storageInput) storageInput.value = storageSelect?.value || "";
+      if (dirInput) dirInput.value = cleanDir();
+      if (isCopy && nameInput) nameInput.value = name;
+      dialog.close();
+      completeConfirmedFileAction(form, options);
+    };
+    if (cancel) cancel.onclick = () => dialog.close();
+    dialog.showModal();
+    return true;
+  };
+
   const initConfirmedFileActions = (root = document) => {
     root.querySelectorAll("[data-confirm-file-action]").forEach((form) => {
       if (form.dataset.initialized === "true") {
@@ -587,11 +640,11 @@
           if (!window.confirm(`Rename ${fileName} to ${nextName}?`)) {
             return;
           }
-        } else if (actionKind === "move") {
-          if (openMovePicker(form, confirmationOptions)) {
+        } else if (actionKind === "move" || actionKind === "copy") {
+          if (openDestPicker(form, actionKind, confirmationOptions)) {
             return;
           }
-          window.alert("No folder picker is available on this page.");
+          window.alert("No destination picker is available on this page.");
           return;
         } else if (actionKind === "inflate") {
           const inflateMode = form.dataset.inflateMode || "full";

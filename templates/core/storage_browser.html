@@ -124,10 +124,28 @@
               {% csrf_token %}
               <input type="hidden" name="path" value="" data-selected-path-input>
               <input type="hidden" name="new_path" value="" data-move-input>
+              <input type="hidden" name="dest_storage" value="" data-dest-storage>
+              <input type="hidden" name="dest_directory" value="" data-dest-directory>
               <input type="hidden" name="confirm_basic" value="">
               <input type="hidden" name="confirm_risk" value="">
               <input type="hidden" name="next" value="{{ request.get_full_path }}">
               <button class="vs-toolbar-button" type="submit" data-selected-file-button disabled>Move To</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_copy_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="copy"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="dest_storage" value="" data-dest-storage>
+              <input type="hidden" name="dest_directory" value="" data-dest-directory>
+              <input type="hidden" name="dest_name" value="" data-dest-name>
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button" type="submit" data-selected-file-button disabled>Copy To</button>
             </form>
             <form
               class="vs-toolbar-form"
@@ -219,57 +237,34 @@
         </label>
       </div>
 
-      <dialog class="move-picker-dialog" data-move-picker>
-        <div class="move-picker-panel">
+      <dialog class="move-picker-dialog" data-dest-picker>
+        <div class="move-picker-panel dest-picker-panel">
           <header class="move-picker-header">
-            <strong>Move To</strong>
-            <button class="icon-button" type="button" data-move-picker-cancel aria-label="Close">
+            <strong data-dest-title>Move To</strong>
+            <button class="icon-button" type="button" data-dest-cancel aria-label="Close">
               <i data-lucide="x" aria-hidden="true"></i>
             </button>
           </header>
-          <div class="move-picker-tree" role="listbox" aria-label="Target folder">
-            {% for node in folder_tree %}
-              <div
-                class="move-picker-node"
-                style="--depth: {{ node.depth }}"
-                data-move-node
-                data-move-path="{{ node.path }}"
-                data-move-depth="{{ node.depth }}"
-                data-move-expanded="{% if node.is_expanded %}true{% else %}false{% endif %}"
-                {% if not node.is_initially_visible %}hidden{% endif %}
-              >
-                {% if node.has_children %}
-                  <button class="move-picker-caret" type="button" data-move-toggle aria-label="Toggle {{ node.name }}">
-                    {% if node.is_expanded %}
-                      <i data-lucide="chevron-down" aria-hidden="true"></i>
-                    {% else %}
-                      <i data-lucide="chevron-right" aria-hidden="true"></i>
-                    {% endif %}
-                  </button>
-                {% else %}
-                  <span class="move-picker-caret move-picker-caret-placeholder" aria-hidden="true"></span>
-                {% endif %}
-                <button
-                  class="move-picker-target"
-                  type="button"
-                  data-move-target="{% if node.path %}{{ node.path }}{% else %}/{% endif %}"
-                  data-move-target-label="{% if node.path %}{{ node.path }}{% else %}Root{% endif %}"
-                >
-                  <span class="folder-tree-icon">
-                    {% if node.depth == 0 %}
-                      <i data-lucide="database" aria-hidden="true"></i>
-                    {% else %}
-                      <i data-lucide="folder" aria-hidden="true"></i>
-                    {% endif %}
-                  </span>
-                  <span>{{ node.name }}</span>
-                </button>
-              </div>
-            {% endfor %}
+          <div class="dest-picker-body">
+            <label class="dest-picker-field">
+              <span>Destination storage</span>
+              <select data-dest-picker-storage>
+                {% for s in dest_storages %}<option value="{{ s.storage_id }}">{{ s.display_name }}</option>{% endfor %}
+              </select>
+            </label>
+            <label class="dest-picker-field">
+              <span>Folder</span>
+              <input type="text" data-dest-picker-folder placeholder="(storage root)">
+              <small class="hw-hint">Relative path within the storage, e.g. <code>images/900</code>. Leave blank for the root.</small>
+            </label>
+            <label class="dest-picker-field" data-dest-picker-name-row hidden>
+              <span>File name</span>
+              <input type="text" data-dest-picker-name>
+            </label>
           </div>
           <footer class="move-picker-footer">
-            <span data-move-picker-selection>-</span>
-            <button class="vs-toolbar-button" type="button" data-move-picker-submit disabled>Move Here</button>
+            <span data-dest-picker-selection></span>
+            <button class="vs-toolbar-button" type="button" data-dest-picker-submit>OK</button>
           </footer>
         </div>
       </dialog>

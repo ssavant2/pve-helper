@@ -2711,6 +2711,36 @@ code {
   max-height: min(620px, calc(100vh - 40px));
 }
 
+.dest-picker-panel {
+  grid-template-rows: auto auto auto;
+  min-width: 360px;
+  max-width: 460px;
+}
+
+.dest-picker-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.dest-picker-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dest-picker-field > span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.dest-picker-field select,
+.dest-picker-field input {
+  min-height: 34px;
+  padding: 5px 8px;
+}
+
 .move-picker-header,
 .move-picker-footer {
   display: flex;
