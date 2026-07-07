@@ -565,7 +565,8 @@
     const dirInput = form.querySelector("[data-dest-directory]");
     const nameInput = form.querySelector("[data-dest-name]");
     const storageSelect = dialog.querySelector("[data-dest-picker-storage]");
-    const folderField = dialog.querySelector("[data-dest-picker-folder]");
+    const folderSelect = dialog.querySelector("[data-dest-picker-folder]");
+    const newFolderField = dialog.querySelector("[data-dest-picker-folder-new]");
     const nameRow = dialog.querySelector("[data-dest-picker-name-row]");
     const nameField = dialog.querySelector("[data-dest-picker-name]");
     const title = dialog.querySelector("[data-dest-title]");
@@ -577,19 +578,54 @@
 
     if (title) title.textContent = isCopy ? "Copy To" : "Move To";
     if (storageSelect && manager?.dataset.storageId) storageSelect.value = manager.dataset.storageId;
-    if (folderField) folderField.value = manager?.dataset.currentPath || "";
     if (nameRow) nameRow.hidden = !isCopy;
     if (nameField) nameField.value = sourceName;
+    if (newFolderField) newFolderField.value = "";
 
-    const cleanDir = () => (folderField?.value || "").trim().replace(/^\/+|\/+$/g, "");
+    // Effective destination folder: the picked folder plus any new subfolder.
+    const cleanDir = () => {
+      const base = (folderSelect?.value || "").trim().replace(/^\/+|\/+$/g, "");
+      const extra = (newFolderField?.value || "").trim().replace(/^\/+|\/+$/g, "");
+      return [base, extra].filter(Boolean).join("/");
+    };
     const refresh = () => {
       const namePart = isCopy ? ` / ${(nameField?.value || sourceName).trim()}` : "";
       if (selection) selection.textContent = `→ [${storageSelect?.value || ""}] ${cleanDir() || "/"}${namePart}`;
     };
-    if (storageSelect) storageSelect.oninput = refresh;
-    if (folderField) folderField.oninput = refresh;
+
+    // Populate the folder dropdown from the chosen storage's known directories.
+    const loadFolders = (preferredPath) => {
+      if (!folderSelect) return;
+      const option = storageSelect?.selectedOptions?.[0];
+      const url = option?.dataset?.foldersUrl;
+      folderSelect.innerHTML = '<option value="">(storage root)</option>';
+      refresh();
+      if (!url) return;
+      fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+        .then((response) => (response.ok ? response.json() : { folders: [] }))
+        .then((data) => {
+          (data.folders || []).forEach((path) => {
+            const opt = document.createElement("option");
+            opt.value = path;
+            opt.textContent = path;
+            folderSelect.appendChild(opt);
+          });
+          if (preferredPath && (data.folders || []).includes(preferredPath)) {
+            folderSelect.value = preferredPath;
+          }
+          refresh();
+        })
+        .catch(() => refresh());
+    };
+
+    if (storageSelect) {
+      storageSelect.oninput = () => loadFolders("");
+    }
+    if (folderSelect) folderSelect.oninput = refresh;
+    if (newFolderField) newFolderField.oninput = refresh;
     if (nameField) nameField.oninput = refresh;
-    refresh();
+    // Default to the folder the user is currently browsing on the source storage.
+    loadFolders(manager?.dataset.currentPath || "");
 
     submit.onclick = () => {
       const name = (nameField?.value || sourceName).trim();

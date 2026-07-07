@@ -19,6 +19,10 @@ class DerivedVolume:
 def categorize_proxmox_path(relative_path: str) -> str:
     path = PurePosixPath(relative_path)
     parts = path.parts
+    if not parts:
+        return "unknown"
+    if parts[0].startswith(".pve-helper"):
+        return "app_internal"
     if parts[:1] == (".trash",):
         return "trash"
     if parts == ("images",):
@@ -41,6 +45,10 @@ def categorize_proxmox_path(relative_path: str) -> str:
         return "snippet"
     if parts[:1] == ("private",):
         return "ct_private"
+    if parts == ("import",):
+        return "import_directory"
+    if parts[:1] == ("import",):
+        return "import_content"
     return "unknown"
 
 
@@ -112,6 +120,11 @@ def parse_config_value_volid(value: str) -> str:
     return first_value
 
 
+# Disk-image extensions used to tell a stray disk image apart from any other
+# loose file that happens to sit directly in the ``images/`` directory.
+DISK_IMAGE_EXTENSIONS = {".qcow2", ".raw", ".vmdk", ".img", ".qed", ".vdi", ".vhd", ".vhdx"}
+
+
 @dataclass(frozen=True)
 class ClassificationResult:
     classification: str
@@ -137,6 +150,14 @@ def classify_entry(
         "gate_ok": gate_ok,
         "missing_consumers": missing_consumers,
     }
+
+    if content_category == "app_internal" or relative_path.startswith(".pve-helper"):
+        return ClassificationResult(
+            classification=FileInventory.Classification.INFRASTRUCTURE,
+            reason="App-managed internal directory (upload staging / working files).",
+            matched_object={},
+            evidence=evidence,
+        )
 
     if content_category == "trash" or relative_path.startswith(".trash/"):
         if entry_type != FileInventory.EntryType.FILE:
@@ -181,6 +202,7 @@ def classify_entry(
     KNOWN_DIRECTORY_CATEGORIES = {
         "vm_images", "vm_image_directory", "backup", "iso",
         "ct_template", "ct_private", "snippet", "template_directory",
+        "import_directory",
     }
 
     if entry_type != FileInventory.EntryType.FILE:
@@ -198,6 +220,8 @@ def classify_entry(
             evidence=evidence,
         )
 
+    # A true orphan is specifically a Proxmox VM disk volume (vm-<id>-disk-N)
+    # with no matching VM/CT reference. Nothing else is called an orphan.
     if content_category == "vm_disk":
         if not gate_ok:
             return ClassificationResult(
@@ -214,7 +238,7 @@ def classify_entry(
         )
 
     KNOWN_CONTENT_CATEGORIES = {
-        "backup", "iso", "ct_template", "ct_private", "snippet",
+        "backup", "iso", "ct_template", "ct_private", "snippet", "import_content",
     }
     if content_category in KNOWN_CONTENT_CATEGORIES:
         return ClassificationResult(
@@ -224,9 +248,24 @@ def classify_entry(
             evidence=evidence,
         )
 
+    # A recognised disk image that is not a proper vm-<id>-disk volume is not an
+    # orphan — it's a real disk image sitting in the wrong place.
+    if PurePosixPath(relative_path).suffix.lower() in DISK_IMAGE_EXTENSIONS:
+        return ClassificationResult(
+            classification=FileInventory.Classification.UNKNOWN,
+            reason=(
+                "Disk image that is not a referenced Proxmox volume — it is probably in the "
+                "wrong folder. A VM disk belongs in images/<vmid>/vm-<vmid>-disk-N.<format>; "
+                "to bring in a loose image, put it in the storage's import/ directory or use "
+                "Import as VM."
+            ),
+            matched_object={},
+            evidence=evidence,
+        )
+
     return ClassificationResult(
         classification=FileInventory.Classification.UNKNOWN,
-        reason="Unrecognized content type; cannot classify.",
+        reason="File type is not used by Proxmox and probably does not belong in this storage.",
         matched_object={},
         evidence=evidence,
     )

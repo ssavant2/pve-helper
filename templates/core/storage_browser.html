@@ -249,13 +249,19 @@
             <label class="dest-picker-field">
               <span>Destination storage</span>
               <select data-dest-picker-storage>
-                {% for s in dest_storages %}<option value="{{ s.storage_id }}">{{ s.display_name }}</option>{% endfor %}
+                {% for s in dest_storages %}<option value="{{ s.storage_id }}" data-folders-url="{% url 'core:storage_folders' s.storage_id %}">{{ s.display_name }}</option>{% endfor %}
               </select>
             </label>
             <label class="dest-picker-field">
-              <span>Folder</span>
-              <input type="text" data-dest-picker-folder placeholder="(storage root)">
-              <small class="hw-hint">Relative path within the storage, e.g. <code>images/900</code>. Leave blank for the root.</small>
+              <span>Destination folder</span>
+              <select data-dest-picker-folder>
+                <option value="">(storage root)</option>
+              </select>
+            </label>
+            <label class="dest-picker-field">
+              <span>New subfolder <span class="hw-optional">(optional)</span></span>
+              <input type="text" data-dest-picker-folder-new placeholder="leave blank to use the selected folder">
+              <small class="hw-hint">Created under the selected folder if it does not exist yet.</small>
             </label>
             <label class="dest-picker-field" data-dest-picker-name-row hidden>
               <span>File name</span>

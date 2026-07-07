@@ -1518,6 +1518,32 @@ def copy_storage_file_view(request, storage_id: str):
     return redirect(redirect_to)
 
 
+@app_login_required
+def storage_folders_view(request, storage_id: str):
+    """JSON list of the folders in a storage, for the move/copy destination picker
+    (so a folder can be chosen from a dropdown instead of typed by hand)."""
+    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    scan = _latest_storage_result_scan(storage)
+    folders: list[str] = []
+    if scan:
+        ignored_paths = ignored_relative_paths_for_storage(storage)
+        folders = sorted(
+            (
+                path
+                for path in FileInventory.objects.filter(
+                    scan_run=scan,
+                    storage=storage,
+                    entry_type=FileInventory.EntryType.DIRECTORY,
+                )
+                .order_by("path")
+                .values_list("path", flat=True)
+                if not is_ignored_storage_path(path, ignored_paths)
+            ),
+            key=lambda item: [part.lower() for part in item.split("/")],
+        )
+    return JsonResponse({"folders": folders})
+
+
 @require_POST
 @app_login_required
 def rename_storage_file_view(request, storage_id: str):
@@ -1685,6 +1711,81 @@ def orphan_finder(request):
         "files": files,
     }
     return render(request, "core/orphan_finder.html", context)
+
+
+@app_login_required
+def classified_files(request):
+    """Drill-down list behind the dashboard classification counters: every file
+    with the requested classification across the enabled storages."""
+    classification = request.GET.get("classification", "")
+    if classification not in FileInventory.Classification.values:
+        messages.error(request, "Unknown classification.")
+        return redirect("core:dashboard")
+    # Likely orphans have their own workspace (register / trash actions).
+    if classification == FileInventory.Classification.LIKELY_ORPHAN:
+        return redirect("core:orphan_finder")
+
+    storage_id = request.GET.get("storage", "").strip()
+    storages = StorageMount.objects.filter(enabled=True).order_by("display_name")
+    if storage_id:
+        storages = storages.filter(storage_id=storage_id)
+
+    files: list[FileInventory] = []
+    for storage in storages:
+        scan = _latest_storage_result_scan(storage)
+        if not scan:
+            continue
+        files.extend(
+            FileInventory.objects.select_related("storage", "scan_run")
+            .filter(scan_run=scan, storage=storage, classification=classification)
+            .order_by("path")
+        )
+    files = sorted(files, key=lambda item: (item.storage.display_name, item.path))
+
+    page_size = 200
+    total = len(files)
+    try:
+        page = max(0, int(request.GET.get("page", "0")))
+    except ValueError:
+        page = 0
+    max_page = max(0, (total - 1) // page_size) if total else 0
+    page = min(page, max_page)
+    start = page * page_size
+    page_files = files[start : start + page_size]
+    for entry in page_files:
+        entry.category_label = _content_category_label(entry.content_category, entry.path)
+        entry.browser_url = _browser_url_for_file(entry)
+
+    query = {"classification": classification}
+    if storage_id:
+        query["storage"] = storage_id
+
+    context = {
+        **navigation_context("orphans"),
+        "latest_scan": _latest_result_scan(),
+        "classification_value": classification,
+        "classification_label": FileInventory.Classification(classification).label,
+        "files": page_files,
+        "total": total,
+        "page": page,
+        "has_prev": page > 0,
+        "has_next": start + page_size < total,
+        "start_index": start + 1 if total else 0,
+        "end_index": min(start + page_size, total),
+        "prev_query": urlencode({**query, "page": page - 1}),
+        "next_query": urlencode({**query, "page": page + 1}),
+    }
+    return render(request, "core/classified_files.html", context)
+
+
+def _browser_url_for_file(entry: FileInventory) -> str:
+    """Link to the storage browser opened at the file's containing folder."""
+    url = reverse("core:storage_browser", args=[entry.storage.storage_id])
+    parent = PurePosixPath(entry.path).parent
+    parent_str = "" if str(parent) in (".", "") else str(parent)
+    if parent_str:
+        url = f"{url}?{urlencode({'path': parent_str})}"
+    return url
 
 
 @require_POST
@@ -2250,10 +2351,13 @@ def _content_category_label(category: str, path: str) -> str:
             return "Templates"
 
     labels = {
+        "app_internal": "App internal",
         "backup": "Backups",
         "base_image": "Base image",
         "ct_private": "CT private data",
         "ct_template": "CT templates",
+        "import_content": "Import content",
+        "import_directory": "Import content",
         "iso": "ISO images",
         "snippet": "Snippets",
         "template_directory": "Templates",

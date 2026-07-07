@@ -1557,6 +1557,7 @@ button.tree-node {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
   gap: 14px;
+  margin-bottom: 14px;
 }
 
 .monitor-split-view {

@@ -88,11 +88,11 @@
       {% include "core/partials/classification_legend.html" %}
       <table class="data-table compact">
         <tbody>
-          <tr><th>Referenced</th><td>{{ classification_counts.referenced|default:0 }}</td></tr>
-          <tr><th>Likely orphan</th><td>{{ classification_counts.likely_orphan|default:0 }}</td></tr>
-          <tr><th>Unknown</th><td>{{ classification_counts.unknown|default:0 }}</td></tr>
-          <tr><th>Blocked</th><td>{{ classification_counts.classification_blocked|default:0 }}</td></tr>
-          <tr><th>Trash</th><td>{{ classification_counts.trash|default:0 }}</td></tr>
+          <tr><th>Referenced</th><td><a href="{% url 'core:classified_files' %}?classification=referenced">{{ classification_counts.referenced|default:0 }}</a></td></tr>
+          <tr><th>Likely orphan</th><td><a href="{% url 'core:orphan_finder' %}">{{ classification_counts.likely_orphan|default:0 }}</a></td></tr>
+          <tr><th>Unknown</th><td><a href="{% url 'core:classified_files' %}?classification=unknown">{{ classification_counts.unknown|default:0 }}</a></td></tr>
+          <tr><th>Blocked</th><td><a href="{% url 'core:classified_files' %}?classification=classification_blocked">{{ classification_counts.classification_blocked|default:0 }}</a></td></tr>
+          <tr><th>Trash</th><td><a href="{% url 'core:classified_files' %}?classification=trash">{{ classification_counts.trash|default:0 }}</a></td></tr>
         </tbody>
       </table>
     </div>

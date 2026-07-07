@@ -144,6 +144,71 @@ class ClassificationTests(SimpleTestCase):
         self.assertEqual(categorize_proxmox_path("images"), "vm_images")
         self.assertEqual(categorize_proxmox_path("images/500"), "vm_image_directory")
 
+    def test_categorizes_import_content_and_app_internal_paths(self):
+        self.assertEqual(categorize_proxmox_path("import"), "import_directory")
+        self.assertEqual(categorize_proxmox_path("import/disk.qcow2"), "import_content")
+        self.assertEqual(categorize_proxmox_path(".pve-helper-upload-tmp"), "app_internal")
+        self.assertEqual(categorize_proxmox_path(".pve-helper-upload-tmp/x.part"), "app_internal")
+
+    def _classify(self, **overrides):
+        params = dict(
+            relative_path="",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="unknown",
+            derived_volid="",
+            referenced_volids=set(),
+            template_vmids=set(),
+            gate_ok=True,
+            missing_consumers=[],
+        )
+        params.update(overrides)
+        return classify_entry(**params)
+
+    def test_import_content_directory_is_infrastructure(self):
+        result = self._classify(
+            relative_path="import",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="import_directory",
+        )
+        self.assertEqual(result.classification, FileInventory.Classification.INFRASTRUCTURE)
+
+    def test_import_content_file_is_proxmox_content(self):
+        result = self._classify(relative_path="import/disk.qcow2", content_category="import_content")
+        self.assertEqual(result.classification, FileInventory.Classification.PROXMOX_CONTENT)
+
+    def test_app_internal_directory_is_infrastructure_not_unknown(self):
+        result = self._classify(
+            relative_path=".pve-helper-upload-tmp",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="app_internal",
+        )
+        self.assertEqual(result.classification, FileInventory.Classification.INFRASTRUCTURE)
+
+    def test_loose_disk_image_is_unknown_with_wrong_folder_hint_not_orphan(self):
+        result = self._classify(
+            relative_path="images/cirros-0.6.2-x86_64-disk.img",
+            content_category="vm_image_directory",
+        )
+        self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
+        self.assertIn("wrong folder", result.reason)
+        self.assertIn("import/", result.reason)
+
+    def test_real_vm_disk_volume_without_reference_is_orphan(self):
+        result = self._classify(
+            relative_path="images/100/vm-100-disk-0.qcow2",
+            content_category="vm_disk",
+            derived_volid="nfs-vm:100/vm-100-disk-0.qcow2",
+        )
+        self.assertEqual(result.classification, FileInventory.Classification.LIKELY_ORPHAN)
+
+    def test_foreign_file_is_unknown_and_flagged_as_not_belonging(self):
+        result = self._classify(
+            relative_path="images/backdoor.sh",
+            content_category="vm_image_directory",
+        )
+        self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
+        self.assertIn("does not belong", result.reason)
+
     def test_storage_scanner_records_permission_errors_without_raising(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1275,6 +1340,78 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "Disk image")
         self.assertContains(response, "Container template")
         self.assertContains(response, "In use: 1")
+
+    def test_classified_files_lists_and_links_to_folder(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/cirros-0.6.2-x86_64-disk.img",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_image_directory",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+
+        # Unknown drill-down lists the file and links to its containing folder.
+        response = self.client.get(reverse("core:classified_files"), {"classification": "unknown"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "cirros-0.6.2-x86_64-disk.img")
+        browser_url = reverse("core:storage_browser", args=["nfs-vm"])
+        self.assertContains(response, f'href="{browser_url}?path=images"')
+
+        # Likely orphans have their own workspace.
+        response = self.client.get(reverse("core:classified_files"), {"classification": "likely_orphan"})
+        self.assertRedirects(response, reverse("core:orphan_finder"))
+
+        # Unknown classifications bounce back to the dashboard.
+        response = self.client.get(reverse("core:classified_files"), {"classification": "bogus"})
+        self.assertRedirects(response, reverse("core:dashboard"))
+
+    def test_storage_folders_api_lists_directories_for_dest_picker(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve-node-1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        for path, kind in [
+            ("images", FileInventory.EntryType.DIRECTORY),
+            ("images/100", FileInventory.EntryType.DIRECTORY),
+            ("template", FileInventory.EntryType.DIRECTORY),
+            (".trash", FileInventory.EntryType.DIRECTORY),
+            ("images/100/vm-100-disk-0.qcow2", FileInventory.EntryType.FILE),
+        ]:
+            FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path=path,
+                entry_type=kind,
+                content_category="unknown",
+                classification=FileInventory.Classification.UNKNOWN,
+            )
+
+        response = self.client.get(reverse("core:storage_folders", args=["nfs-vm"]))
+        self.assertEqual(response.status_code, 200)
+        folders = response.json()["folders"]
+        self.assertIn("images", folders)
+        self.assertIn("images/100", folders)
+        self.assertIn("template", folders)
+        # Internal / trash directories and files are excluded.
+        self.assertNotIn(".trash", folders)
+        self.assertNotIn("images/100/vm-100-disk-0.qcow2", folders)
 
     def test_storage_content_update_blocks_used_content_type(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
