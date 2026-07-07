@@ -1796,12 +1796,16 @@ button.tree-node {
 }
 
 .segmented-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 30px;
   padding: 0 11px;
   border: 0;
   border-right: 1px solid var(--line);
   background: transparent;
   color: var(--text);
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -3574,6 +3578,19 @@ code {
   height: 14px;
 }
 
+/* Clarity object-type icons are fill-based (unlike Lucide's stroke); default to
+   1em so they inherit the container's svg sizing rules. */
+.vicon {
+  width: 1em;
+  height: 1em;
+  fill: currentColor;
+  stroke: none;
+}
+
+.guest-list-icon {
+  position: relative;
+}
+
 .summary-os-icon svg {
   width: 22px;
   height: 22px;
@@ -3687,13 +3704,19 @@ code {
   margin-top: 10px;
 }
 
-/* --- polish v4: green play icon, equal cards, padding, actions, drag hint --- */
-/* running = solid green play icon (replaces the monitor/box icon) */
-.running-icon svg {
-  width: 15px;
-  height: 15px;
-  color: #22c55e;
-  fill: #22c55e;
+/* --- polish v4: equal cards, padding, actions, drag hint --- */
+/* vSphere shows the type icon plus a small green "running" triangle overlay in
+   the lower-left corner, rather than replacing the icon. */
+.guest-list-icon.running-icon::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  bottom: -1px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 3.5px 0 3.5px 6px;
+  border-color: transparent transparent transparent #3fae5a;
 }
 
 /* equal-size cards across the grid */
