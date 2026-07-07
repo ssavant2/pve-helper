@@ -3310,6 +3310,12 @@ code {
   color: #acbac3;
 }
 
+/* Keep the object-type icon a neutral grey everywhere (a touch brighter than
+   the label), even inside the Overview where the name link is accent-blue. */
+:root[data-theme="dark"] .guest-list-icon {
+  color: #c3ced5;
+}
+
 :root[data-theme="dark"] .guest-list-item:hover {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
@@ -3337,9 +3343,9 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  opacity: 0.92;
+  width: 20px;
+  height: 20px;
+  opacity: 1;
 }
 
 .guest-list-icon i {
@@ -3574,8 +3580,8 @@ code {
 
 /* lucide replaces <i> with <svg>; size the svg, not the <i> */
 .guest-list-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
 }
 
 /* Clarity object-type icons are fill-based (unlike Lucide's stroke). The <i>
@@ -3720,12 +3726,12 @@ code {
 .guest-list-icon.running-icon::after {
   content: "";
   position: absolute;
-  left: -2px;
-  bottom: -2px;
+  top: 3px;
+  right: 3px;
   width: 0;
   height: 0;
   border-style: solid;
-  border-width: 4.5px 0 4.5px 8px;
+  border-width: 4px 0 4px 7px;
   border-color: transparent transparent transparent #5bb974;
 }
 
@@ -5769,6 +5775,13 @@ html[data-theme="dark"] .hardware-editor-page {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Match the Inventory list density instead of the roomy default table rows.
+   Needs to out-specify .data-table.compact td. */
+.data-table.compact.vm-overview-table td {
+  padding-top: 3px;
+  padding-bottom: 3px;
 }
 
 .vm-overview-table [data-column="name"] {
