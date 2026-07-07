@@ -3337,9 +3337,21 @@ code {
 /* vSphere's selected row is a light "chip": pale fill, dark text, regular weight. */
 :root[data-theme="dark"] .guest-list-item.active,
 :root[data-theme="dark"] .guest-list-item.active:hover {
-  background: #eef1f3;
+  background: #dce5ea;
   color: #16242c;
   font-weight: 400;
+}
+
+:root[data-theme="dark"] .guest-list-item.active .guest-list-icon,
+:root[data-theme="dark"] .guest-list-item.active:hover .guest-list-icon {
+  color: #3f515c;
+  filter: none;
+}
+
+:root[data-theme="dark"] .guest-list-item.active .guest-list-icon.running-icon::after,
+:root[data-theme="dark"] .guest-list-item.active:hover .guest-list-icon.running-icon::after {
+  border-left-color: #2ca85f;
+  filter: none;
 }
 
 .guest-list-item .status-dot {
