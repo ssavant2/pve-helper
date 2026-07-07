@@ -3337,9 +3337,9 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  opacity: 0.7;
+  width: 18px;
+  height: 18px;
+  opacity: 0.92;
 }
 
 .guest-list-icon i {
@@ -3574,8 +3574,8 @@ code {
 
 /* lucide replaces <i> with <svg>; size the svg, not the <i> */
 .guest-list-icon svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 
 /* Clarity object-type icons are fill-based (unlike Lucide's stroke). The <i>
@@ -3720,13 +3720,13 @@ code {
 .guest-list-icon.running-icon::after {
   content: "";
   position: absolute;
-  left: -1px;
-  bottom: -1px;
+  left: -2px;
+  bottom: -2px;
   width: 0;
   height: 0;
   border-style: solid;
-  border-width: 3.5px 0 3.5px 6px;
-  border-color: transparent transparent transparent #3fae5a;
+  border-width: 4.5px 0 4.5px 8px;
+  border-color: transparent transparent transparent #5bb974;
 }
 
 /* equal-size cards across the grid */

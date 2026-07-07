@@ -2273,7 +2273,8 @@
     const row = rows[0];
     const label = row?.dataset.guestLabel || "guest";
     const target = row?.dataset.guestTarget || "";
-    const vmid = target.split(":")[1] || "";
+    // target is like "vm:986@pve3" — confirm on the numeric VMID only.
+    const vmid = (target.split(":")[1] || "").split("@")[0];
     openVmFormDialog({
       title: "Remove VM/CT",
       summary: label,

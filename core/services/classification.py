@@ -124,6 +124,17 @@ def parse_config_value_volid(value: str) -> str:
 # loose file that happens to sit directly in the ``images/`` directory.
 DISK_IMAGE_EXTENSIONS = {".qcow2", ".raw", ".vmdk", ".img", ".qed", ".vdi", ".vhd", ".vhdx"}
 
+# Expected file extensions for content categories that have a clear file type,
+# so a stray file (e.g. a .txt in template/iso) is not treated as that content.
+CONTENT_EXTENSIONS = {
+    "iso": (".iso", ".img"),
+    "ct_template": (".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tar.lzo", ".tgz", ".tar"),
+}
+CONTENT_LABELS = {
+    "iso": "ISO",
+    "ct_template": "container template",
+}
+
 
 @dataclass(frozen=True)
 class ClassificationResult:
@@ -241,6 +252,23 @@ def classify_entry(
         "backup", "iso", "ct_template", "ct_private", "snippet", "import_content",
     }
     if content_category in KNOWN_CONTENT_CATEGORIES:
+        # Being in the right folder isn't enough: a stray file (e.g. a .txt in
+        # template/iso) is not Proxmox content. For categories with a clear file
+        # type, require a matching extension; otherwise flag it as misplaced.
+        allowed = CONTENT_EXTENSIONS.get(content_category)
+        if allowed and entry_type == FileInventory.EntryType.FILE:
+            name = PurePosixPath(relative_path).name.lower()
+            if not any(name.endswith(ext) for ext in allowed):
+                label = CONTENT_LABELS.get(content_category, content_category)
+                return ClassificationResult(
+                    classification=FileInventory.Classification.UNKNOWN,
+                    reason=(
+                        f"File is in the {label} directory but is not a recognised "
+                        f"{label} file — it is probably misplaced."
+                    ),
+                    matched_object={},
+                    evidence=evidence,
+                )
         return ClassificationResult(
             classification=FileInventory.Classification.PROXMOX_CONTENT,
             reason="File belongs to a recognized Proxmox content type.",

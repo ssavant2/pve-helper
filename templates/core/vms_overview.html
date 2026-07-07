@@ -132,7 +132,7 @@
                 <td data-column="name" data-sort-value="{{ g.name|default:g.vmid }}">
                   <a class="vm-name-link" href="{{ g.detail_url }}">
                     <span class="guest-list-icon{% if g.status == 'running' %} running-icon{% endif %}" data-guest-status-icon title="{{ g.status|default:'unknown' }}">
-                      <i data-vicon="{% if g.object_type == 'ct' %}container{% elif g.is_template %}template{% else %}vm{% endif %}" aria-hidden="true"></i>
+                      <i data-vicon="{% if g.object_type == 'ct' %}container{% else %}vm{% endif %}" aria-hidden="true"></i>
                     </span>
                     {% guest_label g.guest_identity %}
                   </a>

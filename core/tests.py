@@ -209,6 +209,23 @@ class ClassificationTests(SimpleTestCase):
         self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
         self.assertIn("does not belong", result.reason)
 
+    def test_stray_txt_in_iso_folder_is_not_proxmox_content(self):
+        result = self._classify(relative_path="template/iso/junk.txt", content_category="iso")
+        self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
+        self.assertIn("misplaced", result.reason)
+
+    def test_real_iso_in_iso_folder_is_proxmox_content(self):
+        result = self._classify(relative_path="template/iso/ubuntu-24.04.iso", content_category="iso")
+        self.assertEqual(result.classification, FileInventory.Classification.PROXMOX_CONTENT)
+
+    def test_ct_template_tarball_is_content_but_stray_file_is_not(self):
+        good = self._classify(
+            relative_path="template/cache/debian-12.tar.zst", content_category="ct_template"
+        )
+        self.assertEqual(good.classification, FileInventory.Classification.PROXMOX_CONTENT)
+        stray = self._classify(relative_path="template/cache/readme.md", content_category="ct_template")
+        self.assertEqual(stray.classification, FileInventory.Classification.UNKNOWN)
+
     def test_storage_scanner_records_permission_errors_without_raising(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
