@@ -20,6 +20,7 @@ GUEST_TASK_NAMES = {
     "guest.power.reset": "Reset guest",
     "guest.snapshot.create": "Create snapshot",
     "guest.snapshot.delete": "Delete snapshot",
+    "guest.snapshot.delete_all": "Delete all snapshots",
     "guest.snapshot.rollback": "Rollback snapshot",
     "guest.template.convert": "Convert to template",
     "guest.clone.create": "Clone guest",
@@ -112,9 +113,13 @@ def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTa
     tasks.extend(_file_task(event) for event in _visible_file_tasks())
     tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
     tasks.extend(_guest_task(event) for event in _visible_guest_tasks())
-    tasks.sort(key=lambda task: task["sort_at"], reverse=True)
+    tasks.sort(key=_task_timeline_sort_at, reverse=True)
     total = len(tasks)
     return RecentTaskPage(tasks=tasks[offset : offset + limit], page=page, limit=limit, total=total)
+
+
+def _task_timeline_sort_at(task: dict[str, object]):
+    return task.get("started_at") or task.get("sort_at")
 
 
 def _visible_scan_tasks():
@@ -203,6 +208,7 @@ def serialize_task(task: dict[str, object]) -> dict[str, object]:
         "initiator": str(task["initiator"]),
         "queued_for": str(task["queued_for"]),
         "started_at": _datetime_label(task.get("started_at")),
+        "started_at_ms": _datetime_ms(task.get("started_at")),
         "finished_at": _datetime_label(task.get("finished_at")),
         "finished_at_ms": _datetime_ms(task.get("finished_at")),
         "server": str(task["server"] or "-"),

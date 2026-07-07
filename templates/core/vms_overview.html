@@ -78,7 +78,7 @@
       </form>
 
       <div class="data-table-scroll vm-overview-scroll">
-        <table class="data-table compact vm-overview-table" id="vm-overview-table" data-filterable-table data-sortable-table data-column-table="vm-overview">
+        <table class="data-table compact vm-overview-table" id="vm-overview-table" data-filterable-table data-sortable-table data-resizable-columns data-column-table="vm-overview">
           <thead>
             <tr>
               <th class="vm-select-column">
@@ -154,7 +154,7 @@
                 <td data-column="nics" data-sort-value="{{ g.nic_count }}">{{ g.nic_count_label }}</td>
                 <td data-column="disks" data-sort-value="{{ g.disk_count }}">{{ g.disk_count_label }}</td>
                 <td data-column="uptime" data-sort-value="{{ g.uptime_seconds }}">{{ g.uptime_label }}</td>
-                <td data-column="ip" data-agent-ip-cell data-sort-value="{{ g.ip_label }}">{{ g.ip_label }}</td>
+                <td data-column="ip" data-agent-ip-cell data-ip-raw="{{ g.ip_label }}" data-sort-value="{{ g.ip_label }}">{{ g.ip_label }}</td>
                 <td data-column="mac" data-sort-value="{{ g.mac_label }}">{{ g.mac_label }}</td>
                 <td data-column="storage" data-sort-value="{{ g.storage_label }}">{{ g.storage_label }}</td>
                 <td data-column="tags" data-sort-value="{{ g.tags_label }}">{{ g.tags_label }}</td>

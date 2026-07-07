@@ -29,10 +29,20 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260707-19">
+    <script>
+      (function () {
+        try {
+          var ipVersionStyle = localStorage.getItem("pve-helper-ip-version-style");
+          document.documentElement.dataset.ipVersionStyle = ipVersionStyle === "ipv4-only" ? "ipv4-only" : "all";
+        } catch (error) {
+          document.documentElement.dataset.ipVersionStyle = "all";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260707-25">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script defer src="{% static 'js/app.js' %}?v=20260707-19"></script>
+    <script defer src="{% static 'js/app.js' %}?v=20260707-25"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -51,6 +61,9 @@
           </button>
           <button class="theme-toggle" type="button" data-guest-id-toggle aria-pressed="true" aria-label="Hide VM/CT IDs" title="Toggle VM/CT ID display">
             <span data-guest-id-label>IDs on</span>
+          </button>
+          <button class="theme-toggle" type="button" data-ip-version-toggle aria-pressed="false" aria-label="Show IPv4 only" title="Toggle IPv6 display">
+            <span data-ip-version-label>IPv4+IPv6</span>
           </button>
           {% if request.user.is_authenticated %}
             <span>{{ request.user.get_username }}</span>
@@ -227,32 +240,32 @@
           </div>
         </div>
         <div class="task-table-wrap">
-          <table class="task-table">
+          <table class="task-table" data-resizable-columns data-column-table="recent-tasks">
             <thead>
               <tr>
-                <th>Task Name</th>
-                <th>Target</th>
-                <th>Status</th>
-                <th>Details</th>
-                <th>Initiator</th>
-                <th>Queued For</th>
-                <th>Start Time</th>
-                <th>Completion Time</th>
-                <th>Server</th>
+                <th data-column="task-name">Task Name</th>
+                <th data-column="target">Target</th>
+                <th data-column="status">Status</th>
+                <th data-column="details">Details</th>
+                <th data-column="initiator">Initiator</th>
+                <th data-column="queued">Queued For</th>
+                <th data-column="started" class="fixed-sort-heading" aria-sort="descending">Start Time</th>
+                <th data-column="finished">Completion Time</th>
+                <th data-column="server">Server</th>
               </tr>
             </thead>
             <tbody data-task-rows>
               {% for task in app_recent_tasks %}
                 <tr>
-                  <td>{{ task.name }}</td>
-                  <td>{% if task.target_guest %}{% guest_label task.target_guest %}{% else %}{{ task.target }}{% endif %}</td>
-                  <td><span class="badge {{ task.status_class }}">{{ task.status }}</span></td>
-                  <td>{{ task.details }}</td>
-                  <td>{{ task.initiator }}</td>
-                  <td>{{ task.queued_for }}</td>
-                  <td>{{ task.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
-                  <td>{{ task.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
-                  <td>{{ task.server|default:"-" }}</td>
+                  <td data-column="task-name" data-sort-value="{{ task.name }}">{{ task.name }}</td>
+                  <td data-column="target" data-sort-value="{% if task.target_guest %}{{ task.target_guest.name|default:task.target_guest.vmid }}{% else %}{{ task.target }}{% endif %}">{% if task.target_guest %}{% guest_label task.target_guest %}{% else %}{{ task.target }}{% endif %}</td>
+                  <td data-column="status" data-sort-value="{{ task.status }}"><span class="badge {{ task.status_class }}">{{ task.status }}</span></td>
+                  <td data-column="details" data-sort-value="{{ task.details }}">{{ task.details }}</td>
+                  <td data-column="initiator" data-sort-value="{{ task.initiator }}">{{ task.initiator }}</td>
+                  <td data-column="queued" data-sort-value="{{ task.queued_for }}">{{ task.queued_for }}</td>
+                  <td data-column="started" data-sort-value="{{ task.started_at|date:'U'|default:'0' }}">{{ task.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                  <td data-column="finished" data-sort-value="{{ task.finished_at|date:'U'|default:'0' }}">{{ task.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                  <td data-column="server" data-sort-value="{{ task.server|default:'-' }}">{{ task.server|default:"-" }}</td>
                 </tr>
               {% empty %}
                 <tr>

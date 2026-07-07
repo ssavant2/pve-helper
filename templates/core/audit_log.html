@@ -42,43 +42,34 @@
         <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Next 200</a>
       </span>
     </div>
-    <table class="data-table audit-table">
-      <colgroup>
-        <col class="audit-col-time">
-        <col class="audit-col-module">
-        <col class="audit-col-user">
-        <col class="audit-col-source">
-        <col class="audit-col-action">
-        <col class="audit-col-object">
-        <col class="audit-col-outcome">
-      </colgroup>
+    <table class="data-table audit-table" data-sortable-table data-resizable-columns data-column-table="audit-log">
       <thead>
         <tr>
-          <th>Time</th>
-          <th>Module</th>
-          <th>User</th>
-          <th>Source IP</th>
-          <th>Action</th>
-          <th>Object</th>
-          <th>Outcome</th>
+          <th data-column="time" data-sort="number">Time</th>
+          <th data-column="module" data-sort="text">Module</th>
+          <th data-column="user" data-sort="text">User</th>
+          <th data-column="source" data-sort="text">Source IP</th>
+          <th data-column="action" data-sort="text">Action</th>
+          <th data-column="object" data-sort="text">Object</th>
+          <th data-column="outcome" data-sort="text">Outcome</th>
         </tr>
       </thead>
       <tbody>
         {% for event in events %}
           <tr data-context-label="{{ event.object_id }}">
-            <td>{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
-            <td>{{ event.display_module }}</td>
-            <td>{{ event.username|default:"-" }}</td>
-            <td>{{ event.source_ip|default:"-" }}</td>
-            <td>{{ event.display_action }}</td>
-            <td>
+            <td data-column="time" data-sort-value="{{ event.timestamp|date:'U' }}">{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
+            <td data-column="module" data-sort-value="{{ event.display_module }}">{{ event.display_module }}</td>
+            <td data-column="user" data-sort-value="{{ event.username|default:'-' }}">{{ event.username|default:"-" }}</td>
+            <td data-column="source" data-sort-value="{{ event.source_ip|default:'-' }}">{{ event.source_ip|default:"-" }}</td>
+            <td data-column="action" data-sort-value="{{ event.display_action }}">{{ event.display_action }}</td>
+            <td data-column="object" data-sort-value="{% if event.guest_identity %}{{ event.guest_identity.name|default:event.guest_identity.vmid }}{% else %}{{ event.display_object }}{% endif %}">
               {% if event.guest_identity %}
                 {% guest_label event.guest_identity %}
               {% else %}
                 {{ event.display_object }}
               {% endif %}
             </td>
-            <td><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
+            <td data-column="outcome" data-sort-value="{{ event.outcome }}"><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
           </tr>
         {% endfor %}
         {% if not events %}

@@ -13,7 +13,7 @@
         <div class="panel-heading"><h2>Take Snapshot</h2></div>
         <form class="snapshot-form" method="post" action="{% url 'core:guest_snapshot_create' guest.object_type guest.vmid %}">
           {% csrf_token %}
-          <input type="text" name="snapname" placeholder="Snapshot name" pattern="[A-Za-z0-9_\-]+" title="Letters, digits, _ and - only" required autocomplete="off">
+          <input type="text" name="snapname" placeholder="Snapshot name" pattern="[A-Za-z][A-Za-z0-9_\-]*" title="Must start with a letter. Letters, digits, _ and - only." required autocomplete="off">
           <input type="text" name="description" placeholder="Description (optional)" autocomplete="off">
           {% if guest.object_type == 'vm' %}<label class="snapshot-vmstate"><input type="checkbox" name="vmstate"> Include RAM</label>{% endif %}
           <button class="primary-action" type="submit">Take snapshot</button>
@@ -21,62 +21,6 @@
       </div>
     {% endif %}
 
-    <div class="panel panel-spaced">
-      <div class="panel-heading">
-        <h2>Snapshots <span class="muted">({{ snapshot_count }})</span></h2>
-        {% if guest_write_enabled and snapshot_count %}
-          <form method="post" action="{% url 'core:guest_snapshot_delete_all' guest.object_type guest.vmid %}" onsubmit="return confirm('Delete all {{ snapshot_count }} snapshots for this guest? This cannot be undone.');">
-            {% csrf_token %}
-            <button class="secondary-action danger" type="submit">Delete all</button>
-          </form>
-        {% endif %}
-      </div>
-      {% if snapshot_error %}<p class="panel-meta"><span class="badge failed">Unavailable</span> {{ snapshot_error }}</p>{% endif %}
-      <table class="data-table compact snapshot-tree">
-        <thead>
-          <tr><th>Name</th><th>RAM</th><th>Date / Status</th><th>Description</th>{% if guest_write_enabled %}<th aria-label="Actions"></th>{% endif %}</tr>
-        </thead>
-        <tbody>
-          {% for snap in snapshot_tree %}
-            <tr class="{% if snap.is_current %}snap-now-row{% endif %}">
-              <td>
-                <span class="snap-name" style="padding-left: {{ snap.indent }}px;">
-                  {% if snap.is_current %}
-                    <i data-lucide="monitor" class="snap-icon snap-icon-now" aria-hidden="true"></i><strong>NOW</strong>
-                  {% else %}
-                    <i data-lucide="history" class="snap-icon" aria-hidden="true"></i>{{ snap.name }}
-                  {% endif %}
-                </span>
-              </td>
-              <td>{% if not snap.is_current %}{% if snap.vmstate %}Yes{% else %}No{% endif %}{% endif %}</td>
-              <td>
-                {% if snap.is_current %}
-                  <span class="muted">You are here!</span>
-                {% elif snap.snaptime %}
-                  {{ snap.snaptime|date:"Y-m-d H:i:s" }}
-                {% endif %}
-              </td>
-              <td>{{ snap.description|default:"" }}</td>
-              {% if guest_write_enabled %}
-                <td class="row-actions">
-                  {% if not snap.is_current %}
-                    <form class="inline-action-form" method="post" action="{% url 'core:guest_snapshot_rollback' guest.object_type guest.vmid snap.name %}" onsubmit="return confirm('Roll back to snapshot {{ snap.name|escapejs }}? Current state will be lost.');">
-                      {% csrf_token %}
-                      <button class="icon-button" type="submit" title="Rollback" aria-label="Rollback to {{ snap.name }}"><i data-lucide="rotate-ccw" aria-hidden="true"></i></button>
-                    </form>
-                    <form class="inline-action-form" method="post" action="{% url 'core:guest_snapshot_delete' guest.object_type guest.vmid snap.name %}" onsubmit="return confirm('Delete snapshot {{ snap.name|escapejs }}?');">
-                      {% csrf_token %}
-                      <button class="icon-button danger" type="submit" title="Delete" aria-label="Delete {{ snap.name }}"><i data-lucide="trash-2" aria-hidden="true"></i></button>
-                    </form>
-                  {% endif %}
-                </td>
-              {% endif %}
-            </tr>
-          {% empty %}
-            <tr><td colspan="{% if guest_write_enabled %}5{% else %}4{% endif %}" class="empty-state">No snapshots.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    {% include "core/partials/guest_snapshot_panel.html" %}
   </section>
 {% endblock %}

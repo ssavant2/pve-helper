@@ -558,11 +558,12 @@ def storage_browser(request, storage_id: str):
         "include_parent_row": current_path and file_offset == 0,
     }
     if file_partial:
+        include_parent_in_partial = request.GET.get("include_parent") == "1" and current_path and file_offset == 0
         return JsonResponse(
             {
                 "rows_html": render_to_string(
                     "core/partials/storage_file_rows.html",
-                    {**context, "include_parent_row": False},
+                    {**context, "include_parent_row": include_parent_in_partial},
                     request=request,
                 ),
                 "has_next": file_has_next,

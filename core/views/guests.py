@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import re
+
 from django.templatetags.static import static
 
 from .common import *  # noqa: F401,F403
 from . import common
 from core.services.console_sessions import create_guest_console_session
+
+
+SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+SNAPSHOT_NAME_HELP = "Snapshot names must start with a letter and can then contain letters, digits, _ and -."
 
 
 @app_login_required
@@ -1920,6 +1926,13 @@ def guest_snapshots(request, object_type: str, vmid: int):
             "snapshot_rendered_at_ms": int(tz.now().timestamp() * 1000),
         }
     )
+    if request.GET.get("snapshot_partial") == "1":
+        return JsonResponse(
+            {
+                "html": render_to_string("core/partials/guest_snapshot_panel.html", context, request=request),
+                "rendered_at_ms": context["snapshot_rendered_at_ms"],
+            }
+        )
     return render(request, "core/guest_snapshots.html", context)
 
 
@@ -2709,6 +2722,94 @@ def _audit_guest_task_or_success(
     return _audit_guest(request, detail, audit_action, details)
 
 
+def _finish_guest_running_audit(
+    event: AuditEvent,
+    detail: SimpleNamespace,
+    response,
+    client,
+    *,
+    err: str = "",
+    audit_details: dict | None = None,
+    timeout_seconds: int | None = None,
+) -> AuditEvent:
+    details = dict(event.details if isinstance(event.details, dict) else {})
+    details.update(audit_details or {})
+    if err:
+        event.outcome = "failed"
+        details["error"] = err
+        details["finished_at"] = tz.now().isoformat()
+        event.details = details
+        event.save(update_fields=["outcome", "details"])
+        return event
+
+    if isinstance(response, str) and response.startswith("UPID:") and client is not None:
+        details.update(
+            {
+                "proxmox_task_upid": response,
+                "proxmox_task_node": detail.node,
+                "proxmox_endpoint": getattr(client, "endpoint", ""),
+            }
+        )
+        task_id = common.async_task(
+            "core.tasks.poll_guest_audit_task",
+            event.id,
+            getattr(client, "endpoint", ""),
+            detail.node,
+            response,
+            timeout_seconds or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
+        )
+        details["poll_task_id"] = task_id
+        event.details = details
+        event.save(update_fields=["details"])
+        return event
+
+    event.outcome = "success"
+    details["finished_at"] = tz.now().isoformat()
+    event.details = details
+    event.save(update_fields=["outcome", "details"])
+    return event
+
+
+def _bulk_action_initial_audit_details(
+    request,
+    action: str,
+    detail: SimpleNamespace,
+    snapshot_name: str = "",
+) -> tuple[str, dict]:
+    if action == "snapshot":
+        return "guest.snapshot.create", {"snapshot": snapshot_name}
+    if action == "delete_snapshots":
+        return "guest.snapshot.delete_all", {}
+    if action == "clone":
+        newid = request.POST.get("clone_newid", "").strip()
+        clone_name = request.POST.get("clone_name", "").strip()
+        storage = request.POST.get("clone_storage", "").strip()
+        details = {
+            "source_vmid": detail.vmid,
+            "new_name": clone_name,
+            "full": request.POST.get("clone_full") == "1",
+            "storage": storage,
+        }
+        if newid.isdigit():
+            details["new_vmid"] = int(newid)
+        elif newid:
+            details["new_vmid"] = newid
+        return "guest.clone.create", details
+    if action == "tags":
+        return "guest.tags.updated", {
+            "mode": request.POST.get("tags_mode", "").strip(),
+            "tags": _split_tag_text(request.POST.get("tags_value", "")),
+        }
+    if action == "destroy":
+        return "guest.destroy", {
+            "purge": request.POST.get("destroy_purge") == "1",
+            "destroy_unreferenced_disks": request.POST.get("destroy_unreferenced_disks") == "1",
+        }
+    if action == "template":
+        return "guest.template.convert", {}
+    return f"guest.power.{action}", {}
+
+
 @require_POST
 @app_login_required
 def guest_power(request, object_type: str, vmid: int):
@@ -2720,14 +2821,17 @@ def guest_power(request, object_type: str, vmid: int):
     if action not in GUEST_POWER_ACTIONS:
         messages.error(request, "Unknown power action.")
         return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+    running_event = _audit_guest(request, detail, f"guest.power.{action}", outcome="running")
     data, err, client = _guest_post_with_client(detail, f"status/{action}")
     if err:
         if "403" in err:
-            messages.error(request, proxmox_permission_hint("VM.PowerMgmt"))
+            error_label = proxmox_permission_hint("VM.PowerMgmt")
         else:
-            messages.error(request, f"Power action failed: {err}")
+            error_label = f"Power action failed: {err}"
+        _finish_guest_running_audit(running_event, detail, data, client, err=error_label)
+        messages.error(request, error_label)
     else:
-        _audit_guest_task_or_success(request, detail, f"guest.power.{action}", data, client)
+        _finish_guest_running_audit(running_event, detail, data, client)
         clear_live_guest_caches()
     return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
 
@@ -2735,94 +2839,141 @@ def guest_power(request, object_type: str, vmid: int):
 @require_POST
 @app_login_required
 def vms_bulk_action(request):
+    wants_json = request.headers.get("X-Requested-With") == "fetch" or "application/json" in request.headers.get("Accept", "")
+
+    def done(ok: bool = True, errors: list[str] | None = None):
+        if wants_json:
+            return JsonResponse({"ok": ok and not errors, "errors": errors or []})
+        return None
+
     if not settings.VM_WRITE_ENABLED:
+        response = done(False, ["VM/CT write actions are disabled."])
+        if response:
+            return response
         return redirect("core:vms_overview")
 
     action = request.POST.get("bulk_action", "").strip()
     targets = request.POST.getlist("guest")
     if action not in VM_BULK_ACTIONS:
+        response = done(False, ["Unknown VM/CT action."])
+        if response:
+            return response
         return redirect("core:vms_overview")
     if not targets:
+        response = done(False, ["No VM/CT targets selected."])
+        if response:
+            return response
         return redirect("core:vms_overview")
 
     snapshot_name = request.POST.get("snapshot_name", "").strip()
     if action == "snapshot" and not snapshot_name:
+        response = done(False, ["Snapshot name is required."])
+        if response:
+            return response
+        return redirect("core:vms_overview")
+    if action == "snapshot" and not SNAPSHOT_NAME_RE.match(snapshot_name):
+        if wants_json:
+            return done(False, [SNAPSHOT_NAME_HELP])
+        messages.error(request, SNAPSHOT_NAME_HELP)
         return redirect("core:vms_overview")
     if action == "clone" and len(targets) != 1:
+        response = done(False, ["Clone requires exactly one selected guest."])
+        if response:
+            return response
         return redirect("core:vms_overview")
     if action == "destroy" and len(targets) != 1:
+        response = done(False, ["Destroy requires exactly one selected guest."])
+        if response:
+            return response
         return redirect("core:vms_overview")
     if action == "tags" and request.POST.get("tags_mode", "").strip() not in {"add", "remove", "replace"}:
+        response = done(False, ["Unknown tag update mode."])
+        if response:
+            return response
         return redirect("core:vms_overview")
 
+    errors = []
     for target in targets:
         object_type, vmid, target_node = _parse_guest_target_value(target)
         if not object_type or vmid is None:
+            errors.append(f"Invalid target: {target}")
             continue
         try:
             detail = _require_guest(object_type, vmid, node=target_node)
         except Http404:
+            errors.append(f"Could not find target: {target}")
             continue
 
+        audit_action, initial_audit_details = _bulk_action_initial_audit_details(
+            request,
+            action,
+            detail,
+            snapshot_name,
+        )
+        running_event = _audit_guest(request, detail, audit_action, initial_audit_details, outcome="running")
         response = None
         client = None
         if action == "snapshot":
-            _data, err = _guest_post_wait_task(detail, "snapshot", {"snapname": snapshot_name})
-            audit_action = "guest.snapshot.create"
+            response, err, client = _guest_post_with_client(detail, "snapshot", {"snapname": snapshot_name})
             audit_details = {"snapshot": snapshot_name}
             error_label = _snapshot_error(err) if err else ""
         elif action == "delete_snapshots":
             deleted, err = _delete_all_guest_snapshots(detail)
-            audit_action = "guest.snapshot.delete_all"
             audit_details = {"deleted": deleted}
             error_label = _snapshot_error(err) if err else ""
         elif action == "clone":
             err, audit_details, response, client = _clone_guest_from_bulk_request(request, detail)
-            audit_action = "guest.clone.create"
             error_label = f"Clone failed: {err}" if err else ""
         elif action == "tags":
             err, audit_details = _update_guest_tags_from_bulk_request(request, detail)
-            audit_action = "guest.tags.updated"
             error_label = f"Tag update failed: {err}" if err else ""
             response = None
             client = None
         elif action == "destroy":
             err, audit_details, response, client = _destroy_guest_from_bulk_request(request, detail)
-            audit_action = "guest.destroy"
             error_label = f"Destroy failed: {err}" if err else ""
         elif action == "template":
             if object_type != ProxmoxInventory.ObjectType.VM:
-                _audit_guest(
-                    request,
+                _finish_guest_running_audit(
+                    running_event,
                     detail,
-                    "guest.template.convert",
-                    {"error": "Only VMs can be converted to templates."},
-                    outcome="failed",
+                    None,
+                    None,
+                    err="Only VMs can be converted to templates.",
                 )
+                errors.append("Only VMs can be converted to templates.")
                 continue
             response, err, client = _guest_post_with_client(detail, "template")
-            audit_action = "guest.template.convert"
             audit_details = None
             error_label = f"Template conversion failed: {err}" if err else ""
         else:
             response, err, client = _guest_post_with_client(detail, f"status/{action}")
-            audit_action = f"guest.power.{action}"
             audit_details = None
             error_label = f"Power action failed: {err}" if err else ""
 
         if err:
-            failure_details = dict(audit_details or {})
-            failure_details["error"] = error_label
-            _audit_guest(request, detail, audit_action, failure_details, outcome="failed")
+            _finish_guest_running_audit(
+                running_event,
+                detail,
+                response,
+                client,
+                err=error_label,
+                audit_details=audit_details,
+            )
+            errors.append(error_label)
             continue
 
-        _audit_guest_task_or_success(request, detail, audit_action, response, client, audit_details)
+        _finish_guest_running_audit(running_event, detail, response, client, audit_details=audit_details)
         if action == "template":
             _update_latest_guest_scan_config(detail, {"template": "1"}, [])
         if action == "destroy":
             _delete_latest_guest_scan_object(detail)
         if action in GUEST_POWER_ACTIONS or action in {"template", "clone", "tags", "destroy"}:
             clear_live_guest_caches()
+
+    response = done(not errors, errors)
+    if response:
+        return response
 
     redirect_to = request.POST.get("next", "").strip()
     if redirect_to and url_has_allowed_host_and_scheme(
@@ -3063,6 +3214,9 @@ def guest_snapshot_create(request, object_type: str, vmid: int):
     if not name:
         messages.error(request, "Snapshot name is required.")
         return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+    if not SNAPSHOT_NAME_RE.match(name):
+        messages.error(request, SNAPSHOT_NAME_HELP)
+        return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
     data = {"snapname": name}
     description = request.POST.get("description", "").strip()
     if description:
@@ -3070,11 +3224,14 @@ def guest_snapshot_create(request, object_type: str, vmid: int):
     # vmstate (include RAM) only exists for QEMU VMs; LXC has no such option.
     if object_type == ProxmoxInventory.ObjectType.VM and request.POST.get("vmstate") == "on":
         data["vmstate"] = 1
-    _data, err = _guest_post_wait_task(detail, "snapshot", data)
+    running_event = _audit_guest(request, detail, "guest.snapshot.create", {"snapshot": name}, outcome="running")
+    response, err, client = _guest_post_with_client(detail, "snapshot", data)
     if err:
-        messages.error(request, _snapshot_error(err))
+        error_label = _snapshot_error(err)
+        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": name})
+        messages.error(request, error_label)
     else:
-        _audit_guest(request, detail, "guest.snapshot.create", {"snapshot": name})
+        _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": name})
     return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
 
 
@@ -3085,11 +3242,14 @@ def guest_snapshot_delete(request, object_type: str, vmid: int, snapname: str):
     if disabled:
         return disabled
     detail = _require_guest(object_type, vmid)
-    _data, err = _guest_delete_wait_task(detail, f"snapshot/{quote(snapname, safe='')}")
+    running_event = _audit_guest(request, detail, "guest.snapshot.delete", {"snapshot": snapname}, outcome="running")
+    response, err, client = _guest_delete_with_client(detail, f"snapshot/{quote(snapname, safe='')}")
     if err:
-        messages.error(request, _snapshot_error(err))
+        error_label = _snapshot_error(err)
+        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname})
+        messages.error(request, error_label)
     else:
-        _audit_guest(request, detail, "guest.snapshot.delete", {"snapshot": snapname})
+        _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
     return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
 
 
@@ -3100,11 +3260,14 @@ def guest_snapshot_delete_all(request, object_type: str, vmid: int):
     if disabled:
         return disabled
     detail = _require_guest(object_type, vmid)
+    running_event = _audit_guest(request, detail, "guest.snapshot.delete_all", outcome="running")
     deleted, err = _delete_all_guest_snapshots(detail)
     if err:
-        messages.error(request, _snapshot_error(err))
+        error_label = _snapshot_error(err)
+        _finish_guest_running_audit(running_event, detail, None, None, err=error_label)
+        messages.error(request, error_label)
     else:
-        _audit_guest(request, detail, "guest.snapshot.delete_all", {"deleted": deleted})
+        _finish_guest_running_audit(running_event, detail, None, None, audit_details={"deleted": deleted})
     return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
 
 
@@ -3115,11 +3278,14 @@ def guest_snapshot_rollback(request, object_type: str, vmid: int, snapname: str)
     if disabled:
         return disabled
     detail = _require_guest(object_type, vmid)
-    _data, err = _guest_post(detail, f"snapshot/{quote(snapname, safe='')}/rollback")
+    running_event = _audit_guest(request, detail, "guest.snapshot.rollback", {"snapshot": snapname}, outcome="running")
+    response, err, client = _guest_post_with_client(detail, f"snapshot/{quote(snapname, safe='')}/rollback")
     if err:
-        messages.error(request, _snapshot_error(err))
+        error_label = _snapshot_error(err)
+        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname})
+        messages.error(request, error_label)
     else:
-        _audit_guest(request, detail, "guest.snapshot.rollback", {"snapshot": snapname})
+        _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
     return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
 
 

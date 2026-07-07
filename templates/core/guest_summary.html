@@ -31,7 +31,7 @@
           {% if guest_agent_summary.kernel_release %}<div data-agent-dynamic-row><dt>Kernel</dt><dd>{{ guest_agent_summary.kernel_release }}</dd></div>{% endif %}
           {% if guest_agent_summary.hostname %}<div data-agent-dynamic-row><dt>DNS name</dt><dd>{{ guest_agent_summary.hostname }}</dd></div>{% endif %}
           {% if guest_agent_summary.ips %}
-            <div data-agent-dynamic-row><dt>IP addresses</dt><dd>{% for ip in guest_agent_summary.ips %}{{ ip }}{% if not forloop.last %}<br>{% endif %}{% endfor %}</dd></div>
+            <div data-agent-dynamic-row><dt>IP addresses</dt><dd>{% for ip in guest_agent_summary.ips %}{% if not forloop.first %}<br data-ip-separator>{% endif %}<span data-ip-address data-ip-version="{% if ':' in ip %}6{% else %}4{% endif %}">{{ ip }}</span>{% endfor %}</dd></div>
           {% endif %}
           <div>
             <dt>Guest agent</dt>

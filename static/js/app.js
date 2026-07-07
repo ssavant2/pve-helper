@@ -1,6 +1,7 @@
 (() => {
   const themeKey = "pve-helper-theme";
   const guestNameStyleKey = "pve-helper-guest-name-style";
+  const ipVersionStyleKey = "pve-helper-ip-version-style";
   const taskbarKey = "pve-helper-taskbar-collapsed";
   const softContentSelector = "[data-soft-nav-content]";
   const softStatusSelector = "[data-soft-nav-status]";
@@ -16,6 +17,16 @@
   let pageCleanup = [];
   let navigationController = null;
   const activeUploads = new Map();
+
+  const ipVersion = (value) => (String(value || "").includes(":") ? "6" : "4");
+
+  const preferredIpVersionStyle = () => {
+    try {
+      return localStorage.getItem(ipVersionStyleKey) === "ipv4-only" ? "ipv4-only" : "all";
+    } catch (_error) {
+      return "all";
+    }
+  };
 
   const preferredTheme = () => {
     try {
@@ -60,18 +71,24 @@
   // alongside Lucide. 36x36 outline shapes rendered into [data-vicon] elements.
   const CLARITY_ICONS = {
     vm: '<path d="M11,5H25V8h2V5a2,2,0,0,0-2-2H11A2,2,0,0,0,9,5v6.85h2Z"/><path d="M30,10H17v2h8v6h2V12h3V26H22V17a2,2,0,0,0-2-2H6a2,2,0,0,0-2,2V31a2,2,0,0,0,2,2H20a2,2,0,0,0,2-2V28h8a2,2,0,0,0,2-2V12A2,2,0,0,0,30,10ZM6,31V17H20v9H16V20H14v6a2,2,0,0,0,2,2h4v3Z"/>',
-    container: '<path d="M32,30H4a2,2,0,0,1-2-2V8A2,2,0,0,1,4,6H32a2,2,0,0,1,2,2V28A2,2,0,0,1,32,30ZM4,8V28H32V8Z"/><path d="M9,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,9,25.3Z"/><path d="M14.92,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,14.92,25.3Z"/><path d="M21,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,21,25.3Z"/><path d="M27,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,27,25.3Z"/>',
+    container:
+      '<path d="M32,30H4a2,2,0,0,1-2-2V8A2,2,0,0,1,4,6H32a2,2,0,0,1,2,2V28A2,2,0,0,1,32,30ZM4,8V28H32V8Z"/><path d="M9,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,9,25.3Z"/><path d="M14.92,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,14.92,25.3Z"/><path d="M21,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,21,25.3Z"/><path d="M27,25.3a.8.8,0,0,1-.8-.8v-13a.8.8,0,0,1,1.6,0v13A.8.8,0,0,1,27,25.3Z"/>',
     // Custom: a small VM glyph on a dog-eared page — our stand-in for vSphere's
     // proprietary "vm-template" sprite (a VM icon on a sheet of paper).
-    template: '<path fill-rule="evenodd" d="M6,2H22L30,10V34H6V2Zm2,2V32H28V11H21V4H8Z"/><path d="M21,4l7,7h-7z"/><g transform="translate(8.4,13.4) scale(0.5)"><path d="M11,5H25V8h2V5a2,2,0,0,0-2-2H11A2,2,0,0,0,9,5v6.85h2Z"/><path d="M30,10H17v2h8v6h2V12h3V26H22V17a2,2,0,0,0-2-2H6a2,2,0,0,0-2,2V31a2,2,0,0,0,2,2H20a2,2,0,0,0,2-2V28h8a2,2,0,0,0,2-2V12A2,2,0,0,0,30,10ZM6,31V17H20v9H16V20H14v6a2,2,0,0,0,2,2h4v3Z"/></g>',
-    storage: '<path d="M33,6.69h0c-.18-3.41-9.47-4.33-15-4.33S3,3.29,3,6.78V29.37c0,3.49,9.43,4.43,15,4.43s15-.93,15-4.43V6.78s0,0,0,0S33,6.7,33,6.69Zm-2,7.56c-.33.86-5.06,2.45-13,2.45A37.45,37.45,0,0,1,7,15.34v2.08A43.32,43.32,0,0,0,18,18.7c4,0,9.93-.48,13-2v5.17c-.33.86-5.06,2.45-13,2.45A37.45,37.45,0,0,1,7,22.92V25a43.32,43.32,0,0,0,11,1.28c4,0,9.93-.48,13-2v5.1c-.35.86-5.08,2.45-13,2.45S5.3,30.2,5,29.37V6.82C5.3,6,10,4.36,18,4.36c7.77,0,12.46,1.53,13,2.37-.52.87-5.21,2.39-13,2.39A37.6,37.6,0,0,1,7,7.76V9.85a43.53,43.53,0,0,0,11,1.27c4,0,9.93-.48,13-2Z"/>',
+    template:
+      '<path fill-rule="evenodd" d="M6,2H22L30,10V34H6V2Zm2,2V32H28V11H21V4H8Z"/><path d="M21,4l7,7h-7z"/><g transform="translate(8.4,13.4) scale(0.5)"><path d="M11,5H25V8h2V5a2,2,0,0,0-2-2H11A2,2,0,0,0,9,5v6.85h2Z"/><path d="M30,10H17v2h8v6h2V12h3V26H22V17a2,2,0,0,0-2-2H6a2,2,0,0,0-2,2V31a2,2,0,0,0,2,2H20a2,2,0,0,0,2-2V28h8a2,2,0,0,0,2-2V12A2,2,0,0,0,30,10ZM6,31V17H20v9H16V20H14v6a2,2,0,0,0,2,2h4v3Z"/></g>',
+    storage:
+      '<path d="M33,6.69h0c-.18-3.41-9.47-4.33-15-4.33S3,3.29,3,6.78V29.37c0,3.49,9.43,4.43,15,4.43s15-.93,15-4.43V6.78s0,0,0,0S33,6.7,33,6.69Zm-2,7.56c-.33.86-5.06,2.45-13,2.45A37.45,37.45,0,0,1,7,15.34v2.08A43.32,43.32,0,0,0,18,18.7c4,0,9.93-.48,13-2v5.17c-.33.86-5.06,2.45-13,2.45A37.45,37.45,0,0,1,7,22.92V25a43.32,43.32,0,0,0,11,1.28c4,0,9.93-.48,13-2v5.1c-.35.86-5.08,2.45-13,2.45S5.3,30.2,5,29.37V6.82C5.3,6,10,4.36,18,4.36c7.77,0,12.46,1.53,13,2.37-.52.87-5.21,2.39-13,2.39A37.6,37.6,0,0,1,7,7.76V9.85a43.53,43.53,0,0,0,11,1.27c4,0,9.93-.48,13-2Z"/>',
     host: '<path d="M26.5,2H9.5A1.5,1.5,0,0,0,8,3.5V34H28V3.5A1.5,1.5,0,0,0,26.5,2ZM26,32H10V4H26Z"/><rect x="12" y="6.2" width="12" height="1.6"/><rect x="12" y="10.2" width="12" height="1.6"/><path d="M18,22.78a3,3,0,1,0,3,3A3,3,0,0,0,18,22.78Zm0,4.5a1.5,1.5,0,1,1,1.5-1.5A1.5,1.5,0,0,1,18,27.28Z"/>',
-    cluster: '<path d="M31.36,8H27.5v2H31V30H27.5v2H33V9.67A1.65,1.65,0,0,0,31.36,8Z"/><path d="M5,10H8.5V8H4.64A1.65,1.65,0,0,0,3,9.67V32H8.5V30H5Z"/><ellipse cx="18.01" cy="25.99" rx="1.8" ry="1.79"/><path d="M24.32,4H11.68A1.68,1.68,0,0,0,10,5.68V32H26V5.68A1.68,1.68,0,0,0,24.32,4ZM24,30H12V6H24Z"/><rect x="13.5" y="9.21" width="9" height="1.6"/>',
-    nodes: '<path d="M10.5,34.29,2,29.39V19.58l8.5-4.9,8.5,4.9v9.81ZM4,28.23,10.5,32,17,28.23V20.74L10.5,17,4,20.74Z"/><path d="M25.5,34.29,17,29.39V19.58l8.5-4.9,8.5,4.9v9.81ZM19,28.23,25.5,32,32,28.23V20.74L25.5,17,19,20.74Z"/><path d="M18,21.32l-8.5-4.9V6.61L18,1.71l8.5,4.9v9.81Zm-6.5-6.06L18,19l6.5-3.75V7.77L18,4,11.5,7.77Z"/>',
-    network: '<path d="M26.58,32h-18a1,1,0,1,0,0,2h18a1,1,0,0,0,0-2Z"/><path d="M17.75,2a14,14,0,0,0-14,14c0,.45,0,.89.07,1.33l0,0h0A14,14,0,1,0,17.75,2Zm0,2a12,12,0,0,1,8.44,3.48c0,.33,0,.66,0,1A18.51,18.51,0,0,0,14,8.53a2.33,2.33,0,0,0-1.14-.61l-.25,0c-.12-.42-.23-.84-.32-1.27s-.14-.81-.19-1.22A11.92,11.92,0,0,1,17.75,4Zm-3,5.87A17,17,0,0,1,25.92,10a16.9,16.9,0,0,1-3.11,7,2.28,2.28,0,0,0-2.58.57c-.35-.2-.7-.4-1-.63a16,16,0,0,1-4.93-5.23,2.25,2.25,0,0,0,.47-1.77Zm-4-3.6c0,.21.06.43.1.64.09.44.21.87.33,1.3a2.28,2.28,0,0,0-1.1,2.25A18.32,18.32,0,0,0,5.9,14.22,12,12,0,0,1,10.76,6.27Zm0,15.71A2.34,2.34,0,0,0,9.2,23.74l-.64,0A11.94,11.94,0,0,1,5.8,16.92l.11-.19a16.9,16.9,0,0,1,4.81-4.89,2.31,2.31,0,0,0,2.28.63,17.53,17.53,0,0,0,5.35,5.65c.41.27.83.52,1.25.76A2.32,2.32,0,0,0,19.78,20a16.94,16.94,0,0,1-6.2,3.11A2.34,2.34,0,0,0,10.76,22Zm7,6a11.92,11.92,0,0,1-5.81-1.51l.28-.06a2.34,2.34,0,0,0,1.57-1.79,18.43,18.43,0,0,0,7-3.5,2.29,2.29,0,0,0,3-.62,17.41,17.41,0,0,0,4.32.56l.53,0A12,12,0,0,1,17.75,28Zm6.51-8.9a2.33,2.33,0,0,0-.33-1.19,18.4,18.4,0,0,0,3.39-7.37q.75.35,1.48.78a12,12,0,0,1,.42,8.2A16,16,0,0,1,24.27,19.11Z"/>',
+    cluster:
+      '<path d="M31.36,8H27.5v2H31V30H27.5v2H33V9.67A1.65,1.65,0,0,0,31.36,8Z"/><path d="M5,10H8.5V8H4.64A1.65,1.65,0,0,0,3,9.67V32H8.5V30H5Z"/><ellipse cx="18.01" cy="25.99" rx="1.8" ry="1.79"/><path d="M24.32,4H11.68A1.68,1.68,0,0,0,10,5.68V32H26V5.68A1.68,1.68,0,0,0,24.32,4ZM24,30H12V6H24Z"/><rect x="13.5" y="9.21" width="9" height="1.6"/>',
+    nodes:
+      '<path d="M10.5,34.29,2,29.39V19.58l8.5-4.9,8.5,4.9v9.81ZM4,28.23,10.5,32,17,28.23V20.74L10.5,17,4,20.74Z"/><path d="M25.5,34.29,17,29.39V19.58l8.5-4.9,8.5,4.9v9.81ZM19,28.23,25.5,32,32,28.23V20.74L25.5,17,19,20.74Z"/><path d="M18,21.32l-8.5-4.9V6.61L18,1.71l8.5,4.9v9.81Zm-6.5-6.06L18,19l6.5-3.75V7.77L18,4,11.5,7.77Z"/>',
+    network:
+      '<path d="M26.58,32h-18a1,1,0,1,0,0,2h18a1,1,0,0,0,0-2Z"/><path d="M17.75,2a14,14,0,0,0-14,14c0,.45,0,.89.07,1.33l0,0h0A14,14,0,1,0,17.75,2Zm0,2a12,12,0,0,1,8.44,3.48c0,.33,0,.66,0,1A18.51,18.51,0,0,0,14,8.53a2.33,2.33,0,0,0-1.14-.61l-.25,0c-.12-.42-.23-.84-.32-1.27s-.14-.81-.19-1.22A11.92,11.92,0,0,1,17.75,4Zm-3,5.87A17,17,0,0,1,25.92,10a16.9,16.9,0,0,1-3.11,7,2.28,2.28,0,0,0-2.58.57c-.35-.2-.7-.4-1-.63a16,16,0,0,1-4.93-5.23,2.25,2.25,0,0,0,.47-1.77Zm-4-3.6c0,.21.06.43.1.64.09.44.21.87.33,1.3a2.28,2.28,0,0,0-1.1,2.25A18.32,18.32,0,0,0,5.9,14.22,12,12,0,0,1,10.76,6.27Zm0,15.71A2.34,2.34,0,0,0,9.2,23.74l-.64,0A11.94,11.94,0,0,1,5.8,16.92l.11-.19a16.9,16.9,0,0,1,4.81-4.89,2.31,2.31,0,0,0,2.28.63,17.53,17.53,0,0,0,5.35,5.65c.41.27.83.52,1.25.76A2.32,2.32,0,0,0,19.78,20a16.94,16.94,0,0,1-6.2,3.11A2.34,2.34,0,0,0,10.76,22Zm7,6a11.92,11.92,0,0,1-5.81-1.51l.28-.06a2.34,2.34,0,0,0,1.57-1.79,18.43,18.43,0,0,0,7-3.5,2.29,2.29,0,0,0,3-.62,17.41,17.41,0,0,0,4.32.56l.53,0A12,12,0,0,1,17.75,28Zm6.51-8.9a2.33,2.33,0,0,0-.33-1.19,18.4,18.4,0,0,0,3.39-7.37q.75.35,1.48.78a12,12,0,0,1,.42,8.2A16,16,0,0,1,24.27,19.11Z"/>',
   };
   const renderVIcons = (root = document) => {
-    const scope = root && root.querySelectorAll ? root : document;
+    const scope = root?.querySelectorAll ? root : document;
     scope.querySelectorAll("[data-vicon]").forEach((el) => {
       const name = el.getAttribute("data-vicon");
       const shape = CLARITY_ICONS[name];
@@ -260,7 +277,9 @@
             sensitivity: "base",
           });
         })
-        .forEach((item) => list.appendChild(item));
+        .forEach((item) => {
+          list.appendChild(item);
+        });
     });
   };
 
@@ -277,6 +296,73 @@
       toggle.setAttribute("aria-label", showing ? "Hide VM/CT IDs" : "Show VM/CT IDs");
     }
     sortGuestList(showing);
+  };
+
+  const visibleIpText = (value) => {
+    const parts = String(value || "")
+      .split(/[\n,]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (document.documentElement.dataset.ipVersionStyle === "ipv4-only") {
+      return parts.filter((part) => ipVersion(part) === "4").join(", ") || "-";
+    }
+    return parts.join(", ") || "-";
+  };
+
+  const renderIpCell = (cell, rawValue) => {
+    if (!cell) {
+      return;
+    }
+    const raw = rawValue ?? cell.dataset.ipRaw ?? cell.textContent;
+    cell.dataset.ipRaw = String(raw || "");
+    const text = visibleIpText(raw);
+    cell.textContent = text;
+    cell.dataset.sortValue = text;
+  };
+
+  const applyIpVersionStyle = (style) => {
+    const value = style === "ipv4-only" ? "ipv4-only" : "all";
+    document.documentElement.dataset.ipVersionStyle = value;
+    const ipv4Only = value === "ipv4-only";
+    document.querySelectorAll("[data-ip-version-label]").forEach((label) => {
+      label.textContent = ipv4Only ? "IPv4 only" : "IPv4+IPv6";
+    });
+    const toggle = document.querySelector("[data-ip-version-toggle]");
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", ipv4Only ? "true" : "false");
+      toggle.setAttribute("aria-label", ipv4Only ? "Show IPv4 and IPv6" : "Show IPv4 only");
+    }
+    document.querySelectorAll("[data-ip-address][data-ip-version='6']").forEach((item) => {
+      item.hidden = ipv4Only;
+      const nextSeparator = item.nextElementSibling;
+      const previousSeparator = item.previousElementSibling;
+      if (nextSeparator?.matches("[data-ip-separator]")) {
+        nextSeparator.hidden = ipv4Only;
+      }
+      if (previousSeparator?.matches("[data-ip-separator]")) {
+        previousSeparator.hidden = ipv4Only;
+      }
+    });
+    document.querySelectorAll("[data-agent-ip-cell]").forEach((cell) => {
+      renderIpCell(cell);
+    });
+  };
+
+  const initIpVersionToggle = () => {
+    const toggle = document.querySelector("[data-ip-version-toggle]");
+    if (!toggle || toggle.dataset.initialized === "true") {
+      return;
+    }
+    toggle.dataset.initialized = "true";
+    toggle.addEventListener("click", () => {
+      const next = document.documentElement.dataset.ipVersionStyle === "ipv4-only" ? "all" : "ipv4-only";
+      try {
+        localStorage.setItem(ipVersionStyleKey, next);
+      } catch (_error) {
+        // IP display persistence is optional; the UI still updates for this page.
+      }
+      applyIpVersionStyle(next);
+    });
   };
 
   const initGuestNameToggle = () => {
@@ -432,7 +518,7 @@
           }
           const data = await response.json();
           if (scanWasActive && !data.active) {
-            window.location.reload();
+            loadSoftNavigation(new URL(window.location.href), { push: false });
             return;
           }
           scanWasActive = Boolean(data.active);
@@ -475,7 +561,7 @@
     form.submit();
   };
 
-  const openMovePicker = (form, options) => {
+  const _openMovePicker = (form, options) => {
     const manager = form.closest("[data-storage-file-manager]");
     const dialog = manager?.querySelector("[data-move-picker]");
     const moveInput = form.querySelector("[data-move-input]");
@@ -979,6 +1065,36 @@
         syncSelectionState();
       };
 
+      manager.refreshCurrentFileRows = async () => {
+        const tableBody = manager.querySelector(".vs-file-table tbody");
+        if (!tableBody) {
+          return;
+        }
+
+        const url = new URL(window.location.href);
+        url.searchParams.set("file_partial", "1");
+        url.searchParams.set("file_offset", "0");
+        url.searchParams.set("include_parent", "1");
+        try {
+          const response = await fetch(url.href, {
+            headers: {
+              Accept: "application/json",
+              "X-Requested-With": "fetch",
+            },
+          });
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          tableBody.innerHTML = data.rows_html || "";
+          selectedRows.clear();
+          createIcons();
+          syncSelectionState();
+        } catch (_error) {
+          // The next manual navigation or scan refresh will still reconcile the file list.
+        }
+      };
+
       const loadNextFiles = async (link) => {
         const loadRow = link.closest("[data-file-load-more-row]");
         if (!loadRow || link.dataset.loading === "true") {
@@ -1154,7 +1270,9 @@
                 details: "Upload complete",
                 cancel_upload_id: "",
               });
-              window.location.href = payload.redirect || window.location.href;
+              loadSoftNavigation(new URL(payload.redirect || window.location.href, window.location.origin), {
+                push: false,
+              });
               return;
             }
             updatePendingRecentTask({
@@ -1218,6 +1336,7 @@
     let storageReloadPending = false;
     let pendingTasks = [];
     let lastLoadedTasks = [];
+    let renderedTaskSignature = "";
     let taskStatusesById = new Map();
     let lastTaskPageData = {
       page: taskPage,
@@ -1247,7 +1366,7 @@
       }
     };
 
-    const maybeReloadCurrentStorageBrowser = (tasks) => {
+    const maybeRefreshCurrentStorageBrowser = (tasks) => {
       if (storageReloadPending) {
         return true;
       }
@@ -1276,21 +1395,54 @@
         return false;
       }
 
-      storageReloadPending = true;
       rememberTaskReload(completedInflate);
-      window.location.reload();
-      return true;
+      storageReloadPending = true;
+      Promise.resolve(manager.refreshCurrentFileRows?.()).finally(() => {
+        storageReloadPending = false;
+      });
+      return false;
     };
 
-    const maybeReloadCurrentSnapshotView = (tasks) => {
-      const snapshotView = document.querySelector("[data-guest-snapshots]");
-      if (!snapshotView) {
-        return false;
+    let snapshotRefreshPending = false;
+    const refreshCurrentSnapshotView = async (snapshotView) => {
+      if (!snapshotView || snapshotRefreshPending) {
+        return;
       }
+      const panel = snapshotView.querySelector("[data-snapshot-list-panel]");
+      if (!panel) {
+        return;
+      }
+      snapshotRefreshPending = true;
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("snapshot_partial", "1");
+        const response = await fetch(url.href, {
+          headers: {
+            Accept: "application/json",
+            "X-Requested-With": "fetch",
+          },
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (data.html) {
+          panel.outerHTML = data.html;
+          snapshotView.dataset.renderedAtMs = String(data.rendered_at_ms || Date.now());
+          createIcons();
+        }
+      } catch (_error) {
+        // Snapshot list refresh is best effort; manual navigation still shows the latest state.
+      } finally {
+        snapshotRefreshPending = false;
+      }
+    };
 
-      const objectType = snapshotView.dataset.objectType || "";
-      const vmid = String(snapshotView.dataset.vmid || "");
-      const renderedAtMs = Number(snapshotView.dataset.renderedAtMs || 0);
+    const maybeRefreshSnapshotState = (tasks) => {
+      const snapshotView = document.querySelector("[data-guest-snapshots]");
+      const objectType = snapshotView?.dataset.objectType || "";
+      const vmid = String(snapshotView?.dataset.vmid || "");
+      const snapshotRenderedAtMs = Number(snapshotView?.dataset.renderedAtMs || 0);
       const completedSnapshotTask = tasks.find((task) => {
         if (!String(task.action || "").startsWith("guest.snapshot.")) {
           return false;
@@ -1298,12 +1450,14 @@
         if (task.status_class !== "completed") {
           return false;
         }
-        const target = task.target_guest || {};
-        if (String(target.type || "") !== objectType || String(target.vmid || "") !== vmid) {
-          return false;
-        }
-        if (Number(task.finished_at_ms || 0) <= renderedAtMs) {
-          return false;
+        if (snapshotView) {
+          const target = task.target_guest || {};
+          if (String(target.type || "") !== objectType || String(target.vmid || "") !== vmid) {
+            return false;
+          }
+          if (Number(task.finished_at_ms || 0) <= snapshotRenderedAtMs) {
+            return false;
+          }
         }
         return !taskWasReloaded(task);
       });
@@ -1313,11 +1467,17 @@
       }
 
       rememberTaskReload(completedSnapshotTask);
-      window.location.reload();
-      return true;
+      if (snapshotView) {
+        refreshCurrentSnapshotView(snapshotView);
+        return false;
+      }
+      document.querySelectorAll("[data-vm-overview]").forEach((overview) => {
+        overview.refreshVmSnapshotInfo?.();
+      });
+      return false;
     };
 
-    const maybeReloadCurrentGuestInventory = (tasks) => {
+    const maybeRefreshCurrentGuestInventory = (tasks) => {
       const overview = document.querySelector("[data-vm-overview]");
       if (!overview) {
         return false;
@@ -1351,7 +1511,7 @@
       }
 
       rememberTaskReload(completedInventoryTask);
-      window.location.reload();
+      loadSoftNavigation(new URL(window.location.href), { push: false });
       return true;
     };
 
@@ -1365,36 +1525,183 @@
       return escapeHtml(task.details);
     };
 
-    const taskRowHtml = (task) => `
-      <tr>
-        <td>${escapeHtml(task.name)}</td>
-        <td>${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
-        <td><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
-        <td>${taskDetailsHtml(task)}</td>
-        <td>${escapeHtml(task.initiator)}</td>
-        <td>${escapeHtml(task.queued_for)}</td>
-        <td>${escapeHtml(task.started_at)}</td>
-        <td>${escapeHtml(task.finished_at)}</td>
-        <td>${escapeHtml(task.server)}</td>
+    const taskTargetSortValue = (task) => {
+      const target = task.target_guest || {};
+      return target.name || target.vmid || task.target || "";
+    };
+
+    const taskRenderSignature = (tasks) =>
+      JSON.stringify(
+        (tasks || []).map((task) => [
+          task.id,
+          task.name,
+          taskTargetSortValue(task),
+          task.status,
+          task.status_class,
+          task.details,
+          task.initiator,
+          task.queued_for,
+          task.started_at,
+          task.started_at_ms,
+          task.finished_at,
+          task.finished_at_ms,
+          task.server,
+          task.cancel_upload_id,
+        ])
+      );
+
+    const taskRowKey = (task, index = 0) =>
+      String(
+        task.id ||
+          `${task.action || "task"}:${task.name || ""}:${taskTargetSortValue(task)}:${task.started_at || ""}:${index}`
+      );
+
+    const taskRowSignature = (task) =>
+      JSON.stringify([
+        task.name,
+        taskTargetSortValue(task),
+        task.status,
+        task.status_class,
+        task.details,
+        task.initiator,
+        task.queued_for,
+        task.started_at,
+        task.started_at_ms,
+        task.finished_at,
+        task.finished_at_ms,
+        task.server,
+        task.cancel_upload_id,
+      ]);
+
+    const pendingTaskMatchesLoadedTask = (pendingTask, task) => {
+      if (!pendingTask || !task || task.action !== pendingTask.action) {
+        return false;
+      }
+      if (Number(task.started_at_ms || 0) < Number(pendingTask.created_at_ms || 0) - 10000) {
+        return false;
+      }
+      if (pendingTask.target_guest?.vmid || task.target_guest?.vmid) {
+        if (
+          String(pendingTask.target_guest?.vmid || "") !== String(task.target_guest?.vmid || "") ||
+          String(pendingTask.target_guest?.type || "") !== String(task.target_guest?.type || "")
+        ) {
+          return false;
+        }
+      }
+      const pendingDetails = String(pendingTask.details || "");
+      const taskDetails = String(task.details || "");
+      if (pendingDetails && pendingDetails !== "-" && taskDetails && taskDetails !== "-") {
+        return pendingDetails === taskDetails;
+      }
+      return true;
+    };
+
+    const taskRowHtml = (task, index = 0) => `
+      <tr data-task-row-key="${escapeHtml(taskRowKey(task, index))}" data-task-row-signature="${escapeHtml(taskRowSignature(task))}">
+        <td data-column="task-name" data-sort-value="${escapeHtml(task.name)}">${escapeHtml(task.name)}</td>
+        <td data-column="target" data-sort-value="${escapeHtml(taskTargetSortValue(task))}">${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
+        <td data-column="status" data-sort-value="${escapeHtml(task.status)}"><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
+        <td data-column="details" data-sort-value="${escapeHtml(task.details)}">${taskDetailsHtml(task)}</td>
+        <td data-column="initiator" data-sort-value="${escapeHtml(task.initiator)}">${escapeHtml(task.initiator)}</td>
+        <td data-column="queued" data-sort-value="${escapeHtml(task.queued_for)}">${escapeHtml(task.queued_for)}</td>
+        <td data-column="started" data-sort-value="${escapeHtml(task.started_at_ms || 0)}">${escapeHtml(task.started_at)}</td>
+        <td data-column="finished" data-sort-value="${escapeHtml(task.finished_at_ms || 0)}">${escapeHtml(task.finished_at)}</td>
+        <td data-column="server" data-sort-value="${escapeHtml(task.server)}">${escapeHtml(task.server)}</td>
       </tr>
     `;
+
+    const applyTaskColumnOrderToRow = (row) => {
+      const order = Array.from(recentTasks.querySelectorAll("thead th[data-column]"))
+        .map((header) => header.dataset.column)
+        .filter(Boolean);
+      if (!order.length) {
+        return row;
+      }
+      const cellsByColumn = new Map(
+        Array.from(row.children)
+          .filter((cell) => cell.dataset.column)
+          .map((cell) => [cell.dataset.column, cell])
+      );
+      order.forEach((column) => {
+        const cell = cellsByColumn.get(column);
+        if (cell) {
+          row.appendChild(cell);
+        }
+      });
+      return row;
+    };
+
+    const updateTaskRow = (row, task, index) => {
+      const template = document.createElement("template");
+      template.innerHTML = taskRowHtml(task, index).trim();
+      const nextRow = template.content.firstElementChild;
+      row.dataset.taskRowSignature = nextRow.dataset.taskRowSignature || "";
+      row.replaceChildren(...Array.from(nextRow.children));
+      applyTaskColumnOrderToRow(row);
+    };
+
+    const buildTaskRow = (task, index) => {
+      const template = document.createElement("template");
+      template.innerHTML = taskRowHtml(task, index).trim();
+      return applyTaskColumnOrderToRow(template.content.firstElementChild);
+    };
+
+    const renderTaskBody = (tasks) => {
+      const existingRows = new Map(
+        Array.from(rows.querySelectorAll("[data-task-row-key]")).map((row) => [row.dataset.taskRowKey, row])
+      );
+      const wantedKeys = new Set();
+      let cursor = rows.firstElementChild;
+      tasks.forEach((task, index) => {
+        const key = taskRowKey(task, index);
+        const signature = taskRowSignature(task);
+        wantedKeys.add(key);
+        let row = existingRows.get(key);
+        if (!row) {
+          row = buildTaskRow(task, index);
+        } else if (row.dataset.taskRowSignature !== signature) {
+          updateTaskRow(row, task, index);
+        }
+        if (row !== cursor) {
+          rows.insertBefore(row, cursor);
+        }
+        cursor = row.nextElementSibling;
+      });
+      existingRows.forEach((row, key) => {
+        if (!wantedKeys.has(key)) {
+          row.remove();
+        }
+      });
+      rows.querySelectorAll("tr:not([data-task-row-key])").forEach((row) => {
+        row.remove();
+      });
+    };
 
     const renderTaskRows = (tasks) => {
       if (!rows) {
         return;
       }
 
-      const mergedTasks = taskPage === 0 ? [...pendingTasks, ...tasks] : tasks;
-      if (!tasks.length) {
+      const visibleTasks =
+        taskPage === 0
+          ? tasks.filter((task) => !pendingTasks.some((pendingTask) => pendingTaskMatchesLoadedTask(pendingTask, task)))
+          : tasks;
+      const mergedTasks = taskPage === 0 ? [...pendingTasks, ...visibleTasks] : visibleTasks;
+      const nextSignature = `${taskPage}:${taskRenderSignature(mergedTasks)}`;
+      if (nextSignature === renderedTaskSignature) {
+        return;
+      }
+      renderedTaskSignature = nextSignature;
+      if (!visibleTasks.length) {
         if (mergedTasks.length) {
-          rows.innerHTML = mergedTasks.map(taskRowHtml).join("");
+          renderTaskBody(mergedTasks);
           return;
         }
         rows.innerHTML = '<tr><td colspan="9" class="empty-state">No recent tasks.</td></tr>';
         return;
       }
 
-      rows.innerHTML = mergedTasks.map(taskRowHtml).join("");
+      renderTaskBody(mergedTasks);
     };
 
     const updateTaskControls = (data) => {
@@ -1418,7 +1725,7 @@
 
     const addPendingTask = (event) => {
       const task = event.detail || {};
-      pendingTasks = [task, ...pendingTasks].slice(0, 3);
+      pendingTasks = [task, ...pendingTasks].slice(0, 5);
       if (taskPage === 0) {
         renderTaskRows(lastLoadedTasks);
         updateTaskControls(lastTaskPageData);
@@ -1481,26 +1788,27 @@
         const data = await response.json();
         const loadedTasks = data.tasks || [];
         if (pendingTasks.length) {
-          pendingTasks = pendingTasks.filter(
-            (pendingTask) =>
-              !loadedTasks.some(
-                (task) =>
-                  (task.action === "file.uploaded" || task.action === "file.folder_uploaded") &&
-                  task.storage_id === pendingTask.target &&
-                  Number(task.finished_at_ms || 0) >= Number(pendingTask.created_at_ms || 0) - 5000
-              )
-          );
+          pendingTasks = pendingTasks.filter((pendingTask) => {
+            if (pendingTask.pending_kind === "guest") {
+              return !loadedTasks.some((task) => pendingTaskMatchesLoadedTask(pendingTask, task));
+            }
+            return !loadedTasks.some(
+              (task) =>
+                (task.action === "file.uploaded" || task.action === "file.folder_uploaded") &&
+                task.storage_id === pendingTask.target &&
+                Number(task.finished_at_ms || 0) >= Number(pendingTask.created_at_ms || 0) - 5000
+            );
+          });
         }
         let previousTaskStatuses = new Map();
         if (normalizedPage === 0) {
           previousTaskStatuses = taskStatusesById;
           taskStatusesById = new Map(loadedTasks.map((task) => [task.id, task.status_class]));
         }
-        if (
-          maybeReloadCurrentStorageBrowser(loadedTasks) ||
-          maybeReloadCurrentSnapshotView(loadedTasks) ||
-          maybeReloadCurrentGuestInventory(loadedTasks)
-        ) {
+        if (maybeRefreshCurrentStorageBrowser(loadedTasks) || maybeRefreshCurrentGuestInventory(loadedTasks)) {
+          return;
+        }
+        if (maybeRefreshSnapshotState(loadedTasks)) {
           return;
         }
         lastLoadedTasks = loadedTasks;
@@ -1516,6 +1824,17 @@
         loadingTasks = false;
       }
     };
+
+    window.pveHelperRefreshRecentTasks = () => {
+      if (taskPage === 0 && document.visibilityState !== "hidden") {
+        loadTaskPage(0);
+      }
+    };
+    registerPageCleanup(() => {
+      if (window.pveHelperRefreshRecentTasks) {
+        delete window.pveHelperRefreshRecentTasks;
+      }
+    });
 
     if (previousButton) {
       previousButton.addEventListener("click", () => {
@@ -1715,7 +2034,6 @@
             }
             const updates = [
               [row.querySelector("[data-agent-os-cell]"), guest.guest_os],
-              [row.querySelector("[data-agent-ip-cell]"), guest.ip_label],
               [row.querySelector("[data-agent-status-cell]"), guest.agent],
             ];
             updates.forEach(([cell, value]) => {
@@ -1725,6 +2043,7 @@
               cell.textContent = value;
               cell.dataset.sortValue = value;
             });
+            renderIpCell(row.querySelector("[data-agent-ip-cell]"), guest.ip_label);
             const extraFilterText = [guest.guest_os, guest.ip_label, guest.agent]
               .filter(Boolean)
               .join(" ")
@@ -1787,6 +2106,7 @@
         }
       };
 
+      overview.refreshVmSnapshotInfo = loadSnapshotInfo;
       loadSnapshotInfo();
     });
   };
@@ -1918,17 +2238,36 @@
           const term = document.createElement("dt");
           term.textContent = row.label || "";
           const value = document.createElement("dd");
-          String(row.value || "")
-            .split("\n")
-            .forEach((line, index) => {
-              if (index > 0) {
-                value.appendChild(document.createElement("br"));
-              }
-              value.appendChild(document.createTextNode(line));
-            });
+          if (row.label === "IP addresses") {
+            String(row.value || "")
+              .split("\n")
+              .filter(Boolean)
+              .forEach((line, index) => {
+                if (index > 0) {
+                  const separator = document.createElement("br");
+                  separator.dataset.ipSeparator = "true";
+                  value.appendChild(separator);
+                }
+                const ip = document.createElement("span");
+                ip.dataset.ipAddress = "true";
+                ip.dataset.ipVersion = ipVersion(line);
+                ip.textContent = line;
+                value.appendChild(ip);
+              });
+          } else {
+            String(row.value || "")
+              .split("\n")
+              .forEach((line, index) => {
+                if (index > 0) {
+                  value.appendChild(document.createElement("br"));
+                }
+                value.appendChild(document.createTextNode(line));
+              });
+          }
           wrapper.append(term, value);
           details.insertBefore(wrapper, details.lastElementChild);
         });
+        applyIpVersionStyle(document.documentElement.dataset.ipVersionStyle || "all");
       };
 
       const refresh = async () => {
@@ -1963,7 +2302,100 @@
     });
   };
 
-  const submitVmBulkAction = (overview, action, fields = {}, targetRows = null) => {
+  const vmActionAuditAction = (action) => {
+    if (["start", "shutdown", "reboot", "stop", "reset"].includes(action)) {
+      return `guest.power.${action}`;
+    }
+    return (
+      {
+        snapshot: "guest.snapshot.create",
+        delete_snapshots: "guest.snapshot.delete_all",
+        template: "guest.template.convert",
+        clone: "guest.clone.create",
+        tags: "guest.tags.updated",
+        destroy: "guest.destroy",
+      }[action] || `guest.${action}`
+    );
+  };
+
+  const vmActionTaskName = (action) =>
+    ({
+      start: "Power on",
+      shutdown: "Shut down guest",
+      reboot: "Restart guest",
+      stop: "Power off",
+      reset: "Reset guest",
+      snapshot: "Create snapshot",
+      delete_snapshots: "Delete all snapshots",
+      template: "Convert to template",
+      clone: "Clone guest",
+      tags: "Update tags",
+      destroy: "Destroy guest",
+    })[action] || "VM/CT action";
+
+  const pendingVmTaskTarget = (rows) => {
+    if (rows.length !== 1) {
+      return {
+        target: `${rows.length} selected guests`,
+        target_guest: null,
+        server: "-",
+      };
+    }
+    const row = rows[0];
+    const target = row.dataset.guestTarget || "";
+    const [targetText, server = ""] = target.split("@");
+    const [type = "", vmid = ""] = targetText.split(":");
+    return {
+      target: row.dataset.guestLabel || row.dataset.guestName || target || "Guest",
+      target_guest: {
+        type,
+        vmid,
+        name: row.dataset.guestName || row.dataset.guestLabel || "",
+      },
+      server: server || "-",
+    };
+  };
+
+  const pendingVmTaskDetails = (action, fields) => {
+    if (action === "snapshot") {
+      return fields.snapshot_name || "-";
+    }
+    if (action === "tags") {
+      return fields.tags_mode || "update";
+    }
+    if (action === "clone") {
+      return fields.clone_name || fields.clone_newid || "-";
+    }
+    return "-";
+  };
+
+  const createPendingVmTask = (action, fields, rows) => {
+    const now = Date.now();
+    const target = pendingVmTaskTarget(rows);
+    return {
+      id: `pending-vm-${now}-${Math.random().toString(36).slice(2)}`,
+      kind: "guest",
+      pending: true,
+      pending_kind: "guest",
+      action: vmActionAuditAction(action),
+      name: vmActionTaskName(action),
+      target: target.target,
+      target_guest: target.target_guest,
+      status: "Starting",
+      status_class: "queued",
+      details: pendingVmTaskDetails(action, fields),
+      initiator: "-",
+      queued_for: "-",
+      started_at: taskDateLabel(new Date(now)),
+      started_at_ms: now,
+      finished_at: "-",
+      finished_at_ms: 0,
+      server: target.server,
+      created_at_ms: now,
+    };
+  };
+
+  const submitVmBulkAction = async (overview, action, fields = {}, targetRows = null) => {
     const form = overview.querySelector("[data-vm-bulk-form]");
     const actionInput = overview.querySelector("[data-vm-bulk-action]");
     const snapshotInput = overview.querySelector("[data-vm-bulk-snapshot-name]");
@@ -2003,10 +2435,79 @@
       input.dataset.vmBulkExtra = "true";
       form.appendChild(input);
     });
-    if (form.requestSubmit) {
-      form.requestSubmit();
-    } else {
-      form.submit();
+    const pendingTask = createPendingVmTask(action, fields, rows);
+    addPendingRecentTask(pendingTask);
+    let requestSettled = false;
+    window.setTimeout(() => {
+      if (requestSettled) {
+        return;
+      }
+      updatePendingRecentTask({
+        id: pendingTask.id,
+        status: "Running",
+        status_class: "running",
+        details: pendingTask.details || "Accepted",
+      });
+    }, 500);
+    try {
+      const response = await fetch(form.action, {
+        method: "POST",
+        body: new FormData(form),
+        headers: {
+          Accept: "application/json",
+          "X-Requested-With": "fetch",
+        },
+      });
+      if (!response.ok) {
+        requestSettled = true;
+        updatePendingRecentTask({
+          id: pendingTask.id,
+          status: "Failed",
+          status_class: "failed",
+          details: `HTTP ${response.status}`,
+          finished_at: taskDateLabel(new Date()),
+          finished_at_ms: Date.now(),
+        });
+        window.alert(`VM/CT action failed: ${response.status}`);
+        return;
+      }
+      const payload = await response.json();
+      if (!payload.ok) {
+        requestSettled = true;
+        updatePendingRecentTask({
+          id: pendingTask.id,
+          status: "Failed",
+          status_class: "failed",
+          details: (payload.errors || ["VM/CT action failed."]).join("; "),
+          finished_at: taskDateLabel(new Date()),
+          finished_at_ms: Date.now(),
+        });
+        window.alert((payload.errors || ["VM/CT action failed."]).join("\n"));
+      } else {
+        requestSettled = true;
+        updatePendingRecentTask({
+          id: pendingTask.id,
+          status: "Running",
+          status_class: "running",
+          details: pendingTask.details || "Accepted",
+        });
+        window.setTimeout(() => {
+          window.pveHelperRefreshRecentTasks?.();
+        }, 1200);
+        return;
+      }
+      window.pveHelperRefreshRecentTasks?.();
+    } catch (_error) {
+      requestSettled = true;
+      updatePendingRecentTask({
+        id: pendingTask.id,
+        status: "Failed",
+        status_class: "failed",
+        details: "Network error",
+        finished_at: taskDateLabel(new Date()),
+        finished_at_ms: Date.now(),
+      });
+      window.alert("VM/CT action failed: network error.");
     }
   };
 
@@ -2092,8 +2593,8 @@
       `,
       onSubmit: (formData) => {
         const snapshotName = String(formData.get("snapshot_name") || "").trim();
-        if (!/^[A-Za-z0-9_-]+$/.test(snapshotName)) {
-          return "Snapshot names can only contain letters, digits, _ and -.";
+        if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(snapshotName)) {
+          return "Snapshot names must start with a letter and can then contain letters, digits, _ and -.";
         }
         submitVmBulkAction(overview, "snapshot", { snapshot_name: snapshotName }, rows);
         return "";
@@ -2456,19 +2957,23 @@
           return;
         }
         if (action === "open-summary") {
-          window.location.href = firstRow.dataset.detailUrl || window.location.href;
+          loadSoftNavigation(new URL(firstRow.dataset.detailUrl || window.location.href, window.location.origin));
           return;
         }
         if (action === "edit-hardware") {
-          window.location.href =
-            firstRow.dataset.editHardwareUrl ||
-            firstRow.dataset.editOptionsUrl ||
-            firstRow.dataset.detailUrl ||
-            window.location.href;
+          loadSoftNavigation(
+            new URL(
+              firstRow.dataset.editHardwareUrl ||
+                firstRow.dataset.editOptionsUrl ||
+                firstRow.dataset.detailUrl ||
+                window.location.href,
+              window.location.origin
+            )
+          );
           return;
         }
         if (action === "open-snapshots") {
-          window.location.href = firstRow.dataset.snapshotsUrl || window.location.href;
+          loadSoftNavigation(new URL(firstRow.dataset.snapshotsUrl || window.location.href, window.location.origin));
           return;
         }
         if (action === "edit-tags") {
@@ -2991,6 +3496,16 @@
         }
       };
 
+      const applyNewOrder = (nextOrder) => {
+        const known = new Set(defaultOrder);
+        order = [
+          ...nextOrder.filter((column) => known.has(column)),
+          ...defaultOrder.filter((column) => !nextOrder.includes(column)),
+        ];
+        saveColumnOrder();
+        apply();
+      };
+
       const columnFromOption = (option) => option?.querySelector("[data-column-toggle]")?.dataset.columnToggle || "";
 
       const clearDragMarkers = () => {
@@ -3049,6 +3564,7 @@
           });
         });
         syncPickerOrder();
+        table.dispatchEvent(new CustomEvent("pve-helper-columns-changed"));
       };
 
       toggles.forEach((toggle) => {
@@ -3062,6 +3578,13 @@
           apply();
         });
       });
+
+      table.addEventListener("pve-helper-column-order-changed", (event) => {
+        if (!Array.isArray(event.detail?.order)) return;
+        order = event.detail.order;
+        syncPickerOrder();
+      });
+
       let draggedColumn = "";
       picker.addEventListener("dragstart", (event) => {
         const handle = event.target.closest("[data-column-drag-handle]");
@@ -3098,9 +3621,7 @@
         const targetIndex = nextOrder.indexOf(targetColumn);
         if (targetIndex < 0) return;
         nextOrder.splice(targetIndex + (after ? 1 : 0), 0, draggedColumn);
-        order = nextOrder;
-        saveColumnOrder();
-        apply();
+        applyNewOrder(nextOrder);
       });
 
       picker.addEventListener("dragend", () => {
@@ -3112,6 +3633,395 @@
       });
 
       apply();
+    });
+  };
+
+  const initResizableColumns = (root) => {
+    root.querySelectorAll("[data-resizable-columns][data-column-table]").forEach((table) => {
+      if (table.dataset.resizableColumnsInitialized === "true") return;
+      table.dataset.resizableColumnsInitialized = "true";
+
+      const tableName = table.dataset.columnTable || table.id || "table";
+      const allowColumnReorder = tableName !== "recent-tasks";
+      const storageKey = `pve-helper-column-widths-${tableName}`;
+      const orderStorageKey = `pve-helper-columns-${tableName}-order`;
+      let storedWidths = {};
+      try {
+        const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+        if (stored && typeof stored === "object") {
+          storedWidths = stored;
+        }
+      } catch (_error) {
+        storedWidths = {};
+      }
+
+      let measureCanvas = null;
+      const textWidth = (text, element) => {
+        measureCanvas ||= document.createElement("canvas");
+        const context = measureCanvas.getContext("2d");
+        const style = window.getComputedStyle(element);
+        context.font = `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        return context.measureText(
+          String(text || "")
+            .replace(/\s+/g, " ")
+            .trim()
+        ).width;
+      };
+
+      const numericStyle = (element, property) => {
+        const value = Number.parseFloat(window.getComputedStyle(element)[property]);
+        return Number.isFinite(value) ? value : 0;
+      };
+
+      const columnCells = (column) => Array.from(table.querySelectorAll(`[data-column="${CSS.escape(column)}"]`));
+
+      const minColumnWidth = (column) => {
+        if (column === "name") return 150;
+        if (column === "cpu") return 56;
+        if (["cpus", "nics", "disks"].includes(column)) return 52;
+        if (column === "vmid") return 64;
+        if (column === "type") return 68;
+        if (["status", "outcome"].includes(column)) return 82;
+        if (["initiator", "user", "module"].includes(column)) return 76;
+        if (["queued", "started", "finished", "time"].includes(column)) return 118;
+        return 90;
+      };
+
+      const saveWidths = () => {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(storedWidths));
+        } catch (_error) {
+          // Column width preferences are optional.
+        }
+      };
+
+      const allColumns = () =>
+        Array.from(table.tHead?.rows?.[0]?.querySelectorAll("th[data-column]") || [])
+          .map((cell) => cell.dataset.column)
+          .filter(Boolean);
+
+      let columnOrder = allColumns();
+      if (allowColumnReorder) {
+        try {
+          const storedOrder = JSON.parse(localStorage.getItem(orderStorageKey) || "[]");
+          if (Array.isArray(storedOrder)) {
+            const known = new Set(columnOrder);
+            columnOrder = [
+              ...storedOrder.filter((column) => known.has(column)),
+              ...columnOrder.filter((column) => !storedOrder.includes(column)),
+            ];
+          }
+        } catch (_error) {
+          columnOrder = allColumns();
+        }
+      }
+
+      const normalizeColumnOrder = (nextOrder) => {
+        const defaultOrder = allColumns();
+        const known = new Set(defaultOrder);
+        const normalized = [
+          ...nextOrder.filter((column) => known.has(column)),
+          ...defaultOrder.filter((column) => !nextOrder.includes(column)),
+        ];
+        if (tableName === "vm-overview" && normalized.includes("name")) {
+          return ["name", ...normalized.filter((column) => column !== "name")];
+        }
+        return normalized;
+      };
+
+      const saveColumnOrder = () => {
+        try {
+          localStorage.setItem(orderStorageKey, JSON.stringify(columnOrder));
+        } catch (_error) {
+          // Column order preferences are optional.
+        }
+      };
+
+      const applyColumnOrder = () => {
+        columnOrder = normalizeColumnOrder(columnOrder);
+        Array.from(table.rows).forEach((row) => {
+          const cells = Array.from(row.children);
+          const fixedCells = cells.filter((cell) => !cell.dataset.column);
+          const cellsByColumn = new Map();
+          cells
+            .filter((cell) => cell.dataset.column)
+            .forEach((cell) => {
+              cellsByColumn.set(cell.dataset.column, cell);
+            });
+          fixedCells.forEach((cell) => {
+            row.appendChild(cell);
+          });
+          columnOrder.forEach((column) => {
+            const cell = cellsByColumn.get(column);
+            if (cell) {
+              row.appendChild(cell);
+            }
+          });
+        });
+      };
+
+      const applyNewColumnOrder = (nextOrder) => {
+        columnOrder = normalizeColumnOrder(nextOrder);
+        saveColumnOrder();
+        applyColumnOrder();
+        table.dispatchEvent(new CustomEvent("pve-helper-column-order-changed", { detail: { order: columnOrder } }));
+        table.dispatchEvent(new CustomEvent("pve-helper-columns-changed"));
+      };
+
+      const visibleHeaderCells = () =>
+        Array.from(table.tHead?.rows?.[0]?.children || []).filter((cell) => !cell.hidden);
+
+      const defaultColumnWidths = {
+        name: 260,
+        state: 120,
+        provisioned: 130,
+        used: 110,
+        cpu: 74,
+        "host-mem": 110,
+        "active-mem": 130,
+        "guest-os": 200,
+        agent: 120,
+        node: 100,
+        "has-snapshot": 110,
+        vmid: 70,
+        type: 70,
+        "memory-size": 110,
+        cpus: 58,
+        nics: 58,
+        disks: 58,
+        uptime: 100,
+        ip: 170,
+        mac: 170,
+        storage: 170,
+        tags: 170,
+        "task-name": 340,
+        target: 260,
+        status: 150,
+        details: 340,
+        initiator: 120,
+        queued: 140,
+        started: 155,
+        finished: 155,
+        server: 95,
+        time: 160,
+        module: 95,
+        user: 130,
+        source: 130,
+        action: 220,
+        object: 260,
+        outcome: 105,
+      };
+
+      const baseCellWidth = (cell) => {
+        if (cell.classList.contains("vm-select-column")) return 36;
+        const column = cell.dataset.column || "";
+        return Number(storedWidths[column]) || defaultColumnWidths[column] || minColumnWidth(column);
+      };
+
+      const updateTableWidth = () => {
+        const headerCells = visibleHeaderCells();
+        const total = headerCells.reduce((sum, cell) => sum + baseCellWidth(cell), 0);
+        const scroll = table.closest(".data-table-scroll, .task-table-wrap") || table.parentElement;
+        const available = scroll?.clientWidth || table.parentElement?.clientWidth || 0;
+        const width = Math.max(Math.ceil(available), 1);
+        const stretchCell = headerCells.filter((cell) => cell.dataset.column).at(-1);
+        const stretchColumn = stretchCell?.dataset.column || "";
+        const slack = stretchColumn ? width - total : 0;
+        headerCells.forEach((cell) => {
+          const column = cell.dataset.column || "";
+          const renderedWidth = Math.max(
+            column && column === stretchColumn ? minColumnWidth(column) : baseCellWidth(cell),
+            baseCellWidth(cell) + (column && column === stretchColumn ? slack : 0)
+          );
+          const targets = column ? columnCells(column) : [cell];
+          targets.forEach((target) => {
+            target.style.width = `${renderedWidth}px`;
+            target.style.minWidth = "0";
+          });
+        });
+        table.style.width = `${width}px`;
+        table.style.minWidth = `${width}px`;
+      };
+
+      const setColumnWidth = (column, width, persist = true) => {
+        const normalized = Math.max(minColumnWidth(column), Math.round(width));
+        columnCells(column).forEach((cell) => {
+          cell.style.width = `${normalized}px`;
+          cell.style.minWidth = `${normalized}px`;
+        });
+        storedWidths[column] = normalized;
+        if (persist) {
+          saveWidths();
+        }
+        updateTableWidth();
+      };
+
+      const autoFitWidth = (header) => {
+        const column = header.dataset.column;
+        if (!column) return header.getBoundingClientRect().width;
+        const headerPadding = numericStyle(header, "paddingLeft") + numericStyle(header, "paddingRight");
+        const headerControlAllowance = 10;
+        let width =
+          textWidth(header.dataset.columnLabel || header.textContent, header) + headerPadding + headerControlAllowance;
+        table.querySelectorAll(`tbody tr:not([hidden]) [data-column="${CSS.escape(column)}"]`).forEach((cell) => {
+          if (cell.hidden) return;
+          const padding = numericStyle(cell, "paddingLeft") + numericStyle(cell, "paddingRight");
+          const iconAllowance = column === "name" ? 28 : 0;
+          width = Math.max(width, textWidth(cell.textContent, cell) + padding + iconAllowance + 4);
+        });
+        return Math.ceil(width);
+      };
+
+      table.querySelectorAll("thead th[data-column]").forEach((header) => {
+        const column = header.dataset.column;
+        if (!column) return;
+        header.dataset.columnLabel ||= header.textContent.trim();
+        if (allowColumnReorder && !(tableName === "vm-overview" && column === "name")) {
+          header.draggable = true;
+          header.title =
+            header.title ||
+            (table.matches("[data-sortable-table]") ? "Drag to reorder. Click to sort." : "Drag to reorder.");
+        }
+        const storedWidth = Number(storedWidths[column]);
+        if (Number.isFinite(storedWidth) && storedWidth > 0) {
+          setColumnWidth(column, storedWidth, false);
+        }
+        if (header.querySelector("[data-column-resize-handle]")) return;
+        const handle = document.createElement("span");
+        handle.className = "column-resize-handle";
+        handle.dataset.columnResizeHandle = "true";
+        handle.title = "Drag to resize. Double-click to fit.";
+        handle.setAttribute("aria-hidden", "true");
+        header.appendChild(handle);
+
+        handle.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+
+        handle.addEventListener("dblclick", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setColumnWidth(column, autoFitWidth(header));
+        });
+
+        handle.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const startX = event.clientX;
+          const startWidth = header.getBoundingClientRect().width;
+          table.classList.add("column-resizing");
+          handle.classList.add("active");
+
+          const onPointerMove = (moveEvent) => {
+            moveEvent.preventDefault();
+            setColumnWidth(column, startWidth + moveEvent.clientX - startX, false);
+          };
+
+          const onPointerUp = () => {
+            table.classList.remove("column-resizing");
+            handle.classList.remove("active");
+            saveWidths();
+            document.removeEventListener("pointermove", onPointerMove);
+            document.removeEventListener("pointerup", onPointerUp);
+            document.removeEventListener("pointercancel", onPointerUp);
+          };
+
+          document.addEventListener("pointermove", onPointerMove);
+          document.addEventListener("pointerup", onPointerUp);
+          document.addEventListener("pointercancel", onPointerUp);
+        });
+      });
+
+      let draggedHeaderColumn = "";
+      table.addEventListener("dragstart", (event) => {
+        if (!allowColumnReorder) return;
+        const header = event.target.closest("thead th[data-column]");
+        const column = header?.dataset.column || "";
+        if (!header || !table.contains(header) || !column || (tableName === "vm-overview" && column === "name")) return;
+        draggedHeaderColumn = column;
+        header.classList.add("column-dragging");
+        table.dataset.columnDragging = "true";
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", column);
+      });
+
+      table.addEventListener("dragover", (event) => {
+        if (!allowColumnReorder) return;
+        if (!draggedHeaderColumn) return;
+        const header = event.target.closest("thead th[data-column]");
+        const targetColumn = header?.dataset.column || "";
+        if (
+          !header ||
+          !table.contains(header) ||
+          header.hidden ||
+          !targetColumn ||
+          targetColumn === draggedHeaderColumn
+        )
+          return;
+        if (tableName === "vm-overview" && targetColumn === "name") return;
+        event.preventDefault();
+        const rect = header.getBoundingClientRect();
+        const after = event.clientX > rect.left + rect.width / 2;
+        table.querySelectorAll("thead th.drag-over-before, thead th.drag-over-after").forEach((cell) => {
+          cell.classList.remove("drag-over-before", "drag-over-after");
+        });
+        header.classList.toggle("drag-over-before", !after);
+        header.classList.toggle("drag-over-after", after);
+      });
+
+      table.addEventListener("drop", (event) => {
+        if (!allowColumnReorder) return;
+        if (!draggedHeaderColumn) return;
+        const header = event.target.closest("thead th[data-column]");
+        const targetColumn = header?.dataset.column || "";
+        if (
+          !header ||
+          !table.contains(header) ||
+          header.hidden ||
+          !targetColumn ||
+          targetColumn === draggedHeaderColumn
+        )
+          return;
+        if (tableName === "vm-overview" && targetColumn === "name") return;
+        event.preventDefault();
+        const after = header.classList.contains("drag-over-after");
+        const visibleColumns = new Set(
+          Array.from(table.querySelectorAll("thead th[data-column]:not([hidden])"))
+            .map((cell) => cell.dataset.column)
+            .filter(Boolean)
+        );
+        const visibleOrder = columnOrder.filter((column) => visibleColumns.has(column));
+        const hiddenOrder = columnOrder.filter((column) => !visibleColumns.has(column));
+        const nextVisibleOrder = visibleOrder.filter((column) => column !== draggedHeaderColumn);
+        const targetIndex = nextVisibleOrder.indexOf(targetColumn);
+        if (targetIndex < 0) return;
+        nextVisibleOrder.splice(targetIndex + (after ? 1 : 0), 0, draggedHeaderColumn);
+        const nextOrder = [...nextVisibleOrder, ...hiddenOrder.filter((column) => column !== draggedHeaderColumn)];
+        table.dataset.suppressSortClick = "true";
+        applyNewColumnOrder(nextOrder);
+      });
+
+      table.addEventListener("dragend", () => {
+        if (!allowColumnReorder) return;
+        draggedHeaderColumn = "";
+        delete table.dataset.columnDragging;
+        table
+          .querySelectorAll("thead th.column-dragging, thead th.drag-over-before, thead th.drag-over-after")
+          .forEach((cell) => {
+            cell.classList.remove("column-dragging", "drag-over-before", "drag-over-after");
+          });
+        window.setTimeout(() => {
+          delete table.dataset.suppressSortClick;
+        }, 200);
+      });
+
+      table.addEventListener("pve-helper-columns-changed", updateTableWidth);
+      window.addEventListener("resize", updateTableWidth);
+      registerPageCleanup(() => window.removeEventListener("resize", updateTableWidth));
+      applyColumnOrder();
+      updateTableWidth();
     });
   };
 
@@ -3196,6 +4106,10 @@
         header.tabIndex = 0;
         header.classList.add("sortable-heading");
         const sort = () => {
+          if (table.dataset.columnDragging === "true" || table.dataset.suppressSortClick === "true") {
+            delete table.dataset.suppressSortClick;
+            return;
+          }
           const direction = header.dataset.sortDirection === "asc" ? "desc" : "asc";
           sortByHeader(header, direction);
         };
@@ -3640,7 +4554,7 @@
       select.addEventListener("change", () => {
         const url = new URL(window.location.href);
         url.searchParams.set("node", select.value);
-        window.location.href = url.toString();
+        loadSoftNavigation(url);
       });
     });
   };
@@ -4041,9 +4955,15 @@
 
   // Nordic layouts share this digit row + the key right of "0".
   const CONSOLE_NORDIC_DIGITS = [
-    ["Digit1", "1", "!"], ["Digit2", "2", "\"", "@"], ["Digit3", "3", "#", "£"],
-    ["Digit4", "4", "¤", "$"], ["Digit5", "5", "%", "€"], ["Digit6", "6", "&"],
-    ["Digit7", "7", "/", "{"], ["Digit8", "8", "(", "["], ["Digit9", "9", ")", "]"],
+    ["Digit1", "1", "!"],
+    ["Digit2", "2", '"', "@"],
+    ["Digit3", "3", "#", "£"],
+    ["Digit4", "4", "¤", "$"],
+    ["Digit5", "5", "%", "€"],
+    ["Digit6", "6", "&"],
+    ["Digit7", "7", "/", "{"],
+    ["Digit8", "8", "(", "["],
+    ["Digit9", "9", ")", "]"],
     ["Digit0", "0", "=", "}"],
     ["Minus", "+", "?", "\\"],
   ];
@@ -4052,49 +4972,90 @@
   const CONSOLE_KEY_ROWS = {
     "en-us": [
       ...CONSOLE_LETTER_ROWS,
-      ["Digit1", "1", "!"], ["Digit2", "2", "@"], ["Digit3", "3", "#"],
-      ["Digit4", "4", "$"], ["Digit5", "5", "%"], ["Digit6", "6", "^"],
-      ["Digit7", "7", "&"], ["Digit8", "8", "*"], ["Digit9", "9", "("],
+      ["Digit1", "1", "!"],
+      ["Digit2", "2", "@"],
+      ["Digit3", "3", "#"],
+      ["Digit4", "4", "$"],
+      ["Digit5", "5", "%"],
+      ["Digit6", "6", "^"],
+      ["Digit7", "7", "&"],
+      ["Digit8", "8", "*"],
+      ["Digit9", "9", "("],
       ["Digit0", "0", ")"],
-      ["Minus", "-", "_"], ["Equal", "=", "+"],
-      ["BracketLeft", "[", "{"], ["BracketRight", "]", "}"], ["Backslash", "\\", "|"],
-      ["Semicolon", ";", ":"], ["Quote", "'", "\""], ["Backquote", "`", "~"],
-      ["Comma", ",", "<"], ["Period", ".", ">"], ["Slash", "/", "?"],
+      ["Minus", "-", "_"],
+      ["Equal", "=", "+"],
+      ["BracketLeft", "[", "{"],
+      ["BracketRight", "]", "}"],
+      ["Backslash", "\\", "|"],
+      ["Semicolon", ";", ":"],
+      ["Quote", "'", '"'],
+      ["Backquote", "`", "~"],
+      ["Comma", ",", "<"],
+      ["Period", ".", ">"],
+      ["Slash", "/", "?"],
       ["Space", " "],
     ],
     "en-gb": [
       ...CONSOLE_LETTER_ROWS,
-      ["Digit1", "1", "!"], ["Digit2", "2", "\""], ["Digit3", "3", "£"],
-      ["Digit4", "4", "$", "€"], ["Digit5", "5", "%"], ["Digit6", "6", "^"],
-      ["Digit7", "7", "&"], ["Digit8", "8", "*"], ["Digit9", "9", "("],
+      ["Digit1", "1", "!"],
+      ["Digit2", "2", '"'],
+      ["Digit3", "3", "£"],
+      ["Digit4", "4", "$", "€"],
+      ["Digit5", "5", "%"],
+      ["Digit6", "6", "^"],
+      ["Digit7", "7", "&"],
+      ["Digit8", "8", "*"],
+      ["Digit9", "9", "("],
       ["Digit0", "0", ")"],
-      ["Minus", "-", "_"], ["Equal", "=", "+"],
-      ["BracketLeft", "[", "{"], ["BracketRight", "]", "}"], ["Backslash", "#", "~"],
-      ["Semicolon", ";", ":"], ["Quote", "'", "@"], ["Backquote", "`", "¬"],
-      ["Comma", ",", "<"], ["Period", ".", ">"], ["Slash", "/", "?"],
+      ["Minus", "-", "_"],
+      ["Equal", "=", "+"],
+      ["BracketLeft", "[", "{"],
+      ["BracketRight", "]", "}"],
+      ["Backslash", "#", "~"],
+      ["Semicolon", ";", ":"],
+      ["Quote", "'", "@"],
+      ["Backquote", "`", "¬"],
+      ["Comma", ",", "<"],
+      ["Period", ".", ">"],
+      ["Slash", "/", "?"],
       ["IntlBackslash", "\\", "|"],
       ["Space", " "],
     ],
     de: [
       ...CONSOLE_LETTER_ROWS_DE,
-      ["Digit1", "1", "!"], ["Digit2", "2", "\""], ["Digit3", "3", "§"],
-      ["Digit4", "4", "$"], ["Digit5", "5", "%"], ["Digit6", "6", "&"],
-      ["Digit7", "7", "/", "{"], ["Digit8", "8", "(", "["], ["Digit9", "9", ")", "]"],
+      ["Digit1", "1", "!"],
+      ["Digit2", "2", '"'],
+      ["Digit3", "3", "§"],
+      ["Digit4", "4", "$"],
+      ["Digit5", "5", "%"],
+      ["Digit6", "6", "&"],
+      ["Digit7", "7", "/", "{"],
+      ["Digit8", "8", "(", "["],
+      ["Digit9", "9", ")", "]"],
       ["Digit0", "0", "=", "}"],
       ["Minus", "ß", "?", "\\"],
-      ["BracketLeft", "ü", "Ü"], ["BracketRight", "+", "*", "~"],
-      ["Semicolon", "ö", "Ö"], ["Quote", "ä", "Ä"], ["Backslash", "#", "'"],
+      ["BracketLeft", "ü", "Ü"],
+      ["BracketRight", "+", "*", "~"],
+      ["Semicolon", "ö", "Ö"],
+      ["Quote", "ä", "Ä"],
+      ["Backslash", "#", "'"],
       ["IntlBackslash", "<", ">", "|"],
-      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Comma", ",", ";"],
+      ["Period", ".", ":"],
+      ["Slash", "-", "_"],
       ["Space", " "],
     ],
     sv: [
       ...CONSOLE_LETTER_ROWS,
       ...CONSOLE_NORDIC_DIGITS,
       ["BracketLeft", "å", "Å"],
-      ["Semicolon", "ö", "Ö"], ["Quote", "ä", "Ä"], ["Backslash", "'", "*"],
+      ["Semicolon", "ö", "Ö"],
+      ["Quote", "ä", "Ä"],
+      ["Backslash", "'", "*"],
       ["IntlBackslash", "<", ">", "|"],
-      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Comma", ",", ";"],
+      ["Period", ".", ":"],
+      ["Slash", "-", "_"],
       ["Backquote", "§", "½"],
       ["Space", " "],
     ],
@@ -4102,9 +5063,13 @@
       ...CONSOLE_LETTER_ROWS,
       ...CONSOLE_NORDIC_DIGITS,
       ["BracketLeft", "å", "Å"],
-      ["Semicolon", "ø", "Ø"], ["Quote", "æ", "Æ"], ["Backslash", "'", "*"],
+      ["Semicolon", "ø", "Ø"],
+      ["Quote", "æ", "Æ"],
+      ["Backslash", "'", "*"],
       ["IntlBackslash", "<", ">"],
-      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Comma", ",", ";"],
+      ["Period", ".", ":"],
+      ["Slash", "-", "_"],
       ["Backquote", "|", "§"],
       ["Space", " "],
     ],
@@ -4112,9 +5077,13 @@
       ...CONSOLE_LETTER_ROWS,
       ...CONSOLE_NORDIC_DIGITS,
       ["BracketLeft", "å", "Å"],
-      ["Semicolon", "æ", "Æ"], ["Quote", "ø", "Ø"], ["Backslash", "'", "*"],
+      ["Semicolon", "æ", "Æ"],
+      ["Quote", "ø", "Ø"],
+      ["Backslash", "'", "*"],
       ["IntlBackslash", "<", ">", "\\"],
-      ["Comma", ",", ";"], ["Period", ".", ":"], ["Slash", "-", "_"],
+      ["Comma", ",", ";"],
+      ["Period", ".", ":"],
+      ["Slash", "-", "_"],
       ["Backquote", "½", "§"],
       ["Space", " "],
     ],
@@ -4232,10 +5201,7 @@
           return;
         }
         try {
-          localStorage.setItem(
-            reconnectKey,
-            JSON.stringify({ until: Date.now() + keepaliveMinutes() * 60 * 1000 })
-          );
+          localStorage.setItem(reconnectKey, JSON.stringify({ until: Date.now() + keepaliveMinutes() * 60 * 1000 }));
         } catch (_error) {
           // Local storage can be unavailable in restrictive browser modes.
         }
@@ -4324,10 +5290,14 @@
           const script = document.createElement("script");
           script.src = url;
           script.dataset.consoleScript = url;
-          script.addEventListener("load", () => {
-            script.dataset.loaded = "true";
-            resolve();
-          }, { once: true });
+          script.addEventListener(
+            "load",
+            () => {
+              script.dataset.loaded = "true";
+              resolve();
+            },
+            { once: true }
+          );
           script.addEventListener("error", reject, { once: true });
           document.head.appendChild(script);
         });
@@ -4484,13 +5454,15 @@
 
         screen.innerHTML = "";
         screen.classList.remove("xterm-screen");
-        rfb = new RFB(screen, buildConsoleWebSocketUrl(payload).href, { credentials: { password: payload.password || "" } });
+        rfb = new RFB(screen, buildConsoleWebSocketUrl(payload).href, {
+          credentials: { password: payload.password || "" },
+        });
         applySettings();
         rfb.focusOnClick = true;
         rfb.addEventListener("connect", markConnected);
         rfb.addEventListener("disconnect", (event) => {
           rfb = null;
-          const clean = event.detail && event.detail.clean;
+          const clean = event.detail?.clean;
           setStatus(clean ? "Disconnected" : "Console disconnected", false);
         });
         rfb.addEventListener("securityfailure", (event) => {
@@ -4511,13 +5483,17 @@
 
       const sendNoVncKeyStroke = (spec, keysym) => {
         const mods = spec.mods || [];
-        mods.forEach((code) => rfb.sendKey(CONSOLE_MODIFIER_KEYSYMS[code], code, true));
+        mods.forEach((code) => {
+          rfb.sendKey(CONSOLE_MODIFIER_KEYSYMS[code], code, true);
+        });
         rfb.sendKey(keysym, spec.code, true);
         rfb.sendKey(keysym, spec.code, false);
         mods
           .slice()
           .reverse()
-          .forEach((code) => rfb.sendKey(CONSOLE_MODIFIER_KEYSYMS[code], code, false));
+          .forEach((code) => {
+            rfb.sendKey(CONSOLE_MODIFIER_KEYSYMS[code], code, false);
+          });
       };
 
       const sendNoVncText = async (text) => {
@@ -4622,7 +5598,9 @@
 
       sideMenu?.querySelectorAll("[data-console-panel-toggle]").forEach((button) => {
         button.addEventListener("click", () => {
-          const targetPanel = page.querySelector(`[data-console-panel="${CSS.escape(button.dataset.consolePanelToggle || "")}"]`);
+          const targetPanel = page.querySelector(
+            `[data-console-panel="${CSS.escape(button.dataset.consolePanelToggle || "")}"]`
+          );
           const shouldOpen = !targetPanel || targetPanel.hidden;
           hidePanels();
           if (targetPanel && shouldOpen) {
@@ -4724,6 +5702,7 @@
     initSpaceCharts(root);
     initTableFilters(root);
     initColumnPickers(root);
+    initResizableColumns(root);
     initSortableTables(root);
     initVmOverviewSelection(root);
     initVmOverviewAgentInfo(root);
@@ -4731,12 +5710,14 @@
     initVmStatusRefresh(root);
     initGuestAgentSummaries(root);
     initConsolePages(root);
+    applyIpVersionStyle(document.documentElement.dataset.ipVersionStyle || "all");
     createIcons();
   };
 
   const initShell = () => {
     applyTheme(preferredTheme());
     applyGuestNameStyle(preferredGuestNameStyle());
+    applyIpVersionStyle(preferredIpVersionStyle());
     try {
       applyTaskbarState(localStorage.getItem(taskbarKey) === "true");
     } catch (_error) {
@@ -4745,6 +5726,7 @@
 
     initThemeToggle();
     initGuestNameToggle();
+    initIpVersionToggle();
     initTaskbarToggle();
     initTreeModules(document);
     initContextMenu();
