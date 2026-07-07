@@ -3045,6 +3045,9 @@ def guest_clone_options(request, object_type: str, vmid: int):
             "default_storage": default_storage,
             "source_storages": source_storages,
             "suggested_name": f"{detail.name}-clone" if detail.name else "",
+            # Linked clones are only supported from a template; a regular guest
+            # must be full-cloned (Proxmox rejects linked otherwise).
+            "is_template": is_template(detail.config),
         }
     )
 

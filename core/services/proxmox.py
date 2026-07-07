@@ -107,6 +107,31 @@ class ProxmoxAPIError(Exception):
     pass
 
 
+def _proxmox_error_detail(response) -> str:
+    """Pull Proxmox's human-readable reason out of an error response.
+
+    Proxmox returns the reason in the JSON body ``message`` and/or in ``errors``
+    (per-parameter messages); fall back to the status reason phrase. Without this
+    the caller only ever sees a bare status code like ``500``.
+    """
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = None
+    parts: list[str] = []
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if message:
+            parts.append(str(message).strip())
+        errors = payload.get("errors")
+        if isinstance(errors, dict):
+            parts.extend(f"{key}: {value}" for key, value in errors.items())
+    detail = " ".join(part for part in parts if part).strip()
+    if not detail:
+        detail = (getattr(response, "reason_phrase", "") or "").strip()
+    return detail
+
+
 class ProxmoxTaskTimeout(ProxmoxAPIError):
     pass
 
@@ -388,7 +413,9 @@ class ProxmoxClient:
             response = _shared_http_client().request(method, url, **request_kwargs)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise ProxmoxAPIError(f"{exc.response.status_code} from {path}") from exc
+            detail = _proxmox_error_detail(exc.response)
+            suffix = f": {detail}" if detail else f" from {path}"
+            raise ProxmoxAPIError(f"{exc.response.status_code}{suffix}") from exc
         except httpx.HTTPError as exc:
             raise ProxmoxAPIError(f"{exc.__class__.__name__} from {path}") from exc
 

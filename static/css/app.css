@@ -3065,6 +3065,12 @@ code {
   font-size: 12px;
 }
 
+.vm-action-dialog .form-hint {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .vm-action-dialog input[type="text"],
 .vm-action-dialog input[type="number"],
 .vm-action-dialog select {

@@ -2150,6 +2150,7 @@
           <input type="checkbox" name="clone_full" value="1" checked>
           <span>Full clone</span>
         </label>
+        <p class="form-hint" data-clone-full-hint hidden></p>
       `,
       onSubmit: (formData) => {
         const newid = String(formData.get("clone_newid") || "").trim();
@@ -2167,7 +2168,9 @@
             clone_newid: newid,
             clone_name: name,
             clone_storage: String(formData.get("clone_storage") || "").trim(),
-            clone_full: formData.get("clone_full") === "1" ? "1" : "0",
+            // Read the property, not FormData: a disabled (forced-full) checkbox
+            // is omitted from FormData and would otherwise read as linked.
+            clone_full: fullCheckbox?.checked ? "1" : "0",
           },
           rows
         );
@@ -2231,6 +2234,17 @@
         const nameInput = dialog?.querySelector("[name='clone_name']");
         if (nameInput && !nameInput.value && data.suggested_name) {
           nameInput.value = data.suggested_name;
+        }
+        // Linked clones are only valid from a template; force a full clone for a
+        // regular guest so Proxmox does not reject it.
+        const fullHint = dialog?.querySelector("[data-clone-full-hint]");
+        if (fullCheckbox && !data.is_template) {
+          fullCheckbox.checked = true;
+          fullCheckbox.disabled = true;
+          if (fullHint) {
+            fullHint.textContent = "Linked clones require a template — this guest will be full-cloned.";
+            fullHint.hidden = false;
+          }
         }
         syncStorageState();
         if (submitButton) {

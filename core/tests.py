@@ -381,6 +381,19 @@ class ProxmoxClientTests(SimpleTestCase):
             request=httpx.Request("GET", "https://pve.example.com/api2/json/test"),
         )
 
+    def test_request_surfaces_proxmox_error_message(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+        error_response = httpx.Response(
+            500,
+            json={"data": None, "message": "Linked clone feature is not supported for 'x' (scsi0)\n"},
+            request=httpx.Request("POST", "https://pve.example.com/api2/json/nodes/pve3/qemu/507/clone"),
+        )
+        mock_http = Mock()
+        mock_http.request.return_value = error_response
+        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+            with self.assertRaisesMessage(ProxmoxAPIError, "Linked clone feature is not supported"):
+                client.post("nodes/pve3/qemu/507/clone", data={"newid": 102, "full": 0})
+
     @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
     def test_power_action_refuses_when_disabled(self):
         client = ProxmoxClient("https://pve.example.com:8006")
