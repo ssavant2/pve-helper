@@ -511,8 +511,8 @@ button.tree-node {
 }
 
 .tree-icon svg {
-  width: 15px;
-  height: 15px;
+  width: 17px;
+  height: 17px;
   stroke-width: 1.9;
 }
 
@@ -3574,17 +3574,27 @@ code {
 
 /* lucide replaces <i> with <svg>; size the svg, not the <i> */
 .guest-list-icon svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
-/* Clarity object-type icons are fill-based (unlike Lucide's stroke); default to
-   1em so they inherit the container's svg sizing rules. */
+/* Clarity object-type icons are fill-based (unlike Lucide's stroke). The <i>
+   wrapper is a centered flex box so the icon sits dead-centre in tree/list
+   slots, and .vicon has a concrete size so it never falls back to the huge
+   intrinsic SVG size in a table cell. */
+[data-vicon] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
 .vicon {
-  width: 1em;
-  height: 1em;
+  width: 16px;
+  height: 16px;
   fill: currentColor;
   stroke: none;
+  display: block;
 }
 
 .guest-list-icon {
