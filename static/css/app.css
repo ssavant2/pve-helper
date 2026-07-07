@@ -1,5 +1,45 @@
+/* Metropolis — the actual vSphere UI typeface (public domain, self-hosted).
+   vSphere declares: Metropolis, "Avenir Next", "Helvetica Neue", Arial — we
+   mirror that fallback stack. collectstatic rewrites these url()s to hashed names. */
+@font-face {
+  font-family: "Metropolis";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("../fonts/metropolis-latin-300-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Metropolis";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/metropolis-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Metropolis";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/metropolis-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Metropolis";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/metropolis-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Metropolis";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/metropolis-latin-700-normal.woff2") format("woff2");
+}
+
 :root {
   --taskbar-height: 242px;
+  --font-sans: "Metropolis", "Avenir Next", "Helvetica Neue", Arial, system-ui, sans-serif;
   --bg: #eef1f4;
   --surface: #ffffff;
   --surface-alt: #f7f8fa;
@@ -8,6 +48,8 @@
   --muted: #65717d;
   --accent: #1f6fb2;
   --accent-strong: #15578f;
+  --accent-button: #1f6fb2;
+  --accent-button-hover: #15578f;
   --green: #2b7a4b;
   --amber: #9c6415;
   --red: #a64040;
@@ -54,59 +96,65 @@
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
 }
 
+/* Dark theme = vSphere-dark. One teal-slate palette, shared with the hardware
+   editor's --vs-* tokens so the whole app reads as one theme. --accent is the
+   bright link/highlight cyan; --accent-button is the deeper blue used behind
+   white button text (cyan + white would fail contrast). */
 :root[data-theme="dark"] {
-  --bg: #11161b;
-  --surface: #1a222a;
-  --surface-alt: #202a33;
-  --line: #33414d;
-  --text: #e6edf3;
-  --muted: #a6b3bf;
-  --accent: #67a9e8;
-  --accent-strong: #8fc1f0;
+  --bg: #16242c;
+  --surface: #1c2f38;
+  --surface-alt: #26414c;
+  --line: #35505c;
+  --text: #e8f0f4;
+  --muted: #b2c1c8;
+  --accent: #4db6e8;
+  --accent-strong: #7fd0f5;
+  --accent-button: #1f7fc0;
+  --accent-button-hover: #2a90d4;
   --green: #82d49b;
   --amber: #e0b15f;
-  --red: #ef8a8a;
-  --blue-soft: #17324a;
-  --topbar-bg: #0f171d;
-  --topbar-border: #26323d;
+  --red: #ff746e;
+  --blue-soft: #1b3742;
+  --topbar-bg: #13212a;
+  --topbar-border: #0c1922;
   --topbar-text: #eef5fb;
   --topbar-muted: #aebbc7;
   --brand-bg: #438d57;
   --brand-text: #f7fff9;
   --status-ok: #74d987;
   --button-primary-text: #ffffff;
-  --sidebar-bg: #151d24;
-  --tree-text: #d5dee7;
+  --sidebar-bg: #142129;
+  --tree-text: #cfd9df;
   --tree-root-text: #eef5fb;
   --tree-active-text: #ffffff;
-  --tree-active-bg: #244661;
+  --tree-active-bg: #294857;
   --tree-module-text: #d9ecfb;
-  --tree-line: #394854;
-  --tree-icon-bg: #202b34;
-  --tree-icon-border: #526373;
-  --tree-icon-text: #d4dde6;
-  --tree-icon-disabled-bg: #1a232b;
+  --tree-line: #334c58;
+  --tree-icon-bg: #223a44;
+  --tree-icon-border: #4c6672;
+  --tree-icon-text: #cfd9df;
+  --tree-icon-disabled-bg: #1b2d35;
   --tree-icon-disabled-text: #7f8d99;
-  --root-icon-bg: #17344c;
+  --root-icon-bg: #16384a;
   --root-icon-border: #477597;
   --root-icon-text: #d8eefc;
   --storage-icon-bg: #173928;
   --storage-icon-border: #4d8661;
   --storage-icon-text: #d8f3df;
-  --table-header-text: #d5dee7;
-  --table-hover: #22313d;
-  --badge-bg: #273541;
+  --table-header-text: #cdd9df;
+  --table-hover: #26414c;
+  --badge-bg: #263b44;
   --badge-text: #d8e2ea;
   --success-bg: #183d28;
-  --info-bg: #18344d;
+  --info-bg: #183446;
   --warning-bg: #46351a;
   --danger-bg: #4a2225;
   --message-success-bg: #173a25;
   --message-success-line: #3d8857;
-  --taskbar-bg: #151d24;
+  --taskbar-bg: #142129;
   --taskbar-text: #c8d3dd;
-  --context-shadow: 0 8px 28px rgba(0, 0, 0, 0.42);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --context-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
 }
 
 * {
@@ -123,7 +171,12 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 14px/1.45 var(--font-sans);
+  /* Match Clarity/vSphere: render Metropolis with grayscale AA so it looks
+     light and crisp instead of the heavier subpixel default. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 html.soft-navigation-loading,
@@ -533,15 +586,16 @@ button.tree-node {
   justify-content: center;
   min-height: 34px;
   padding: 0 14px;
-  border: 1px solid var(--accent-strong);
+  border: 1px solid var(--accent-button);
   border-radius: 4px;
-  background: var(--accent);
+  background: var(--accent-button);
   color: var(--button-primary-text);
   cursor: pointer;
 }
 
 .primary-action:hover {
-  background: var(--accent-strong);
+  background: var(--accent-button-hover);
+  border-color: var(--accent-button-hover);
 }
 
 .primary-action:disabled {
@@ -3221,11 +3275,12 @@ code {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 3px 8px;
   border-radius: 6px;
   color: inherit;
   text-decoration: none;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 20px;
   white-space: nowrap;
 }
 
@@ -3236,6 +3291,26 @@ code {
 .guest-list-item.active {
   background: var(--accent-soft, rgba(59, 130, 246, 0.15));
   font-weight: 600;
+}
+
+/* vSphere dims inventory-tree labels to a muted blue-grey. The selected row is
+   a subtle dark highlight (#1b2b32) with the same muted text; only hover lifts
+   the text. Dark mode only — light keeps its readable dark text + selection. */
+:root[data-theme="dark"] .guest-list-item {
+  color: #acbac3;
+}
+
+:root[data-theme="dark"] .guest-list-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+/* vSphere's selected row is a light "chip": pale fill, dark text, regular weight. */
+:root[data-theme="dark"] .guest-list-item.active,
+:root[data-theme="dark"] .guest-list-item.active:hover {
+  background: #eef1f3;
+  color: #16242c;
+  font-weight: 400;
 }
 
 .guest-list-item .status-dot {
@@ -3252,14 +3327,14 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   opacity: 0.7;
 }
 
 .guest-list-icon i {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
 }
 
 .guest-list-label {
@@ -3489,8 +3564,8 @@ code {
 
 /* lucide replaces <i> with <svg>; size the svg, not the <i> */
 .guest-list-icon svg {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
 }
 
 .summary-os-icon svg {
@@ -4985,23 +5060,26 @@ body.cards-dragging {
 }
 
 html[data-theme="dark"] .hardware-editor-page {
-  --vs-bg: #203640;
-  --vs-text: #e8f0f4;
-  --vs-muted: #b2c1c8;
+  /* Derive from the shared vSphere-dark tokens so the editor and the rest of
+     the app stay in lockstep; only the editor-specific structural tints stay
+     local. */
+  --vs-bg: var(--surface);
+  --vs-text: var(--text);
+  --vs-muted: var(--muted);
   --vs-faint: #81949d;
   --vs-line: rgba(178, 199, 208, 0.25);
   --vs-line-strong: rgba(188, 207, 216, 0.42);
-  --vs-row: #203640;
-  --vs-row-hover: #284551;
+  --vs-row: var(--surface);
+  --vs-row-hover: var(--surface-alt);
   --vs-row-open: #263f49;
-  --vs-panel: #1f343d;
-  --vs-input: #203640;
+  --vs-panel: var(--bg);
+  --vs-input: var(--surface);
   --vs-input-border: rgba(204, 222, 230, 0.54);
-  --vs-menu: #203640;
+  --vs-menu: var(--surface);
   --vs-menu-shadow: rgba(0, 0, 0, 0.52);
   --vs-menu-hover: #dbe6eb;
-  --vs-accent: #47c6f3;
-  --vs-danger: #ff746e;
+  --vs-accent: var(--accent);
+  --vs-danger: var(--red);
   box-shadow: 0 28px 76px rgba(0, 0, 0, 0.5);
 }
 
