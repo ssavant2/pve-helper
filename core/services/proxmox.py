@@ -304,6 +304,9 @@ class ProxmoxClient:
             raise ProxmoxAPIError(f"Unexpected task status response for {upid}")
         return data
 
+    def stop_task(self, *, node: str, upid: str) -> Any:
+        return self.delete(f"nodes/{quote(node, safe='')}/tasks/{quote(upid, safe='')}")
+
     def wait_for_task(
         self,
         *,

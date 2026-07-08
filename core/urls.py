@@ -88,6 +88,7 @@ urlpatterns = [
     path("scheduled-tasks/<int:action_id>/run-now/", views.scheduled_task_run_now, name="scheduled_task_run_now"),
     path("audit/", views.audit_log, name="audit_log"),
     path("tasks/recent/", views.recent_tasks, name="recent_tasks"),
+    path("tasks/cancel/", views.cancel_recent_task, name="cancel_recent_task"),
     path("scans/schedule/", views.update_scan_schedule_view, name="update_scan_schedule"),
     path("trash/purge-schedule/", views.update_trash_purge_schedule_view, name="update_trash_purge_schedule"),
     path("audit/retention-schedule/", views.update_audit_retention_schedule_view, name="update_audit_retention_schedule"),

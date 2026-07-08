@@ -14,6 +14,7 @@
   let activeLabel = "";
   let activeVmOverview = null;
   let activeVmContextRows = [];
+  let activeTaskRow = null;
   let pageCleanup = [];
   let navigationController = null;
   const activeUploads = new Map();
@@ -1547,6 +1548,7 @@
           task.finished_at_ms,
           task.server,
           task.cancel_upload_id,
+          task.cancelable ? "1" : "0",
         ])
       );
 
@@ -1571,6 +1573,7 @@
         task.finished_at_ms,
         task.server,
         task.cancel_upload_id,
+        task.cancelable ? "1" : "0",
       ]);
 
     const pendingTaskMatchesLoadedTask = (pendingTask, task) => {
@@ -1597,7 +1600,12 @@
     };
 
     const taskRowHtml = (task, index = 0) => `
-      <tr data-task-row-key="${escapeHtml(taskRowKey(task, index))}" data-task-row-signature="${escapeHtml(taskRowSignature(task))}">
+      <tr
+        data-task-row-key="${escapeHtml(taskRowKey(task, index))}"
+        data-task-id="${escapeHtml(task.id || "")}"
+        data-task-cancelable="${task.cancelable ? "true" : "false"}"
+        data-task-row-signature="${escapeHtml(taskRowSignature(task))}"
+      >
         <td data-column="task-name" data-sort-value="${escapeHtml(task.name)}">${escapeHtml(task.name)}</td>
         <td data-column="target" data-sort-value="${escapeHtml(taskTargetSortValue(task))}">${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
         <td data-column="status" data-sort-value="${escapeHtml(task.status)}"><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
@@ -1635,6 +1643,8 @@
       const template = document.createElement("template");
       template.innerHTML = taskRowHtml(task, index).trim();
       const nextRow = template.content.firstElementChild;
+      row.dataset.taskId = nextRow.dataset.taskId || "";
+      row.dataset.taskCancelable = nextRow.dataset.taskCancelable || "false";
       row.dataset.taskRowSignature = nextRow.dataset.taskRowSignature || "";
       row.replaceChildren(...Array.from(nextRow.children));
       applyTaskColumnOrderToRow(row);
@@ -2951,6 +2961,52 @@
     return true;
   };
 
+  const setTaskRowCancelled = (row) => {
+    if (!row) {
+      return;
+    }
+    const now = new Date();
+    const statusCell = row.querySelector('[data-column="status"]');
+    const detailsCell = row.querySelector('[data-column="details"]');
+    const finishedCell = row.querySelector('[data-column="finished"]');
+    if (statusCell) {
+      statusCell.dataset.sortValue = "Cancelled";
+      statusCell.innerHTML = '<span class="badge cancelled">Cancelled</span>';
+    }
+    if (detailsCell) {
+      detailsCell.dataset.sortValue = "Cancelled by user";
+      detailsCell.textContent = "Cancelled by user";
+    }
+    if (finishedCell) {
+      finishedCell.dataset.sortValue = String(now.getTime());
+      finishedCell.textContent = taskDateLabel(now);
+    }
+    row.dataset.taskCancelable = "false";
+    row.dataset.taskRowSignature = "";
+  };
+
+  const openTaskContextMenu = (menu, row, event) => {
+    const taskbar = row.closest("[data-recent-tasks]");
+    if (!taskbar) {
+      return false;
+    }
+    const taskName = row.querySelector('[data-column="task-name"]')?.textContent?.trim() || "Task";
+    const cancelable = row.dataset.taskCancelable === "true";
+    activeTaskRow = row;
+    activeVmOverview = null;
+    activeVmContextRows = [];
+    activeLabel = "";
+    clearVmContextHighlights();
+    menu.innerHTML = `
+      <div class="context-menu-title">${escapeHtml(taskName)}</div>
+      <button type="button" data-task-action="cancel-task" ${cancelable ? "" : "disabled"}>Cancel Task</button>
+    `;
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+    menu.hidden = false;
+    return true;
+  };
+
   const initContextMenu = () => {
     const menu = document.getElementById("context-menu");
     if (!menu || menu.dataset.initialized === "true") {
@@ -2961,6 +3017,12 @@
     document.addEventListener("contextmenu", (event) => {
       const vmRow = event.target.closest("[data-vm-overview-row]");
       if (vmRow && openVmContextMenu(menu, vmRow, event)) {
+        event.preventDefault();
+        return;
+      }
+
+      const taskRow = event.target.closest("[data-task-row-key]");
+      if (taskRow && openTaskContextMenu(menu, taskRow, event)) {
         event.preventDefault();
         return;
       }
@@ -2986,11 +3048,55 @@
     document.addEventListener("click", (event) => {
       if (!menu.contains(event.target)) {
         menu.hidden = true;
+        activeTaskRow = null;
         clearVmContextHighlights();
       }
     });
 
     menu.addEventListener("click", async (event) => {
+      const taskButton = event.target.closest("button[data-task-action]");
+      if (taskButton && activeTaskRow) {
+        event.preventDefault();
+        if (taskButton.disabled) {
+          return;
+        }
+        const action = taskButton.dataset.taskAction || "";
+        const taskbar = activeTaskRow.closest("[data-recent-tasks]");
+        const cancelUrl = taskbar?.dataset.taskCancelUrl || "";
+        const taskId = activeTaskRow.dataset.taskId || activeTaskRow.dataset.taskRowKey || "";
+        if (action === "cancel-task" && cancelUrl && taskId) {
+          if (!window.confirm("Cancel this task?")) {
+            menu.hidden = true;
+            activeTaskRow = null;
+            return;
+          }
+          const body = new URLSearchParams();
+          body.set("task_id", taskId);
+          try {
+            const response = await fetch(new URL(cancelUrl, window.location.origin), {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-CSRFToken": taskbar?.dataset.csrfToken || "",
+                "X-Requested-With": "fetch",
+              },
+              body,
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.error || "Task could not be cancelled.");
+            }
+            setTaskRowCancelled(activeTaskRow);
+            window.pveHelperRefreshRecentTasks?.();
+          } catch (error) {
+            window.alert(error.message || "Task could not be cancelled.");
+          }
+        }
+        menu.hidden = true;
+        activeTaskRow = null;
+        return;
+      }
+
       const vmButton = event.target.closest("button[data-vm-action]");
       if (vmButton && activeVmOverview) {
         const targetRows = activeVmContextRows.length ? activeVmContextRows : selectedVmOverviewRows(activeVmOverview);

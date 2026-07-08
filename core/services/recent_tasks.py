@@ -158,6 +158,7 @@ def _visible_scheduled_action_tasks():
         ScheduledActionRun.Status.MISSED,
         ScheduledActionRun.Status.TIMEOUT,
         ScheduledActionRun.Status.STALE,
+        ScheduledActionRun.Status.CANCELLED,
     ]
     return (
         ScheduledActionRun.objects.select_related("scheduled_action")
@@ -217,6 +218,7 @@ def serialize_task(task: dict[str, object]) -> dict[str, object]:
         "storage_id": str(task.get("storage_id", "")),
         "path": str(task.get("path", "")),
         "path_parent": str(task.get("path_parent", "")),
+        "cancelable": bool(task.get("cancelable")),
     }
 
 
@@ -242,6 +244,7 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
         "finished_at": scan.finished_at,
         "server": ", ".join(scan.endpoints_succeeded or scan.endpoints_attempted or []),
         "sort_at": scan.created_at,
+        "cancelable": False,
     }
 
 
@@ -298,6 +301,8 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         "finished_at": finished_at,
         "server": str(details.get("proxmox_task_node") or details.get("node") or "-"),
         "sort_at": finished_at or event.timestamp,
+        "cancelable": status_class in {"queued", "running"}
+        and bool(details.get("proxmox_task_upid") and details.get("proxmox_task_node")),
     }
 
 
@@ -308,6 +313,8 @@ def _guest_task_status(event: AuditEvent) -> tuple[str, str]:
         return "Queued", "queued"
     if event.outcome == "failed":
         return "Failed", "failed"
+    if event.outcome == "cancelled":
+        return "Cancelled", "cancelled"
     return "Completed", "completed"
 
 
@@ -360,6 +367,7 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
         "storage_id": storage_id,
         "path": path,
         "path_parent": _parent_path(path),
+        "cancelable": False,
     }
 
 
@@ -403,6 +411,7 @@ def _scheduled_action_task(run: ScheduledActionRun) -> dict[str, object]:
         "finished_at": run.finished_at,
         "server": _scheduled_action_node(run),
         "sort_at": run.finished_at or run.started_at or run.created_at,
+        "cancelable": status_class in {"queued", "running"} and bool(run.proxmox_task_upid and run.proxmox_task_node),
     }
 
 
@@ -432,6 +441,8 @@ def _scheduled_action_status(run: ScheduledActionRun) -> tuple[str, str]:
         return "Timed out", "failed"
     if run.status == ScheduledActionRun.Status.STALE:
         return "Stale", "failed"
+    if run.status == ScheduledActionRun.Status.CANCELLED:
+        return "Cancelled", "cancelled"
     return "Failed", "failed"
 
 

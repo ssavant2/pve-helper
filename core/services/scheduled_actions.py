@@ -357,6 +357,9 @@ def execute_scheduled_action_run(
         return
 
     if result.success:
+        if _run_was_cancelled(run):
+            clear_live_guest_caches()
+            return
         _finish_run(
             run,
             status=ScheduledActionRun.Status.COMPLETED,
@@ -366,6 +369,9 @@ def execute_scheduled_action_run(
         )
         clear_live_guest_caches()
     else:
+        if _run_was_cancelled(run):
+            clear_live_guest_caches()
+            return
         _finish_run(
             run,
             status=ScheduledActionRun.Status.FAILED,
@@ -524,6 +530,7 @@ def _finish_run(
         ScheduledActionRun.Status.SKIPPED: "scheduled_action.run_skipped",
         ScheduledActionRun.Status.TIMEOUT: "scheduled_action.run_failed",
         ScheduledActionRun.Status.STALE: "scheduled_action.run_failed",
+        ScheduledActionRun.Status.CANCELLED: "scheduled_action.run_cancelled",
     }.get(status, "scheduled_action.run_completed")
     audit_outcome = "success" if outcome in {ScheduledActionRun.Outcome.SUCCESS, ScheduledActionRun.Outcome.SUCCESS_NOOP} else outcome
     _audit_run(
@@ -558,6 +565,10 @@ def _advance_action_after_claim(action: ScheduledAction, now, status: str) -> st
     action.last_status = status
     action.save(update_fields=["enabled", "next_run_at", "last_run_at", "last_status", "updated_at"])
     return error
+
+
+def _run_was_cancelled(run: ScheduledActionRun) -> bool:
+    return ScheduledActionRun.objects.filter(pk=run.pk, status=ScheduledActionRun.Status.CANCELLED).exists()
 
 
 def _has_in_flight_run(action: ScheduledAction) -> bool:

@@ -1182,6 +1182,7 @@ class AuditEventTests(TestCase):
                 "target_type": "vm",
                 "name": "Lab VM",
                 "proxmox_task_upid": "UPID:pve1:start:500:root@pam:",
+                "proxmox_task_node": "pve1",
             },
         )
 
@@ -4535,6 +4536,7 @@ class ViewSmokeTests(TestCase):
                 "target_type": "vm",
                 "name": "Lab VM",
                 "proxmox_task_upid": "UPID:pve1:start:500:root@pam:",
+                "proxmox_task_node": "pve1",
             },
         )
 
@@ -4546,6 +4548,70 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(task_page.tasks[0]["status_class"], "running")
         self.assertIsNone(task_page.tasks[0]["finished_at"])
         self.assertEqual(task_page.tasks[0]["server"], "pve1")
+        self.assertTrue(task_page.tasks[0]["cancelable"])
+
+    def test_cancel_recent_guest_task_stops_proxmox_task(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+        event = AuditEvent.objects.create(
+            user=user,
+            username="operator",
+            action="guest.power.shutdown",
+            object_type="guest",
+            object_id="vm:500",
+            outcome="running",
+            details={
+                "node": "pve1",
+                "vmid": 500,
+                "target_type": "vm",
+                "name": "Lab VM",
+                "proxmox_endpoint": "https://pve1.example.invalid:8006/api2/json",
+                "proxmox_task_upid": "UPID:pve1:shutdown:500:root@pam:",
+                "proxmox_task_node": "pve1",
+            },
+        )
+        stopped_tasks = []
+
+        class FakeProxmoxClient:
+            def __init__(self, endpoint):
+                self.endpoint = endpoint
+
+            def stop_task(self, *, node, upid):
+                stopped_tasks.append((self.endpoint, node, upid))
+
+        with patch("core.views.scheduling.ProxmoxClient", FakeProxmoxClient):
+            response = self.client.post(reverse("core:cancel_recent_task"), {"task_id": f"guest:{event.id}"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "cancelled")
+        self.assertEqual(event.details["cancelled_by"], "operator")
+        self.assertEqual(stopped_tasks, [("https://pve1.example.invalid:8006/api2/json", "pve1", "UPID:pve1:shutdown:500:root@pam:")])
+        self.assertTrue(AuditEvent.objects.filter(action="task.cancelled", outcome="success").exists())
+
+    def test_cancel_recent_completed_guest_task_is_rejected(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+        event = AuditEvent.objects.create(
+            user=user,
+            username="operator",
+            action="guest.power.shutdown",
+            object_type="guest",
+            object_id="vm:500",
+            outcome="success",
+            details={
+                "node": "pve1",
+                "proxmox_task_upid": "UPID:pve1:shutdown:500:root@pam:",
+                "proxmox_task_node": "pve1",
+            },
+        )
+
+        response = self.client.post(reverse("core:cancel_recent_task"), {"task_id": f"guest:{event.id}"})
+
+        self.assertEqual(response.status_code, 409)
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "success")
 
     def test_recent_tasks_serializes_file_refresh_metadata(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

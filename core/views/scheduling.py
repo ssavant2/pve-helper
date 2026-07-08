@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .common import *  # noqa: F401,F403
 from . import common
+from ..services.proxmox import ProxmoxClient, configured_clients
 
 
 @app_login_required
@@ -151,6 +152,129 @@ def recent_tasks(request):
         page = 0
 
     return JsonResponse(serialize_task_page(recent_task_page(page=page)))
+
+
+@require_POST
+@app_login_required
+def cancel_recent_task(request):
+    task_id = request.POST.get("task_id", "").strip()
+    if not task_id:
+        return JsonResponse({"ok": False, "error": "Missing task id."}, status=400)
+
+    try:
+        if task_id.startswith("guest:"):
+            _cancel_guest_recent_task(request, int(task_id.split(":", 1)[1]))
+        elif task_id.startswith("scheduled_action:"):
+            _cancel_scheduled_action_recent_task(request, int(task_id.split(":", 1)[1]))
+        else:
+            return JsonResponse({"ok": False, "error": "This task type cannot be cancelled."}, status=409)
+    except ValueError:
+        return JsonResponse({"ok": False, "error": "Invalid task id."}, status=400)
+    except Http404:
+        return JsonResponse({"ok": False, "error": "Task not found."}, status=404)
+    except ProxmoxAPIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=409)
+
+    return JsonResponse({"ok": True})
+
+
+def _cancel_guest_recent_task(request, event_id: int) -> None:
+    event = get_object_or_404(AuditEvent, pk=event_id, action__startswith="guest.")
+    details = dict(event.details) if isinstance(event.details, dict) else {}
+    if event.outcome not in {"queued", "running"}:
+        raise ProxmoxAPIError("Only queued or running tasks can be cancelled.")
+    upid = str(details.get("proxmox_task_upid") or "")
+    node = str(details.get("proxmox_task_node") or details.get("node") or "")
+    if not upid or not node:
+        raise ProxmoxAPIError("This task has no Proxmox task id to cancel.")
+
+    _cancel_proxmox_task(node=node, upid=upid, endpoint_url=str(details.get("proxmox_endpoint") or ""))
+    now = tz.now()
+    username = request.user.get_username()
+    details.update(
+        {
+            "cancelled_at": now.isoformat(),
+            "cancelled_by": username,
+            "finished_at": now.isoformat(),
+            "error": f"Cancelled by {username}.",
+        }
+    )
+    event.outcome = "cancelled"
+    event.details = details
+    event.save(update_fields=["outcome", "details"])
+    record_audit_event(
+        request,
+        action="task.cancelled",
+        object_type="recent_task",
+        object_id=f"guest:{event.id}",
+        details={"task_id": f"guest:{event.id}", "proxmox_task_upid": upid, "proxmox_task_node": node},
+    )
+    clear_live_guest_caches()
+
+
+def _cancel_scheduled_action_recent_task(request, run_id: int) -> None:
+    run = get_object_or_404(ScheduledActionRun.objects.select_related("scheduled_action"), pk=run_id)
+    if run.status not in {
+        ScheduledActionRun.Status.SUBMITTED,
+        ScheduledActionRun.Status.POLLING,
+    }:
+        raise ProxmoxAPIError("Only scheduled tasks already submitted to Proxmox can be cancelled.")
+    if not run.proxmox_task_upid or not run.proxmox_task_node:
+        raise ProxmoxAPIError("This task has no Proxmox task id to cancel.")
+
+    _cancel_proxmox_task(node=run.proxmox_task_node, upid=run.proxmox_task_upid)
+    now = tz.now()
+    username = request.user.get_username()
+    run.status = ScheduledActionRun.Status.CANCELLED
+    run.outcome = ScheduledActionRun.Outcome.CANCELLED
+    run.error = f"Cancelled by {username}."
+    run.finished_at = now
+    run.result = {"cancelled": True, "cancelled_by": username, "cancelled_at": now.isoformat()}
+    run.save(update_fields=["status", "outcome", "error", "finished_at", "result", "updated_at"])
+    ScheduledAction.objects.filter(pk=run.scheduled_action_id).update(
+        last_status=ScheduledAction.LastStatus.CANCELLED,
+        last_run_at=now,
+        updated_at=now,
+    )
+    record_audit_event(
+        request,
+        action="scheduled_action.run_cancelled",
+        object_type="scheduled_action",
+        object_id=str(run.scheduled_action_id),
+        outcome="cancelled",
+        details={
+            "scheduled_action_id": run.scheduled_action_id,
+            "scheduled_action_name": run.scheduled_action.name,
+            "run_id": run.id,
+            "target_type": run.scheduled_action.target_type,
+            "target_vmid": run.scheduled_action.target_vmid,
+            "target_node": run.scheduled_action.target_node,
+            "action_type": run.scheduled_action.action_type,
+            "planned_for": run.planned_for.isoformat(),
+            "proxmox_task_upid": run.proxmox_task_upid,
+            "proxmox_task_node": run.proxmox_task_node,
+            "cancelled_by": username,
+        },
+    )
+    clear_live_guest_caches()
+
+
+def _cancel_proxmox_task(*, node: str, upid: str, endpoint_url: str = "") -> None:
+    errors: list[str] = []
+    clients = [ProxmoxClient(endpoint_url)] if endpoint_url else []
+    clients.extend(configured_clients())
+    seen: set[str] = set()
+    for client in clients:
+        endpoint = getattr(client, "endpoint", "")
+        if endpoint in seen:
+            continue
+        seen.add(endpoint)
+        try:
+            client.stop_task(node=node, upid=upid)
+            return
+        except ProxmoxAPIError as exc:
+            errors.append(str(exc))
+    raise ProxmoxAPIError("; ".join(errors) or "Could not cancel the Proxmox task.")
 
 
 @app_login_required

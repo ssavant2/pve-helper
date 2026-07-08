@@ -345,6 +345,7 @@ class ScheduledAction(TimestampedModel):
         SKIPPED = "skipped", "Skipped"
         MISSED = "missed", "Missed"
         TIMEOUT = "timeout", "Timed out"
+        CANCELLED = "cancelled", "Cancelled"
 
     name = models.CharField(max_length=160, unique=True)
     enabled = models.BooleanField(default=True)
@@ -411,6 +412,7 @@ class ScheduledActionRun(TimestampedModel):
         MISSED = "missed", "Missed"
         TIMEOUT = "timeout", "Timed out"
         STALE = "stale", "Stale"
+        CANCELLED = "cancelled", "Cancelled"
 
     class Outcome(models.TextChoices):
         SUCCESS = "success", "Success"
@@ -420,6 +422,7 @@ class ScheduledActionRun(TimestampedModel):
         MISSED = "missed", "Missed"
         TIMEOUT = "timeout", "Timed out"
         STALE = "stale", "Stale"
+        CANCELLED = "cancelled", "Cancelled"
 
     scheduled_action = models.ForeignKey(
         ScheduledAction,

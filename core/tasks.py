@@ -97,6 +97,9 @@ def poll_guest_audit_task(
             event.outcome = "failed"
             details["error"] = f"Proxmox task exitstatus: {result.exitstatus or result.status or 'unknown'}"
 
+    if AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists():
+        return
+
     details["finished_at"] = timezone.now().isoformat()
     event.details = details
     event.save(update_fields=["outcome", "details"])

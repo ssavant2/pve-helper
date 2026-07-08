@@ -426,6 +426,8 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Audit retention purge"
     if event.action == "audit.retention.schedule.updated":
         return "Audit retention schedule updated"
+    if event.action == "task.cancelled":
+        return "Cancel task"
     guest_action_labels = {
         "guest.power.start": "Power on guest",
         "guest.power.shutdown": "Shut down guest OS",
@@ -484,6 +486,8 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Scheduled task skipped"
     if event.action == "scheduled_action.run_missed":
         return "Scheduled task missed"
+    if event.action == "scheduled_action.run_cancelled":
+        return "Scheduled task cancelled"
     if event.action == "scheduled_action.run_retention.purge":
         return "Scheduled task retention purge"
     return event.action
