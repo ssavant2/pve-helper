@@ -2874,6 +2874,20 @@
     createIcons();
   };
 
+  const positionContextMenu = (menu, event) => {
+    const margin = 8;
+    menu.hidden = false;
+    menu.style.visibility = "hidden";
+    menu.style.left = "0px";
+    menu.style.top = "0px";
+    const rect = menu.getBoundingClientRect();
+    const left = Math.max(margin, Math.min(event.clientX, window.innerWidth - rect.width - margin));
+    const top = Math.max(margin, Math.min(event.clientY, window.innerHeight - rect.height - margin));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.style.visibility = "";
+  };
+
   const openVmContextMenu = (menu, row, event) => {
     const overview = row.closest("[data-vm-overview]");
     if (!overview) {
@@ -2954,10 +2968,8 @@
       <div class="context-menu-separator"></div>
       <button type="button" data-vm-action="destroy" class="danger" ${singleSelected && writable && allStopped ? "" : "disabled"}>Remove from Disk...</button>
     `;
-    menu.style.left = `${event.clientX}px`;
-    menu.style.top = `${event.clientY}px`;
-    menu.hidden = false;
     createIcons();
+    positionContextMenu(menu, event);
     return true;
   };
 
@@ -3001,9 +3013,7 @@
       <div class="context-menu-title">${escapeHtml(taskName)}</div>
       <button type="button" data-task-action="cancel-task" ${cancelable ? "" : "disabled"}>Cancel Task</button>
     `;
-    menu.style.left = `${event.clientX}px`;
-    menu.style.top = `${event.clientY}px`;
-    menu.hidden = false;
+    positionContextMenu(menu, event);
     return true;
   };
 
@@ -3040,9 +3050,7 @@
         <button type="button" data-action="details">Details</button>
         <button type="button" data-action="copy-path">Copy path</button>
       `;
-      menu.style.left = `${event.clientX}px`;
-      menu.style.top = `${event.clientY}px`;
-      menu.hidden = false;
+      positionContextMenu(menu, event);
     });
 
     document.addEventListener("click", (event) => {
