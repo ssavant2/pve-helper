@@ -39,10 +39,10 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260708-15">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260708-17">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script defer src="{% static 'js/app.js' %}?v=20260708-15"></script>
+    <script defer src="{% static 'js/app.js' %}?v=20260708-17"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -50,10 +50,18 @@
         <div class="brand">
           <span class="brand-mark">pve</span>
           <span class="brand-name">pve-helper</span>
+          <span class="brand-version">v0.21</span>
         </div>
-        <div class="topbar-status" data-soft-nav-status>
-          <span class="status-dot"></span>
-          <span>{{ app_display_url }}</span>
+        <div class="global-search" data-global-search data-global-search-url="{% url 'core:global_search' %}">
+          <label class="global-search-box">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <span class="sr-only">Global search</span>
+            <input type="search" placeholder="Search" autocomplete="off" spellcheck="false" data-global-search-input>
+          </label>
+          <button class="global-search-clear" type="button" data-global-search-clear aria-label="Clear search" hidden>
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+          <div class="global-search-results" data-global-search-results role="listbox" hidden></div>
         </div>
         <div class="user-area">
           <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">

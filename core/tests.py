@@ -1270,6 +1270,63 @@ class ViewSmokeTests(TestCase):
         tag_end = html.index(">", marker_index)
         return html[tag_start:tag_end]
 
+    def test_global_search_finds_guests_storage_and_hosts(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="TrueNAS-VM",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve1"],
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status={"nfs-vm": {"ok": True}})
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="App01",
+            status="running",
+            config={"agent": 1, "ostype": "l26", "tags": "prod"},
+        )
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name="local-lvm",
+            config={"type": "lvmthin", "content": "images,rootdir"},
+        )
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.NODE,
+            name="pve1",
+            status="online",
+        )
+        cache.set(
+            "pve-helper:guest-agent-summary:v1:pve1:vm:500",
+            {
+                "enabled": True,
+                "running": True,
+                "os_pretty_name": "Ubuntu 24.04.4 LTS",
+                "hostname": "app01",
+                "ips": ["203.0.113.3"],
+            },
+            60,
+        )
+
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="App01", node="pve1", status="running")
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]):
+            ip_response = self.client.get(reverse("core:global_search"), {"q": "203.0.113.3"})
+            storage_response = self.client.get(reverse("core:global_search"), {"q": "TrueNAS"})
+            host_response = self.client.get(reverse("core:global_search"), {"q": "pve1"})
+
+        self.assertEqual(ip_response.status_code, 200)
+        self.assertIn("App01", [result["label"] for result in ip_response.json()["results"]])
+        self.assertIn("TrueNAS-VM", [result["label"] for result in storage_response.json()["results"]])
+        self.assertIn("pve1", [result["label"] for result in host_response.json()["results"]])
+
     def test_storage_views_render(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)

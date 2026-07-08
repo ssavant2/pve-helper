@@ -586,6 +586,155 @@
     window.addEventListener("resize", refreshSidebarWidth);
   };
 
+  const initGlobalSearch = () => {
+    const search = document.querySelector("[data-global-search]");
+    const input = search?.querySelector("[data-global-search-input]");
+    const results = search?.querySelector("[data-global-search-results]");
+    const clearButton = search?.querySelector("[data-global-search-clear]");
+    const searchUrl = search?.dataset.globalSearchUrl;
+    if (!search || !input || !results || !searchUrl || search.dataset.initialized === "true") {
+      return;
+    }
+
+    search.dataset.initialized = "true";
+    let controller = null;
+    let debounceTimer = null;
+    let activeIndex = -1;
+
+    const resultLinks = () => Array.from(results.querySelectorAll("[data-global-search-option]"));
+    const setOpen = (open) => {
+      results.hidden = !open;
+      input.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    const setActive = (index) => {
+      const links = resultLinks();
+      activeIndex = links.length ? (index + links.length) % links.length : -1;
+      links.forEach((link, linkIndex) => {
+        link.classList.toggle("active", linkIndex === activeIndex);
+      });
+      if (activeIndex >= 0) {
+        links[activeIndex].scrollIntoView({ block: "nearest" });
+      }
+    };
+    const iconHtml = (result) => {
+      const icon = escapeHtml(result.icon || "search");
+      if (result.icon_family === "vicon") {
+        return `<span class="global-search-result-icon" data-vicon="${icon}" aria-hidden="true"></span>`;
+      }
+      return `<span class="global-search-result-icon"><i data-lucide="${icon}" aria-hidden="true"></i></span>`;
+    };
+    const renderResults = (items, query) => {
+      activeIndex = -1;
+      if (!query) {
+        results.innerHTML = "";
+        setOpen(false);
+        return;
+      }
+      if (!items.length) {
+        results.innerHTML = '<div class="global-search-empty">No matching objects.</div>';
+        setOpen(true);
+        return;
+      }
+
+      let currentCategory = "";
+      results.innerHTML = items
+        .map((result) => {
+          const category = result.category || "Results";
+          const group =
+            category !== currentCategory ? `<div class="global-search-group">${escapeHtml(category)}</div>` : "";
+          currentCategory = category;
+          return `${group}<a class="global-search-result" href="${escapeHtml(result.url || "#")}" data-global-search-option>
+            ${iconHtml(result)}
+            <span class="global-search-result-body">
+              <span class="global-search-result-title">${escapeHtml(result.label || "Untitled")}</span>
+              <span class="global-search-result-meta">${escapeHtml(result.meta || result.kind || "")}</span>
+            </span>
+          </a>`;
+        })
+        .join("");
+      setOpen(true);
+      createIcons();
+    };
+    const fetchResults = async () => {
+      const query = input.value.trim();
+      clearButton.hidden = query === "";
+      if (!query) {
+        controller?.abort();
+        renderResults([], "");
+        return;
+      }
+      controller?.abort();
+      controller = new AbortController();
+      const url = new URL(searchUrl, window.location.origin);
+      url.searchParams.set("q", query);
+      results.innerHTML = '<div class="global-search-empty">Searching...</div>';
+      setOpen(true);
+      try {
+        const response = await fetch(url, {
+          headers: { "X-Requested-With": "fetch" },
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Search failed with ${response.status}`);
+        }
+        const payload = await response.json();
+        renderResults(payload.results || [], query);
+      } catch (error) {
+        if (error.name === "AbortError") {
+          return;
+        }
+        results.innerHTML = '<div class="global-search-empty">Search failed.</div>';
+        setOpen(true);
+      }
+    };
+    const queueSearch = () => {
+      window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(fetchResults, 160);
+    };
+
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-expanded", "false");
+    input.addEventListener("input", queueSearch);
+    input.addEventListener("focus", () => {
+      if (results.innerHTML.trim()) {
+        setOpen(true);
+      }
+    });
+    input.addEventListener("keydown", (event) => {
+      const links = resultLinks();
+      if (event.key === "Escape") {
+        setOpen(false);
+        input.blur();
+      } else if (event.key === "ArrowDown" && links.length) {
+        event.preventDefault();
+        setActive(activeIndex + 1);
+      } else if (event.key === "ArrowUp" && links.length) {
+        event.preventDefault();
+        setActive(activeIndex - 1);
+      } else if (event.key === "Enter" && activeIndex >= 0 && links[activeIndex]) {
+        event.preventDefault();
+        links[activeIndex].click();
+      }
+    });
+    clearButton?.addEventListener("click", () => {
+      input.value = "";
+      clearButton.hidden = true;
+      renderResults([], "");
+      input.focus();
+    });
+    results.addEventListener("click", (event) => {
+      if (event.target.closest("[data-global-search-option]")) {
+        setOpen(false);
+      }
+    });
+    document.addEventListener("click", (event) => {
+      if (!search.contains(event.target)) {
+        setOpen(false);
+      }
+    });
+  };
+
   const initTreeModules = (root = document) => {
     root.querySelectorAll("[data-tree-module]").forEach((module) => {
       const moduleName = module.dataset.treeModule;
@@ -3719,7 +3868,7 @@
         ? document.querySelector(selector)
         : input.closest(".panel")?.querySelector("[data-filterable-table]");
       if (!table) return;
-      input.addEventListener("input", () => {
+      const applyFilter = () => {
         const q = input.value.toLowerCase().trim();
         table.querySelectorAll("tbody tr[data-filter-text]").forEach((row) => {
           row.hidden = q && !row.dataset.filterText.includes(q);
@@ -3728,7 +3877,13 @@
         if (overview) {
           syncVmOverviewSelection(overview);
         }
-      });
+      };
+      input.addEventListener("input", applyFilter);
+      const query = new URLSearchParams(window.location.search).get("q");
+      if (query && !input.value) {
+        input.value = query;
+        applyFilter();
+      }
     });
   };
 
@@ -6066,6 +6221,7 @@
     initIpVersionToggle();
     initTaskbarToggle();
     initSidebarControls();
+    initGlobalSearch();
     initTreeModules(document);
     initContextMenu();
     initSoftNavigation();

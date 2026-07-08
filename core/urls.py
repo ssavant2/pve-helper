@@ -7,6 +7,7 @@ app_name = "core"
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("datastores/", views.datastores, name="datastores"),
+    path("search/", views.global_search, name="global_search"),
     path("vms/overview/", views.vms_overview, name="vms_overview"),
     path("vms/overview/agent-info/", views.vms_overview_agent_info, name="vms_overview_agent_info"),
     path("vms/overview/snapshot-info/", views.vms_overview_snapshot_info, name="vms_overview_snapshot_info"),
