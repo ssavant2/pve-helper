@@ -39,10 +39,10 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260708-5">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260708-15">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script defer src="{% static 'js/app.js' %}?v=20260708-5"></script>
+    <script defer src="{% static 'js/app.js' %}?v=20260708-15"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -77,13 +77,13 @@
         </div>
       </header>
 
-      <aside class="sidebar">
+      <aside class="sidebar" data-sidebar>
+        <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-label="Collapse navigation" aria-expanded="true">
+          <i data-lucide="chevron-left" data-sidebar-expanded-icon aria-hidden="true"></i>
+          <i data-lucide="chevron-right" data-sidebar-collapsed-icon aria-hidden="true"></i>
+        </button>
+        <div class="sidebar-top-divider" aria-hidden="true"></div>
         <nav class="nav-tree" aria-label="Module navigation" data-soft-nav-tree>
-          <div class="tree-root">
-            <span class="tree-icon root-icon"><i data-lucide="wrench" aria-hidden="true"></i></span>
-            <span class="tree-label">pve-helper</span>
-          </div>
-
           <section class="tree-module" aria-label="Clusters module">
             <div class="tree-node module-node disabled">
               <span class="tree-caret">></span>
@@ -198,6 +198,7 @@
             <span class="tree-label">Audit</span>
           </a>
         </nav>
+        <div class="sidebar-resize-handle" data-sidebar-resize-handle role="separator" aria-orientation="vertical" aria-label="Resize navigation"></div>
       </aside>
 
       <main class="content" data-soft-nav-content tabindex="-1">

@@ -39,6 +39,8 @@
 
 :root {
   --taskbar-height: 242px;
+  --sidebar-width: 248px;
+  --sidebar-collapsed-width: 58px;
   --font-sans: "Metropolis", "Avenir Next", "Helvetica Neue", Arial, system-ui, sans-serif;
   --bg: #eef1f4;
   --surface: #ffffff;
@@ -236,7 +238,7 @@ select optgroup {
   height: 100vh;
   min-height: 0;
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   grid-template-rows: 48px minmax(0, 1fr) var(--taskbar-height);
   grid-template-areas:
     "topbar topbar"
@@ -246,6 +248,15 @@ select optgroup {
 
 .app-shell.tasks-collapsed {
   --taskbar-height: 38px;
+}
+
+.app-shell.sidebar-collapsed {
+  grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
+}
+
+.app-shell.sidebar-resizing {
+  user-select: none;
+  cursor: col-resize;
 }
 
 .topbar {
@@ -340,14 +351,147 @@ select optgroup {
 
 .sidebar {
   grid-area: sidebar;
+  position: relative;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--line);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .nav-tree {
   display: block;
-  padding: 10px 7px;
+  height: 100%;
+  overflow: auto;
+  padding: 40px 7px 10px;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 11px;
+  right: 10px;
+  z-index: 25;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--sidebar-bg);
+  color: var(--tree-text);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.sidebar-toggle:hover {
+  background: var(--tree-active-bg);
+  color: var(--tree-active-text);
+}
+
+.sidebar-toggle svg {
+  width: 17px;
+  height: 17px;
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle {
+  right: auto;
+  left: 50%;
+  width: 24px;
+  height: 22px;
+  transform: translateX(-50%);
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle svg {
+  width: 17px;
+  height: 17px;
+}
+
+.sidebar-toggle [data-sidebar-collapsed-icon],
+.app-shell.sidebar-collapsed .sidebar-toggle [data-sidebar-expanded-icon] {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle [data-sidebar-collapsed-icon] {
+  display: block;
+}
+
+.sidebar-top-divider {
+  position: absolute;
+  top: 22px;
+  right: 48px;
+  left: 12px;
+  height: 1px;
+  background: var(--line);
+  opacity: 0.85;
+}
+
+.app-shell.sidebar-collapsed .sidebar-top-divider {
+  display: none;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 20;
+  width: 8px;
+  cursor: col-resize;
+}
+
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  width: 3px;
+  height: 56px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 66%, transparent);
+  opacity: 0.6;
+  transform: translateY(-50%);
+}
+
+.sidebar-resize-handle:hover::after,
+.app-shell.sidebar-resizing .sidebar-resize-handle::after {
+  background: var(--accent);
+  opacity: 0.95;
+}
+
+.app-shell.sidebar-collapsed .sidebar-resize-handle {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .nav-tree {
+  padding-top: 40px;
+  padding-right: 6px;
+  padding-left: 6px;
+}
+
+.sidebar-measure-probe {
+  position: absolute;
+  inset: auto auto 0 0;
+  visibility: hidden;
+  white-space: nowrap;
+  font: inherit;
+  font-weight: 400;
+  pointer-events: none;
+}
+
+.sidebar-measure-tree {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  width: max-content;
+  min-width: 0;
+  height: auto;
+  overflow: visible;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.sidebar-measure-tree .tree-children,
+.sidebar-measure-tree .tree-module.collapsed .tree-children {
+  display: block;
 }
 
 .tree-root,
@@ -549,6 +693,29 @@ button.tree-node {
 .tree-node.disabled .tree-icon {
   background: var(--tree-icon-disabled-bg);
   color: var(--tree-icon-disabled-text);
+}
+
+.app-shell.sidebar-collapsed .tree-root,
+.app-shell.sidebar-collapsed .tree-node {
+  justify-content: center;
+  gap: 0;
+  padding-right: 5px;
+  padding-left: 5px;
+}
+
+.app-shell.sidebar-collapsed .tree-root::after,
+.app-shell.sidebar-collapsed .tree-caret,
+.app-shell.sidebar-collapsed .tree-label,
+.app-shell.sidebar-collapsed .tree-children {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .tree-module {
+  margin: 4px 0;
+}
+
+.app-shell.sidebar-collapsed .nav-tree > .tree-node.module-node {
+  margin: 4px 0;
 }
 
 .content {
@@ -3169,14 +3336,53 @@ code {
     --taskbar-height: 38px;
   }
 
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--line);
     max-height: 240px;
+    overflow: auto;
+  }
+
+  .sidebar-toggle,
+  .sidebar-resize-handle {
+    display: none;
   }
 
   .nav-tree {
     display: block;
+    height: auto;
+  }
+
+  .app-shell.sidebar-collapsed .tree-root,
+  .app-shell.sidebar-collapsed .tree-node {
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 5px 9px;
+  }
+
+  .app-shell.sidebar-collapsed .tree-root::after {
+    display: block;
+  }
+
+  .app-shell.sidebar-collapsed .tree-root .tree-icon {
+    display: inline-grid;
+  }
+
+  .app-shell.sidebar-collapsed .tree-caret,
+  .app-shell.sidebar-collapsed .tree-label {
+    display: inline;
+  }
+
+  .app-shell.sidebar-collapsed .tree-children {
+    display: block;
+  }
+
+  .app-shell.sidebar-collapsed .tree-module.collapsed .tree-children {
+    display: none;
   }
 
   .metric-grid,
@@ -3319,6 +3525,11 @@ code {
   font-size: 14px;
   line-height: 20px;
   white-space: nowrap;
+}
+
+.guest-list-item[hidden],
+.guest-list-empty[hidden] {
+  display: none;
 }
 
 .guest-list-item:hover {

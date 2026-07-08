@@ -67,6 +67,9 @@
         {% empty %}
           <p class="muted guest-list-empty">No guests found.</p>
         {% endfor %}
+        {% if guest_list %}
+          <p class="muted guest-list-empty" data-guest-filter-empty hidden>No matching guests.</p>
+        {% endif %}
       </div>
     </aside>
     <div class="guest-detail-pane">

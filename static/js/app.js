@@ -3,6 +3,8 @@
   const guestNameStyleKey = "pve-helper-guest-name-style";
   const ipVersionStyleKey = "pve-helper-ip-version-style";
   const taskbarKey = "pve-helper-taskbar-collapsed";
+  const sidebarCollapsedKey = "pve-helper-sidebar-collapsed";
+  const sidebarWidthKey = "pve-helper-sidebar-width";
   const softContentSelector = "[data-soft-nav-content]";
   const softStatusSelector = "[data-soft-nav-status]";
   const softTreeSelector = "[data-soft-nav-tree]";
@@ -66,6 +68,109 @@
     appShell.classList.toggle("tasks-collapsed", collapsed);
     taskbarToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
     taskbarToggle.setAttribute("aria-label", collapsed ? "Show recent tasks" : "Hide recent tasks");
+  };
+
+  const sidebarMaxWidth = () => Math.max(280, Math.min(720, Math.floor(window.innerWidth * 0.5)));
+
+  const measureSidebarMinimumWidth = () => {
+    const sidebar = document.querySelector("[data-sidebar]");
+    const navTree = sidebar?.querySelector(".nav-tree");
+    if (!sidebar || !navTree) {
+      return 248;
+    }
+
+    const nodes = Array.from(navTree.children)
+      .map((child) => (child.matches?.(".tree-module") ? child.querySelector(".module-node") : child))
+      .filter((node) => node?.matches?.(".module-node"));
+    if (!nodes.length) {
+      return 248;
+    }
+
+    const probe = document.createElement("span");
+    probe.className = "sidebar-measure-probe";
+    probe.setAttribute("aria-hidden", "true");
+    sidebar.appendChild(probe);
+    const widestLabel = nodes.reduce((maxWidth, node) => {
+      const label = node.querySelector(".tree-label")?.textContent?.trim() || "";
+      probe.textContent = label;
+      return Math.max(maxWidth, probe.getBoundingClientRect().width);
+    }, 0);
+    probe.remove();
+
+    // Nav padding + caret + icon + gaps + row padding. This is intentionally
+    // top-level only; deeper labels can overflow until the user expands width
+    // or double-clicks the handle for full-tree auto-fit.
+    return Math.ceil(Math.max(190, widestLabel + 78));
+  };
+
+  const measureSidebarExpandedWidth = () => {
+    const sidebar = document.querySelector("[data-sidebar]");
+    const navTree = sidebar?.querySelector(".nav-tree");
+    if (!sidebar || !navTree) {
+      return measureSidebarMinimumWidth();
+    }
+
+    const clone = navTree.cloneNode(true);
+    clone.classList.add("sidebar-measure-tree");
+    clone.querySelectorAll(".tree-module.collapsed").forEach((module) => {
+      module.classList.remove("collapsed");
+      module.classList.add("expanded");
+      const toggle = module.querySelector("[data-tree-toggle]");
+      const caret = module.querySelector("[data-tree-caret]");
+      toggle?.setAttribute("aria-expanded", "true");
+      if (caret) {
+        caret.textContent = "v";
+      }
+    });
+    sidebar.appendChild(clone);
+    const width = Math.ceil(clone.scrollWidth + 8);
+    clone.remove();
+    return Math.max(measureSidebarMinimumWidth(), width);
+  };
+
+  const clampSidebarWidth = (width) => {
+    const minimum = measureSidebarMinimumWidth();
+    return Math.min(sidebarMaxWidth(), Math.max(minimum, width || minimum));
+  };
+
+  const storedSidebarWidth = () => {
+    try {
+      return Number.parseInt(localStorage.getItem(sidebarWidthKey) || "", 10);
+    } catch (_error) {
+      return Number.NaN;
+    }
+  };
+
+  const rememberSidebarWidth = (width) => {
+    try {
+      localStorage.setItem(sidebarWidthKey, String(Math.round(width)));
+    } catch (_error) {
+      // Width persistence is a convenience, not a dependency.
+    }
+  };
+
+  const applySidebarState = (collapsed) => {
+    const appShell = document.querySelector(".app-shell");
+    const toggle = document.querySelector("[data-sidebar-toggle]");
+    if (!appShell || !toggle) {
+      return;
+    }
+
+    const width = clampSidebarWidth(storedSidebarWidth());
+    appShell.style.setProperty("--sidebar-width", `${width}px`);
+    appShell.classList.toggle("sidebar-collapsed", collapsed);
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    toggle.setAttribute("aria-label", collapsed ? "Expand navigation" : "Collapse navigation");
+  };
+
+  const refreshSidebarWidth = () => {
+    const appShell = document.querySelector(".app-shell");
+    if (!appShell || appShell.classList.contains("sidebar-collapsed")) {
+      return;
+    }
+    const width = clampSidebarWidth(storedSidebarWidth());
+    appShell.style.setProperty("--sidebar-width", `${width}px`);
+    rememberSidebarWidth(width);
   };
 
   // Clarity (vSphere) object-type icons, self-hosted as inline SVG so they sit
@@ -420,6 +525,65 @@
       }
       applyTaskbarState(collapsed);
     });
+  };
+
+  const initSidebarControls = () => {
+    const appShell = document.querySelector(".app-shell");
+    const sidebar = document.querySelector("[data-sidebar]");
+    const toggle = document.querySelector("[data-sidebar-toggle]");
+    const handle = document.querySelector("[data-sidebar-resize-handle]");
+    if (!appShell || !sidebar || !toggle || !handle || sidebar.dataset.controlsInitialized === "true") {
+      return;
+    }
+
+    sidebar.dataset.controlsInitialized = "true";
+
+    toggle.addEventListener("click", () => {
+      const collapsed = !appShell.classList.contains("sidebar-collapsed");
+      try {
+        localStorage.setItem(sidebarCollapsedKey, collapsed ? "true" : "false");
+      } catch (_error) {
+        // The visual state still changes even when localStorage is unavailable.
+      }
+      if (!collapsed) {
+        refreshSidebarWidth();
+      }
+      applySidebarState(collapsed);
+    });
+
+    handle.addEventListener("dblclick", () => {
+      const width = clampSidebarWidth(measureSidebarExpandedWidth());
+      rememberSidebarWidth(width);
+      applySidebarState(false);
+    });
+
+    handle.addEventListener("pointerdown", (event) => {
+      if (appShell.classList.contains("sidebar-collapsed")) {
+        return;
+      }
+      event.preventDefault();
+      appShell.classList.add("sidebar-resizing");
+      handle.setPointerCapture?.(event.pointerId);
+
+      const resize = (moveEvent) => {
+        const shellLeft = appShell.getBoundingClientRect().left;
+        const width = clampSidebarWidth(moveEvent.clientX - shellLeft);
+        appShell.style.setProperty("--sidebar-width", `${width}px`);
+        rememberSidebarWidth(width);
+      };
+      const stop = () => {
+        appShell.classList.remove("sidebar-resizing");
+        window.removeEventListener("pointermove", resize);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      };
+
+      window.addEventListener("pointermove", resize);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    });
+
+    window.addEventListener("resize", refreshSidebarWidth);
   };
 
   const initTreeModules = (root = document) => {
@@ -3272,6 +3436,7 @@
     document.title = nextDocument.title || "pve-helper";
 
     initTreeModules(document);
+    refreshSidebarWidth();
     initPage(currentContent);
     createIcons();
     return true;
@@ -4543,15 +4708,25 @@
       if (!list) {
         return;
       }
-      const items = list.querySelectorAll("[data-filter-text]");
       const apply = () => {
         const query = input.value.trim().toLowerCase();
+        const items = Array.from(list.querySelectorAll("[data-filter-text]"));
+        let visibleCount = 0;
         items.forEach((item) => {
           const text = item.dataset.filterText || "";
-          item.hidden = query !== "" && !text.includes(query);
+          const hidden = query !== "" && !text.includes(query);
+          item.hidden = hidden;
+          if (!hidden) {
+            visibleCount += 1;
+          }
         });
+        const empty = list.querySelector("[data-guest-filter-empty]");
+        if (empty) {
+          empty.hidden = query === "" || visibleCount > 0;
+        }
       };
       input.addEventListener("input", apply);
+      apply();
     });
   };
 
@@ -5880,11 +6055,17 @@
     } catch (_error) {
       applyTaskbarState(false);
     }
+    try {
+      applySidebarState(localStorage.getItem(sidebarCollapsedKey) === "true");
+    } catch (_error) {
+      applySidebarState(false);
+    }
 
     initThemeToggle();
     initGuestNameToggle();
     initIpVersionToggle();
     initTaskbarToggle();
+    initSidebarControls();
     initTreeModules(document);
     initContextMenu();
     initSoftNavigation();
