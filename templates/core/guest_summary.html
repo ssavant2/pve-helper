@@ -76,7 +76,7 @@
         <div><dt>VMID</dt><dd>{{ guest.vmid }}</dd></div>
         <div><dt>Type</dt><dd>{{ guest_type_label }}</dd></div>
         {% for row in vm_details %}
-          <div><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>
+          <div{% if row.key %} data-vm-detail-field="{{ row.key }}"{% endif %}><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>
         {% endfor %}
       </dl>
     </div>

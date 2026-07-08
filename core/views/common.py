@@ -222,7 +222,17 @@ def _guest_destroy(detail: SimpleNamespace, query: str):
 
 
 GUEST_POWER_ACTIONS = {"start", "shutdown", "reboot", "stop", "reset"}
-VM_BULK_ACTIONS = {*GUEST_POWER_ACTIONS, "snapshot", "delete_snapshots", "template", "clone", "tags", "destroy"}
+VM_BULK_ACTIONS = {
+    *GUEST_POWER_ACTIONS,
+    "snapshot",
+    "delete_snapshots",
+    "template",
+    "clone",
+    "tags",
+    "destroy",
+    "agent_enable",
+    "agent_disable",
+}
 
 
 GUEST_AGENT_API_TIMEOUT_SECONDS = 2
@@ -429,6 +439,8 @@ def _audit_action_label(event: AuditEvent) -> str:
         "guest.template.convert": "Convert guest to template",
         "guest.clone.create": "Clone guest",
         "guest.tags.updated": "Update guest tags",
+        "guest.agent.enable": "Enable guest agent",
+        "guest.agent.disable": "Disable guest agent",
         "guest.destroy": "Destroy guest",
         "guest.config.updated": "Update guest configuration",
         "guest.hardware.updated": "Update guest hardware",

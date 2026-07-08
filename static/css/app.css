@@ -3000,6 +3000,20 @@ code {
   position: relative;
 }
 
+.context-menu-submenu::after {
+  position: absolute;
+  top: -8px;
+  right: -18px;
+  bottom: -8px;
+  width: 18px;
+  content: "";
+}
+
+.context-menu-submenu:hover > .context-menu-parent,
+.context-menu-submenu:focus-within > .context-menu-parent {
+  background: var(--blue-soft);
+}
+
 .context-menu-parent span {
   margin-left: auto;
   color: var(--muted);
@@ -3008,7 +3022,7 @@ code {
 .context-menu-submenu-panel {
   position: absolute;
   top: -5px;
-  left: calc(100% + 4px);
+  left: calc(100% + 2px);
   display: none;
   min-width: 260px;
   padding: 4px;

@@ -2800,6 +2800,10 @@ def _bulk_action_initial_audit_details(
             "mode": request.POST.get("tags_mode", "").strip(),
             "tags": _split_tag_text(request.POST.get("tags_value", "")),
         }
+    if action == "agent_enable":
+        return "guest.agent.enable", {"agent": "enabled"}
+    if action == "agent_disable":
+        return "guest.agent.disable", {"agent": "disabled"}
     if action == "destroy":
         return "guest.destroy", {
             "purge": request.POST.get("destroy_purge") == "1",
@@ -2929,6 +2933,12 @@ def vms_bulk_action(request):
             error_label = f"Tag update failed: {err}" if err else ""
             response = None
             client = None
+        elif action in {"agent_enable", "agent_disable"}:
+            err, audit_details, response, client = _set_guest_agent_from_bulk_request(
+                detail,
+                enabled=action == "agent_enable",
+            )
+            error_label = f"Guest agent update failed: {err}" if err else ""
         elif action == "destroy":
             err, audit_details, response, client = _destroy_guest_from_bulk_request(request, detail)
             error_label = f"Destroy failed: {err}" if err else ""
@@ -2968,7 +2978,7 @@ def vms_bulk_action(request):
             _update_latest_guest_scan_config(detail, {"template": "1"}, [])
         if action == "destroy":
             _delete_latest_guest_scan_object(detail)
-        if action in GUEST_POWER_ACTIONS or action in {"template", "clone", "tags", "destroy"}:
+        if action in GUEST_POWER_ACTIONS or action in {"template", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
             clear_live_guest_caches()
 
     response = done(not errors, errors)
@@ -3108,6 +3118,52 @@ def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tu
 
     _update_latest_guest_scan_config(detail, updates, delete)
     return "", audit_details
+
+
+def _set_guest_agent_from_bulk_request(
+    detail: SimpleNamespace,
+    *,
+    enabled: bool,
+) -> tuple[str, dict, object | None, object | None]:
+    audit_details = {"agent": "enabled" if enabled else "disabled"}
+    if detail.object_type != ProxmoxInventory.ObjectType.VM:
+        return "Guest agent applies to VMs only.", audit_details, None, None
+
+    client = None
+    fresh: dict = {}
+    for candidate in common.configured_clients():
+        try:
+            fresh = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            client = candidate
+            break
+        except ProxmoxAPIError:
+            continue
+    if client is None:
+        return "Could not read the current guest config from Proxmox.", audit_details, None, None
+    if fresh.get("lock"):
+        return f"Guest is locked by another Proxmox operation ({fresh.get('lock')}).", audit_details, None, None
+
+    currently_enabled = _guest_agent_config_enabled(fresh, detail.object_type)
+    audit_details["previous_agent"] = "enabled" if currently_enabled else "disabled"
+    if currently_enabled == enabled:
+        audit_details["noop"] = True
+        return "", audit_details, None, client
+
+    updates = {"agent": "1" if enabled else "0"}
+    try:
+        client.set_guest_config(
+            node=detail.node,
+            object_type=detail.object_type,
+            vmid=detail.vmid,
+            updates=updates,
+            delete=[],
+            digest=fresh.get("digest"),
+        )
+    except ProxmoxAPIError as exc:
+        return str(exc), audit_details, None, client
+
+    _update_latest_guest_scan_config(detail, updates, [])
+    return "", audit_details, None, client
 
 
 def _split_tag_text(value: str) -> list[str]:
@@ -3665,9 +3721,9 @@ def _guest_vm_details(detail: SimpleNamespace) -> list[dict]:
     current = detail.current
     rows: list[dict] = []
 
-    def add(label, value):
+    def add(label, value, key: str = ""):
         if value not in (None, "", "-"):
-            rows.append({"label": label, "value": value})
+            rows.append({"label": label, "value": value, "key": key})
 
     add("Guest OS", _guest_os_label(config))
     add("Node", detail.node or "-")
@@ -3677,8 +3733,8 @@ def _guest_vm_details(detail: SimpleNamespace) -> list[dict]:
         add("Machine", config.get("machine"))
     if config.get("boot"):
         add("Boot order", str(config.get("boot")).replace("order=", ""))
-    if config.get("agent"):
-        add("Guest agent", "Enabled")
+    if detail.object_type == ProxmoxInventory.ObjectType.VM:
+        add("Guest agent", _guest_agent_config_label(config, detail.object_type), "agent")
     uptime = current.get("uptime") if isinstance(current, dict) else None
     if uptime:
         add("Uptime", _format_uptime(int(uptime)))

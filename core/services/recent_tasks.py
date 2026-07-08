@@ -25,6 +25,8 @@ GUEST_TASK_NAMES = {
     "guest.template.convert": "Convert to template",
     "guest.clone.create": "Clone guest",
     "guest.tags.updated": "Update tags",
+    "guest.agent.enable": "Enable guest agent",
+    "guest.agent.disable": "Disable guest agent",
     "guest.destroy": "Destroy guest",
     "guest.config.updated": "Reconfigure",
     "guest.hardware.updated": "Reconfigure hardware",

@@ -2313,6 +2313,8 @@
         template: "guest.template.convert",
         clone: "guest.clone.create",
         tags: "guest.tags.updated",
+        agent_enable: "guest.agent.enable",
+        agent_disable: "guest.agent.disable",
         destroy: "guest.destroy",
       }[action] || `guest.${action}`
     );
@@ -2330,6 +2332,8 @@
       template: "Convert to template",
       clone: "Clone guest",
       tags: "Update tags",
+      agent_enable: "Enable guest agent",
+      agent_disable: "Disable guest agent",
       destroy: "Destroy guest",
     })[action] || "VM/CT action";
 
@@ -2366,7 +2370,28 @@
     if (action === "clone") {
       return fields.clone_name || fields.clone_newid || "-";
     }
+    if (action === "agent_enable") {
+      return "enabled";
+    }
+    if (action === "agent_disable") {
+      return "disabled";
+    }
     return "-";
+  };
+
+  const updateVmRowsAgentState = (rows, enabled) => {
+    const label = enabled ? "Enabled" : "Disabled";
+    rows.forEach((row) => {
+      row.dataset.guestAgentEnabled = enabled ? "true" : "false";
+      const statusCell = row.querySelector("[data-agent-status-cell]");
+      if (statusCell) {
+        statusCell.textContent = label;
+        statusCell.dataset.sortValue = label;
+      }
+    });
+    document.querySelectorAll('[data-vm-detail-field="agent"] dd').forEach((field) => {
+      field.textContent = label;
+    });
   };
 
   const createPendingVmTask = (action, fields, rows) => {
@@ -2485,6 +2510,20 @@
         window.alert((payload.errors || ["VM/CT action failed."]).join("\n"));
       } else {
         requestSettled = true;
+        if (action === "agent_enable" || action === "agent_disable") {
+          const finishedAt = new Date();
+          updatePendingRecentTask({
+            id: pendingTask.id,
+            status: "Completed",
+            status_class: "completed",
+            details: pendingTask.details || "Accepted",
+            finished_at: taskDateLabel(finishedAt),
+            finished_at_ms: finishedAt.getTime(),
+          });
+          updateVmRowsAgentState(rows, action === "agent_enable");
+          window.pveHelperRefreshRecentTasks?.();
+          return;
+        }
         updatePendingRecentTask({
           id: pendingTask.id,
           status: "Running",
@@ -2846,6 +2885,8 @@
     const allStopped = contextRows.every((item) => item.dataset.guestStatus === "stopped");
     const allVms = contextRows.every((item) => item.dataset.guestType === "vm");
     const noTemplates = contextRows.every((item) => item.dataset.guestTemplate !== "true");
+    const allAgentEnabled = contextRows.every((item) => item.dataset.guestAgentEnabled === "true");
+    const allAgentDisabled = contextRows.every((item) => item.dataset.guestAgentEnabled !== "true");
     const singleSelected = contextRows.length === 1;
 
     activeVmOverview = overview;
@@ -2871,6 +2912,8 @@
         <button type="button" class="context-menu-parent">Guest OS <span>›</span></button>
         <div class="context-menu-submenu-panel">
           <button type="button" data-vm-action="open-summary" ${singleSelected ? "" : "disabled"}>Open Summary</button>
+          <button type="button" data-vm-action="agent_enable" ${writable && allVms && allAgentDisabled ? "" : "disabled"}>Enable guest agent</button>
+          <button type="button" data-vm-action="agent_disable" ${writable && allVms && allAgentEnabled ? "" : "disabled"}>Disable guest agent</button>
           <button type="button" disabled>Run command</button>
         </div>
       </div>

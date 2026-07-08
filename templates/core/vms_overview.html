@@ -115,6 +115,7 @@
                 data-guest-target="{{ g.target_id }}"
                 data-guest-type="{{ g.object_type }}"
                 data-guest-template="{{ g.is_template|yesno:'true,false' }}"
+                data-guest-agent-enabled="{{ g.agent_enabled|yesno:'true,false' }}"
                 data-guest-status="{{ g.status }}"
                 data-guest-label="{{ g.guest_identity.full_label_with_type }}"
                 data-guest-name="{{ g.name }}"
