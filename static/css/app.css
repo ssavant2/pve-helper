@@ -2179,6 +2179,292 @@ button.tree-node {
   font-size: 12px;
 }
 
+.audit-export-header-button {
+  min-height: 30px;
+}
+
+.audit-export-dialog {
+  position: relative;
+  width: min(520px, calc(100vw - 32px));
+  padding: 0;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--context-shadow);
+}
+
+.audit-export-dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}
+
+.audit-export-form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.audit-export-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.audit-export-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.audit-export-heading button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.audit-export-body {
+  display: grid;
+  gap: 12px;
+}
+
+.audit-export-body .form-field {
+  display: grid;
+  gap: 6px;
+}
+
+.audit-export-body .form-field > span,
+.audit-export-body .form-field-inline span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-export-body input[type="search"],
+.audit-export-body input[type="text"],
+.audit-export-body input[type="number"],
+.audit-export-body select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  font: inherit;
+}
+
+.audit-export-datetime {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  align-items: center;
+  width: 100%;
+  color: var(--text);
+  font: inherit;
+}
+
+.audit-export-datetime input[readonly] {
+  cursor: default;
+  border-radius: 6px 0 0 6px;
+}
+
+.audit-export-datetime button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 39px;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
+  background: var(--surface_alt, transparent);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.audit-export-datetime button:hover,
+.audit-export-datetime button:focus-visible {
+  color: var(--accent);
+}
+
+.audit-export-datetime button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.audit-date-picker-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  border-radius: inherit;
+  background: rgb(0 0 0 / 0.3);
+}
+
+.audit-date-picker-modal[hidden] {
+  display: none;
+}
+
+.audit-date-picker-panel {
+  box-sizing: border-box;
+  width: min(380px, 100%);
+  max-height: min(620px, calc(100vh - 72px));
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 0.35);
+}
+
+.audit-date-picker-title,
+.audit-date-picker-header,
+.audit-date-picker-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.audit-date-picker-title {
+  margin-bottom: 10px;
+}
+
+.audit-date-picker-title strong,
+.audit-date-picker-header strong {
+  color: var(--text);
+}
+
+.audit-date-picker-title button,
+.audit-date-picker-header button,
+.audit-date-picker-actions button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.audit-date-picker-title button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+}
+
+.audit-date-picker-header button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 32px;
+  padding: 0;
+}
+
+.audit-date-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.audit-date-picker-weekday,
+.audit-date-picker-empty,
+.audit-date-picker-day {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  border-radius: 6px;
+}
+
+.audit-date-picker-weekday {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.audit-date-picker-day {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.audit-date-picker-day:hover,
+.audit-date-picker-day:focus-visible {
+  border-color: var(--accent);
+}
+
+.audit-date-picker-day.is-selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.audit-date-picker-day.is-today {
+  color: var(--accent);
+}
+
+.audit-date-picker-time {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.audit-date-picker-time label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-date-picker-time input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  font: inherit;
+}
+
+.audit-date-picker-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.audit-date-picker-actions button {
+  padding: 7px 11px;
+}
+
+.audit-date-picker-actions button[data-audit-date-apply] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--button_text, #fff);
+}
+
+.audit-export-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.audit-export-body .form-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Fixed layout so column widths stay identical across filters/searches
    instead of reflowing to whatever content the current result set has. */
 .audit-table {

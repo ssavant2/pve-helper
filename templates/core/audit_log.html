@@ -8,6 +8,7 @@
       <p>Authentication, storage scans, and file actions</p>
     </div>
     <div class="scan-controls">
+      <button class="page-button audit-export-header-button" type="button" data-audit-export-open>Export</button>
       <form class="scan-schedule-form" method="post" action="{% url 'core:update_audit_retention_schedule' %}" data-auto-submit-form>
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -80,4 +81,76 @@
       </tbody>
     </table>
   </section>
+
+  <dialog class="audit-export-dialog" data-audit-export-dialog>
+    <form class="audit-export-form" method="get" action="{% url 'core:audit_export' %}">
+      <div class="audit-export-heading">
+        <h2>Export Audit Log</h2>
+        <button type="button" data-audit-export-close aria-label="Close">x</button>
+      </div>
+      <div class="audit-export-body">
+        <label class="form-field">
+          <span>Format</span>
+          <select name="format">
+            <option value="xlsx">Excel workbook (.xlsx)</option>
+            <option value="csv">CSV (.csv)</option>
+            <option value="json">JSON (.json)</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span>Scope</span>
+          <select name="scope">
+            <option value="matching">All matching events</option>
+            <option value="page">Current page only</option>
+          </select>
+        </label>
+        <input type="hidden" name="page" value="{{ audit_page }}">
+        <label class="form-field">
+          <span>Module</span>
+          <select name="filter">
+            {% for filter in audit_filters %}
+              <option value="{{ filter.key }}"{% if filter.key == audit_filter %} selected{% endif %}>{{ filter.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="form-field">
+          <span>Search</span>
+          <input type="search" name="q" value="{{ audit_query }}" placeholder="Optional text filter" autocomplete="off">
+        </label>
+        <div class="audit-export-dates">
+          <label class="form-field">
+            <span>From</span>
+            <span class="audit-export-datetime" data-audit-export-datetime data-audit-export-default-hour="00" data-audit-export-default-minute="00" data-audit-export-label="From">
+              <input type="hidden" name="start" data-audit-export-datetime-value>
+              <input type="text" readonly placeholder="YYYY-MM-DD HH:MM" aria-label="From date and time" data-audit-export-display>
+              <button type="button" aria-label="Pick from date and time" data-audit-export-open-picker>
+                <i data-lucide="calendar-clock" aria-hidden="true"></i>
+              </button>
+            </span>
+          </label>
+          <label class="form-field">
+            <span>To</span>
+            <span class="audit-export-datetime" data-audit-export-datetime data-audit-export-default-hour="23" data-audit-export-default-minute="59" data-audit-export-label="To">
+              <input type="hidden" name="end" data-audit-export-datetime-value>
+              <input type="text" readonly placeholder="YYYY-MM-DD HH:MM" aria-label="To date and time" data-audit-export-display>
+              <button type="button" aria-label="Pick to date and time" data-audit-export-open-picker>
+                <i data-lucide="calendar-clock" aria-hidden="true"></i>
+              </button>
+            </span>
+          </label>
+        </div>
+        <label class="form-field-inline">
+          <input type="checkbox" name="include_technical">
+          <span>Include raw action, object id, and details</span>
+        </label>
+      </div>
+      <div class="form-actions">
+        <button class="primary-action" type="submit">Export</button>
+        <button class="secondary-action" type="button" data-audit-export-cancel>Cancel</button>
+      </div>
+    </form>
+    <div class="audit-date-picker-modal" data-audit-date-modal hidden>
+      <div class="audit-date-picker-panel" data-audit-date-panel role="dialog" aria-modal="true" aria-label="Pick date and time"></div>
+    </div>
+  </dialog>
 {% endblock %}

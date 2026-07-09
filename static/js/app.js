@@ -789,6 +789,252 @@
     });
   };
 
+  const initAuditExportDialog = (root = document) => {
+    const dialog =
+      root.querySelector("[data-audit-export-dialog]") || document.querySelector("[data-audit-export-dialog]");
+    if (!dialog || dialog.dataset.initialized === "true") {
+      return;
+    }
+
+    dialog.dataset.initialized = "true";
+    const close = () => {
+      dialog.querySelector("[data-audit-date-modal]")?.setAttribute("hidden", "");
+      dialog.close();
+    };
+    document.querySelectorAll("[data-audit-export-open]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (typeof dialog.showModal === "function") {
+          dialog.showModal();
+        }
+      });
+    });
+    dialog.querySelector("[data-audit-export-close]")?.addEventListener("click", close);
+    dialog.querySelector("[data-audit-export-cancel]")?.addEventListener("click", close);
+    const padDatePart = (value) => String(value).padStart(2, "0");
+    const monthNames = [
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
+    ];
+    const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const clampNumber = (value, min, max) => {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed)) {
+        return min;
+      }
+      return Math.min(max, Math.max(min, parsed));
+    };
+    const parseExportDate = (value) => {
+      const match = String(value || "")
+        .trim()
+        .match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+      if (!match) {
+        return null;
+      }
+      const parsed = new Date(
+        Number.parseInt(match[1], 10),
+        Number.parseInt(match[2], 10) - 1,
+        Number.parseInt(match[3], 10),
+        Number.parseInt(match[4], 10),
+        Number.parseInt(match[5], 10)
+      );
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+    const formatExportDate = (date) =>
+      `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())} ${padDatePart(
+        date.getHours()
+      )}:${padDatePart(date.getMinutes())}`;
+    const dateModal = dialog.querySelector("[data-audit-date-modal]");
+    const datePanel = dialog.querySelector("[data-audit-date-panel]");
+    let activeDateGroup = null;
+    let pickerDate = new Date();
+    pickerDate.setSeconds(0, 0);
+    let pickerYear = pickerDate.getFullYear();
+    let pickerMonth = pickerDate.getMonth();
+
+    const syncDateTimeGroup = (group) => {
+      const valueInput = group.querySelector("[data-audit-export-datetime-value]");
+      const displayInput = group.querySelector("[data-audit-export-display]");
+      if (!valueInput || !displayInput) {
+        return;
+      }
+      const parsed = parseExportDate(displayInput.value);
+      if (!parsed) {
+        valueInput.value = "";
+        return;
+      }
+      const normalized = formatExportDate(parsed);
+      displayInput.value = normalized;
+      valueInput.value = normalized;
+    };
+    const closeDatePicker = () => {
+      if (dateModal) {
+        dateModal.hidden = true;
+      }
+    };
+    const renderDatePicker = () => {
+      if (!datePanel || !activeDateGroup) {
+        return;
+      }
+      const firstOfMonth = new Date(pickerYear, pickerMonth, 1);
+      const mondayOffset = (firstOfMonth.getDay() + 6) % 7;
+      const daysInMonth = new Date(pickerYear, pickerMonth + 1, 0).getDate();
+      const today = new Date();
+      const dayCells = [];
+      for (let index = 0; index < mondayOffset; index += 1) {
+        dayCells.push('<span class="audit-date-picker-empty"></span>');
+      }
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const isSelected =
+          pickerDate.getFullYear() === pickerYear &&
+          pickerDate.getMonth() === pickerMonth &&
+          pickerDate.getDate() === day;
+        const isToday =
+          today.getFullYear() === pickerYear && today.getMonth() === pickerMonth && today.getDate() === day;
+        dayCells.push(
+          `<button type="button" class="audit-date-picker-day${isSelected ? " is-selected" : ""}${
+            isToday ? " is-today" : ""
+          }" data-audit-date-day="${day}">${day}</button>`
+        );
+      }
+      datePanel.innerHTML = `
+        <div class="audit-date-picker-title">
+          <strong>${activeDateGroup.dataset.auditExportLabel || "Date range"}</strong>
+          <button type="button" aria-label="Close date picker" data-audit-date-close>x</button>
+        </div>
+        <div class="audit-date-picker-header">
+          <button type="button" aria-label="Previous month" data-audit-date-prev><i data-lucide="chevron-left" aria-hidden="true"></i></button>
+          <strong>${monthNames[pickerMonth]} ${pickerYear}</strong>
+          <button type="button" aria-label="Next month" data-audit-date-next><i data-lucide="chevron-right" aria-hidden="true"></i></button>
+        </div>
+        <div class="audit-date-picker-grid">
+          ${weekdays.map((day) => `<span class="audit-date-picker-weekday">${day}</span>`).join("")}
+          ${dayCells.join("")}
+        </div>
+        <div class="audit-date-picker-time">
+          <label>Hour <input type="number" min="0" max="23" step="1" value="${padDatePart(pickerDate.getHours())}" data-audit-date-hour></label>
+          <label>Minute <input type="number" min="0" max="59" step="1" value="${padDatePart(pickerDate.getMinutes())}" data-audit-date-minute></label>
+        </div>
+        <div class="audit-date-picker-actions">
+          <button type="button" data-audit-date-clear>Clear</button>
+          <button type="button" data-audit-date-apply>Apply</button>
+        </div>
+      `;
+      if (window.lucide) {
+        window.lucide.createIcons({ attrs: { "stroke-width": 2 } });
+      }
+    };
+
+    dialog.querySelectorAll("[data-audit-export-datetime]").forEach((group) => {
+      const openButton = group.querySelector("[data-audit-export-open-picker]");
+      const displayInput = group.querySelector("[data-audit-export-display]");
+      openButton?.addEventListener("click", () => {
+        activeDateGroup = group;
+        const parsed = parseExportDate(displayInput?.value);
+        pickerDate = parsed || new Date();
+        pickerDate.setSeconds(0, 0);
+        if (!parsed) {
+          pickerDate.setHours(
+            clampNumber(group.dataset.auditExportDefaultHour || "00", 0, 23),
+            clampNumber(group.dataset.auditExportDefaultMinute || "00", 0, 59),
+            0,
+            0
+          );
+        }
+        pickerYear = pickerDate.getFullYear();
+        pickerMonth = pickerDate.getMonth();
+        renderDatePicker();
+        if (dateModal) {
+          dateModal.hidden = false;
+        }
+      });
+    });
+
+    dialog.querySelector(".audit-export-form")?.addEventListener("submit", () => {
+      dialog.querySelectorAll("[data-audit-export-datetime]").forEach(syncDateTimeGroup);
+    });
+    dateModal?.addEventListener("click", (event) => {
+      if (event.target === dateModal) {
+        closeDatePicker();
+      }
+    });
+    datePanel?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const target = event.target instanceof Element ? event.target.closest("button") : null;
+      if (!target) {
+        return;
+      }
+      if (target.matches("[data-audit-date-close]")) {
+        closeDatePicker();
+        return;
+      }
+      if (target.matches("[data-audit-date-prev]")) {
+        pickerMonth -= 1;
+        if (pickerMonth < 0) {
+          pickerMonth = 11;
+          pickerYear -= 1;
+        }
+        renderDatePicker();
+        return;
+      }
+      if (target.matches("[data-audit-date-next]")) {
+        pickerMonth += 1;
+        if (pickerMonth > 11) {
+          pickerMonth = 0;
+          pickerYear += 1;
+        }
+        renderDatePicker();
+        return;
+      }
+      if (target.matches("[data-audit-date-day]")) {
+        pickerDate.setFullYear(pickerYear, pickerMonth, Number.parseInt(target.dataset.auditDateDay, 10));
+        renderDatePicker();
+        return;
+      }
+      if (target.matches("[data-audit-date-clear]")) {
+        const valueInput = activeDateGroup?.querySelector("[data-audit-export-datetime-value]");
+        const displayInput = activeDateGroup?.querySelector("[data-audit-export-display]");
+        if (valueInput) {
+          valueInput.value = "";
+        }
+        if (displayInput) {
+          displayInput.value = "";
+        }
+        closeDatePicker();
+        return;
+      }
+      if (target.matches("[data-audit-date-apply]")) {
+        const hourInput = datePanel.querySelector("[data-audit-date-hour]");
+        const minuteInput = datePanel.querySelector("[data-audit-date-minute]");
+        pickerDate.setHours(clampNumber(hourInput?.value, 0, 23), clampNumber(minuteInput?.value, 0, 59), 0, 0);
+        const formatted = formatExportDate(pickerDate);
+        const valueInput = activeDateGroup?.querySelector("[data-audit-export-datetime-value]");
+        const displayInput = activeDateGroup?.querySelector("[data-audit-export-display]");
+        if (valueInput) {
+          valueInput.value = formatted;
+        }
+        if (displayInput) {
+          displayInput.value = formatted;
+        }
+        closeDatePicker();
+      }
+    });
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) {
+        close();
+      }
+    });
+  };
+
   const initScanActions = (root = document) => {
     root.querySelectorAll("[data-scan-action]").forEach((form) => {
       if (form.dataset.initialized === "true") {
@@ -6356,6 +6602,7 @@
     initNodeReload(root);
     initSummaryCards(root);
     initAutoSubmitForms(root);
+    initAuditExportDialog(root);
     initScanActions(root);
     initStorageFileManagers(root);
     initConfirmedFileActions(root);

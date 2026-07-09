@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import zipfile
 from datetime import datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -2870,6 +2872,90 @@ class ViewSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "1-200 of 205")
+
+    def test_audit_export_csv_uses_filters_and_time_range(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        AuditEvent.objects.all().delete()
+        base_time = datetime(2026, 6, 26, 7, 0, 0, tzinfo=timezone.get_current_timezone())
+        included = AuditEvent.objects.create(
+            username="viewer",
+            action="file.downloaded",
+            object_type="file",
+            object_id="nfs-vm:template/iso/ubuntu.iso",
+            module="storage",
+        )
+        excluded = AuditEvent.objects.create(
+            username="viewer",
+            action="auth.login",
+            object_type="user",
+            object_id="viewer",
+            module="auth",
+        )
+        AuditEvent.objects.filter(pk=included.pk).update(timestamp=base_time)
+        AuditEvent.objects.filter(pk=excluded.pk).update(timestamp=base_time + timedelta(days=1))
+
+        response = self.client.get(
+            reverse("core:audit_export"),
+            {
+                "format": "csv",
+                "filter": "storage",
+                "q": "ubuntu",
+                "start": "2026-06-26 00:00",
+                "end": "2026-06-26 23:59",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        body = response.content.decode()
+        self.assertIn("Download file", body)
+        self.assertIn("nfs-vm:template/iso/ubuntu.iso", body)
+        self.assertNotIn("Login", body)
+
+    def test_audit_export_json_can_include_technical_columns(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        AuditEvent.objects.all().delete()
+        AuditEvent.objects.create(
+            username="viewer",
+            action="guest.power.start",
+            object_type="guest",
+            object_id="vm:500",
+            module="vms",
+            details={"target_type": "vm", "vmid": 500, "name": "Lab VM"},
+        )
+
+        response = self.client.get(reverse("core:audit_export"), {"format": "json", "include_technical": "on"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        self.assertIn("Raw Action", payload["columns"])
+        self.assertEqual(payload["rows"][0]["Action"], "Power on guest")
+        self.assertEqual(payload["rows"][0]["Raw Action"], "guest.power.start")
+        self.assertIn("Lab VM", payload["rows"][0]["Object"])
+
+    def test_audit_export_xlsx_returns_workbook(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        AuditEvent.objects.all().delete()
+        AuditEvent.objects.create(username="viewer", action="scan.completed", object_type="scan_run", object_id="scan-1", module="storage")
+
+        response = self.client.get(reverse("core:audit_export"), {"format": "xlsx"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with zipfile.ZipFile(BytesIO(response.content)) as workbook:
+            self.assertIn("xl/worksheets/sheet1.xml", workbook.namelist())
+            self.assertIn("xl/sharedStrings.xml", workbook.namelist())
+            self.assertIn("docProps/app.xml", workbook.namelist())
+            sheet = workbook.read("xl/worksheets/sheet1.xml").decode()
+            strings = workbook.read("xl/sharedStrings.xml").decode()
+            app_properties = workbook.read("docProps/app.xml").decode()
+        self.assertIn('t="s"', sheet)
+        self.assertIn("Full scan completed", strings)
+        self.assertIn("Storage inventory scan", strings)
+        self.assertIn("HeadingPairs", app_properties)
 
     def test_audit_log_records_authentication_events(self):
         get_user_model().objects.create_user(username="viewer", password="secret")
