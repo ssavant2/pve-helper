@@ -4892,7 +4892,159 @@
     }
     grid.dataset.initialized = "true";
     const orderKey = "pve-helper-vm-summary-order";
+    const sizeKey = "pve-helper-vm-summary-card-sizes";
+    const layoutKey = "pve-helper-vm-summary-layout-v2";
     const cardList = () => Array.from(grid.querySelectorAll("[data-card-key]"));
+    const autoCardList = () => cardList().filter((card) => card.dataset.cardSize === "auto");
+
+    const savedSizes = () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem(sizeKey) || "{}");
+        return saved && typeof saved === "object" ? saved : {};
+      } catch (_error) {
+        return {};
+      }
+    };
+
+    const persistSizes = () => {
+      const sizes = {};
+      autoCardList().forEach((card) => {
+        if (card.dataset.cardExpanded === "true") {
+          sizes[card.dataset.cardKey] = "expanded";
+        }
+      });
+      try {
+        localStorage.setItem(sizeKey, JSON.stringify(sizes));
+      } catch (_error) {
+        // persistence is optional
+      }
+    };
+
+    const syncSizeToggle = (card) => {
+      const button = card.querySelector("[data-card-size-toggle]");
+      if (!button) {
+        return;
+      }
+      const expanded = card.dataset.cardExpanded === "true";
+      const label = card.querySelector(".panel-heading h2")?.textContent?.trim() || "card";
+      button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${label}`);
+      button.title = expanded ? "Collapse" : "Expand";
+    };
+
+    const cardSpan = (card) => (card.dataset.cardSize === "full" || card.dataset.cardExpanded === "true" ? 2 : 1);
+
+    const gridMetrics = () => {
+      const style = window.getComputedStyle(grid);
+      const columns = style.gridTemplateColumns.split(" ").filter((value) => value && value !== "none").length || 1;
+      const columnGap = Number.parseFloat(style.columnGap) || 0;
+      const rowGap = Number.parseFloat(style.rowGap) || 0;
+      const rect = grid.getBoundingClientRect();
+      const columnWidth = (rect.width - columnGap * Math.max(0, columns - 1)) / columns;
+      const rowHeight = Number.parseFloat(style.gridAutoRows) || columnWidth;
+      return { columnGap, columns, columnWidth, rect, rowGap, rowHeight };
+    };
+
+    const cardGridPosition = (card, metrics) => {
+      const rect = card.getBoundingClientRect();
+      const rowStride = metrics.rowHeight + metrics.rowGap;
+      const columnStride = metrics.columnWidth + metrics.columnGap;
+      return {
+        x: Math.max(
+          0,
+          Math.min(metrics.columns - 1, Math.round((rect.left - metrics.rect.left) / Math.max(1, columnStride)))
+        ),
+        y: Math.max(0, Math.round((rect.top - metrics.rect.top) / Math.max(1, rowStride))),
+      };
+    };
+
+    const pointerGridPosition = (event, metrics) => {
+      const columnStride = metrics.columnWidth + metrics.columnGap;
+      const rowStride = metrics.rowHeight + metrics.rowGap;
+      if (event.clientX < metrics.rect.left || event.clientX > metrics.rect.right || event.clientY < metrics.rect.top) {
+        return null;
+      }
+      return {
+        x: Math.max(
+          0,
+          Math.min(metrics.columns - 1, Math.floor((event.clientX - metrics.rect.left) / Math.max(1, columnStride)))
+        ),
+        y: Math.max(0, Math.floor((event.clientY - metrics.rect.top) / Math.max(1, rowStride))),
+      };
+    };
+
+    const loadLayout = () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem(layoutKey) || "{}");
+        return saved && typeof saved === "object" ? saved : {};
+      } catch (_error) {
+        return {};
+      }
+    };
+
+    const persistLayout = (layout) => {
+      try {
+        localStorage.setItem(layoutKey, JSON.stringify(layout));
+      } catch (_error) {
+        // persistence is optional
+      }
+    };
+
+    const layoutFromDom = () => {
+      const metrics = gridMetrics();
+      const layout = {};
+      cardList().forEach((card) => {
+        layout[card.dataset.cardKey] = cardGridPosition(card, metrics);
+      });
+      return layout;
+    };
+
+    const hasCollision = (item, placed) =>
+      placed.find((other) => item.x === other.x && item.y < other.y + other.span && item.y + item.span > other.y);
+
+    const resolveLayout = (layout, preferredKey = "") => {
+      const metrics = gridMetrics();
+      const byKey = new Map(cardList().map((card) => [card.dataset.cardKey, card]));
+      const items = cardList().map((card) => {
+        const saved = layout[card.dataset.cardKey] || {};
+        return {
+          key: card.dataset.cardKey,
+          x: Math.max(0, Math.min(metrics.columns - 1, Number.isFinite(saved.x) ? saved.x : 0)),
+          y: Math.max(0, Number.isFinite(saved.y) ? saved.y : 0),
+          span: cardSpan(card),
+        };
+      });
+      items.sort((left, right) => {
+        if (left.key === preferredKey) {
+          return -1;
+        }
+        if (right.key === preferredKey) {
+          return 1;
+        }
+        return (
+          left.y - right.y ||
+          left.x - right.x ||
+          cardList().indexOf(byKey.get(left.key)) - cardList().indexOf(byKey.get(right.key))
+        );
+      });
+      const placed = [];
+      items.forEach((item) => {
+        let collision = hasCollision(item, placed);
+        while (collision) {
+          item.y = collision.y + collision.span;
+          collision = hasCollision(item, placed);
+        }
+        placed.push(item);
+      });
+      return Object.fromEntries(placed.map((item) => [item.key, { x: item.x, y: item.y }]));
+    };
+
+    const applyLayout = (layout) => {
+      cardList().forEach((card) => {
+        const position = layout[card.dataset.cardKey] || { x: 0, y: 0 };
+        card.style.gridColumn = `${position.x + 1} / span 1`;
+        card.style.gridRow = `${position.y + 1} / span ${cardSpan(card)}`;
+      });
+    };
 
     try {
       const saved = JSON.parse(localStorage.getItem(orderKey) || "[]");
@@ -4908,6 +5060,35 @@
     } catch (_error) {
       // ignore corrupt saved order
     }
+    const sizes = savedSizes();
+    autoCardList().forEach((card) => {
+      if (sizes[card.dataset.cardKey] === "expanded") {
+        card.dataset.cardExpanded = "true";
+      }
+      syncSizeToggle(card);
+    });
+
+    let activeLayout = resolveLayout(Object.keys(loadLayout()).length ? loadLayout() : layoutFromDom());
+    applyLayout(activeLayout);
+
+    grid.querySelectorAll("[data-card-size-toggle]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const card = button.closest("[data-card-key]");
+        if (!card) {
+          return;
+        }
+        if (card.dataset.cardExpanded === "true") {
+          delete card.dataset.cardExpanded;
+        } else {
+          card.dataset.cardExpanded = "true";
+        }
+        syncSizeToggle(card);
+        persistSizes();
+        activeLayout = resolveLayout(activeLayout, card.dataset.cardKey);
+        applyLayout(activeLayout);
+        persistLayout(activeLayout);
+      });
+    });
 
     const persist = () => {
       try {
@@ -4917,49 +5098,35 @@
       }
     };
 
-    // Pointer-based drag: the grabbed card floats under the cursor, a
-    // placeholder marks where it will land, and the other cards slide (FLIP).
+    // Pointer-based drag with explicit grid slots. The layout is sparse on
+    // purpose: empty half-slots can remain between cards, just like a dashboard
+    // grid with manual placement.
     let dragCard = null;
     let placeholder = null;
+    let previewLayout = null;
     let startX = 0;
     let startY = 0;
     let offsetX = 0;
     let offsetY = 0;
     let active = false;
 
-    const flip = (mutate) => {
-      const others = cardList().filter((card) => card !== dragCard);
-      const first = new Map(others.map((card) => [card, card.getBoundingClientRect()]));
-      mutate();
-      others.forEach((card) => {
-        const before = first.get(card);
-        if (!before) {
-          return;
-        }
-        const after = card.getBoundingClientRect();
-        const dx = before.left - after.left;
-        const dy = before.top - after.top;
-        if (!dx && !dy) {
-          return;
-        }
-        card.style.transition = "none";
-        card.style.transform = `translate(${dx}px, ${dy}px)`;
-        requestAnimationFrame(() => {
-          card.style.transition = "transform 0.16s ease";
-          card.style.transform = "";
-        });
-      });
-    };
-
     const beginDrag = () => {
       active = true;
       const rect = dragCard.getBoundingClientRect();
+      activeLayout = resolveLayout(activeLayout);
+      applyLayout(activeLayout);
       offsetX = startX - rect.left;
       offsetY = startY - rect.top;
       placeholder = document.createElement("div");
       placeholder.className = "summary-card card-placeholder";
-      placeholder.style.height = `${rect.height}px`;
-      grid.insertBefore(placeholder, dragCard);
+      placeholder.dataset.cardSize = dragCard.dataset.cardSize || "full";
+      if (dragCard.dataset.cardExpanded === "true") {
+        placeholder.dataset.cardExpanded = "true";
+      }
+      const startPosition = activeLayout[dragCard.dataset.cardKey] || cardGridPosition(dragCard, gridMetrics());
+      placeholder.style.gridColumn = `${startPosition.x + 1} / span 1`;
+      placeholder.style.gridRow = `${startPosition.y + 1} / span ${cardSpan(dragCard)}`;
+      grid.appendChild(placeholder);
       dragCard.style.width = `${rect.width}px`;
       dragCard.style.height = `${rect.height}px`;
       dragCard.style.position = "fixed";
@@ -4984,30 +5151,39 @@
       event.preventDefault();
       dragCard.style.left = `${event.clientX - offsetX}px`;
       dragCard.style.top = `${event.clientY - offsetY}px`;
-      const under = document.elementFromPoint(event.clientX, event.clientY);
-      const overCard = under?.closest ? under.closest("[data-card-key]") : null;
-      if (overCard && overCard !== dragCard && overCard !== placeholder && overCard.parentElement === grid) {
-        const box = overCard.getBoundingClientRect();
-        const before = event.clientY < box.top + box.height / 2 ? true : event.clientX < box.left + box.width / 2;
-        flip(() => grid.insertBefore(placeholder, before ? overCard : overCard.nextSibling));
+      const target = pointerGridPosition(event, gridMetrics());
+      if (!target) {
+        return;
       }
+      previewLayout = resolveLayout(
+        {
+          ...activeLayout,
+          [dragCard.dataset.cardKey]: target,
+        },
+        dragCard.dataset.cardKey
+      );
+      const previewPosition = previewLayout[dragCard.dataset.cardKey] || target;
+      placeholder.style.gridColumn = `${previewPosition.x + 1} / span 1`;
+      placeholder.style.gridRow = `${previewPosition.y + 1} / span ${cardSpan(dragCard)}`;
+      applyLayout(previewLayout);
     };
 
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       if (active && dragCard) {
+        activeLayout = previewLayout || activeLayout;
         dragCard.style.cssText = "";
         dragCard.classList.remove("dragging");
-        if (placeholder) {
-          grid.insertBefore(dragCard, placeholder);
-          placeholder.remove();
-        }
+        placeholder?.remove();
+        applyLayout(activeLayout);
+        persistLayout(activeLayout);
         persist();
       }
       document.body.classList.remove("cards-dragging");
       dragCard = null;
       placeholder = null;
+      previewLayout = null;
       active = false;
     };
 

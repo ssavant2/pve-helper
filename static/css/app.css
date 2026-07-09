@@ -4099,6 +4099,33 @@ code {
   text-decoration: underline;
 }
 
+.card-size-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.card-size-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.card-size-toggle svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.14s ease;
+}
+
+.summary-card[data-card-expanded="true"] .card-size-toggle svg {
+  transform: rotate(180deg);
+}
+
 .guest-edit-panel .form-field {
   display: flex;
   flex-direction: column;
@@ -4153,8 +4180,26 @@ code {
 
 /* equal-size cards across the grid */
 .vm-summary-grid {
+  --summary-card-gap: 16px;
+  --summary-card-row-height: calc((var(--summary-card-height) - var(--summary-card-gap)) / 2);
   align-items: stretch;
-  grid-auto-rows: var(--summary-card-height);
+  gap: var(--summary-card-gap);
+  grid-auto-rows: var(--summary-card-row-height);
+  grid-auto-flow: row;
+}
+
+.summary-card {
+  height: auto;
+}
+
+.summary-card[data-card-size="full"],
+.summary-card[data-card-size="auto"][data-card-expanded="true"] {
+  grid-row: span 2;
+}
+
+.summary-card[data-card-size="half"],
+.summary-card[data-card-size="auto"]:not([data-card-expanded="true"]) {
+  grid-row: span 1;
 }
 
 /* consistent body padding + bottom breathing room (VM Details/Hardware as the template) */
