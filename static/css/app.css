@@ -2253,36 +2253,37 @@ button.tree-node {
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
   font: inherit;
 }
 
 .audit-export-datetime {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px;
-  align-items: center;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
   width: 100%;
   color: var(--text);
   font: inherit;
 }
 
 .audit-export-datetime input[readonly] {
+  flex: 1 1 auto;
+  min-width: 0;
   cursor: default;
-  border-radius: 6px 0 0 6px;
+  border-radius: 6px;
 }
 
 .audit-export-datetime button {
+  flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  min-height: 39px;
+  width: 40px;
   border: 1px solid var(--line);
-  border-left: 0;
-  border-radius: 0 6px 6px 0;
-  background: var(--surface_alt, transparent);
+  border-radius: 6px;
+  background: var(--surface-alt);
   color: var(--muted);
   cursor: pointer;
 }
@@ -2293,8 +2294,8 @@ button.tree-node {
 }
 
 .audit-export-datetime button svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
 }
 
 .audit-date-picker-modal {
@@ -2320,7 +2321,7 @@ button.tree-node {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--surface-alt);
   color: var(--text);
   box-shadow: 0 18px 40px rgb(0 0 0 / 0.35);
 }
@@ -2433,7 +2434,7 @@ button.tree-node {
   padding: 7px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--surface_alt, transparent);
+  background: var(--bg);
   color: var(--text);
   font: inherit;
 }
@@ -2448,9 +2449,9 @@ button.tree-node {
 }
 
 .audit-date-picker-actions button[data-audit-date-apply] {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--button_text, #fff);
+  border-color: var(--accent-button);
+  background: var(--accent-button);
+  color: var(--button-primary-text);
 }
 
 .audit-export-dates {
