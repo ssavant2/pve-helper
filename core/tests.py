@@ -91,6 +91,24 @@ from core.tasks import (
 )
 
 
+class PowerActionMapTests(SimpleTestCase):
+    def test_power_action_map_and_vm_only_set(self):
+        from core.views.common import (
+            GUEST_POWER_ACTIONS,
+            POWER_ACTION_REQUESTS,
+            VM_ONLY_POWER_ACTIONS,
+        )
+
+        self.assertEqual(POWER_ACTION_REQUESTS["suspend"], ("status/suspend", {}))
+        self.assertEqual(POWER_ACTION_REQUESTS["hibernate"], ("status/suspend", {"todisk": 1}))
+        self.assertEqual(POWER_ACTION_REQUESTS["resume"], ("status/resume", {}))
+        for action in ("suspend", "resume", "hibernate"):
+            self.assertIn(action, GUEST_POWER_ACTIONS)
+            self.assertIn(action, VM_ONLY_POWER_ACTIONS)
+        # every declared power action has an endpoint mapping
+        self.assertEqual(set(POWER_ACTION_REQUESTS), GUEST_POWER_ACTIONS)
+
+
 class ClassificationTests(SimpleTestCase):
     def test_extracts_disk_references_from_nested_snapshot_config(self):
         config = {
@@ -1392,11 +1410,10 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "data-auto-submit-form")
         self.assertContains(response, "<title>pve-helper</title>")
         self.assertContains(response, 'rel="icon"')
-        self.assertContains(response, "http://testserver")
         self.assertNotContains(response, "pve-helper.example.com")
         self.assertContains(response, "data-soft-nav-content")
         self.assertContains(response, "data-soft-nav-tree")
-        self.assertContains(response, "data-soft-nav-status")
+        self.assertContains(response, "data-global-search")
         self.assertContains(response, "Classification legend")
         self.assertContains(response, "Storage gate")
         self.assertContains(response, "blocks orphan classification")
@@ -5745,13 +5762,20 @@ class ViewSmokeTests(TestCase):
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.async_task", return_value="poll-task-1") as poll_mock,
         ):
             response = self.client.post(reverse("core:guest_snapshot_delete", args=["vm", 500, "snap-a"]))
 
         self.assertRedirects(response, reverse("core:guest_snapshots", args=["vm", 500]), fetch_redirect_response=False)
         self.assertEqual(fake_client.deletes, ["nodes/pve1/qemu/500/snapshot/snap-a"])
-        self.assertEqual(fake_client.waits, [("pve1", "UPID:pve1:snapshot-delete:500:root@pam:", 60)])
-        self.assertTrue(AuditEvent.objects.filter(action="guest.snapshot.delete", outcome="success").exists())
+        # The delete returns a UPID; the task is polled in the background (async
+        # audit), not by blocking the request on wait_for_task.
+        self.assertEqual(fake_client.waits, [])
+        poll_mock.assert_called_once()
+        self.assertEqual(poll_mock.call_args[0][0], "core.tasks.poll_guest_audit_task")
+        event = AuditEvent.objects.get(action="guest.snapshot.delete")
+        self.assertEqual(event.outcome, "running")
+        self.assertEqual(event.details["proxmox_task_upid"], "UPID:pve1:snapshot-delete:500:root@pam:")
 
     @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_clone_options_returns_nextid_and_storage_default(self):

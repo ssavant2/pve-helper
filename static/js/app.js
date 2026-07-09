@@ -279,7 +279,6 @@
         updateVmRowStatus(row, {
           target: row.dataset.guestTarget || "",
           status,
-          state_label: status === "running" ? "Powered On" : "Powered Off",
         });
         changed = true;
       });
@@ -2684,7 +2683,16 @@
     const previousStatus = row.dataset.guestStatus || "";
     const status = guest.status || "";
     const stateLabel =
-      guest.state_label || (status === "running" ? "Powered On" : status === "stopped" ? "Powered Off" : "-");
+      guest.state_label ||
+      (status === "running"
+        ? "Powered On"
+        : status === "stopped"
+          ? "Powered Off"
+          : status === "paused"
+            ? "Suspended"
+            : status
+              ? status.charAt(0).toUpperCase() + status.slice(1)
+              : "-");
     row.dataset.guestStatus = status;
 
     const stateCell = row.querySelector("[data-guest-state-cell]");
@@ -2872,7 +2880,7 @@
   };
 
   const vmActionAuditAction = (action) => {
-    if (["start", "shutdown", "reboot", "stop", "reset"].includes(action)) {
+    if (["start", "shutdown", "reboot", "stop", "reset", "suspend", "resume", "hibernate"].includes(action)) {
       return `guest.power.${action}`;
     }
     return (
@@ -2896,6 +2904,9 @@
       reboot: "Restart guest",
       stop: "Power off",
       reset: "Reset guest",
+      suspend: "Suspend",
+      resume: "Resume",
+      hibernate: "Hibernate",
       snapshot: "Create snapshot",
       delete_snapshots: "Delete all snapshots",
       template: "Convert to template",
@@ -3466,6 +3477,7 @@
     const allRunning = contextRows.every((item) => item.dataset.guestStatus === "running");
     const allNotRunning = contextRows.every((item) => item.dataset.guestStatus !== "running");
     const allStopped = contextRows.every((item) => item.dataset.guestStatus === "stopped");
+    const allPaused = contextRows.every((item) => item.dataset.guestStatus === "paused");
     const allVms = contextRows.every((item) => item.dataset.guestType === "vm");
     const noTemplates = contextRows.every((item) => item.dataset.guestTemplate !== "true");
     const allAgentEnabled = contextRows.every((item) => item.dataset.guestAgentEnabled === "true");
@@ -3483,9 +3495,13 @@
       <div class="context-menu-submenu">
         <button type="button" class="context-menu-parent">Power <span>›</span></button>
         <div class="context-menu-submenu-panel">
-          <button type="button" data-vm-action="start" ${writable && allNotRunning ? "" : "disabled"}><i data-lucide="play" aria-hidden="true"></i>Power On</button>
+          <button type="button" data-vm-action="start" ${writable && allNotRunning && !allPaused ? "" : "disabled"}><i data-lucide="play" aria-hidden="true"></i>Power On</button>
+          <button type="button" data-vm-action="resume" ${writable && allPaused && allVms ? "" : "disabled"}><i data-lucide="play" aria-hidden="true"></i>Resume</button>
           <button type="button" data-vm-action="stop" ${writable && allRunning ? "" : "disabled"}><i data-lucide="square" aria-hidden="true"></i>Power Off</button>
           <button type="button" data-vm-action="reset" ${writable && allRunning && allVms ? "" : "disabled"}><i data-lucide="rotate-ccw" aria-hidden="true"></i>Reset</button>
+          <div class="context-menu-separator"></div>
+          <button type="button" data-vm-action="suspend" ${writable && allRunning && allVms ? "" : "disabled"}><i data-lucide="pause" aria-hidden="true"></i>Suspend (to RAM)</button>
+          <button type="button" data-vm-action="hibernate" ${writable && allRunning && allVms ? "" : "disabled"}><i data-lucide="moon" aria-hidden="true"></i>Hibernate (to disk)</button>
           <div class="context-menu-separator"></div>
           <button type="button" data-vm-action="shutdown" ${writable && allRunning ? "" : "disabled"}><i data-lucide="power" aria-hidden="true"></i>Shut Down Guest OS</button>
           <button type="button" data-vm-action="reboot" ${writable && allRunning ? "" : "disabled"}><i data-lucide="refresh-cw" aria-hidden="true"></i>Restart Guest OS</button>
@@ -3739,6 +3755,16 @@
         if (
           action === "template" &&
           !window.confirm(`Convert ${targetRows.length} selected VM${targetRows.length === 1 ? "" : "s"} to template?`)
+        ) {
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (
+          action === "hibernate" &&
+          !window.confirm(
+            `Hibernate ${targetRows.length} selected VM${targetRows.length === 1 ? "" : "s"}? State is saved to disk and the VM stops; Power On resumes it.`
+          )
         ) {
           menu.hidden = true;
           clearVmContextHighlights();

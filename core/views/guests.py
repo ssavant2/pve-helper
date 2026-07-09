@@ -560,6 +560,8 @@ def _guest_state_label(status: str) -> str:
         return "Powered On"
     if status == "stopped":
         return "Powered Off"
+    if status == "paused":
+        return "Suspended"
     return (status or "-").title()
 
 
@@ -3079,8 +3081,12 @@ def guest_power(request, object_type: str, vmid: int):
     if action not in GUEST_POWER_ACTIONS:
         messages.error(request, "Unknown power action.")
         return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+    if action in VM_ONLY_POWER_ACTIONS and object_type != ProxmoxInventory.ObjectType.VM:
+        messages.error(request, "This action is only available for VMs.")
+        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+    subpath, params = POWER_ACTION_REQUESTS[action]
     running_event = _audit_guest(request, detail, f"guest.power.{action}", outcome="running")
-    data, err, client = _guest_post_with_client(detail, f"status/{action}")
+    data, err, client = _guest_post_with_client(detail, subpath, params)
     if err:
         if "403" in err:
             error_label = proxmox_permission_hint("VM.PowerMgmt")
@@ -3211,7 +3217,8 @@ def vms_bulk_action(request):
             audit_details = None
             error_label = f"Template conversion failed: {err}" if err else ""
         else:
-            response, err, client = _guest_post_with_client(detail, f"status/{action}")
+            subpath, params = POWER_ACTION_REQUESTS.get(action, (f"status/{action}", {}))
+            response, err, client = _guest_post_with_client(detail, subpath, params)
             audit_details = None
             error_label = f"Power action failed: {err}" if err else ""
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote
 
@@ -497,6 +497,32 @@ def clear_live_guest_caches() -> None:
     cache.delete_many([LIVE_GUEST_STATUS_CACHE_KEY, LIVE_GUEST_INVENTORY_CACHE_KEY])
 
 
+def _paused_vm_keys(unknown_vm_keys, deadline) -> set[tuple[str, str, int]]:
+    """A RAM-suspended VM reports status ``unknown`` in cluster/resources; the
+    real signal is ``qmpstatus == paused`` from status/current. Resolve only the
+    (rare) unknown VMs, best-effort within the display timeout budget."""
+    paused: set[tuple[str, str, int]] = set()
+    if not unknown_vm_keys:
+        return paused
+    for client in configured_clients():
+        remaining = [key for key in unknown_vm_keys if key not in paused]
+        if not remaining:
+            break
+        for node, object_type, vmid in remaining:
+            timeout = _remaining_display_timeout(deadline)
+            if timeout is None:
+                return paused
+            try:
+                current = client.get(
+                    f"nodes/{quote(node, safe='')}/qemu/{vmid}/status/current", timeout=timeout
+                )
+            except ProxmoxAPIError:
+                continue
+            if isinstance(current, dict) and current.get("qmpstatus") == "paused":
+                paused.add((node, object_type, vmid))
+    return paused
+
+
 def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
     """Return {(node, object_type, vmid): status} for all guests.
 
@@ -521,6 +547,9 @@ def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
         for guest in guests_by_key.values():
             if guest.status:
                 statuses[(guest.node, guest.object_type, guest.vmid)] = guest.status
+    unknown_vm_keys = [key for key, status in statuses.items() if status == "unknown" and key[1] == "vm"]
+    for key in _paused_vm_keys(unknown_vm_keys, deadline):
+        statuses[key] = "paused"
     return statuses
 
 
@@ -569,6 +598,9 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
                     continue
                 for guest in guests:
                     _add_guest_summary(guests_by_key, guest, node=node, object_type=object_type)
+    unknown_vm_keys = [key for key, guest in guests_by_key.items() if guest.status == "unknown" and key[1] == "vm"]
+    for key in _paused_vm_keys(unknown_vm_keys, deadline):
+        guests_by_key[key] = replace(guests_by_key[key], status="paused")
     return sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
 
 

@@ -221,7 +221,24 @@ def _guest_destroy(detail: SimpleNamespace, query: str):
     return response, err
 
 
-GUEST_POWER_ACTIONS = {"start", "shutdown", "reboot", "stop", "reset"}
+GUEST_POWER_ACTIONS = {"start", "shutdown", "reboot", "stop", "reset", "suspend", "resume", "hibernate"}
+
+# Power action -> (status subpath, extra POST params). Hibernate is
+# suspend-to-disk (frees RAM, survives a host reboot); resuming a hibernated
+# guest is a normal Power On.
+POWER_ACTION_REQUESTS = {
+    "start": ("status/start", {}),
+    "shutdown": ("status/shutdown", {}),
+    "reboot": ("status/reboot", {}),
+    "stop": ("status/stop", {}),
+    "reset": ("status/reset", {}),
+    "suspend": ("status/suspend", {}),
+    "hibernate": ("status/suspend", {"todisk": 1}),
+    "resume": ("status/resume", {}),
+}
+
+# QEMU-only power actions (LXC has no reliable suspend/resume/reset).
+VM_ONLY_POWER_ACTIONS = {"reset", "suspend", "resume", "hibernate"}
 VM_BULK_ACTIONS = {
     *GUEST_POWER_ACTIONS,
     "snapshot",
@@ -434,6 +451,9 @@ def _audit_action_label(event: AuditEvent) -> str:
         "guest.power.reboot": "Restart guest OS",
         "guest.power.stop": "Power off guest",
         "guest.power.reset": "Reset guest",
+        "guest.power.suspend": "Suspend guest",
+        "guest.power.resume": "Resume guest",
+        "guest.power.hibernate": "Hibernate guest",
         "guest.snapshot.create": "Create snapshot",
         "guest.snapshot.delete": "Delete snapshot",
         "guest.snapshot.delete_all": "Delete all snapshots",
