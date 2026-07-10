@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import posixpath
 import re
+from pathlib import Path, PurePosixPath
 
 from django.templatetags.static import static
 
 from .common import *  # noqa: F401,F403
 from . import common
-from core.models import ProxmoxEndpoint
+from core.models import ProxmoxEndpoint, StorageMount
+from core.services.classification import extract_disk_references
 from core.services.console_sessions import create_guest_console_session
 
 
@@ -3077,6 +3080,8 @@ def _bulk_action_initial_audit_details(
         }
     if action == "template":
         return "guest.template.convert", {}
+    if action == "untemplate":
+        return "guest.template.revert", {}
     return f"guest.power.{action}", {}
 
 
@@ -3171,6 +3176,11 @@ def vms_bulk_action(request):
         if response:
             return response
         return redirect("core:vms_overview")
+    if action == "untemplate" and len(targets) != 1:
+        response = done(False, ["Convert template to VM requires exactly one selected template."])
+        if response:
+            return response
+        return redirect("core:vms_overview")
     if action == "tags" and request.POST.get("tags_mode", "").strip() not in {"add", "remove", "replace"}:
         response = done(False, ["Unknown tag update mode."])
         if response:
@@ -3237,6 +3247,9 @@ def vms_bulk_action(request):
             response, err, client = _guest_post_with_client(detail, "template")
             audit_details = None
             error_label = f"Template conversion failed: {err}" if err else ""
+        elif action == "untemplate":
+            err, audit_details, response, client = _convert_template_back_to_vm(request, detail)
+            error_label = f"Template conversion failed: {err}" if err else ""
         else:
             subpath, params = POWER_ACTION_REQUESTS.get(action, (f"status/{action}", {}))
             response, err, client = _guest_post_with_client(detail, subpath, params)
@@ -3258,9 +3271,11 @@ def vms_bulk_action(request):
         _finish_guest_running_audit(running_event, detail, response, client, audit_details=audit_details)
         if action == "template":
             _update_latest_guest_scan_config(detail, {"template": "1"}, [])
+        if action == "untemplate":
+            _update_latest_guest_scan_config(detail, {"template": "0"}, [])
         if action == "destroy":
             _delete_latest_guest_scan_object(detail)
-        if action in GUEST_POWER_ACTIONS or action in {"template", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
+        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
             clear_live_guest_caches()
 
     response = done(not errors, errors)
@@ -3315,6 +3330,183 @@ def _clone_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[st
         "storage": storage,
     }
     return err or "", audit_details, response, client
+
+
+def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
+    """Safely clear the QEMU template flag for a standalone template.
+
+    Proxmox accepts ``template=0`` even when linked clones still reference a
+    template base disk.  The API does not protect that relationship, so this
+    deliberately has narrow V1 support and fails closed when it cannot prove
+    the template has no children on every backing storage.
+    """
+    audit_details: dict[str, object] = {"operation": "template_to_vm"}
+    confirmation = request.POST.get("untemplate_confirm_vmid", "").strip()
+    acknowledgement = request.POST.get("untemplate_acknowledge", "").strip()
+    if confirmation != str(detail.vmid):
+        return "The confirmation VMID did not match.", audit_details, None, None
+    if acknowledgement != "convert":
+        return "Confirm that you understand this converts the template back to a VM.", audit_details, None, None
+    if detail.object_type != ProxmoxInventory.ObjectType.VM:
+        return "Only VM templates can be converted back to VMs.", audit_details, None, None
+    if not detail.node:
+        return "Could not resolve the template's current node.", audit_details, None, None
+
+    client = None
+    fresh_config: dict = {}
+    current: dict = {}
+    for candidate in common.configured_clients():
+        try:
+            fresh_config = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            current = candidate.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            client = candidate
+            break
+        except ProxmoxAPIError:
+            continue
+    if client is None:
+        return "Could not read the template's current configuration from Proxmox.", audit_details, None, None
+
+    if not is_template(fresh_config):
+        return "This guest is no longer a template.", audit_details, None, client
+    status = str(current.get("status") or "")
+    if status != "stopped":
+        return "Stop the template before converting it back to a VM.", {**audit_details, "status": status}, None, client
+    if fresh_config.get("lock"):
+        return (
+            f"Template is locked by another Proxmox operation ({fresh_config.get('lock')}).",
+            audit_details,
+            None,
+            client,
+        )
+    if _config_enabled(fresh_config, "protection"):
+        return "Disable protection before converting this template back to a VM.", audit_details, None, client
+
+    try:
+        snapshots = client.get(f"nodes/{quote(detail.node, safe='')}/qemu/{detail.vmid}/snapshot")
+    except ProxmoxAPIError as exc:
+        return f"Could not verify template snapshots: {exc}", audit_details, None, client
+    if not isinstance(snapshots, list):
+        return "Could not verify template snapshots: unexpected Proxmox response.", audit_details, None, client
+    snapshot_names = [
+        str(snapshot.get("name") or "")
+        for snapshot in snapshots if isinstance(snapshot, dict)
+        if str(snapshot.get("name") or "") not in {"", "current"}
+    ]
+    if snapshot_names:
+        return "Remove template snapshots before converting it back to a VM.", {**audit_details, "snapshots": snapshot_names}, None, client
+
+    disk_references = extract_disk_references(fresh_config)
+    if not disk_references:
+        return "This template has no supported disk volumes to validate.", audit_details, None, client
+    storage_paths, storage_error = _template_storage_paths(disk_references)
+    if storage_error:
+        return storage_error, audit_details, None, client
+
+    children, child_error = _template_linked_clone_children(client, detail.node, storage_paths)
+    if child_error:
+        return child_error, audit_details, None, client
+    if children:
+        child_labels = ", ".join(sorted({str(child.get("vmid") or "unknown") for child in children}))
+        return (
+            f"Cannot convert this template back to a VM because linked clone(s) still depend on it: {child_labels}.",
+            {**audit_details, "linked_children": children},
+            None,
+            client,
+        )
+
+    audit_details["storage_ids"] = sorted(storage_paths)
+    try:
+        client.set_guest_config(
+            node=detail.node,
+            object_type=detail.object_type,
+            vmid=detail.vmid,
+            updates={"template": "0"},
+            delete=[],
+            digest=fresh_config.get("digest"),
+        )
+    except ProxmoxAPIError as exc:
+        return str(exc), audit_details, None, client
+    return "", audit_details, None, client
+
+
+def _template_storage_paths(disk_references: list[str]) -> tuple[dict[str, set[str]], str]:
+    """Return template-disk paths by storage, limited to app-mounted file storage."""
+    mounted_storages = {
+        storage.storage_id: storage
+        for storage in StorageMount.objects.filter(enabled=True).only("storage_id", "path")
+    }
+    paths: dict[str, set[str]] = {}
+    for reference in disk_references:
+        storage_id, separator, relative_path = str(reference).partition(":")
+        normalized = _normalized_storage_relative_path(relative_path)
+        storage = mounted_storages.get(storage_id)
+        if not separator or not normalized or storage is None or not Path(storage.path).is_dir():
+            return {}, (
+                "Template-to-VM conversion currently supports only disk volumes on configured, mounted file storage. "
+                f"Unsupported volume: {reference}."
+            )
+        paths.setdefault(storage_id, set()).add(normalized)
+    return paths, ""
+
+
+def _template_linked_clone_children(client, node: str, storage_paths: dict[str, set[str]]) -> tuple[list[dict], str]:
+    children: list[dict] = []
+    for storage_id, template_paths in storage_paths.items():
+        try:
+            content = client.get(
+                f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content"
+            )
+        except ProxmoxAPIError as exc:
+            return [], f"Could not verify linked clones on storage '{storage_id}': {exc}"
+        if not isinstance(content, list):
+            return [], f"Could not verify linked clones on storage '{storage_id}': unexpected Proxmox response."
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            parent = str(item.get("parent") or "")
+            if not parent:
+                continue
+            child_vmid = item.get("vmid")
+            candidates = _linked_parent_candidates(parent, child_vmid)
+            if candidates.intersection(template_paths):
+                children.append(
+                    {
+                        "vmid": child_vmid,
+                        "volid": str(item.get("volid") or ""),
+                        "parent": parent,
+                    }
+                )
+    return children, ""
+
+
+def _normalized_storage_relative_path(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if ":" in text:
+        _storage, _separator, text = text.partition(":")
+    path = PurePosixPath(text)
+    if path.is_absolute() or ".." in path.parts:
+        return ""
+    return posixpath.normpath(str(path))
+
+
+def _linked_parent_candidates(parent: str, child_vmid: object) -> set[str]:
+    """Normalize PVE's relative ``parent`` values against a child VMID.
+
+    The content API reports linked-clone parents as e.g.
+    ``../102/base-102-disk-0.qcow2`` for VMID 103.  Some backends return the
+    direct relative form instead, so accept both representations.
+    """
+    raw = str(parent or "").strip()
+    if ":" in raw:
+        _storage, _separator, raw = raw.partition(":")
+    if not raw or raw.startswith("/"):
+        return set()
+    candidates = {posixpath.normpath(raw)}
+    if child_vmid not in {None, ""}:
+        candidates.add(posixpath.normpath(posixpath.join(str(child_vmid), raw)))
+    return {candidate for candidate in candidates if candidate and not candidate.startswith("../")}
 
 
 def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:

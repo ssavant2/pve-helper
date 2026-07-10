@@ -5678,6 +5678,141 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(event.details["new_name"], "Lab Clone")
 
     @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_untemplate_clears_template_flag_for_standalone_template(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as storage_path:
+            StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="NFS VM",
+                path=storage_path,
+                enabled=True,
+            )
+
+            class FakeClient:
+                def __init__(self):
+                    self.updates = []
+
+                def guest_current(self, *, node, object_type, vmid):
+                    return {"status": "stopped"}
+
+                def guest_config(self, *, node, object_type, vmid):
+                    return {
+                        "name": "Lab Template",
+                        "template": 1,
+                        "digest": "template-digest",
+                        "scsi0": "nfs-vm:500/base-500-disk-0.qcow2,size=32G",
+                    }
+
+                def get(self, path, *, timeout=None):
+                    if path == "nodes/pve1/qemu/500/snapshot":
+                        return [{"name": "current"}]
+                    if path == "nodes/pve1/storage/nfs-vm/content":
+                        return [{"vmid": 500, "volid": "nfs-vm:500/base-500-disk-0.qcow2"}]
+                    raise ProxmoxAPIError(path)
+
+                def set_guest_config(self, *, node, object_type, vmid, updates, delete=None, digest=None):
+                    self.updates.append((node, object_type, vmid, updates, delete, digest))
+
+            fake_client = FakeClient()
+            live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
+            with (
+                patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+                patch("core.views.common.configured_clients", return_value=[fake_client]),
+            ):
+                response = self.client.post(
+                    reverse("core:vms_bulk_action"),
+                    {
+                        "bulk_action": "untemplate",
+                        "guest": ["vm:500"],
+                        "untemplate_confirm_vmid": "500",
+                        "untemplate_acknowledge": "convert",
+                    },
+                )
+
+        self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(
+            fake_client.updates,
+            [("pve1", "vm", 500, {"template": "0"}, [], "template-digest")],
+        )
+        event = AuditEvent.objects.get(action="guest.template.revert")
+        self.assertEqual(event.outcome, "success")
+        self.assertEqual(event.details["storage_ids"], ["nfs-vm"])
+        self.assertIn("Convert template to VM", [task["name"] for task in recent_task_page(limit=10).tasks])
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_untemplate_blocks_linked_clone(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as storage_path:
+            StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="NFS VM",
+                path=storage_path,
+                enabled=True,
+            )
+
+            class FakeClient:
+                def __init__(self):
+                    self.updated = False
+
+                def guest_current(self, *, node, object_type, vmid):
+                    return {"status": "stopped"}
+
+                def guest_config(self, *, node, object_type, vmid):
+                    return {
+                        "name": "Lab Template",
+                        "template": 1,
+                        "digest": "template-digest",
+                        "scsi0": "nfs-vm:500/base-500-disk-0.qcow2,size=32G",
+                    }
+
+                def get(self, path, *, timeout=None):
+                    if path == "nodes/pve1/qemu/500/snapshot":
+                        return [{"name": "current"}]
+                    if path == "nodes/pve1/storage/nfs-vm/content":
+                        return [
+                            {"vmid": 500, "volid": "nfs-vm:500/base-500-disk-0.qcow2"},
+                            {
+                                "vmid": 600,
+                                "volid": "nfs-vm:600/vm-600-disk-0.qcow2",
+                                "parent": "../500/base-500-disk-0.qcow2",
+                            },
+                        ]
+                    raise ProxmoxAPIError(path)
+
+                def set_guest_config(self, **_kwargs):
+                    self.updated = True
+
+            fake_client = FakeClient()
+            live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
+            with (
+                patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+                patch("core.views.common.configured_clients", return_value=[fake_client]),
+            ):
+                response = self.client.post(
+                    reverse("core:vms_bulk_action"),
+                    {
+                        "bulk_action": "untemplate",
+                        "guest": ["vm:500"],
+                        "untemplate_confirm_vmid": "500",
+                        "untemplate_acknowledge": "convert",
+                    },
+                    HTTP_ACCEPT="application/json",
+                    HTTP_X_REQUESTED_WITH="fetch",
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["ok"])
+        self.assertIn("linked clone", response.json()["errors"][0])
+        self.assertFalse(fake_client.updated)
+        event = AuditEvent.objects.get(action="guest.template.revert")
+        self.assertEqual(event.outcome, "failed")
+        self.assertEqual(event.details["linked_children"][0]["vmid"], 600)
+
+    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_delete_all_snapshots_deletes_leaf_first(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)

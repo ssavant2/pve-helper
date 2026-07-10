@@ -2987,6 +2987,7 @@
         snapshot_rollback: "guest.snapshot.rollback",
         delete_snapshots: "guest.snapshot.delete_all",
         template: "guest.template.convert",
+        untemplate: "guest.template.revert",
         clone: "guest.clone.create",
         tags: "guest.tags.updated",
         agent_enable: "guest.agent.enable",
@@ -3011,6 +3012,7 @@
       snapshot_rollback: "Rollback snapshot",
       delete_snapshots: "Delete all snapshots",
       template: "Convert to template",
+      untemplate: "Convert template to VM",
       clone: "Clone guest",
       tags: "Update tags",
       agent_enable: "Enable guest agent",
@@ -3073,6 +3075,26 @@
     document.querySelectorAll('[data-vm-detail-field="agent"] dd').forEach((field) => {
       field.textContent = label;
     });
+  };
+
+  const updateVmRowsTemplateState = (rows, isTemplate) => {
+    rows.forEach((row) => {
+      row.dataset.guestTemplate = isTemplate ? "true" : "false";
+      if (row.dataset.guestType !== "vm") {
+        return;
+      }
+      row.querySelectorAll("[data-vicon]").forEach((icon) => {
+        icon.setAttribute("data-vicon", isTemplate ? "template" : "vm");
+        delete icon.dataset.viconRendered;
+      });
+      const typeCell = row.querySelector('[data-column="type"]');
+      if (typeCell) {
+        const typeLabel = isTemplate ? "Template" : "VM";
+        typeCell.textContent = typeLabel;
+        typeCell.dataset.sortValue = typeLabel;
+      }
+    });
+    renderVIcons(document);
   };
 
   const createPendingVmTask = (action, fields, rows) => {
@@ -3288,7 +3310,7 @@
         window.alert((payload.errors || ["VM/CT action failed."]).join("\n"));
       } else {
         requestSettled = true;
-        if (action === "agent_enable" || action === "agent_disable") {
+        if (action === "agent_enable" || action === "agent_disable" || action === "untemplate") {
           const finishedAt = new Date();
           updatePendingRecentTask({
             id: pendingTask.id,
@@ -3298,7 +3320,12 @@
             finished_at: taskDateLabel(finishedAt),
             finished_at_ms: finishedAt.getTime(),
           });
-          updateVmRowsAgentState(rows, action === "agent_enable");
+          if (action === "agent_enable" || action === "agent_disable") {
+            updateVmRowsAgentState(rows, action === "agent_enable");
+          }
+          if (action === "untemplate") {
+            updateVmRowsTemplateState(rows, false);
+          }
           window.pveHelperRefreshRecentTasks?.();
           return;
         }
@@ -3645,6 +3672,56 @@
     createIcons();
   };
 
+  const openUnTemplateDialog = (overview, rows) => {
+    const row = rows[0];
+    const label = row?.dataset.guestLabel || row?.dataset.guestName || "Template";
+    const target = row?.dataset.guestTarget || "";
+    const vmid = (target.split(":")[1] || "").split("@")[0];
+    openVmFormDialog({
+      title: "Convert Template Back to VM",
+      summary: label,
+      submitLabel: "Convert to VM",
+      submitClass: "primary-action danger-action",
+      bodyHtml: `
+        <div class="danger-confirmation">
+          <i data-lucide="triangle-alert" aria-hidden="true"></i>
+          <div>
+            <p>This clears the Proxmox template flag and makes the original guest a VM again.</p>
+            <p class="warning-copy">Proxmox does not provide an officially supported reverse for this operation. Linked clones, snapshots, locked templates, protected templates, and unsupported storage are blocked.</p>
+          </div>
+        </div>
+        <label class="form-field form-field-inline">
+          <input type="checkbox" name="untemplate_acknowledge" value="convert" required>
+          <span>I understand that this changes the template back into its original VM.</span>
+        </label>
+        <label class="form-field">
+          <span>Enter VMID to confirm (${escapeHtml(vmid)})</span>
+          <input type="number" name="untemplate_confirm_vmid" min="1" step="1" autocomplete="off" required>
+        </label>
+      `,
+      onSubmit: (formData) => {
+        const confirmed = String(formData.get("untemplate_confirm_vmid") || "").trim();
+        if (confirmed !== vmid) {
+          return `Enter ${vmid} to confirm.`;
+        }
+        if (formData.get("untemplate_acknowledge") !== "convert") {
+          return "Confirm that you understand this operation.";
+        }
+        submitVmBulkAction(
+          overview,
+          "untemplate",
+          {
+            untemplate_confirm_vmid: confirmed,
+            untemplate_acknowledge: "convert",
+          },
+          rows
+        );
+        return "";
+      },
+    });
+    createIcons();
+  };
+
   const positionContextMenu = (menu, event) => {
     const margin = 8;
     menu.hidden = false;
@@ -3681,6 +3758,7 @@
     const allPaused = contextRows.every((item) => item.dataset.guestStatus === "paused");
     const allVms = contextRows.every((item) => item.dataset.guestType === "vm");
     const noTemplates = contextRows.every((item) => item.dataset.guestTemplate !== "true");
+    const allTemplates = contextRows.every((item) => item.dataset.guestTemplate === "true");
     const allAgentEnabled = contextRows.every((item) => item.dataset.guestAgentEnabled === "true");
     const allAgentDisabled = contextRows.every((item) => item.dataset.guestAgentEnabled !== "true");
     const singleSelected = contextRows.length === 1;
@@ -3732,6 +3810,7 @@
         <div class="context-menu-submenu-panel">
           <button type="button" data-vm-action="clone" ${singleSelected && writable ? "" : "disabled"}>Clone...</button>
           <button type="button" data-vm-action="template" ${writable && allStopped && allVms && noTemplates ? "" : "disabled"}>Convert to Template</button>
+          <button type="button" data-vm-action="untemplate" ${singleSelected && writable && allStopped && allVms && allTemplates ? "" : "disabled"}>Convert Template to VM...</button>
         </div>
       </div>
       <div class="context-menu-submenu">
@@ -3929,6 +4008,12 @@
         }
         if (action === "destroy") {
           openDestroyDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "untemplate") {
+          openUnTemplateDialog(activeVmOverview, targetRows);
           menu.hidden = true;
           clearVmContextHighlights();
           return;
