@@ -4106,20 +4106,19 @@ code {
 }
 
 .agent-summary-grid .summary-card {
-  flex: 1 1 300px;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   height: auto;
   min-height: 0;
   overflow: visible;
   scrollbar-gutter: auto;
 }
 
-.agent-summary-grid .agent-card-nic {
-  flex-grow: 1.5;
-}
-
-.agent-summary-grid .agent-card-fs {
-  flex-grow: 0.9;
+/* Tables size to their content (not 100% of the card) so a card is only as
+   wide as it needs — no dead space stretching each card across the row. */
+.agent-summary-grid .summary-card .data-table {
+  width: auto;
 }
 
 /* Long free-text values (OS version, IPv6) may wrap; atomic tokens must not
