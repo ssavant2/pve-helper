@@ -2843,19 +2843,35 @@
             return;
           }
           const data = await response.json();
-          const liveTargets = new Set((data.guests || []).map((guest) => guest.target || ""));
+          // Key by node-agnostic type:vmid so a guest that changed node (e.g. a
+          // migration) is followed, not treated as gone and dropped from the list.
+          const bareTarget = (value) => String(value || "").split("@")[0];
+          const liveByBare = new Map();
           (data.guests || []).forEach((guest) => {
-            const target = guest.target || "";
-            const row = overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
-            if (!row) {
+            liveByBare.set(bareTarget(guest.target), guest);
+          });
+          vmOverviewRows(overview).forEach((row) => {
+            const guest = liveByBare.get(bareTarget(row.dataset.guestTarget || ""));
+            if (!guest) {
               return;
+            }
+            const newTarget = guest.target || "";
+            if (newTarget && newTarget !== row.dataset.guestTarget) {
+              // Guest moved to another node — follow it in place.
+              row.dataset.guestTarget = newTarget;
+              const newNode = newTarget.split("@")[1] || "";
+              const nodeCell = row.querySelector('[data-column="node"]');
+              if (nodeCell && newNode) {
+                nodeCell.textContent = newNode;
+                nodeCell.dataset.sortValue = newNode;
+              }
             }
             updateVmRowStatus(row, guest);
           });
           if (data.live_available) {
             vmOverviewRows(overview).forEach((row) => {
-              const target = row.dataset.guestTarget || "";
-              if (target && !liveTargets.has(target)) {
+              const bare = bareTarget(row.dataset.guestTarget || "");
+              if (bare && !liveByBare.has(bare)) {
                 row.remove();
               }
             });
