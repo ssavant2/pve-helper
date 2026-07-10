@@ -3005,6 +3005,12 @@ def _finish_guest_running_audit(
 ) -> AuditEvent:
     details = dict(event.details if isinstance(event.details, dict) else {})
     details.update(audit_details or {})
+    if response is _MIGRATE_ASYNC:
+        # A worker task owns this event (multi-disk storage migration); just
+        # persist the details and leave it running for the worker to finalize.
+        event.details = details
+        event.save(update_fields=["details"])
+        return event
     if err:
         event.outcome = "failed"
         details["error"] = err
@@ -3092,7 +3098,6 @@ def _bulk_action_initial_audit_details(
             "source_node": detail.node,
             "target_node": request.POST.get("migrate_target_node", "").strip(),
             "target_storage": request.POST.get("migrate_target_storage", "").strip(),
-            "disk": request.POST.get("migrate_disk", "").strip(),
         }
     return f"guest.power.{action}", {}
 
@@ -3278,7 +3283,7 @@ def vms_bulk_action(request):
             client = None
             error_label = f"Pool update failed: {err}" if err else ""
         elif action == "migrate":
-            err, audit_details, response, client = _migrate_guest_from_bulk_request(request, detail)
+            err, audit_details, response, client = _migrate_guest_from_bulk_request(request, detail, running_event)
             error_label = f"Migrate failed: {err}" if err else ""
         else:
             subpath, params = POWER_ACTION_REQUESTS.get(action, (f"status/{action}", {}))
@@ -3458,22 +3463,25 @@ def _pool_member_matches_guest(member: object, detail: SimpleNamespace) -> bool:
 
 
 MIGRATE_KINDS = {"host", "storage", "both"}
+# Sentinel response: the migrate is being carried out by a worker task that owns
+# the audit event's lifecycle, so _finish_guest_running_audit must not finalize it.
+_MIGRATE_ASYNC = object()
 # States where a VM/CT is not fully stopped, so a host migration must go online
 # (VM live migration) or restart (LXC) rather than plain offline.
 _MIGRATE_ACTIVE_STATES = {"running", "paused", "hibernated"}
 
 
-def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
+def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_event) -> tuple[str, dict, object | None, object | None]:
     """Issue one Migrate operation (host / storage / both) for a single guest.
 
     host/both go through the cluster ``migrate`` endpoint (one UPID, so the same
-    async poll + cancel path as clone); storage-only relocates a single owned
-    volume on the same node via ``move_disk`` (VM) / ``move_volume`` (CT).
+    async poll + cancel path as clone); storage-only relocates **all** of the
+    guest's volumes to the target storage via a worker task that runs the
+    per-volume ``move_disk`` / ``move_volume`` operations sequentially.
     """
     kind = request.POST.get("migrate_kind", "").strip()
     target_node = request.POST.get("migrate_target_node", "").strip()
     target_storage = request.POST.get("migrate_target_storage", "").strip()
-    disk_key = request.POST.get("migrate_disk", "").strip()
     is_vm = detail.object_type == ProxmoxInventory.ObjectType.VM
     active = str(detail.status or "").strip() in _MIGRATE_ACTIVE_STATES
     audit = {
@@ -3481,7 +3489,6 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
         "source_node": detail.node,
         "target_node": target_node,
         "target_storage": target_storage,
-        "disk": disk_key,
     }
     if kind not in MIGRATE_KINDS:
         return "Choose what to migrate (host, storage, or both).", audit, None, None
@@ -3513,20 +3520,41 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
         response, err, client = _guest_post_with_client(detail, "migrate", data)
         return err or "", audit, response, client
 
-    # kind == "storage": relocate a single owned volume on the same node.
-    if not disk_key:
-        return "Choose a disk/volume to move.", audit, None, None
+    # kind == "storage": relocate ALL of the guest's volumes to the target
+    # storage on the same node, one move at a time (Proxmox locks the guest per
+    # move), handed off to a worker task.
     if not target_storage:
         return "Choose a target storage.", audit, None, None
-    if is_vm:
-        response, err, client = _guest_post_with_client(
-            detail, "move_disk", {"disk": disk_key, "storage": target_storage, "delete": 1}
-        )
-    else:
-        response, err, client = _guest_post_with_client(
-            detail, "move_volume", {"volume": disk_key, "storage": target_storage, "delete": 1}
-        )
-    return err or "", audit, response, client
+    disks = _guest_movable_disks(detail)
+    if not disks:
+        return "This guest has no movable disk/volume.", audit, None, None
+    moves = [[disk["key"], target_storage] for disk in disks if disk["storage"] != target_storage]
+    audit["disks"] = [disk["key"] for disk in disks]
+    audit["moves"] = [move[0] for move in moves]
+    if not moves:
+        audit["noop"] = True
+        return "", audit, None, None
+    endpoint = ""
+    for client in common.configured_clients():
+        try:
+            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            endpoint = getattr(client, "endpoint", "")
+            break
+        except ProxmoxAPIError:
+            continue
+    if not endpoint:
+        return "Could not reach the guest's Proxmox endpoint.", audit, None, None
+    common.async_task(
+        "core.tasks.migrate_guest_disks_task",
+        running_event.id,
+        endpoint,
+        detail.node,
+        detail.object_type,
+        detail.vmid,
+        moves,
+        settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
+    )
+    return "", audit, _MIGRATE_ASYNC, None
 
 
 def _guest_movable_disks(detail: SimpleNamespace) -> list[dict]:
@@ -3538,11 +3566,16 @@ def _guest_movable_disks(detail: SimpleNamespace) -> list[dict]:
         if not isinstance(value, str):
             continue
         if detail.object_type == ProxmoxInventory.ObjectType.VM:
-            if not _is_disk_device_key(key) or "media=cdrom" in value:
+            # data/system disks + the EFI vars and TPM state volumes (all move via
+            # move_disk); skip CD-ROM/cloudinit-style entries.
+            if not (_is_disk_device_key(key) or key in ("efidisk0", "tpmstate0")) or "media=cdrom" in value:
                 continue
         elif key != "rootfs" and not re.match(r"^mp\d+$", key):
             continue
         storage = value.split(":", 1)[0] if ":" in value else ""
+        # A volume with no storage prefix (e.g. an ISO path) can't be moved.
+        if not storage:
+            continue
         disks.append({"key": key, "storage": storage, "label": f"{key} ({storage})" if storage else key})
     return disks
 

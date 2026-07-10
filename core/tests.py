@@ -175,27 +175,42 @@ class MigrateActionTests(SimpleTestCase):
         ct = self._detail(object_type=ProxmoxInventory.ObjectType.CT, config={"cpu": "host"})
         self.assertEqual(_guest_cpu_model(ct), "")
 
+    def _running_event(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=1, details={})
+
     def test_host_migration_requires_a_different_target_node(self):
         from core.views.guests import _migrate_guest_from_bulk_request
 
         request = RequestFactory().post("/", {"migrate_kind": "host", "migrate_target_node": "pve3"})
-        err, _details, response, client = _migrate_guest_from_bulk_request(request, self._detail())
+        err, _details, response, client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
         self.assertIn("must differ", err)
         self.assertIsNone(response)
         self.assertIsNone(client)
 
-    def test_storage_migration_requires_disk_and_storage(self):
+    def test_storage_migration_requires_a_target_storage(self):
         from core.views.guests import _migrate_guest_from_bulk_request
 
         request = RequestFactory().post("/", {"migrate_kind": "storage", "migrate_target_storage": ""})
-        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail())
-        self.assertIn("disk", err.lower())
+        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
+        self.assertIn("target storage", err.lower())
+
+    def test_storage_migration_noop_when_all_disks_already_on_target(self):
+        from core.views.guests import _migrate_guest_from_bulk_request
+
+        # the guest's only disk is already on TrueNAS-VM → nothing to move
+        request = RequestFactory().post("/", {"migrate_kind": "storage", "migrate_target_storage": "TrueNAS-VM"})
+        err, details, response, _client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
+        self.assertEqual(err, "")
+        self.assertTrue(details.get("noop"))
+        self.assertIsNone(response)
 
     def test_unknown_kind_is_rejected(self):
         from core.views.guests import _migrate_guest_from_bulk_request
 
         request = RequestFactory().post("/", {"migrate_kind": "sideways"})
-        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail())
+        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
         self.assertIn("Choose what to migrate", err)
 
 

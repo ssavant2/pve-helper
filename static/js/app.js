@@ -3078,7 +3078,7 @@
     }
     if (action === "migrate") {
       if (fields.migrate_kind === "storage") {
-        return `${fields.migrate_disk || "disk"} → ${fields.migrate_target_storage || "-"}`;
+        return `→ ${fields.migrate_target_storage || "-"}`;
       }
       // Mirror the server-side detail exactly (incl. the remap suffix) so the
       // optimistic row reconciles with the loaded task instead of lingering.
@@ -3642,13 +3642,10 @@
           <span>Target node</span>
           <select name="migrate_target_node" disabled><option value="">Loading nodes…</option></select>
         </label>
-        <label class="form-field" data-migrate-disk-field hidden>
-          <span>Disk / volume</span>
-          <select name="migrate_disk"></select>
-        </label>
         <label class="form-field" data-migrate-storage-field hidden>
           <span>Target storage</span>
           <select name="migrate_target_storage"></select>
+          <span class="form-hint" data-migrate-storage-hint hidden>All of the guest's disks move to this storage.</span>
         </label>
         <div class="form-field migrate-net-check" data-migrate-net-field hidden>
           <span>Network mapping</span>
@@ -3662,7 +3659,6 @@
         const kind = String(formData.get("migrate_kind") || "");
         const targetNode = String(formData.get("migrate_target_node") || "").trim();
         const targetStorage = String(formData.get("migrate_target_storage") || "").trim();
-        const disk = String(formData.get("migrate_disk") || "").trim();
         if (kind === "host" || kind === "both") {
           if (!targetNode) {
             return "Choose a target node.";
@@ -3675,22 +3671,13 @@
             return opt.dataset.cpuReason ? `${opt.dataset.cpuReason}.` : "The target host can't run this VM's CPU model.";
           }
         }
-        if (kind === "both" && !targetStorage) {
+        if ((kind === "both" || kind === "storage") && !targetStorage) {
           return "Choose a target storage.";
-        }
-        if (kind === "storage") {
-          if (!disk) {
-            return "Choose a disk/volume to move.";
-          }
-          if (!targetStorage) {
-            return "Choose a target storage.";
-          }
         }
         const fields = {
           migrate_kind: kind,
           migrate_target_node: kind === "storage" ? "" : targetNode,
           migrate_target_storage: kind === "host" ? "" : targetStorage,
-          migrate_disk: kind === "storage" ? disk : "",
         };
         if (kind !== "storage") {
           const remap = collectRemap();
@@ -3705,10 +3692,9 @@
     const submitButton = dialog?.querySelector("[data-vm-dialog-submit]");
     const error = dialog?.querySelector("[data-vm-dialog-error]");
     const nodeField = dialog?.querySelector("[data-migrate-node-field]");
-    const diskField = dialog?.querySelector("[data-migrate-disk-field]");
     const storageField = dialog?.querySelector("[data-migrate-storage-field]");
+    const storageHint = dialog?.querySelector("[data-migrate-storage-hint]");
     const nodeSelect = dialog?.querySelector("[name='migrate_target_node']");
-    const diskSelect = dialog?.querySelector("[name='migrate_disk']");
     const storageSelect = dialog?.querySelector("[name='migrate_target_storage']");
     const netField = dialog?.querySelector("[data-migrate-net-field]");
     const netBody = dialog?.querySelector("[data-migrate-net-body]");
@@ -3869,8 +3855,10 @@
     const syncFields = () => {
       const kind = currentKind();
       setShown(nodeField, kind !== "storage");
-      setShown(diskField, kind === "storage");
       setShown(storageField, kind !== "host");
+      if (storageHint) {
+        storageHint.hidden = kind !== "storage";
+      }
       if (kind === "storage") {
         fillStorage(optionsData?.current_node || "");
       } else if (kind === "both") {
@@ -3935,23 +3923,6 @@
             const firstAllowed = nodes.find((node) => node.allowed && node.cpu_ok !== false) || nodes.find((node) => node.allowed);
             nodeSelect.value = firstAllowed ? firstAllowed.node : nodes[0].node;
             nodeSelect.disabled = false;
-          }
-        }
-        if (diskSelect) {
-          diskSelect.innerHTML = "";
-          const disks = Array.isArray(data.disks) ? data.disks : [];
-          if (!disks.length) {
-            const option = document.createElement("option");
-            option.value = "";
-            option.textContent = "No movable disk";
-            diskSelect.appendChild(option);
-          } else {
-            disks.forEach((disk) => {
-              const option = document.createElement("option");
-              option.value = disk.key;
-              option.textContent = disk.label || disk.key;
-              diskSelect.appendChild(option);
-            });
           }
         }
         if (submitButton) {

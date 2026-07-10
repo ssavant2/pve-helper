@@ -106,6 +106,79 @@ def poll_guest_audit_task(
     clear_live_guest_caches()
 
 
+def migrate_guest_disks_task(
+    audit_event_id: int,
+    endpoint_url: str,
+    node: str,
+    object_type: str,
+    vmid: int,
+    moves: list,
+    timeout_seconds: int,
+) -> None:
+    """Worker task: relocate every one of a guest's volumes to a target storage.
+
+    Proxmox locks the guest for each ``move_disk``/``move_volume``, so the moves
+    run **sequentially** — one UPID at a time — recording the in-flight UPID on the
+    audit row (so it stays cancelable) and stopping on the first failure with a
+    precise partial-success report.
+    """
+    event = AuditEvent.objects.filter(pk=audit_event_id).first()
+    if event is None:
+        return
+    details = dict(event.details) if isinstance(event.details, dict) else {}
+    client = ProxmoxClient(endpoint_url)
+    kind = "qemu" if object_type == ProxmoxInventory.ObjectType.VM else "lxc"
+    subpath = "move_disk" if kind == "qemu" else "move_volume"
+    disk_param = "disk" if kind == "qemu" else "volume"
+
+    moved: list[str] = []
+    error: str | None = None
+    for move in moves:
+        disk_key, storage = move[0], move[1]
+        if AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists():
+            return
+        try:
+            upid = client.post(
+                f"nodes/{quote(node, safe='')}/{kind}/{vmid}/{subpath}",
+                data={disk_param: disk_key, "storage": storage, "delete": 1},
+            )
+        except ProxmoxAPIError as exc:
+            error = f"{disk_key}: {exc}"
+            break
+        if not (isinstance(upid, str) and upid.startswith("UPID:")):
+            error = f"{disk_key}: unexpected Proxmox response"
+            break
+        details["proxmox_task_upid"] = upid
+        details["proxmox_task_node"] = node
+        details["current_disk"] = disk_key
+        event.details = details
+        event.save(update_fields=["details"])
+        try:
+            result = client.wait_for_task(node=node, upid=upid, timeout_seconds=timeout_seconds)
+        except (ProxmoxTaskTimeout, ProxmoxAPIError) as exc:
+            error = f"{disk_key}: {exc}"
+            break
+        if not result.success:
+            error = f"{disk_key}: exitstatus {result.exitstatus or result.status or 'unknown'}"
+            break
+        moved.append(disk_key)
+
+    if AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists():
+        return
+    details["moved_disks"] = moved
+    details.pop("proxmox_task_upid", None)
+    details.pop("current_disk", None)
+    if error:
+        event.outcome = "failed"
+        details["error"] = f"Moved {', '.join(moved) or 'none'}; then failed on {error}"
+    else:
+        event.outcome = "success"
+    details["finished_at"] = timezone.now().isoformat()
+    event.details = details
+    event.save(update_fields=["outcome", "details"])
+    clear_live_guest_caches()
+
+
 def register_import_vm_task(
     audit_event_id: int,
     node: str,
