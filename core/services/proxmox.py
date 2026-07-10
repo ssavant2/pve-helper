@@ -523,6 +523,41 @@ def _paused_vm_keys(unknown_vm_keys, deadline) -> set[tuple[str, str, int]]:
     return paused
 
 
+def _hibernated_vm_keys(stopped_vm_keys, deadline) -> set[tuple[str, str, int]]:
+    """A hibernated (suspend-to-disk) VM is reported ``stopped`` but carries
+    ``lock == suspended``. Resolve it cheaply with one ``nodes/<node>/qemu`` call
+    per node (which includes ``lock`` for every VM), not per VM."""
+    hibernated: set[tuple[str, str, int]] = set()
+    if not stopped_vm_keys:
+        return hibernated
+    stopped_by_node: dict[str, set[int]] = {}
+    for node, _object_type, vmid in stopped_vm_keys:
+        stopped_by_node.setdefault(node, set()).add(vmid)
+    pending_nodes = set(stopped_by_node)
+    for client in configured_clients():
+        for node in list(pending_nodes):
+            timeout = _remaining_display_timeout(deadline)
+            if timeout is None:
+                return hibernated
+            try:
+                vms = client.get(f"nodes/{quote(node, safe='')}/qemu", timeout=timeout)
+            except ProxmoxAPIError:
+                continue
+            if not isinstance(vms, list):
+                continue
+            for vm in vms:
+                try:
+                    vmid = int(vm.get("vmid"))
+                except (TypeError, ValueError):
+                    continue
+                if vmid in stopped_by_node.get(node, set()) and vm.get("lock") == "suspended":
+                    hibernated.add((node, "vm", vmid))
+            pending_nodes.discard(node)
+        if not pending_nodes:
+            break
+    return hibernated
+
+
 def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
     """Return {(node, object_type, vmid): status} for all guests.
 
@@ -550,6 +585,9 @@ def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
     unknown_vm_keys = [key for key, status in statuses.items() if status == "unknown" and key[1] == "vm"]
     for key in _paused_vm_keys(unknown_vm_keys, deadline):
         statuses[key] = "paused"
+    stopped_vm_keys = [key for key, status in statuses.items() if status == "stopped" and key[1] == "vm"]
+    for key in _hibernated_vm_keys(stopped_vm_keys, deadline):
+        statuses[key] = "hibernated"
     return statuses
 
 
@@ -601,6 +639,9 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
     unknown_vm_keys = [key for key, guest in guests_by_key.items() if guest.status == "unknown" and key[1] == "vm"]
     for key in _paused_vm_keys(unknown_vm_keys, deadline):
         guests_by_key[key] = replace(guests_by_key[key], status="paused")
+    stopped_vm_keys = [key for key, guest in guests_by_key.items() if guest.status == "stopped" and key[1] == "vm"]
+    for key in _hibernated_vm_keys(stopped_vm_keys, deadline):
+        guests_by_key[key] = replace(guests_by_key[key], status="hibernated")
     return sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
 
 

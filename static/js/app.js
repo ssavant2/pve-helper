@@ -2776,9 +2776,11 @@
           ? "Powered Off"
           : status === "paused"
             ? "Suspended"
-            : status
-              ? status.charAt(0).toUpperCase() + status.slice(1)
-              : "-");
+            : status === "hibernated"
+              ? "Hibernated"
+              : status
+                ? status.charAt(0).toUpperCase() + status.slice(1)
+                : "-");
     row.dataset.guestStatus = status;
 
     const stateCell = row.querySelector("[data-guest-state-cell]");
@@ -2790,8 +2792,10 @@
     const statusIcon = row.querySelector("[data-guest-status-icon]");
     if (statusIcon) {
       // The type icon (vm/container/template) is fixed; power state only toggles
-      // the green "running" triangle overlay.
+      // the running-triangle / paused overlay.
       statusIcon.classList.toggle("running-icon", status === "running");
+      statusIcon.classList.toggle("paused-icon", status === "paused");
+      statusIcon.classList.toggle("hibernated-icon", status === "hibernated");
       statusIcon.title = status || "unknown";
     }
 
@@ -2865,8 +2869,15 @@
       };
 
       overview.refreshVmStatus = refresh;
+      // Power state rarely changes on its own, so the steady poll is relaxed;
+      // an action triggers a short burst (below) to reflect the change fast.
+      overview.burstVmStatusRefresh = () => {
+        [0, 1500, 4000, 8000].forEach((delay) => {
+          window.setTimeout(() => refresh({ force: true }), delay);
+        });
+      };
       refresh();
-      const intervalId = window.setInterval(refresh, 2500);
+      const intervalId = window.setInterval(refresh, 20000);
       registerPageCleanup(() => window.clearInterval(intervalId));
     });
   };
@@ -3171,6 +3182,15 @@
           window.pveHelperRefreshRecentTasks?.();
           // Refresh the page's own state (status badge, action menu) in place.
           loadSoftNavigation(new URL(window.location.href), { push: false });
+          // The guest's live status (Proxmox cluster/resources) lags a few
+          // seconds behind the action; refresh once more so the status badge/icon
+          // catches up without a manual reload.
+          const here = window.location.href;
+          window.setTimeout(() => {
+            if (window.location.href === here) {
+              loadSoftNavigation(new URL(here), { push: false });
+            }
+          }, 4500);
         } catch (_error) {
           fail("Network error");
         }
@@ -3291,6 +3311,9 @@
         window.setTimeout(() => {
           window.pveHelperRefreshRecentTasks?.();
         }, 1200);
+        // Burst-refresh the guests' power state so the change shows quickly
+        // even though the steady status poll is relaxed.
+        overview.burstVmStatusRefresh?.();
         return;
       }
       window.pveHelperRefreshRecentTasks?.();

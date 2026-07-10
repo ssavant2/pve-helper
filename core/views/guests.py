@@ -562,6 +562,8 @@ def _guest_state_label(status: str) -> str:
         return "Powered Off"
     if status == "paused":
         return "Suspended"
+    if status == "hibernated":
+        return "Hibernated"
     return (status or "-").title()
 
 
@@ -745,6 +747,14 @@ def guest_summary(request, object_type: str, vmid: int):
             "guest_notes": config.get("description") or "",
             "guest_current": current,
             "guest_config": config,
+            # A hibernated (suspend-to-disk) VM is 'stopped' but carries
+            # lock=suspended + a saved vmstate; Power On resumes it. The live
+            # inventory may already surface it as 'hibernated'.
+            "guest_is_hibernated": detail.status == "hibernated"
+            or (
+                detail.status == "stopped"
+                and ((current or {}).get("lock") or config.get("lock")) == "suspended"
+            ),
         }
     )
     return render(request, "core/guest_summary.html", context)

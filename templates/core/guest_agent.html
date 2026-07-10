@@ -7,7 +7,7 @@
     {% elif not agent_enabled %}
       <div class="panel"><p class="muted" style="padding:14px;"><span class="badge">Disabled</span> The QEMU guest agent is not enabled in this VM's configuration.</p></div>
     {% else %}
-      <div class="vm-summary-grid">
+      <div class="vm-summary-grid agent-summary-grid">
         <div class="panel summary-card">
           <div class="panel-heading"><h2>Guest OS</h2></div>
           {% if agent_osinfo or agent_hostname %}
@@ -21,9 +21,9 @@
             <p class="muted" style="padding:14px;">Agent enabled, but OS info is unavailable{% if agent_error %} ({{ agent_error }}){% endif %} — the agent may not be running yet.</p>
           {% endif %}
         </div>
-        <div class="panel summary-card">
+        <div class="panel summary-card agent-card-nic">
           <div class="panel-heading"><h2>Network Interfaces</h2></div>
-          <table class="data-table compact">
+          <table class="data-table compact agent-nic-table">
             <thead><tr><th>Interface</th><th>MAC</th><th>Addresses</th></tr></thead>
             <tbody>
               {% for iface in agent_interfaces %}
@@ -39,7 +39,7 @@
           </table>
         </div>
         {% if agent_filesystems %}
-          <div class="panel summary-card">
+          <div class="panel summary-card agent-card-fs">
             <div class="panel-heading"><h2>Filesystems</h2></div>
             <table class="data-table compact">
               <thead><tr><th>Mount</th><th>Type</th><th>Used</th><th>Total</th></tr></thead>

@@ -18,6 +18,10 @@
           <div class="muted">
             {% if guest.status == "running" %}
               <span class="badge completed">Powered On</span>
+            {% elif guest_is_hibernated %}
+              <span class="badge">Hibernated</span>
+            {% elif guest.status == "paused" %}
+              <span class="badge">Suspended</span>
             {% else %}
               <span class="badge">{{ guest.status|default:"-"|capfirst }}</span>
             {% endif %}
@@ -71,7 +75,7 @@
                   {% endif %}
                   <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="stop" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}" data-confirm="Power off (hard stop) this guest?">{% csrf_token %}<input type="hidden" name="action" value="stop"><button type="submit" class="danger">Power Off</button></form>
                 {% else %}
-                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="start" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="start"><button type="submit">Power On</button></form>
+                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="start" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="start"><button type="submit">{% if guest_is_hibernated %}Resume (from hibernate){% else %}Power On{% endif %}</button></form>
                 {% endif %}
                 {% endwith %}
                 <a href="{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=options">Edit settings</a>

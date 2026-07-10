@@ -4870,7 +4870,7 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, 'data-vm-bulk-form')
         self.assertContains(response, 'data-vm-agent-info-url')
         self.assertEqual(LIVE_GUEST_INVENTORY_CACHE_SECONDS, 30)
-        self.assertContains(response, "Inventory cached for 30 seconds; power state refreshes every 2 seconds.")
+        self.assertContains(response, "Power state updates right after an action and otherwise refreshes periodically.")
         self.assertContains(response, "Has snapshot")
         self.assertNotContains(response, "guest-list-pane")
 
