@@ -148,6 +148,21 @@ class MigrateActionTests(SimpleTestCase):
         )
         self.assertEqual([d["key"] for d in _guest_movable_disks(detail)], ["mp0", "rootfs"])
 
+    def test_nic_bridges_parsed_from_config(self):
+        from core.views.guests import _guest_nic_bridges
+
+        detail = self._detail(
+            config={
+                "net0": "virtio=BC:24:11:70:D6:A2,bridge=server10,firewall=1",
+                "net1": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0",
+                "scsi0": "TrueNAS-VM:500/vm-500-disk-0.raw,size=32G",
+            }
+        )
+        self.assertEqual(
+            _guest_nic_bridges(detail),
+            [{"key": "net0", "bridge": "server10"}, {"key": "net1", "bridge": "vmbr0"}],
+        )
+
     def test_host_migration_requires_a_different_target_node(self):
         from core.views.guests import _migrate_guest_from_bulk_request
 

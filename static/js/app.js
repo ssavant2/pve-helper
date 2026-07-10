@@ -3636,6 +3636,11 @@
           <span>Target storage</span>
           <select name="migrate_target_storage"></select>
         </label>
+        <div class="form-field migrate-net-check" data-migrate-net-field hidden>
+          <span>Network mapping</span>
+          <label class="form-field-inline"><input type="checkbox" data-migrate-net-ignore> Ignore network mapping (migrate NICs as-is)</label>
+          <div data-migrate-net-body></div>
+        </div>
         <p class="form-hint" data-migrate-hint hidden></p>
       `,
       onSubmit: (formData) => {
@@ -3663,17 +3668,19 @@
             return "Choose a target storage.";
           }
         }
-        submitVmBulkAction(
-          overview,
-          "migrate",
-          {
-            migrate_kind: kind,
-            migrate_target_node: kind === "storage" ? "" : targetNode,
-            migrate_target_storage: kind === "host" ? "" : targetStorage,
-            migrate_disk: kind === "storage" ? disk : "",
-          },
-          rows
-        );
+        const fields = {
+          migrate_kind: kind,
+          migrate_target_node: kind === "storage" ? "" : targetNode,
+          migrate_target_storage: kind === "host" ? "" : targetStorage,
+          migrate_disk: kind === "storage" ? disk : "",
+        };
+        if (kind !== "storage") {
+          const remap = collectRemap();
+          if (Object.keys(remap).length) {
+            fields.migrate_net_remap = JSON.stringify(remap);
+          }
+        }
+        submitVmBulkAction(overview, "migrate", fields, rows);
         return "";
       },
     });
@@ -3685,6 +3692,9 @@
     const nodeSelect = dialog?.querySelector("[name='migrate_target_node']");
     const diskSelect = dialog?.querySelector("[name='migrate_disk']");
     const storageSelect = dialog?.querySelector("[name='migrate_target_storage']");
+    const netField = dialog?.querySelector("[data-migrate-net-field]");
+    const netBody = dialog?.querySelector("[data-migrate-net-body]");
+    const netIgnore = dialog?.querySelector("[data-migrate-net-ignore]");
     const hint = dialog?.querySelector("[data-migrate-hint]");
     if (submitButton) {
       submitButton.disabled = true;
@@ -3738,6 +3748,71 @@
         field.style.display = shown ? "" : "none";
       }
     };
+    // Only send a remap for NICs whose chosen bridge differs from the current
+    // one; skip entirely when "ignore network mapping" is ticked.
+    const collectRemap = () => {
+      const out = {};
+      if (netIgnore?.checked) {
+        return out;
+      }
+      netBody?.querySelectorAll("[data-remap-net]").forEach((select) => {
+        const value = String(select.value || "").trim();
+        if (value && value !== select.dataset.current) {
+          out[select.dataset.remapNet] = value;
+        }
+      });
+      return out;
+    };
+    // Proxmox has no per-host port groups: a NIC's bridge name must exist on the
+    // target node. Only surface a NIC when there's a decision to make — its
+    // bridge is missing on the target, or it's on a default `vmbrN` bridge (which
+    // exists everywhere, so picking a specific net is worthwhile). A custom
+    // bridge already present on the target (e.g. server10→server10) needs no
+    // prompt. Choosing a different bridge edits the guest config (permanent,
+    // cluster-wide — see the backend).
+    const isDefaultBridge = (bridge) => /^vmbr\d+$/.test(bridge || "");
+    const renderNetCheck = () => {
+      if (!netField || !netBody) {
+        return;
+      }
+      const kind = currentKind();
+      const node = nodeSelect?.value || "";
+      const nics = Array.isArray(optionsData?.guest_nics) ? optionsData.guest_nics : [];
+      const available = (optionsData?.bridges_by_node && optionsData.bridges_by_node[node]) || [];
+      const relevant =
+        kind === "storage" || !node
+          ? []
+          : nics.filter((nic) => !available.includes(nic.bridge) || isDefaultBridge(nic.bridge));
+      if (!relevant.length) {
+        setShown(netField, false);
+        netBody.innerHTML = "";
+        return;
+      }
+      setShown(netField, true);
+      if (netIgnore?.checked) {
+        netBody.innerHTML = "";
+        return;
+      }
+      netBody.innerHTML = relevant
+        .map((nic) => {
+          const present = available.includes(nic.bridge);
+          const keepOption = present
+            ? `<option value="${escapeHtml(nic.bridge)}" selected>${escapeHtml(nic.bridge)} (unchanged)</option>`
+            : `<option value="" selected>Keep “${escapeHtml(nic.bridge)}” — missing on ${escapeHtml(node)}</option>`;
+          const options = keepOption
+            .concat(available.filter((bridge) => bridge !== nic.bridge).map((bridge) => `<option value="${escapeHtml(bridge)}">${escapeHtml(bridge)}</option>`).join(""));
+          const warn = present
+            ? ""
+            : `<span class="form-hint">⚠ bridge “${escapeHtml(nic.bridge)}” is not on ${escapeHtml(node)} — the NIC will have no network unless remapped.</span>`;
+          return `<div class="migrate-net-warn">
+              <label class="form-field-inline"><span>${escapeHtml(nic.key)}</span><select data-remap-net="${escapeHtml(nic.key)}" data-current="${escapeHtml(nic.bridge)}">${options}</select></label>
+              ${warn}
+            </div>`;
+        })
+        .join("");
+      setShown(netField, true);
+    };
+    netIgnore?.addEventListener("change", renderNetCheck);
     const syncFields = () => {
       const kind = currentKind();
       setShown(nodeField, kind !== "storage");
@@ -3749,6 +3824,7 @@
         fillStorage(nodeSelect?.value || "");
       }
       updateHint();
+      renderNetCheck();
     };
     dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
     nodeSelect?.addEventListener("change", syncFields);

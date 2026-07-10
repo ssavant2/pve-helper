@@ -3710,6 +3710,16 @@ code {
   gap: 6px;
 }
 
+.vm-action-dialog .migrate-net-check .migrate-net-warn {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.vm-action-dialog .migrate-net-check .migrate-net-warn .form-hint {
+  color: #e0a83c;
+}
+
 .vm-action-dialog .form-field span {
   color: var(--muted);
   font-size: 12px;

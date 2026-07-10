@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 from pathlib import Path, PurePosixPath
@@ -3501,6 +3502,14 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
             if not target_storage:
                 return "Choose a target storage.", audit, None, None
             data["targetstorage" if is_vm else "target-storage"] = target_storage
+        # Optional NIC bridge remap for bridges missing on the target. Proxmox
+        # has no migrate-time network mapping, so this edits the guest config
+        # (a cluster-wide, permanent change) before the migrate.
+        remap_err, remapped = _apply_migrate_net_remap(request, detail)
+        if remap_err:
+            return remap_err, audit, None, None
+        if remapped:
+            audit["net_remap"] = remapped
         response, err, client = _guest_post_with_client(detail, "migrate", data)
         return err or "", audit, response, client
 
@@ -3538,6 +3547,78 @@ def _guest_movable_disks(detail: SimpleNamespace) -> list[dict]:
     return disks
 
 
+def _apply_migrate_net_remap(request, detail: SimpleNamespace) -> tuple[str, dict]:
+    """Rewrite selected NICs' bridge before a host migration.
+
+    Reads ``migrate_net_remap`` (JSON ``{"net0": "vmbr0", ...}``) and PUTs the
+    changed netX lines. Returns ``(error, {net: bridge} applied)``.
+    """
+    raw = request.POST.get("migrate_net_remap", "").strip()
+    if not raw:
+        return "", {}
+    try:
+        remap = json.loads(raw)
+    except ValueError:
+        return "Invalid network remap request.", {}
+    if not isinstance(remap, dict) or not remap:
+        return "", {}
+    config = detail.config if isinstance(detail.config, dict) else {}
+    applied: dict[str, str] = {}
+    for net_key in sorted(remap):
+        new_bridge = str(remap[net_key] or "").strip()
+        if not re.match(r"^net\d+$", str(net_key)) or not new_bridge:
+            continue
+        current = config.get(net_key)
+        if not isinstance(current, str) or "bridge=" not in current:
+            continue
+        new_value = re.sub(r"(^|,)bridge=[^,]+", lambda m: f"{m.group(1)}bridge={new_bridge}", current)
+        if new_value == current:
+            continue
+        _response, err = _guest_put(detail, "config", {net_key: new_value})
+        if err:
+            return f"Could not remap {net_key} to '{new_bridge}': {err}", applied
+        applied[net_key] = new_bridge
+    return "", applied
+
+
+def _guest_nic_bridges(detail: SimpleNamespace) -> list[dict]:
+    """The guest's NICs and the bridge each is attached to (netX → bridge=...)."""
+    config = detail.config if isinstance(detail.config, dict) else {}
+    nics: list[dict] = []
+    for key in sorted(config):
+        if not re.match(r"^net\d+$", key):
+            continue
+        value = config[key]
+        if not isinstance(value, str):
+            continue
+        match = re.search(r"(?:^|,)bridge=([^,]+)", value)
+        if match:
+            nics.append({"key": key, "bridge": match.group(1)})
+    return nics
+
+
+def _node_available_bridges(client, node: str, sdn_vnets: set[str]) -> list[str]:
+    """Bridges a NIC can attach to on ``node``: Linux/OVS bridges + realized SDN
+    vnets. Proxmox has no per-host port-group concept, so a NIC's bridge name
+    must exist on the target node or the guest lands without a network there."""
+    try:
+        raw = client.get(f"nodes/{quote(node, safe='')}/network")
+    except ProxmoxAPIError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    bridges: set[str] = set()
+    for iface in raw:
+        if not isinstance(iface, dict):
+            continue
+        name = str(iface.get("iface") or "")
+        if not name:
+            continue
+        if str(iface.get("type") or "") in {"bridge", "OVSBridge"} or name in sdn_vnets:
+            bridges.add(name)
+    return sorted(bridges)
+
+
 def _migrate_not_allowed_reason(reason: object) -> str:
     if isinstance(reason, dict):
         parts: list[str] = []
@@ -3566,6 +3647,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
 
     nodes: list[dict] = []
     storages_by_node: dict[str, list[str]] = {}
+    bridges_by_node: dict[str, list[str]] = {}
     local_resources: list[str] = []
     for client in common.configured_clients():
         try:
@@ -3574,6 +3656,14 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             continue
         if not isinstance(raw_nodes, list):
             continue
+        try:
+            sdn_vnets = {
+                str(vnet.get("vnet"))
+                for vnet in client.get("cluster/sdn/vnets")
+                if isinstance(vnet, dict) and vnet.get("vnet")
+            }
+        except ProxmoxAPIError:
+            sdn_vnets = set()
         # Proxmox migration preconditions give the real allowed/blocked target
         # set + reasons (missing storage/bridge, passthrough, ...). Defensive:
         # if the endpoint can't answer, fall back to "all online nodes allowed".
@@ -3624,6 +3714,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
                 if content in contents and str(storage.get("active", "1")) != "0":
                     ids.append(str(storage["storage"]))
             storages_by_node[name] = sorted(set(ids))
+            bridges_by_node[name] = _node_available_bridges(client, name, sdn_vnets)
         break
 
     return JsonResponse(
@@ -3633,7 +3724,9 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             "running": active,
             "nodes": nodes,
             "disks": _guest_movable_disks(detail),
+            "guest_nics": _guest_nic_bridges(detail),
             "storages_by_node": storages_by_node,
+            "bridges_by_node": bridges_by_node,
             "local_resources": local_resources,
         }
     )

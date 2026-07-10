@@ -285,6 +285,9 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
             extra = f"{disk} → {target_storage}" if disk else f"→ {target_storage}"
         elif target_node:
             extra = f"→ {target_node}" + (f" / {target_storage}" if target_storage else "")
+            remap = details.get("net_remap")
+            if isinstance(remap, dict) and remap:
+                extra += " (" + ", ".join(f"{k}→{v}" for k, v in remap.items()) + ")"
     elif event.action == "guest.destroy":
         flags = []
         if details.get("purge"):
