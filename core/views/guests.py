@@ -3716,6 +3716,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
 
     nodes: list[dict] = []
     storages_by_node: dict[str, list[str]] = {}
+    storage_free_by_node: dict[str, dict[str, int]] = {}
     bridges_by_node: dict[str, list[str]] = {}
     sdn_vnet_names: list[str] = []
     local_resources: list[str] = []
@@ -3809,13 +3810,20 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             if not isinstance(raw_storages, list):
                 continue
             ids: list[str] = []
+            free: dict[str, int] = {}
             for storage in raw_storages:
                 if not isinstance(storage, dict) or not storage.get("storage"):
                     continue
                 contents = {item.strip() for item in str(storage.get("content", "")).split(",")}
                 if content in contents and str(storage.get("active", "1")) != "0":
-                    ids.append(str(storage["storage"]))
+                    storage_id = str(storage["storage"])
+                    ids.append(storage_id)
+                    try:
+                        free[storage_id] = int(storage.get("avail"))
+                    except (TypeError, ValueError):
+                        pass
             storages_by_node[name] = sorted(set(ids))
+            storage_free_by_node[name] = free
             bridges_by_node[name] = _node_available_bridges(client, name, sdn_vnets)
         break
 
@@ -3828,7 +3836,9 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             "disks": _guest_movable_disks(detail),
             "guest_nics": _guest_nic_bridges(detail),
             "guest_cpu": _guest_cpu_model(detail),
+            "guest_disk_bytes": _config_disk_bytes(detail.config),
             "storages_by_node": storages_by_node,
+            "storage_free_by_node": storage_free_by_node,
             "bridges_by_node": bridges_by_node,
             "sdn_vnets": sdn_vnet_names,
             "local_resources": local_resources,

@@ -3657,6 +3657,17 @@
       });
   };
 
+  const formatMigrateBytes = (bytes) => {
+    const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let value = Number(bytes) || 0;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  };
+
   const openMigrateDialog = (overview, rows) => {
     const row = rows[0];
     const label = row?.dataset.guestLabel || "guest";
@@ -3864,8 +3875,9 @@
       if (!warnBox) {
         return;
       }
+      const kind = currentKind();
       const lines = [];
-      if (currentKind() !== "storage") {
+      if (kind !== "storage") {
         const local = Array.isArray(optionsData?.local_resources) ? optionsData.local_resources : [];
         if (local.length) {
           lines.push(`⚠ Local/passthrough resources may block migration: ${local.join(", ")}.`);
@@ -3878,6 +3890,17 @@
         // silent when the guest is stopped (offline) or the CPUs match.
         if ((optionsData?.guest_cpu || "") === "host" && optionsData?.running && opt?.dataset.hostCpuMatch === "false") {
           lines.push(`⚠ cpu=host and ${opt.dataset.hostCpuReason || "the target host CPU differs"} — live migration will likely crash the guest (pin a CPU model, or migrate while stopped).`);
+        }
+      }
+      // Target-storage capacity: warn when free space looks short of the guest's
+      // provisioned disks (actual usage may be less for thin/sparse volumes).
+      if (kind === "storage" || kind === "both") {
+        const storageNode = kind === "storage" ? optionsData?.current_node || "" : nodeSelect?.value || "";
+        const storageId = storageSelect?.value || "";
+        const need = Number(optionsData?.guest_disk_bytes || 0);
+        const free = optionsData?.storage_free_by_node?.[storageNode]?.[storageId];
+        if (need > 0 && typeof free === "number" && free < need) {
+          lines.push(`⚠ Target storage ${storageId} has ${formatMigrateBytes(free)} free, but the guest's disks are provisioned at ${formatMigrateBytes(need)} (thin/sparse disks may still fit).`);
         }
       }
       if (lines.length) {
@@ -3905,6 +3928,9 @@
     };
     dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
     nodeSelect?.addEventListener("change", syncFields);
+    // Storage choice only affects the capacity warning — don't re-run syncFields
+    // (which would repopulate and reset the select).
+    storageSelect?.addEventListener("change", updateWarnings);
     syncFields();
     if (!optionsUrl) {
       if (error) {
