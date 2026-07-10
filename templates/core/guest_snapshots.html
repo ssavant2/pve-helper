@@ -11,7 +11,7 @@
     {% if guest_write_enabled %}
       <div class="panel panel-spaced">
         <div class="panel-heading"><h2>Take Snapshot</h2></div>
-        <form class="snapshot-form" method="post" action="{% url 'core:guest_snapshot_create' guest.object_type guest.vmid %}">
+        <form class="snapshot-form" method="post" action="{% url 'core:guest_snapshot_create' guest.object_type guest.vmid %}" data-guest-action-form data-action="snapshot" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}">
           {% csrf_token %}
           <input type="text" name="snapname" placeholder="Snapshot name" pattern="[A-Za-z][A-Za-z0-9_\-]*" title="Must start with a letter. Letters, digits, _ and - only." required autocomplete="off">
           <input type="text" name="description" placeholder="Description (optional)" autocomplete="off">

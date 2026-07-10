@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import wraps
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from time import monotonic
 from pathlib import Path, PurePosixPath
@@ -142,6 +143,24 @@ def app_login_required(view_func):
 
 def navigation_context(active: str, **extra: str) -> dict[str, str]:
     return {"active_nav": active, **extra}
+
+
+def json_task_response(view_func):
+    """Let a redirecting action view answer fetch (XHR) callers with JSON so the
+    optimistic Recent Tasks row can be updated in place. For a fetch request the
+    view's normal redirect is swapped for ``{"ok": ..., "errors": [...]}`` built
+    from any error-level messages it queued; plain requests are unchanged. Apply
+    below @app_login_required so it only wraps the view body."""
+
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        response = view_func(request, *args, **kwargs)
+        if request.headers.get("X-Requested-With") != "fetch":
+            return response
+        errors = [m.message for m in messages.get_messages(request) if m.level >= messages.ERROR]
+        return JsonResponse({"ok": not errors, "errors": errors})
+
+    return wrapper
 
 
 # Total wall-time budget for live Proxmox calls in an overview enrichment XHR.

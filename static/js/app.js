@@ -1104,6 +1104,92 @@
     });
   };
 
+  const FILE_ACTION_META = {
+    move: { action: "file.moved", name: "Move file" },
+    copy: { action: "file.copied", name: "Copy file" },
+    trash: { action: "file.trashed", name: "Move file to trash" },
+    rename: { action: "file.renamed", name: "Rename file" },
+    "new-folder": { action: "file.folder_created", name: "Create folder" },
+    inflate: { action: "file.inflate_queued", name: "Inflate disk" },
+  };
+
+  const createPendingFileTask = (form) => {
+    const now = Date.now();
+    const kind = form.dataset.actionKind || "";
+    const meta = FILE_ACTION_META[kind] || { action: `file.${kind}`, name: "File action" };
+    const manager = form.closest("[data-storage-file-manager]");
+    const storageId = manager?.dataset.storageId || "-";
+    const path =
+      form.querySelector("[data-selected-path-input]")?.value ||
+      form.querySelector('input[name="path"]')?.value ||
+      form.dataset.fileName ||
+      "-";
+    return {
+      id: `pending-file-${now}-${Math.random().toString(36).slice(2)}`,
+      kind: "file",
+      pending: true,
+      pending_kind: "file",
+      action: meta.action,
+      name: meta.name,
+      target: storageId,
+      target_guest: null,
+      status: "Starting",
+      status_class: "queued",
+      details: path,
+      initiator: "-",
+      queued_for: "-",
+      started_at: taskDateLabel(new Date(now)),
+      started_at_ms: now,
+      finished_at: "-",
+      finished_at_ms: 0,
+      server: storageId,
+      created_at_ms: now,
+    };
+  };
+
+  // Same general flow as guest actions: instant Recent Tasks row, run via fetch
+  // (no navigation), update the row, then soft-refresh the file browser.
+  const runFileActionForm = async (form) => {
+    const pending = createPendingFileTask(form);
+    addPendingRecentTask(pending);
+    let settled = false;
+    window.setTimeout(() => {
+      if (!settled) {
+        updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running" });
+      }
+    }, 500);
+    const fail = (message) => {
+      settled = true;
+      updatePendingRecentTask({
+        id: pending.id,
+        status: "Failed",
+        status_class: "failed",
+        details: message,
+        finished_at: taskDateLabel(new Date()),
+        finished_at_ms: Date.now(),
+      });
+      window.alert(message);
+    };
+    try {
+      const response = await fetch(form.action, {
+        method: "POST",
+        body: new FormData(form),
+        headers: { Accept: "application/json", "X-Requested-With": "fetch" },
+      });
+      const payload = response.ok ? await response.json() : { ok: false, errors: [`HTTP ${response.status}`] };
+      if (!payload.ok) {
+        fail((payload.errors || ["File action failed."]).join("; "));
+        return;
+      }
+      settled = true;
+      updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running" });
+      window.pveHelperRefreshRecentTasks?.();
+      loadSoftNavigation(new URL(window.location.href), { push: false });
+    } catch (_error) {
+      fail("Network error");
+    }
+  };
+
   const completeConfirmedFileAction = (form, { requiresRiskConfirmation, riskMessage }) => {
     const basicInput = form.querySelector('input[name="confirm_basic"]');
     const riskInput = form.querySelector('input[name="confirm_risk"]');
@@ -1117,7 +1203,7 @@
       riskInput.value = "yes";
     }
     form.dataset.confirmed = "true";
-    form.submit();
+    runFileActionForm(form);
   };
 
   const _openMovePicker = (form, options) => {
@@ -2886,6 +2972,8 @@
     return (
       {
         snapshot: "guest.snapshot.create",
+        snapshot_delete: "guest.snapshot.delete",
+        snapshot_rollback: "guest.snapshot.rollback",
         delete_snapshots: "guest.snapshot.delete_all",
         template: "guest.template.convert",
         clone: "guest.clone.create",
@@ -2908,6 +2996,8 @@
       resume: "Resume",
       hibernate: "Hibernate",
       snapshot: "Create snapshot",
+      snapshot_delete: "Delete snapshot",
+      snapshot_rollback: "Rollback snapshot",
       delete_snapshots: "Delete all snapshots",
       template: "Convert to template",
       clone: "Clone guest",
@@ -2998,6 +3088,94 @@
       server: target.server,
       created_at_ms: now,
     };
+  };
+
+  // Optimistic pending task for a single-guest detail-page action form, built
+  // from the form's data attributes (data-action / data-guest-target / label).
+  const createPendingGuestFormTask = (form) => {
+    const now = Date.now();
+    const action = form.dataset.action || "";
+    const target = form.dataset.guestTarget || "";
+    const [targetText, server = ""] = target.split("@");
+    const [type = "", vmid = ""] = targetText.split(":");
+    return {
+      id: `pending-guest-${now}-${Math.random().toString(36).slice(2)}`,
+      kind: "guest",
+      pending: true,
+      pending_kind: "guest",
+      action: vmActionAuditAction(action),
+      name: vmActionTaskName(action),
+      target: form.dataset.guestLabel || form.dataset.guestName || target || "Guest",
+      target_guest: { type, vmid, name: form.dataset.guestName || "" },
+      status: "Starting",
+      status_class: "queued",
+      details: "-",
+      initiator: "-",
+      queued_for: "-",
+      started_at: taskDateLabel(new Date(now)),
+      started_at_ms: now,
+      finished_at: "-",
+      finished_at_ms: 0,
+      server: server || "-",
+      created_at_ms: now,
+    };
+  };
+
+  // General action flow: on submit, add a Recent Tasks row immediately, run the
+  // command via fetch (no full navigation), then update the row + refresh page
+  // state. Same principle as the Inventory bulk actions.
+  const initGuestActionForms = (root = document) => {
+    root.querySelectorAll("form[data-guest-action-form]").forEach((form) => {
+      if (form.dataset.actionFormInit === "true") {
+        return;
+      }
+      form.dataset.actionFormInit = "true";
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) {
+          return;
+        }
+        const pending = createPendingGuestFormTask(form);
+        addPendingRecentTask(pending);
+        let settled = false;
+        window.setTimeout(() => {
+          if (!settled) {
+            updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running" });
+          }
+        }, 500);
+        const fail = (message) => {
+          settled = true;
+          updatePendingRecentTask({
+            id: pending.id,
+            status: "Failed",
+            status_class: "failed",
+            details: message,
+            finished_at: taskDateLabel(new Date()),
+            finished_at_ms: Date.now(),
+          });
+          window.alert(message);
+        };
+        try {
+          const response = await fetch(form.action, {
+            method: "POST",
+            body: new FormData(form),
+            headers: { Accept: "application/json", "X-Requested-With": "fetch" },
+          });
+          const payload = response.ok ? await response.json() : { ok: false, errors: [`HTTP ${response.status}`] };
+          if (!payload.ok) {
+            fail((payload.errors || ["Action failed."]).join("; "));
+            return;
+          }
+          settled = true;
+          updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running" });
+          window.pveHelperRefreshRecentTasks?.();
+          // Refresh the page's own state (status badge, action menu) in place.
+          loadSoftNavigation(new URL(window.location.href), { push: false });
+        } catch (_error) {
+          fail("Network error");
+        }
+      });
+    });
   };
 
   const submitVmBulkAction = async (overview, action, fields = {}, targetRows = null) => {
@@ -6623,6 +6801,7 @@
   const initPage = (root = document) => {
     initHardwareEditor(root);
     initVmRegister(root);
+    initGuestActionForms(root);
     initGuestListFilter(root);
     sortGuestList(document.documentElement.dataset.guestNameStyle !== "name-only");
     initNodeReload(root);

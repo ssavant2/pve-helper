@@ -614,6 +614,7 @@ def download_storage_file(request, storage_id: str):
 
 @require_POST
 @app_login_required
+@json_task_response
 def create_storage_folder(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
@@ -1344,6 +1345,7 @@ def storage_vms(request, storage_id: str):
 
 @require_POST
 @app_login_required
+@json_task_response
 def trash_storage_file(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
@@ -1392,6 +1394,7 @@ def trash_storage_file(request, storage_id: str):
 
 @require_POST
 @app_login_required
+@json_task_response
 def move_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
@@ -1466,6 +1469,7 @@ def move_storage_file_view(request, storage_id: str):
 
 @require_POST
 @app_login_required
+@json_task_response
 def copy_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
@@ -1547,6 +1551,7 @@ def storage_folders_view(request, storage_id: str):
 
 @require_POST
 @app_login_required
+@json_task_response
 def rename_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
@@ -1590,6 +1595,7 @@ def rename_storage_file_view(request, storage_id: str):
 
 @require_POST
 @app_login_required
+@json_task_response
 def inflate_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()

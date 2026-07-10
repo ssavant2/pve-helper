@@ -58,20 +58,22 @@
             <details class="actions-menu">
               <summary>Actions</summary>
               <div class="actions-menu-panel">
+                {% with gn=guest.name|default:guest.vmid %}
                 {% if guest.status == "running" %}
                   {% if guest.object_type != "ct" and guest_current.qmpstatus == "paused" %}
-                    <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="resume"><button type="submit">Resume</button></form>
+                    <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="resume" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="resume"><button type="submit">Resume</button></form>
                   {% endif %}
-                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="shutdown"><button type="submit">Shut Down Guest OS</button></form>
-                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="reboot"><button type="submit">Restart Guest OS</button></form>
+                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="shutdown" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="shutdown"><button type="submit">Shut Down Guest OS</button></form>
+                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="reboot" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="reboot"><button type="submit">Restart Guest OS</button></form>
                   {% if guest.object_type != "ct" and guest_current.qmpstatus != "paused" %}
-                    <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="suspend"><button type="submit">Suspend (to RAM)</button></form>
-                    <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" onsubmit="return confirm('Hibernate this VM? State is saved to disk and the VM stops; Power On resumes it.');">{% csrf_token %}<input type="hidden" name="action" value="hibernate"><button type="submit">Hibernate (to disk)</button></form>
+                    <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="suspend" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="suspend"><button type="submit">Suspend (to RAM)</button></form>
+                    <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="hibernate" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}" data-confirm="Hibernate this VM? State is saved to disk and the VM stops; Power On resumes it.">{% csrf_token %}<input type="hidden" name="action" value="hibernate"><button type="submit">Hibernate (to disk)</button></form>
                   {% endif %}
-                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" onsubmit="return confirm('Power off (hard stop) this guest?');">{% csrf_token %}<input type="hidden" name="action" value="stop"><button type="submit" class="danger">Power Off</button></form>
+                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="stop" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}" data-confirm="Power off (hard stop) this guest?">{% csrf_token %}<input type="hidden" name="action" value="stop"><button type="submit" class="danger">Power Off</button></form>
                 {% else %}
-                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}">{% csrf_token %}<input type="hidden" name="action" value="start"><button type="submit">Power On</button></form>
+                  <form method="post" action="{% url 'core:guest_power' guest.object_type guest.vmid %}" data-guest-action-form data-action="start" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="start"><button type="submit">Power On</button></form>
                 {% endif %}
+                {% endwith %}
                 <a href="{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=options">Edit settings</a>
               </div>
             </details>

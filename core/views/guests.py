@@ -3070,34 +3070,45 @@ def _bulk_action_initial_audit_details(
     return f"guest.power.{action}", {}
 
 
+def _wants_task_json(request) -> bool:
+    """Detail-page action forms post via fetch (so the optimistic Recent Tasks
+    row can be updated in place). Plain posts still redirect."""
+    return request.headers.get("X-Requested-With") == "fetch"
+
+
+def _guest_action_response(request, object_type, vmid, error_label="", *, redirect_name):
+    if _wants_task_json(request):
+        return JsonResponse({"ok": not error_label, "errors": [error_label] if error_label else []})
+    if error_label:
+        messages.error(request, error_label)
+    return redirect(redirect_name, object_type=object_type, vmid=vmid)
+
+
 @require_POST
 @app_login_required
 def guest_power(request, object_type: str, vmid: int):
+    def result(error_label: str = ""):
+        return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_summary")
+
     disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_summary")
     if disabled:
-        return disabled
+        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     action = request.POST.get("action", "")
     if action not in GUEST_POWER_ACTIONS:
-        messages.error(request, "Unknown power action.")
-        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+        return result("Unknown power action.")
     if action in VM_ONLY_POWER_ACTIONS and object_type != ProxmoxInventory.ObjectType.VM:
-        messages.error(request, "This action is only available for VMs.")
-        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+        return result("This action is only available for VMs.")
     subpath, params = POWER_ACTION_REQUESTS[action]
     running_event = _audit_guest(request, detail, f"guest.power.{action}", outcome="running")
     data, err, client = _guest_post_with_client(detail, subpath, params)
     if err:
-        if "403" in err:
-            error_label = proxmox_permission_hint("VM.PowerMgmt")
-        else:
-            error_label = f"Power action failed: {err}"
+        error_label = proxmox_permission_hint("VM.PowerMgmt") if "403" in err else f"Power action failed: {err}"
         _finish_guest_running_audit(running_event, detail, data, client, err=error_label)
-        messages.error(request, error_label)
-    else:
-        _finish_guest_running_audit(running_event, detail, data, client)
-        clear_live_guest_caches()
-    return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+        return result(error_label)
+    _finish_guest_running_audit(running_event, detail, data, client)
+    clear_live_guest_caches()
+    return result()
 
 
 @require_POST
@@ -3523,17 +3534,18 @@ def guest_clone_options(request, object_type: str, vmid: int):
 @require_POST
 @app_login_required
 def guest_snapshot_create(request, object_type: str, vmid: int):
+    def result(error_label: str = ""):
+        return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+
     disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
     if disabled:
-        return disabled
+        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     name = request.POST.get("snapname", "").strip()
     if not name:
-        messages.error(request, "Snapshot name is required.")
-        return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+        return result("Snapshot name is required.")
     if not SNAPSHOT_NAME_RE.match(name):
-        messages.error(request, SNAPSHOT_NAME_HELP)
-        return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+        return result(SNAPSHOT_NAME_HELP)
     data = {"snapname": name}
     description = request.POST.get("description", "").strip()
     if description:
@@ -3546,64 +3558,69 @@ def guest_snapshot_create(request, object_type: str, vmid: int):
     if err:
         error_label = _snapshot_error(err)
         _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": name})
-        messages.error(request, error_label)
-    else:
-        _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": name})
-    return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+        return result(error_label)
+    _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": name})
+    return result()
 
 
 @require_POST
 @app_login_required
 def guest_snapshot_delete(request, object_type: str, vmid: int, snapname: str):
+    def result(error_label: str = ""):
+        return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+
     disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
     if disabled:
-        return disabled
+        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     running_event = _audit_guest(request, detail, "guest.snapshot.delete", {"snapshot": snapname}, outcome="running")
     response, err, client = _guest_delete_with_client(detail, f"snapshot/{quote(snapname, safe='')}")
     if err:
         error_label = _snapshot_error(err)
         _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname})
-        messages.error(request, error_label)
-    else:
-        _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
-    return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+        return result(error_label)
+    _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
+    return result()
 
 
 @require_POST
 @app_login_required
 def guest_snapshot_delete_all(request, object_type: str, vmid: int):
+    def result(error_label: str = ""):
+        return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+
     disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
     if disabled:
-        return disabled
+        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     running_event = _audit_guest(request, detail, "guest.snapshot.delete_all", outcome="running")
     deleted, err = _delete_all_guest_snapshots(detail)
     if err:
         error_label = _snapshot_error(err)
         _finish_guest_running_audit(running_event, detail, None, None, err=error_label)
-        messages.error(request, error_label)
-    else:
-        _finish_guest_running_audit(running_event, detail, None, None, audit_details={"deleted": deleted})
-    return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+        return result(error_label)
+    _finish_guest_running_audit(running_event, detail, None, None, audit_details={"deleted": deleted})
+    return result()
 
 
 @require_POST
 @app_login_required
 def guest_snapshot_rollback(request, object_type: str, vmid: int, snapname: str):
+    def result(error_label: str = ""):
+        return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+
     disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
     if disabled:
-        return disabled
+        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     running_event = _audit_guest(request, detail, "guest.snapshot.rollback", {"snapshot": snapname}, outcome="running")
     response, err, client = _guest_post_with_client(detail, f"snapshot/{quote(snapname, safe='')}/rollback")
     if err:
         error_label = _snapshot_error(err)
         _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname})
-        messages.error(request, error_label)
-    else:
-        _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
-    return redirect("core:guest_snapshots", object_type=object_type, vmid=vmid)
+        return result(error_label)
+    _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
+    return result()
 
 
 def _snapshot_error(err: str) -> str:
