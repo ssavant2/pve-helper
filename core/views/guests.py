@@ -3603,6 +3603,20 @@ def _node_cpu_models(client, node: str) -> set[str]:
     return {str(item.get("name")) for item in caps if isinstance(item, dict) and item.get("name")}
 
 
+def _node_cpu_signature(client, node: str) -> tuple[str, frozenset[str]] | None:
+    """(model name, flag set) for a node's physical CPU — used to decide whether a
+    ``cpu=host`` guest can be **live**-migrated between two hosts (only safe when
+    the exposed CPU is identical)."""
+    try:
+        status = client.get(f"nodes/{quote(node, safe='')}/status")
+    except ProxmoxAPIError:
+        return None
+    cpuinfo = status.get("cpuinfo") if isinstance(status, dict) else None
+    if not isinstance(cpuinfo, dict):
+        return None
+    return (str(cpuinfo.get("model") or ""), frozenset(str(cpuinfo.get("flags") or "").split()))
+
+
 def _guest_nic_bridges(detail: SimpleNamespace) -> list[dict]:
     """The guest's NICs and the bridge each is attached to (netX → bridge=...)."""
     config = detail.config if isinstance(detail.config, dict) else {}
@@ -3704,6 +3718,9 @@ def guest_migrate_options(request, object_type: str, vmid: int):
                 local_resources = [str(item) for item in pre["local_resources"]]
 
         cpu_model = _guest_cpu_model(detail)
+        # For cpu=host, live migration is only safe between hosts exposing an
+        # identical CPU; capture the source signature to compare each target.
+        source_cpu_sig = _node_cpu_signature(client, detail.node) if cpu_model == "host" else None
         node_names: list[str] = []
         for node in raw_nodes:
             if not isinstance(node, dict) or not node.get("node"):
@@ -3713,7 +3730,16 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             if name == detail.node:
                 continue
             online = str(node.get("status") or "") == "online"
-            entry = {"node": name, "online": online, "allowed": True, "reason": "", "cpu_ok": True, "cpu_reason": ""}
+            entry = {
+                "node": name,
+                "online": online,
+                "allowed": True,
+                "reason": "",
+                "cpu_ok": True,
+                "cpu_reason": "",
+                "host_cpu_match": True,
+                "host_cpu_reason": "",
+            }
             if not online:
                 entry["allowed"] = False
                 entry["reason"] = "node offline"
@@ -3721,11 +3747,21 @@ def guest_migrate_options(request, object_type: str, vmid: int):
                 entry["allowed"] = False
                 entry["reason"] = _migrate_not_allowed_reason(not_allowed.get(name))
             # EVC-lite: a named CPU model must be runnable on the target. Proxmox's
-            # own precondition does not check this. `host`/default are handled in
-            # the dialog (host = non-portable warning; default = portable).
+            # own precondition does not check this. Default (unset) is portable.
             if online and cpu_model and cpu_model != "host" and cpu_model not in _node_cpu_models(client, name):
                 entry["cpu_ok"] = False
                 entry["cpu_reason"] = f"CPU model '{cpu_model}' is not available on {name}"
+            # cpu=host: only safe to live-migrate to an identical CPU. Compare on
+            # the CPU model so two identical hosts stay silent (a trivial flag/
+            # microcode delta shouldn't nag), while a real mismatch (e.g. Intel →
+            # AMD) is flagged.
+            if online and source_cpu_sig is not None:
+                target_sig = _node_cpu_signature(client, name)
+                if target_sig is None or target_sig[0] != source_cpu_sig[0]:
+                    entry["host_cpu_match"] = False
+                    src_model = source_cpu_sig[0] or "source CPU"
+                    tgt_model = (target_sig[0] if target_sig else "") or "target CPU"
+                    entry["host_cpu_reason"] = f"host CPUs differ ({src_model} → {tgt_model})"
             nodes.append(entry)
 
         for name in node_names:

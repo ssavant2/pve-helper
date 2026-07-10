@@ -3831,12 +3831,14 @@
         if (local.length) {
           lines.push(`⚠ Local/passthrough resources may block migration: ${local.join(", ")}.`);
         }
-        if ((optionsData?.guest_cpu || "") === "host") {
-          lines.push("⚠ VM uses cpu=host — live migration is only safe to a host with an identical CPU.");
-        }
         const opt = nodeSelect?.selectedOptions?.[0];
         if (opt?.dataset.cpuOk === "false") {
           lines.push(`⚠ ${opt.dataset.cpuReason || "The target host can't run this VM's CPU model."}.`);
+        }
+        // cpu=host is only risky for a live migration between differing hosts;
+        // silent when the guest is stopped (offline) or the CPUs match.
+        if ((optionsData?.guest_cpu || "") === "host" && optionsData?.running && opt?.dataset.hostCpuMatch === "false") {
+          lines.push(`⚠ cpu=host and ${opt.dataset.hostCpuReason || "the target host CPU differs"} — live migration will likely crash the guest (pin a CPU model, or migrate while stopped).`);
         }
       }
       if (lines.length) {
@@ -3908,6 +3910,8 @@
               option.dataset.reason = node.reason || "";
               option.dataset.cpuOk = node.cpu_ok === false ? "false" : "true";
               option.dataset.cpuReason = node.cpu_reason || "";
+              option.dataset.hostCpuMatch = node.host_cpu_match === false ? "false" : "true";
+              option.dataset.hostCpuReason = node.host_cpu_reason || "";
               nodeSelect.appendChild(option);
             });
             const firstAllowed = nodes.find((node) => node.allowed && node.cpu_ok !== false) || nodes.find((node) => node.allowed);
