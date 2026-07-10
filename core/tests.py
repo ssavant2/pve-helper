@@ -163,6 +163,18 @@ class MigrateActionTests(SimpleTestCase):
             [{"key": "net0", "bridge": "server10"}, {"key": "net1", "bridge": "vmbr0"}],
         )
 
+    def test_cpu_model_parsed_vm_only(self):
+        from core.models import ProxmoxInventory
+        from core.views.guests import _guest_cpu_model
+
+        self.assertEqual(_guest_cpu_model(self._detail(config={"cpu": "x86-64-v2-AES,flags=+aes"})), "x86-64-v2-AES")
+        self.assertEqual(_guest_cpu_model(self._detail(config={"cpu": "host"})), "host")
+        # unset → portable default, no model to check
+        self.assertEqual(_guest_cpu_model(self._detail(config={})), "")
+        # CT shares the host kernel: no CPU model
+        ct = self._detail(object_type=ProxmoxInventory.ObjectType.CT, config={"cpu": "host"})
+        self.assertEqual(_guest_cpu_model(ct), "")
+
     def test_host_migration_requires_a_different_target_node(self):
         from core.views.guests import _migrate_guest_from_bulk_request
 

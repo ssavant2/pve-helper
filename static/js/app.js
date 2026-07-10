@@ -3642,6 +3642,7 @@
           <div data-migrate-net-body></div>
         </div>
         <p class="form-hint" data-migrate-hint hidden></p>
+        <p class="form-hint migrate-warn" data-migrate-warn hidden></p>
       `,
       onSubmit: (formData) => {
         const kind = String(formData.get("migrate_kind") || "");
@@ -3655,6 +3656,9 @@
           const opt = nodeSelect?.selectedOptions?.[0];
           if (opt?.dataset.allowed === "false") {
             return opt.dataset.reason ? `That node can't be a migration target: ${opt.dataset.reason}.` : "That node can't be a migration target.";
+          }
+          if (opt?.dataset.cpuOk === "false") {
+            return opt.dataset.cpuReason ? `${opt.dataset.cpuReason}.` : "The target host can't run this VM's CPU model.";
           }
         }
         if (kind === "both" && !targetStorage) {
@@ -3696,6 +3700,7 @@
     const netBody = dialog?.querySelector("[data-migrate-net-body]");
     const netIgnore = dialog?.querySelector("[data-migrate-net-ignore]");
     const hint = dialog?.querySelector("[data-migrate-hint]");
+    const warnBox = dialog?.querySelector("[data-migrate-warn]");
     if (submitButton) {
       submitButton.disabled = true;
     }
@@ -3813,6 +3818,34 @@
       setShown(netField, true);
     };
     netIgnore?.addEventListener("change", renderNetCheck);
+    // Preflight cautions Proxmox itself doesn't check: passthrough/local
+    // resources that block migration, cpu=host (non-portable for live
+    // migration), and a target host whose CPU can't run the VM's model (EVC-lite).
+    const updateWarnings = () => {
+      if (!warnBox) {
+        return;
+      }
+      const lines = [];
+      if (currentKind() !== "storage") {
+        const local = Array.isArray(optionsData?.local_resources) ? optionsData.local_resources : [];
+        if (local.length) {
+          lines.push(`⚠ Local/passthrough resources may block migration: ${local.join(", ")}.`);
+        }
+        if ((optionsData?.guest_cpu || "") === "host") {
+          lines.push("⚠ VM uses cpu=host — live migration is only safe to a host with an identical CPU.");
+        }
+        const opt = nodeSelect?.selectedOptions?.[0];
+        if (opt?.dataset.cpuOk === "false") {
+          lines.push(`⚠ ${opt.dataset.cpuReason || "The target host can't run this VM's CPU model."}.`);
+        }
+      }
+      if (lines.length) {
+        warnBox.innerHTML = lines.map((line) => escapeHtml(line)).join("<br>");
+        warnBox.hidden = false;
+      } else {
+        warnBox.hidden = true;
+      }
+    };
     const syncFields = () => {
       const kind = currentKind();
       setShown(nodeField, kind !== "storage");
@@ -3825,6 +3858,7 @@
       }
       updateHint();
       renderNetCheck();
+      updateWarnings();
     };
     dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
     nodeSelect?.addEventListener("change", syncFields);
@@ -3868,12 +3902,15 @@
             nodes.forEach((node) => {
               const option = document.createElement("option");
               option.value = node.node;
-              option.textContent = node.allowed ? node.node : `${node.node} — ${node.reason || "blocked"}`;
+              const blockReason = !node.allowed ? node.reason || "blocked" : node.cpu_ok === false ? node.cpu_reason || "CPU incompatible" : "";
+              option.textContent = blockReason ? `${node.node} — ${blockReason}` : node.node;
               option.dataset.allowed = node.allowed ? "true" : "false";
               option.dataset.reason = node.reason || "";
+              option.dataset.cpuOk = node.cpu_ok === false ? "false" : "true";
+              option.dataset.cpuReason = node.cpu_reason || "";
               nodeSelect.appendChild(option);
             });
-            const firstAllowed = nodes.find((node) => node.allowed);
+            const firstAllowed = nodes.find((node) => node.allowed && node.cpu_ok !== false) || nodes.find((node) => node.allowed);
             nodeSelect.value = firstAllowed ? firstAllowed.node : nodes[0].node;
             nodeSelect.disabled = false;
           }

@@ -3720,6 +3720,10 @@ code {
   color: #e0a83c;
 }
 
+.vm-action-dialog .migrate-warn {
+  color: #e0a83c;
+}
+
 .vm-action-dialog .form-field span {
   color: var(--muted);
   font-size: 12px;

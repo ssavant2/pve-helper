@@ -3581,6 +3581,28 @@ def _apply_migrate_net_remap(request, detail: SimpleNamespace) -> tuple[str, dic
     return "", applied
 
 
+def _guest_cpu_model(detail: SimpleNamespace) -> str:
+    """The VM's configured CPU model (e.g. ``x86-64-v2-AES``, ``host``), or ``""``
+    for the portable default. CT has no CPU model (shares the host kernel)."""
+    if detail.object_type != ProxmoxInventory.ObjectType.VM:
+        return ""
+    config = detail.config if isinstance(detail.config, dict) else {}
+    raw = config.get("cpu")
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    return raw.split(",", 1)[0].strip()
+
+
+def _node_cpu_models(client, node: str) -> set[str]:
+    try:
+        caps = client.get(f"nodes/{quote(node, safe='')}/capabilities/qemu/cpu")
+    except ProxmoxAPIError:
+        return set()
+    if not isinstance(caps, list):
+        return set()
+    return {str(item.get("name")) for item in caps if isinstance(item, dict) and item.get("name")}
+
+
 def _guest_nic_bridges(detail: SimpleNamespace) -> list[dict]:
     """The guest's NICs and the bridge each is attached to (netX → bridge=...)."""
     config = detail.config if isinstance(detail.config, dict) else {}
@@ -3681,6 +3703,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             if isinstance(pre.get("local_resources"), list):
                 local_resources = [str(item) for item in pre["local_resources"]]
 
+        cpu_model = _guest_cpu_model(detail)
         node_names: list[str] = []
         for node in raw_nodes:
             if not isinstance(node, dict) or not node.get("node"):
@@ -3690,13 +3713,19 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             if name == detail.node:
                 continue
             online = str(node.get("status") or "") == "online"
-            entry = {"node": name, "online": online, "allowed": True, "reason": ""}
+            entry = {"node": name, "online": online, "allowed": True, "reason": "", "cpu_ok": True, "cpu_reason": ""}
             if not online:
                 entry["allowed"] = False
                 entry["reason"] = "node offline"
             elif allowed is not None and name not in allowed:
                 entry["allowed"] = False
                 entry["reason"] = _migrate_not_allowed_reason(not_allowed.get(name))
+            # EVC-lite: a named CPU model must be runnable on the target. Proxmox's
+            # own precondition does not check this. `host`/default are handled in
+            # the dialog (host = non-portable warning; default = portable).
+            if online and cpu_model and cpu_model != "host" and cpu_model not in _node_cpu_models(client, name):
+                entry["cpu_ok"] = False
+                entry["cpu_reason"] = f"CPU model '{cpu_model}' is not available on {name}"
             nodes.append(entry)
 
         for name in node_names:
@@ -3725,6 +3754,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             "nodes": nodes,
             "disks": _guest_movable_disks(detail),
             "guest_nics": _guest_nic_bridges(detail),
+            "guest_cpu": _guest_cpu_model(detail),
             "storages_by_node": storages_by_node,
             "bridges_by_node": bridges_by_node,
             "local_resources": local_resources,
