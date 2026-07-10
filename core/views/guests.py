@@ -735,6 +735,7 @@ def guest_summary(request, object_type: str, vmid: int):
 
     context = _guest_tab_context(detail, "summary")
     guest_pool = _guest_pool_label(detail)
+    guest_ha = _guest_ha_summary(detail)
     context.update(
         {
             "guest_os_label": _guest_os_label(config),
@@ -744,6 +745,7 @@ def guest_summary(request, object_type: str, vmid: int):
             "related_storages": related_storages,
             "related_networks": related_networks,
             "vm_details": _guest_vm_details(detail, guest_pool),
+            "guest_ha": guest_ha,
             "guest_cpu_label": _guest_cpu_label(config, detail.object_type),
             "guest_memory_label": f"{config.get('memory')} MB" if config.get("memory") else "",
             "guest_disks": disks,
@@ -4768,6 +4770,121 @@ def _guest_pool_label(detail: SimpleNamespace) -> str:
         except ProxmoxAPIError:
             continue
     return ""
+
+
+def _guest_ha_summary(detail: SimpleNamespace) -> dict:
+    """Return a small, read-only HA view for the Summary card.
+
+    HA resources are cluster scoped, but a pve-helper installation can point at
+    several unrelated endpoints. Resolve the guest against an endpoint first,
+    then only read that endpoint's cluster data. This is deliberately a read
+    model; Module 5 owns HA writes and placement rules.
+    """
+    unavailable = {
+        "available": False,
+        "managed": False,
+        "label": "HA / cluster unavailable",
+        "badge_class": "warning",
+        "message": "Live HA status could not be read for this guest.",
+        "cluster_name": "",
+        "cluster_nodes": 0,
+        "quorate": False,
+        "desired_state": "",
+        "max_restart": "",
+        "max_relocate": "",
+        "placement": "",
+    }
+    if not detail.live_ok or not detail.node:
+        return unavailable
+
+    cache_key = f"pve-helper:guest-ha-summary:v1:{detail.node}:{detail.object_type}:{detail.vmid}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    for client in common.configured_clients():
+        if not hasattr(client, "get"):
+            continue
+        try:
+            # Confirms this endpoint owns the guest before querying its cluster.
+            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            cluster_status = client.get("cluster/status", timeout=2)
+            resources = client.get("cluster/ha/resources", timeout=2)
+        except (AttributeError, ProxmoxAPIError):
+            continue
+
+        cluster_status = cluster_status if isinstance(cluster_status, list) else []
+        resources = resources if isinstance(resources, list) else []
+        cluster = next(
+            (entry for entry in cluster_status if isinstance(entry, dict) and entry.get("type") == "cluster"),
+            None,
+        )
+        if not cluster:
+            result = {
+                **unavailable,
+                "message": "This endpoint is not reporting a Proxmox cluster.",
+            }
+        else:
+            cluster_nodes = _int_or_zero(cluster.get("nodes"))
+            quorate = bool(cluster.get("quorate"))
+            cluster_name = str(cluster.get("name") or "Proxmox cluster")
+            common_fields = {
+                "cluster_name": cluster_name,
+                "cluster_nodes": cluster_nodes,
+                "quorate": quorate,
+            }
+            if cluster_nodes < 2:
+                result = {
+                    **unavailable,
+                    **common_fields,
+                    "message": "A multi-node cluster is required before HA can protect this guest.",
+                }
+            elif not quorate:
+                result = {
+                    **unavailable,
+                    **common_fields,
+                    "message": "The cluster is not quorate, so HA is unavailable.",
+                }
+            else:
+                resource_id = f"{'ct' if detail.object_type == ProxmoxInventory.ObjectType.CT else 'vm'}:{detail.vmid}"
+                resource = next(
+                    (
+                        entry
+                        for entry in resources
+                        if isinstance(entry, dict) and str(entry.get("sid") or entry.get("id") or "") == resource_id
+                    ),
+                    None,
+                )
+                if resource is None:
+                    result = {
+                        **common_fields,
+                        "available": True,
+                        "managed": False,
+                        "label": "Not managed",
+                        "badge_class": "",
+                        "message": "This guest is not configured as a Proxmox HA resource.",
+                        "desired_state": "",
+                        "max_restart": "",
+                        "max_relocate": "",
+                        "placement": "",
+                    }
+                else:
+                    result = {
+                        **common_fields,
+                        "available": True,
+                        "managed": True,
+                        "label": "Managed",
+                        "badge_class": "completed",
+                        "message": "",
+                        "desired_state": str(resource.get("state") or "started").capitalize(),
+                        "max_restart": resource.get("max_restart") or resource.get("max-restart") or "Default",
+                        "max_relocate": resource.get("max_relocate") or resource.get("max-relocate") or "Default",
+                        "placement": resource.get("group") or resource.get("rule") or "Default placement",
+                    }
+        cache.set(cache_key, result, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
+        return result
+
+    return unavailable
 
 
 def _guest_vm_details(detail: SimpleNamespace, pool_label: str = "") -> list[dict]:

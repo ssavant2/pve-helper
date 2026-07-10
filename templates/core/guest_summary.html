@@ -151,6 +151,23 @@
       </dl>
     </div>
 
+    <div class="panel summary-card" data-card-key="high-availability" data-card-size="half">
+      <div class="panel-heading"><h2>High Availability</h2><div class="card-heading-actions"><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
+      <dl class="details-list">
+        <div><dt>State</dt><dd><span class="badge {{ guest_ha.badge_class }}">{{ guest_ha.label }}</span></dd></div>
+        {% if guest_ha.cluster_name %}<div><dt>Cluster</dt><dd>{{ guest_ha.cluster_name }}</dd></div>{% endif %}
+        {% if guest_ha.cluster_nodes %}<div><dt>Nodes</dt><dd>{{ guest_ha.cluster_nodes }}{% if guest_ha.quorate %} <span class="muted">(quorate)</span>{% endif %}</dd></div>{% endif %}
+        {% if guest_ha.managed %}
+          <div><dt>Desired state</dt><dd>{{ guest_ha.desired_state }}</dd></div>
+          <div><dt>Max restarts</dt><dd>{{ guest_ha.max_restart }}</dd></div>
+          <div><dt>Max relocations</dt><dd>{{ guest_ha.max_relocate }}</dd></div>
+          <div><dt>Placement</dt><dd>{{ guest_ha.placement }}</dd></div>
+        {% else %}
+          <div><dt>Details</dt><dd>{{ guest_ha.message }}</dd></div>
+        {% endif %}
+      </dl>
+    </div>
+
     <div class="panel summary-card" data-card-key="usage" data-card-size="half">
       <div class="panel-heading"><h2>Usage</h2><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div>
       <div class="usage-block">

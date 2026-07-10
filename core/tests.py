@@ -5205,6 +5205,76 @@ class ViewSmokeTests(TestCase):
         self.assertContains(response, "<dt>vCPUs</dt><dd>2</dd>", html=True)
         self.assertNotContains(response, "Virtual Machine Details")
 
+    def test_guest_summary_shows_not_managed_ha_state_for_quorate_cluster(self):
+        cache.clear()
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM", "memory": "2048", "cores": "2"}
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/status":
+                    return [{"type": "cluster", "name": "Lab Cluster", "nodes": 2, "quorate": 1}]
+                if path == "cluster/ha/resources":
+                    return []
+                raise ProxmoxAPIError(path)
+
+        with (
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "High Availability")
+        self.assertContains(response, "Not managed")
+        self.assertContains(response, "Lab Cluster")
+        self.assertContains(response, "This guest is not configured as a Proxmox HA resource.")
+
+    def test_guest_summary_shows_managed_ha_resource_details(self):
+        cache.clear()
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM", "memory": "2048", "cores": "2"}
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/status":
+                    return [{"type": "cluster", "name": "Lab Cluster", "nodes": 2, "quorate": 1}]
+                if path == "cluster/ha/resources":
+                    return [
+                        {
+                            "sid": "vm:500",
+                            "state": "started",
+                            "max_restart": 3,
+                            "max_relocate": 2,
+                            "group": "preferred-nodes",
+                        }
+                    ]
+                raise ProxmoxAPIError(path)
+
+        with (
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
+            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+        ):
+            response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Managed")
+        self.assertContains(response, "Desired state")
+        self.assertContains(response, "Started")
+        self.assertContains(response, "preferred-nodes")
+
     @override_settings(VM_WRITE_ENABLED=False)
     def test_guest_summary_hides_power_actions_when_writes_are_disabled(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
