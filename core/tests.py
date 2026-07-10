@@ -5813,6 +5813,95 @@ class ViewSmokeTests(TestCase):
         self.assertEqual(event.details["linked_children"][0]["vmid"], 600)
 
     @override_settings(VM_WRITE_ENABLED=True)
+    def test_vms_bulk_pool_move_reassigns_membership_and_records_task(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def __init__(self):
+                self.puts = []
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "running"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM"}
+
+            def get(self, path, *, timeout=None):
+                if path == "pools":
+                    return [{"poolid": "old-pool"}, {"poolid": "new-pool"}]
+                if path == "pools/old-pool":
+                    return {"poolid": "old-pool", "members": [{"type": "qemu", "vmid": 500}]}
+                if path == "pools/new-pool":
+                    return {"poolid": "new-pool", "members": []}
+                raise ProxmoxAPIError(path)
+
+            def put(self, path, *, data=None):
+                self.puts.append((path, data or {}))
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
+        with (
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {"bulk_action": "pool", "guest": ["vm:500"], "pool_id": "new-pool"},
+            )
+
+        self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
+        self.assertEqual(
+            fake_client.puts,
+            [
+                ("pools/old-pool", {"vms": "500", "delete": 1}),
+                ("pools/new-pool", {"vms": "500"}),
+            ],
+        )
+        event = AuditEvent.objects.get(action="guest.pool.updated")
+        self.assertEqual(event.outcome, "success")
+        self.assertEqual(event.details["previous_pool"], "old-pool")
+        self.assertEqual(event.details["target_pool"], "new-pool")
+        self.assertIn("Move to pool", [task["name"] for task in recent_task_page(limit=10).tasks])
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_guest_pool_options_returns_current_membership(self):
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab CT"}
+
+            def get(self, path, *, timeout=None):
+                if path == "pools":
+                    return [{"poolid": "operations"}]
+                if path == "pools/operations":
+                    return {"poolid": "operations", "members": [{"type": "lxc", "vmid": 601}]}
+                raise ProxmoxAPIError(path)
+
+        fake_client = FakeClient()
+        live_guest = self._live_guest(object_type="ct", vmid=601, name="Lab CT", node="pve1", status="stopped")
+        with (
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.configured_clients", return_value=[fake_client]),
+        ):
+            response = self.client.get(reverse("core:guest_pool_options", args=["ct", 601]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "pools": [{"id": "operations", "label": "operations"}],
+                "current_pool": "operations",
+                "multiple_memberships": [],
+            },
+        )
+
+    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_delete_all_snapshots_deletes_leaf_first(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)

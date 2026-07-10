@@ -27,6 +27,7 @@ GUEST_TASK_NAMES = {
     "guest.snapshot.rollback": "Rollback snapshot",
     "guest.template.convert": "Convert to template",
     "guest.template.revert": "Convert template to VM",
+    "guest.pool.updated": "Move to pool",
     "guest.clone.create": "Clone guest",
     "guest.tags.updated": "Update tags",
     "guest.agent.enable": "Enable guest agent",

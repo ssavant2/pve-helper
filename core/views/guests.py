@@ -733,6 +733,7 @@ def guest_summary(request, object_type: str, vmid: int):
             related_networks.append({"bridge": net["bridge"], "vlan": net["vlan"]})
 
     context = _guest_tab_context(detail, "summary")
+    guest_pool = _guest_pool_label(detail)
     context.update(
         {
             "guest_os_label": _guest_os_label(config),
@@ -741,7 +742,7 @@ def guest_summary(request, object_type: str, vmid: int):
             "guest_cpu_topology": _guest_cpu_topology(config, detail.object_type),
             "related_storages": related_storages,
             "related_networks": related_networks,
-            "vm_details": _guest_vm_details(detail),
+            "vm_details": _guest_vm_details(detail, guest_pool),
             "guest_cpu_label": _guest_cpu_label(config, detail.object_type),
             "guest_memory_label": f"{config.get('memory')} MB" if config.get("memory") else "",
             "guest_disks": disks,
@@ -3082,6 +3083,8 @@ def _bulk_action_initial_audit_details(
         return "guest.template.convert", {}
     if action == "untemplate":
         return "guest.template.revert", {}
+    if action == "pool":
+        return "guest.pool.updated", {"pool": request.POST.get("pool_id", "").strip()}
     return f"guest.power.{action}", {}
 
 
@@ -3181,6 +3184,11 @@ def vms_bulk_action(request):
         if response:
             return response
         return redirect("core:vms_overview")
+    if action == "pool" and "pool_id" not in request.POST:
+        response = done(False, ["Choose a target pool or No pool."])
+        if response:
+            return response
+        return redirect("core:vms_overview")
     if action == "tags" and request.POST.get("tags_mode", "").strip() not in {"add", "remove", "replace"}:
         response = done(False, ["Unknown tag update mode."])
         if response:
@@ -3250,6 +3258,11 @@ def vms_bulk_action(request):
         elif action == "untemplate":
             err, audit_details, response, client = _convert_template_back_to_vm(request, detail)
             error_label = f"Template conversion failed: {err}" if err else ""
+        elif action == "pool":
+            err, audit_details = _move_guest_to_pool_from_bulk_request(request, detail)
+            response = None
+            client = None
+            error_label = f"Pool update failed: {err}" if err else ""
         else:
             subpath, params = POWER_ACTION_REQUESTS.get(action, (f"status/{action}", {}))
             response, err, client = _guest_post_with_client(detail, subpath, params)
@@ -3275,7 +3288,7 @@ def vms_bulk_action(request):
             _update_latest_guest_scan_config(detail, {"template": "0"}, [])
         if action == "destroy":
             _delete_latest_guest_scan_object(detail)
-        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
+        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "pool", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
             clear_live_guest_caches()
 
     response = done(not errors, errors)
@@ -3330,6 +3343,101 @@ def _clone_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[st
         "storage": storage,
     }
     return err or "", audit_details, response, client
+
+
+def _move_guest_to_pool_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict]:
+    """Move one guest between PVE pools with a rollback on a failed add."""
+    target_pool = request.POST.get("pool_id", "").strip()
+    client = None
+    pools: list[str] = []
+    memberships: list[str] = []
+    for candidate in common.configured_clients():
+        try:
+            # Resolve both the guest and the pool list through the same endpoint.
+            # Pools are cluster-local, not globally shared between configured PVE
+            # endpoints.
+            candidate.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            pools, memberships = _guest_pool_memberships(candidate, detail)
+            client = candidate
+            break
+        except ProxmoxAPIError:
+            continue
+    if client is None:
+        return "Could not read the current pool membership from Proxmox.", {}
+    if len(memberships) > 1:
+        return "This guest appears in multiple pools; resolve that inconsistent Proxmox state before moving it.", {
+            "previous_pools": memberships,
+            "target_pool": target_pool,
+        }
+    if target_pool and target_pool not in pools:
+        return f"Pool '{target_pool}' no longer exists on this Proxmox endpoint.", {"target_pool": target_pool}
+
+    current_pool = memberships[0] if memberships else ""
+    audit_details = {
+        "previous_pool": current_pool,
+        "target_pool": target_pool,
+    }
+    if current_pool == target_pool:
+        audit_details["noop"] = True
+        return "", audit_details
+
+    if current_pool:
+        try:
+            client.put(f"pools/{quote(current_pool, safe='')}", data={"vms": str(detail.vmid), "delete": 1})
+        except ProxmoxAPIError as exc:
+            return str(exc), audit_details
+
+    if not target_pool:
+        return "", audit_details
+
+    try:
+        client.put(f"pools/{quote(target_pool, safe='')}", data={"vms": str(detail.vmid)})
+    except ProxmoxAPIError as exc:
+        rollback_error = ""
+        if current_pool:
+            try:
+                client.put(f"pools/{quote(current_pool, safe='')}", data={"vms": str(detail.vmid)})
+            except ProxmoxAPIError as rollback_exc:
+                rollback_error = f" Rollback to '{current_pool}' also failed: {rollback_exc}"
+        return f"{exc}.{rollback_error}", audit_details
+    return "", audit_details
+
+
+def _guest_pool_memberships(client, detail: SimpleNamespace) -> tuple[list[str], list[str]]:
+    raw_pools = client.get("pools")
+    if not isinstance(raw_pools, list):
+        raise ProxmoxAPIError("Unexpected Proxmox pool list response.")
+    pool_ids = sorted(
+        {
+            str(pool.get("poolid") or "").strip()
+            for pool in raw_pools
+            if isinstance(pool, dict) and str(pool.get("poolid") or "").strip()
+        },
+        key=str.casefold,
+    )
+    memberships: list[str] = []
+    for pool_id in pool_ids:
+        pool = client.get(f"pools/{quote(pool_id, safe='')}")
+        members = pool.get("members") if isinstance(pool, dict) else None
+        if not isinstance(members, list):
+            raise ProxmoxAPIError(f"Unexpected member response for pool '{pool_id}'.")
+        if any(_pool_member_matches_guest(member, detail) for member in members):
+            memberships.append(pool_id)
+    return pool_ids, memberships
+
+
+def _pool_member_matches_guest(member: object, detail: SimpleNamespace) -> bool:
+    if not isinstance(member, dict):
+        return False
+    try:
+        vmid = int(member.get("vmid"))
+    except (TypeError, ValueError):
+        return False
+    if vmid != detail.vmid:
+        return False
+    member_type = str(member.get("type") or "").strip().lower()
+    expected = "qemu" if detail.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
+    return not member_type or member_type == expected
 
 
 def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
@@ -3731,6 +3839,27 @@ def guest_clone_options(request, object_type: str, vmid: int):
             "is_template": is_template(detail.config),
         }
     )
+
+
+@app_login_required
+def guest_pool_options(request, object_type: str, vmid: int):
+    if not settings.VM_WRITE_ENABLED:
+        return JsonResponse({"error": "VM/CT writes are disabled."}, status=403)
+    detail = _require_guest(object_type, vmid)
+    for client in common.configured_clients():
+        try:
+            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            pools, memberships = _guest_pool_memberships(client, detail)
+            return JsonResponse(
+                {
+                    "pools": [{"id": pool_id, "label": pool_id} for pool_id in pools],
+                    "current_pool": memberships[0] if len(memberships) == 1 else "",
+                    "multiple_memberships": memberships if len(memberships) > 1 else [],
+                }
+            )
+        except ProxmoxAPIError:
+            continue
+    return JsonResponse({"error": "Could not load pools from the guest's Proxmox endpoint."}, status=502)
 
 
 @require_POST
@@ -4196,7 +4325,22 @@ def _empty_guest_agent_summary(*, enabled: bool, running: bool) -> dict:
     }
 
 
-def _guest_vm_details(detail: SimpleNamespace) -> list[dict]:
+def _guest_pool_label(detail: SimpleNamespace) -> str:
+    if not detail.live_ok or not detail.node:
+        return ""
+    for client in common.configured_clients():
+        if not hasattr(client, "get"):
+            continue
+        try:
+            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            _pools, memberships = _guest_pool_memberships(client, detail)
+            return memberships[0] if len(memberships) == 1 else ""
+        except ProxmoxAPIError:
+            continue
+    return ""
+
+
+def _guest_vm_details(detail: SimpleNamespace, pool_label: str = "") -> list[dict]:
     config = detail.config
     current = detail.current
     rows: list[dict] = []
@@ -4207,6 +4351,7 @@ def _guest_vm_details(detail: SimpleNamespace) -> list[dict]:
 
     add("Guest OS", _guest_os_label(config))
     add("Node", detail.node or "-")
+    add("Pool", pool_label or "No pool", "pool")
     if config.get("bios"):
         add("Firmware", "UEFI (OVMF)" if config.get("bios") == "ovmf" else "SeaBIOS")
     if config.get("machine"):

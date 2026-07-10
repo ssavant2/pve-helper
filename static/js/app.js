@@ -2988,6 +2988,7 @@
         delete_snapshots: "guest.snapshot.delete_all",
         template: "guest.template.convert",
         untemplate: "guest.template.revert",
+        pool: "guest.pool.updated",
         clone: "guest.clone.create",
         tags: "guest.tags.updated",
         agent_enable: "guest.agent.enable",
@@ -3013,6 +3014,7 @@
       delete_snapshots: "Delete all snapshots",
       template: "Convert to template",
       untemplate: "Convert template to VM",
+      pool: "Move to pool",
       clone: "Clone guest",
       tags: "Update tags",
       agent_enable: "Enable guest agent",
@@ -3052,6 +3054,9 @@
     }
     if (action === "clone") {
       return fields.clone_name || fields.clone_newid || "-";
+    }
+    if (action === "pool") {
+      return fields.pool_id || "No pool";
     }
     if (action === "agent_enable") {
       return "enabled";
@@ -3095,6 +3100,18 @@
       }
     });
     renderVIcons(document);
+  };
+
+  const updateVmRowsPoolState = (rows, poolId) => {
+    rows.forEach((row) => {
+      row.dataset.guestPool = poolId || "";
+      if (!row.classList.contains("active")) {
+        return;
+      }
+      document.querySelectorAll('[data-vm-detail-field="pool"] dd').forEach((field) => {
+        field.textContent = poolId || "No pool";
+      });
+    });
   };
 
   const createPendingVmTask = (action, fields, rows) => {
@@ -3310,7 +3327,7 @@
         window.alert((payload.errors || ["VM/CT action failed."]).join("\n"));
       } else {
         requestSettled = true;
-        if (action === "agent_enable" || action === "agent_disable" || action === "untemplate") {
+        if (action === "agent_enable" || action === "agent_disable" || action === "untemplate" || action === "pool") {
           const finishedAt = new Date();
           updatePendingRecentTask({
             id: pendingTask.id,
@@ -3325,6 +3342,9 @@
           }
           if (action === "untemplate") {
             updateVmRowsTemplateState(rows, false);
+          }
+          if (action === "pool") {
+            updateVmRowsPoolState(rows, fields.pool_id || "");
           }
           window.pveHelperRefreshRecentTasks?.();
           return;
@@ -3481,6 +3501,87 @@
         return "";
       },
     });
+  };
+
+  const openPoolDialog = (overview, rows) => {
+    const row = rows[0];
+    const optionsUrl = row?.dataset.poolOptionsUrl || "";
+    const dialog = openVmFormDialog({
+      title: "Move to Pool",
+      summary: selectedGuestSummary(rows),
+      submitLabel: "Move",
+      bodyHtml: `
+        <label class="form-field">
+          <span>Pool</span>
+          <select name="pool_id" disabled>
+            <option value="">Loading pools...</option>
+          </select>
+        </label>
+        <p class="form-hint" data-pool-current hidden></p>
+      `,
+      onSubmit: (formData) => {
+        submitVmBulkAction(overview, "pool", { pool_id: String(formData.get("pool_id") || "") }, rows);
+        return "";
+      },
+    });
+    const submitButton = dialog?.querySelector("[data-vm-dialog-submit]");
+    const poolSelect = dialog?.querySelector("[name='pool_id']");
+    const currentHint = dialog?.querySelector("[data-pool-current]");
+    const error = dialog?.querySelector("[data-vm-dialog-error]");
+    if (submitButton) {
+      submitButton.disabled = true;
+    }
+    if (!optionsUrl) {
+      if (error) {
+        error.textContent = "Could not resolve pool options URL.";
+        error.hidden = false;
+      }
+      return;
+    }
+    fetch(new URL(optionsUrl, window.location.origin), { headers: { Accept: "application/json" } })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Could not load pools.");
+        }
+        return response.json();
+      })
+      .then((data) => {
+        if (!poolSelect) {
+          return;
+        }
+        poolSelect.innerHTML = "";
+        const noPool = document.createElement("option");
+        noPool.value = "";
+        noPool.textContent = "No pool";
+        poolSelect.appendChild(noPool);
+        const pools = Array.isArray(data.pools) ? data.pools : [];
+        pools.forEach((pool) => {
+          const option = document.createElement("option");
+          option.value = pool.id || "";
+          option.textContent = pool.label || pool.id || "";
+          option.selected = option.value === (data.current_pool || "");
+          poolSelect.appendChild(option);
+        });
+        if (currentHint) {
+          if (Array.isArray(data.multiple_memberships) && data.multiple_memberships.length) {
+            currentHint.textContent = `Warning: this guest appears in multiple pools (${data.multiple_memberships.join(", ")}). The move will be blocked until that is resolved.`;
+            currentHint.hidden = false;
+          } else if (data.current_pool) {
+            currentHint.textContent = `Current pool: ${data.current_pool}`;
+            currentHint.hidden = false;
+          }
+        }
+        poolSelect.disabled = false;
+        if (submitButton) {
+          submitButton.disabled = Boolean(Array.isArray(data.multiple_memberships) && data.multiple_memberships.length);
+        }
+      })
+      .catch((errorObject) => {
+        if (error) {
+          error.textContent = errorObject.message || "Could not load pools.";
+          error.hidden = false;
+        }
+      });
   };
 
   const openCloneDialog = (overview, rows) => {
@@ -3820,6 +3921,7 @@
           <button type="button" disabled>Remove Tags...</button>
         </div>
       </div>
+      <button type="button" data-vm-action="pool" ${writable ? "" : "disabled"}>Move to Pool...</button>
       <div class="context-menu-separator"></div>
       <button type="button" data-vm-action="destroy" class="danger" ${singleSelected && writable && allStopped ? "" : "disabled"}>Remove from Disk...</button>
     `;
@@ -3990,6 +4092,12 @@
         }
         if (action === "edit-tags") {
           openTagsDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "pool") {
+          openPoolDialog(activeVmOverview, targetRows);
           menu.hidden = true;
           clearVmContextHighlights();
           return;
