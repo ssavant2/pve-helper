@@ -13,6 +13,7 @@ urlpatterns = [
     path("vms/overview/snapshot-info/", views.vms_overview_snapshot_info, name="vms_overview_snapshot_info"),
     path("vms/status/", views.vms_status, name="vms_status"),
     path("vms/bulk-action/", views.vms_bulk_action, name="vms_bulk_action"),
+    path("vms/bulk-nics/", views.guest_bulk_nics, name="guest_bulk_nics"),
     path("vms/", views.vms_list, name="vms"),
     path("vms/create/<str:object_type>/", views.guest_create, name="guest_create"),
     path("vms/register/", views.register_vm, name="register_vm"),

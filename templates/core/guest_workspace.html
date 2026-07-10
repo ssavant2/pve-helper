@@ -7,6 +7,7 @@
     data-vm-overview
     data-vm-write-enabled="{{ guest_write_enabled|yesno:'true,false' }}"
     data-vm-status-url="{% url 'core:vms_status' %}"
+    data-vm-migrate-nics-url="{% url 'core:guest_bulk_nics' %}"
   >
     <form method="post" action="{% url 'core:vms_bulk_action' %}" data-vm-bulk-form hidden>
       {% csrf_token %}

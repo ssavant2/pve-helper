@@ -3400,11 +3400,15 @@
         window.alert((payload.errors || ["VM/CT action failed."]).join("\n"));
       } else {
         requestSettled = true;
-        if (action === "agent_enable" || action === "agent_disable" || action === "untemplate" || action === "pool") {
+        // Bulk migrate can't reconcile one summary row against N per-guest server
+        // tasks, so mark the summary accepted; the per-guest rows carry the real
+        // running/completed/failed status.
+        const bulkMigrate = action === "migrate" && rows.length > 1;
+        if (action === "agent_enable" || action === "agent_disable" || action === "untemplate" || action === "pool" || bulkMigrate) {
           const finishedAt = new Date();
           updatePendingRecentTask({
             id: pendingTask.id,
-            status: "Completed",
+            status: bulkMigrate ? "Submitted" : "Completed",
             status_class: "completed",
             details: pendingTask.details || "Accepted",
             finished_at: taskDateLabel(finishedAt),
@@ -3420,6 +3424,9 @@
             updateVmRowsPoolState(rows, fields.pool_id || "");
           }
           window.pveHelperRefreshRecentTasks?.();
+          if (bulkMigrate) {
+            overview.burstVmStatusRefresh?.();
+          }
           return;
         }
         updatePendingRecentTask({
@@ -3668,7 +3675,210 @@
     return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
   };
 
+  const openBulkMigrateDialog = (overview, rows) => {
+    // Bulk applies one choice to all selected guests. Per-guest NICs/CPU differ,
+    // so there's no network mapping or per-guest CPU annotation here — NICs move
+    // as-is and each guest's preflight/outcome appears per-row in Recent Tasks.
+    // storage = move every guest's disks to the target storage.
+    const optionsUrl = rows[0]?.dataset.migrateOptionsUrl || "";
+    let optionsData = null;
+    const dialog = openVmFormDialog({
+      title: "Migrate",
+      summary: `${rows.length} selected guests`,
+      submitLabel: "Migrate",
+      bodyHtml: `
+        <p class="form-hint">Applies to all selected guests. NICs move as-is; per-guest results (including any that can't migrate) appear in Recent Tasks.</p>
+        <fieldset class="form-field vm-migrate-kind">
+          <span>What to migrate</span>
+          <label class="form-field-inline"><input type="radio" name="migrate_kind" value="host" checked> Change host</label>
+          <label class="form-field-inline"><input type="radio" name="migrate_kind" value="storage"> Change storage (all disks)</label>
+          <label class="form-field-inline"><input type="radio" name="migrate_kind" value="both"> Change host and storage</label>
+        </fieldset>
+        <label class="form-field" data-migrate-node-field>
+          <span>Target node</span>
+          <select name="migrate_target_node" disabled><option value="">Loading nodes…</option></select>
+        </label>
+        <label class="form-field" data-migrate-storage-field hidden>
+          <span>Target storage</span>
+          <select name="migrate_target_storage"></select>
+        </label>
+        <p class="form-hint migrate-warn" data-migrate-warn hidden></p>
+      `,
+      onSubmit: (formData) => {
+        const kind = String(formData.get("migrate_kind") || "");
+        const targetNode = String(formData.get("migrate_target_node") || "").trim();
+        const targetStorage = String(formData.get("migrate_target_storage") || "").trim();
+        if ((kind === "host" || kind === "both") && !targetNode) {
+          return "Choose a target node.";
+        }
+        if ((kind === "storage" || kind === "both") && !targetStorage) {
+          return "Choose a target storage.";
+        }
+        submitVmBulkAction(
+          overview,
+          "migrate",
+          {
+            migrate_kind: kind,
+            migrate_target_node: kind === "storage" ? "" : targetNode,
+            migrate_target_storage: kind === "host" ? "" : targetStorage,
+          },
+          rows
+        );
+        return "";
+      },
+    });
+    const nodeField = dialog?.querySelector("[data-migrate-node-field]");
+    const storageField = dialog?.querySelector("[data-migrate-storage-field]");
+    const nodeSelect = dialog?.querySelector("[name='migrate_target_node']");
+    const storageSelect = dialog?.querySelector("[name='migrate_target_storage']");
+    const warnBox = dialog?.querySelector("[data-migrate-warn]");
+    const submitButton = dialog?.querySelector("[data-vm-dialog-submit]");
+    const error = dialog?.querySelector("[data-vm-dialog-error]");
+    if (submitButton) {
+      submitButton.disabled = true;
+    }
+    let perGuestNics = null;
+    const setShown = (field, shown) => {
+      if (field) {
+        field.style.display = shown ? "" : "none";
+      }
+    };
+    const currentKind = () => dialog?.querySelector("[name='migrate_kind']:checked")?.value || "host";
+    // Bulk NICs move as-is, so warn (and name the guests) when a selected guest's
+    // bridge isn't realized on the target node — it would land without a network.
+    const updateWarnings = () => {
+      if (!warnBox) {
+        return;
+      }
+      const kind = currentKind();
+      const node = nodeSelect?.value || "";
+      if (kind === "storage" || !node || !perGuestNics || !optionsData) {
+        warnBox.hidden = true;
+        return;
+      }
+      const available = (optionsData.bridges_by_node && optionsData.bridges_by_node[node]) || [];
+      const affected = [];
+      perGuestNics.forEach((guest) => {
+        const missing = [...new Set((guest.bridges || []).filter((bridge) => !available.includes(bridge)))];
+        if (missing.length) {
+          affected.push(`${guest.label} (${missing.join(", ")})`);
+        }
+      });
+      if (affected.length) {
+        warnBox.textContent = `⚠ Bridges not on ${node} — these guests will land without a network: ${affected.join("; ")}.`;
+        warnBox.hidden = false;
+      } else {
+        warnBox.hidden = true;
+      }
+    };
+    const fillStorage = (nodeName) => {
+      if (!storageSelect) {
+        return;
+      }
+      const ids = (optionsData?.storages_by_node && optionsData.storages_by_node[nodeName]) || [];
+      storageSelect.innerHTML = "";
+      if (!ids.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No compatible storage";
+        storageSelect.appendChild(option);
+      } else {
+        ids.forEach((id) => {
+          const option = document.createElement("option");
+          option.value = id;
+          option.textContent = id;
+          storageSelect.appendChild(option);
+        });
+      }
+    };
+    const syncFields = () => {
+      const kind = currentKind();
+      setShown(nodeField, kind !== "storage");
+      setShown(storageField, kind !== "host");
+      // storage: each guest moves on its own node — offer the source-node storages
+      // (rows[0]'s node); both: offer the target node's storages.
+      if (kind === "storage") {
+        fillStorage(optionsData?.current_node || "");
+      } else if (kind === "both") {
+        fillStorage(nodeSelect?.value || "");
+      }
+      updateWarnings();
+    };
+    dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
+    nodeSelect?.addEventListener("change", syncFields);
+    // Fetch each selected guest's NIC bridges once for the missing-bridge warning.
+    const nicsUrl = overview?.dataset.vmMigrateNicsUrl || "";
+    if (nicsUrl) {
+      const csrf = overview.querySelector("[data-vm-bulk-form] [name=csrfmiddlewaretoken]")?.value || "";
+      const body = new URLSearchParams();
+      rows.forEach((row) => body.append("guest", row.dataset.guestTarget || ""));
+      fetch(new URL(nicsUrl, window.location.origin), {
+        method: "POST",
+        headers: { "X-CSRFToken": csrf, "X-Requested-With": "fetch" },
+        body,
+      })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data) => {
+          perGuestNics = Array.isArray(data?.guests) ? data.guests : [];
+          updateWarnings();
+        })
+        .catch(() => {
+          /* the NIC warning is best-effort */
+        });
+    }
+    if (!optionsUrl) {
+      if (error) {
+        error.textContent = "Could not resolve migrate options URL.";
+        error.hidden = false;
+      }
+      return;
+    }
+    fetch(new URL(optionsUrl, window.location.origin), { headers: { Accept: "application/json" } })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Could not load migrate options.");
+        }
+        return response.json();
+      })
+      .then((data) => {
+        optionsData = data;
+        if (nodeSelect) {
+          const online = (Array.isArray(data.nodes) ? data.nodes : []).filter((node) => node.online);
+          nodeSelect.innerHTML = "";
+          if (!online.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "No other online cluster node";
+            nodeSelect.appendChild(option);
+            nodeSelect.disabled = true;
+          } else {
+            online.forEach((node) => {
+              const option = document.createElement("option");
+              option.value = node.node;
+              option.textContent = node.node;
+              nodeSelect.appendChild(option);
+            });
+            nodeSelect.disabled = false;
+          }
+        }
+        if (submitButton) {
+          submitButton.disabled = false;
+        }
+        syncFields();
+      })
+      .catch((errorObject) => {
+        if (error) {
+          error.textContent = errorObject.message || "Could not load migrate options.";
+          error.hidden = false;
+        }
+      });
+  };
+
   const openMigrateDialog = (overview, rows) => {
+    if (rows.length > 1) {
+      openBulkMigrateDialog(overview, rows);
+      return;
+    }
     const row = rows[0];
     const label = row?.dataset.guestLabel || "guest";
     const optionsUrl = row?.dataset.migrateOptionsUrl || "";
@@ -4320,7 +4530,7 @@
         </div>
       </div>
       <div class="context-menu-separator"></div>
-      <button type="button" data-vm-action="migrate" ${singleSelected && writable ? "" : "disabled"}><i data-lucide="move-right" aria-hidden="true"></i>Migrate...</button>
+      <button type="button" data-vm-action="migrate" ${writable ? "" : "disabled"}><i data-lucide="move-right" aria-hidden="true"></i>Migrate...</button>
       <div class="context-menu-submenu">
         <button type="button" class="context-menu-parent">Template <span>›</span></button>
         <div class="context-menu-submenu-panel">

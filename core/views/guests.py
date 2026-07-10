@@ -3198,11 +3198,9 @@ def vms_bulk_action(request):
         if response:
             return response
         return redirect("core:vms_overview")
-    if action == "migrate" and len(targets) != 1:
-        response = done(False, ["Migrate requires exactly one selected guest."])
-        if response:
-            return response
-        return redirect("core:vms_overview")
+    # Migrate supports one or many guests for every kind: host/both migrate each
+    # guest to the target node, storage moves each guest's volumes to the target
+    # storage — all per-guest in the loop below (bulk skips per-guest NIC remap).
     if action == "pool" and "pool_id" not in request.POST:
         response = done(False, ["Choose a target pool or No pool."])
         if response:
@@ -3703,6 +3701,32 @@ def _migrate_not_allowed_reason(reason: object) -> str:
     if reason:
         return str(reason)
     return "not a valid target"
+
+
+@require_POST
+@app_login_required
+def guest_bulk_nics(request):
+    """Per-guest NIC bridges for a set of guests, for the bulk-migrate network
+    preflight (which guests would land without a network on the target node)."""
+    if not settings.VM_WRITE_ENABLED:
+        return JsonResponse({"error": "VM/CT writes are disabled."}, status=403)
+    guests: list[dict] = []
+    for value in request.POST.getlist("guest"):
+        object_type, vmid, node = _parse_guest_target_value(value)
+        if not object_type or vmid is None:
+            continue
+        try:
+            detail = _require_guest(object_type, vmid, node=node)
+        except Http404:
+            continue
+        guests.append(
+            {
+                "target": value,
+                "label": detail.name or str(vmid),
+                "bridges": [nic["bridge"] for nic in _guest_nic_bridges(detail)],
+            }
+        )
+    return JsonResponse({"guests": guests})
 
 
 @app_login_required
