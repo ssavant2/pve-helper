@@ -3731,17 +3731,18 @@
       }
       hint.hidden = true;
     };
+    // Toggle via inline display: the dialog's .form-field is `display: grid`,
+    // which would override the [hidden] attribute and leave fields visible.
+    const setShown = (field, shown) => {
+      if (field) {
+        field.style.display = shown ? "" : "none";
+      }
+    };
     const syncFields = () => {
       const kind = currentKind();
-      if (nodeField) {
-        nodeField.hidden = kind === "storage";
-      }
-      if (diskField) {
-        diskField.hidden = kind !== "storage";
-      }
-      if (storageField) {
-        storageField.hidden = kind === "host";
-      }
+      setShown(nodeField, kind !== "storage");
+      setShown(diskField, kind === "storage");
+      setShown(storageField, kind !== "host");
       if (kind === "storage") {
         fillStorage(optionsData?.current_node || "");
       } else if (kind === "both") {
@@ -3751,6 +3752,7 @@
     };
     dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
     nodeSelect?.addEventListener("change", syncFields);
+    syncFields();
     if (!optionsUrl) {
       if (error) {
         error.textContent = "Could not resolve migrate options URL.";
