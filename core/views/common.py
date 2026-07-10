@@ -265,6 +265,7 @@ VM_BULK_ACTIONS = {
     "template",
     "untemplate",
     "pool",
+    "migrate",
     "clone",
     "tags",
     "destroy",

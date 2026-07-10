@@ -2989,6 +2989,7 @@
         template: "guest.template.convert",
         untemplate: "guest.template.revert",
         pool: "guest.pool.updated",
+        migrate: "guest.migrate",
         clone: "guest.clone.create",
         tags: "guest.tags.updated",
         agent_enable: "guest.agent.enable",
@@ -3015,6 +3016,7 @@
       template: "Convert to template",
       untemplate: "Convert template to VM",
       pool: "Move to pool",
+      migrate: "Migrate",
       clone: "Clone guest",
       tags: "Update tags",
       agent_enable: "Enable guest agent",
@@ -3057,6 +3059,12 @@
     }
     if (action === "pool") {
       return fields.pool_id || "No pool";
+    }
+    if (action === "migrate") {
+      if (fields.migrate_kind === "storage") {
+        return `${fields.migrate_disk || "disk"} → ${fields.migrate_target_storage || "-"}`;
+      }
+      return `→ ${fields.migrate_target_node || "-"}${fields.migrate_target_storage ? ` / ${fields.migrate_target_storage}` : ""}`;
     }
     if (action === "agent_enable") {
       return "enabled";
@@ -3584,6 +3592,228 @@
       });
   };
 
+  const openMigrateDialog = (overview, rows) => {
+    const row = rows[0];
+    const label = row?.dataset.guestLabel || "guest";
+    const optionsUrl = row?.dataset.migrateOptionsUrl || "";
+    let optionsData = null;
+    const dialog = openVmFormDialog({
+      title: "Migrate",
+      summary: label,
+      submitLabel: "Migrate",
+      bodyHtml: `
+        <fieldset class="form-field vm-migrate-kind">
+          <span>What to migrate</span>
+          <label class="form-field-inline"><input type="radio" name="migrate_kind" value="host" checked> Change host</label>
+          <label class="form-field-inline"><input type="radio" name="migrate_kind" value="storage"> Change storage</label>
+          <label class="form-field-inline"><input type="radio" name="migrate_kind" value="both"> Change host and storage</label>
+        </fieldset>
+        <label class="form-field" data-migrate-node-field>
+          <span>Target node</span>
+          <select name="migrate_target_node" disabled><option value="">Loading nodes…</option></select>
+        </label>
+        <label class="form-field" data-migrate-disk-field hidden>
+          <span>Disk / volume</span>
+          <select name="migrate_disk"></select>
+        </label>
+        <label class="form-field" data-migrate-storage-field hidden>
+          <span>Target storage</span>
+          <select name="migrate_target_storage"></select>
+        </label>
+        <p class="form-hint" data-migrate-hint hidden></p>
+      `,
+      onSubmit: (formData) => {
+        const kind = String(formData.get("migrate_kind") || "");
+        const targetNode = String(formData.get("migrate_target_node") || "").trim();
+        const targetStorage = String(formData.get("migrate_target_storage") || "").trim();
+        const disk = String(formData.get("migrate_disk") || "").trim();
+        if (kind === "host" || kind === "both") {
+          if (!targetNode) {
+            return "Choose a target node.";
+          }
+          const opt = nodeSelect?.selectedOptions?.[0];
+          if (opt?.dataset.allowed === "false") {
+            return opt.dataset.reason ? `That node can't be a migration target: ${opt.dataset.reason}.` : "That node can't be a migration target.";
+          }
+        }
+        if (kind === "both" && !targetStorage) {
+          return "Choose a target storage.";
+        }
+        if (kind === "storage") {
+          if (!disk) {
+            return "Choose a disk/volume to move.";
+          }
+          if (!targetStorage) {
+            return "Choose a target storage.";
+          }
+        }
+        submitVmBulkAction(
+          overview,
+          "migrate",
+          {
+            migrate_kind: kind,
+            migrate_target_node: kind === "storage" ? "" : targetNode,
+            migrate_target_storage: kind === "host" ? "" : targetStorage,
+            migrate_disk: kind === "storage" ? disk : "",
+          },
+          rows
+        );
+        return "";
+      },
+    });
+    const submitButton = dialog?.querySelector("[data-vm-dialog-submit]");
+    const error = dialog?.querySelector("[data-vm-dialog-error]");
+    const nodeField = dialog?.querySelector("[data-migrate-node-field]");
+    const diskField = dialog?.querySelector("[data-migrate-disk-field]");
+    const storageField = dialog?.querySelector("[data-migrate-storage-field]");
+    const nodeSelect = dialog?.querySelector("[name='migrate_target_node']");
+    const diskSelect = dialog?.querySelector("[name='migrate_disk']");
+    const storageSelect = dialog?.querySelector("[name='migrate_target_storage']");
+    const hint = dialog?.querySelector("[data-migrate-hint]");
+    if (submitButton) {
+      submitButton.disabled = true;
+    }
+    const currentKind = () => dialog?.querySelector("[name='migrate_kind']:checked")?.value || "host";
+    const fillStorage = (nodeName) => {
+      if (!storageSelect) {
+        return;
+      }
+      const ids = (optionsData?.storages_by_node && optionsData.storages_by_node[nodeName]) || [];
+      storageSelect.innerHTML = "";
+      if (!ids.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No compatible storage";
+        storageSelect.appendChild(option);
+      } else {
+        ids.forEach((id) => {
+          const option = document.createElement("option");
+          option.value = id;
+          option.textContent = id;
+          storageSelect.appendChild(option);
+        });
+      }
+    };
+    const updateHint = () => {
+      if (!hint) {
+        return;
+      }
+      const kind = currentKind();
+      const opt = nodeSelect?.selectedOptions?.[0];
+      if ((kind === "host" || kind === "both") && opt?.dataset.allowed === "false") {
+        hint.textContent = opt.dataset.reason ? `Blocked target: ${opt.dataset.reason}.` : "This node can't be a migration target.";
+        hint.hidden = false;
+        return;
+      }
+      if ((kind === "host" || kind === "both") && optionsData?.running) {
+        hint.textContent =
+          optionsData.object_type === "vm"
+            ? "Running VM → live (online) migration."
+            : "Running container → restart migration (brief downtime).";
+        hint.hidden = false;
+        return;
+      }
+      hint.hidden = true;
+    };
+    const syncFields = () => {
+      const kind = currentKind();
+      if (nodeField) {
+        nodeField.hidden = kind === "storage";
+      }
+      if (diskField) {
+        diskField.hidden = kind !== "storage";
+      }
+      if (storageField) {
+        storageField.hidden = kind === "host";
+      }
+      if (kind === "storage") {
+        fillStorage(optionsData?.current_node || "");
+      } else if (kind === "both") {
+        fillStorage(nodeSelect?.value || "");
+      }
+      updateHint();
+    };
+    dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
+    nodeSelect?.addEventListener("change", syncFields);
+    if (!optionsUrl) {
+      if (error) {
+        error.textContent = "Could not resolve migrate options URL.";
+        error.hidden = false;
+      }
+      return;
+    }
+    fetch(new URL(optionsUrl, window.location.origin), { headers: { Accept: "application/json" } })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Could not load migrate options.");
+        }
+        return response.json();
+      })
+      .then((data) => {
+        optionsData = data;
+        if (nodeSelect) {
+          nodeSelect.innerHTML = "";
+          const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+          if (!nodes.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "No other cluster node";
+            nodeSelect.appendChild(option);
+            nodeSelect.disabled = true;
+            // Only storage-only migration is possible without a second node.
+            dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => {
+              if (radio.value !== "storage") {
+                radio.disabled = true;
+              }
+            });
+            const storageRadio = dialog?.querySelector("[name='migrate_kind'][value='storage']");
+            if (storageRadio) {
+              storageRadio.checked = true;
+            }
+          } else {
+            nodes.forEach((node) => {
+              const option = document.createElement("option");
+              option.value = node.node;
+              option.textContent = node.allowed ? node.node : `${node.node} — ${node.reason || "blocked"}`;
+              option.dataset.allowed = node.allowed ? "true" : "false";
+              option.dataset.reason = node.reason || "";
+              nodeSelect.appendChild(option);
+            });
+            const firstAllowed = nodes.find((node) => node.allowed);
+            nodeSelect.value = firstAllowed ? firstAllowed.node : nodes[0].node;
+            nodeSelect.disabled = false;
+          }
+        }
+        if (diskSelect) {
+          diskSelect.innerHTML = "";
+          const disks = Array.isArray(data.disks) ? data.disks : [];
+          if (!disks.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "No movable disk";
+            diskSelect.appendChild(option);
+          } else {
+            disks.forEach((disk) => {
+              const option = document.createElement("option");
+              option.value = disk.key;
+              option.textContent = disk.label || disk.key;
+              diskSelect.appendChild(option);
+            });
+          }
+        }
+        if (submitButton) {
+          submitButton.disabled = false;
+        }
+        syncFields();
+      })
+      .catch((errorObject) => {
+        if (error) {
+          error.textContent = errorObject.message || "Could not load migrate options.";
+          error.hidden = false;
+        }
+      });
+  };
+
   const openCloneDialog = (overview, rows) => {
     const row = rows[0];
     const label = row?.dataset.guestLabel || "guest";
@@ -3905,7 +4135,7 @@
         </div>
       </div>
       <div class="context-menu-separator"></div>
-      <button type="button" disabled><i data-lucide="move-right" aria-hidden="true"></i>Migrate...</button>
+      <button type="button" data-vm-action="migrate" ${singleSelected && writable ? "" : "disabled"}><i data-lucide="move-right" aria-hidden="true"></i>Migrate...</button>
       <div class="context-menu-submenu">
         <button type="button" class="context-menu-parent">Template <span>›</span></button>
         <div class="context-menu-submenu-panel">
@@ -4098,6 +4328,12 @@
         }
         if (action === "pool") {
           openPoolDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "migrate") {
+          openMigrateDialog(activeVmOverview, targetRows);
           menu.hidden = true;
           clearVmContextHighlights();
           return;

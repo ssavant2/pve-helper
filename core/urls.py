@@ -22,6 +22,7 @@ urlpatterns = [
     path("vms/<str:object_type>/<int:vmid>/agent-summary/", views.guest_agent_summary_api, name="guest_agent_summary_api"),
     path("vms/<str:object_type>/<int:vmid>/clone-options/", views.guest_clone_options, name="guest_clone_options"),
     path("vms/<str:object_type>/<int:vmid>/pool-options/", views.guest_pool_options, name="guest_pool_options"),
+    path("vms/<str:object_type>/<int:vmid>/migrate-options/", views.guest_migrate_options, name="guest_migrate_options"),
     path("vms/<str:object_type>/<int:vmid>/edit/", views.guest_edit, name="guest_edit"),
     path("vms/<str:object_type>/<int:vmid>/hardware/edit/", views.guest_hardware_edit, name="guest_hardware_edit"),
     path("vms/<str:object_type>/<int:vmid>/configure/", views.guest_configure, name="guest_configure"),

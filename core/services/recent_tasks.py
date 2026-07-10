@@ -28,6 +28,7 @@ GUEST_TASK_NAMES = {
     "guest.template.convert": "Convert to template",
     "guest.template.revert": "Convert template to VM",
     "guest.pool.updated": "Move to pool",
+    "guest.migrate": "Migrate",
     "guest.clone.create": "Clone guest",
     "guest.tags.updated": "Update tags",
     "guest.agent.enable": "Enable guest agent",
@@ -275,6 +276,15 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         mode = str(details.get("mode") or "update").strip()
         tags = details.get("tags") if isinstance(details.get("tags"), list) else []
         extra = f"{mode}: {', '.join(tags)}" if tags else mode
+    elif event.action == "guest.migrate":
+        kind = str(details.get("kind") or "").strip()
+        target_node = str(details.get("target_node") or "").strip()
+        target_storage = str(details.get("target_storage") or "").strip()
+        disk = str(details.get("disk") or "").strip()
+        if kind == "storage":
+            extra = f"{disk} → {target_storage}" if disk else f"→ {target_storage}"
+        elif target_node:
+            extra = f"→ {target_node}" + (f" / {target_storage}" if target_storage else "")
     elif event.action == "guest.destroy":
         flags = []
         if details.get("purge"):

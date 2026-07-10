@@ -109,6 +109,69 @@ class PowerActionMapTests(SimpleTestCase):
         self.assertEqual(set(POWER_ACTION_REQUESTS), GUEST_POWER_ACTIONS)
 
 
+class MigrateActionTests(SimpleTestCase):
+    def _detail(self, **kwargs):
+        from types import SimpleNamespace
+
+        from core.models import ProxmoxInventory
+
+        base = dict(
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=500,
+            name="ubuntu-test",
+            node="pve3",
+            status="running",
+            config={"scsi0": "TrueNAS-VM:500/vm-500-disk-0.raw,size=32G", "ide2": "none,media=cdrom"},
+        )
+        base.update(kwargs)
+        return SimpleNamespace(**base)
+
+    def test_migrate_is_a_registered_bulk_action(self):
+        from core.views.common import VM_BULK_ACTIONS
+
+        self.assertIn("migrate", VM_BULK_ACTIONS)
+
+    def test_movable_disks_lists_disks_but_not_cdrom(self):
+        from core.views.guests import _guest_movable_disks
+
+        disks = _guest_movable_disks(self._detail())
+        self.assertEqual([d["key"] for d in disks], ["scsi0"])
+        self.assertEqual(disks[0]["storage"], "TrueNAS-VM")
+
+    def test_movable_volumes_for_container(self):
+        from core.models import ProxmoxInventory
+        from core.views.guests import _guest_movable_disks
+
+        detail = self._detail(
+            object_type=ProxmoxInventory.ObjectType.CT,
+            config={"rootfs": "TrueNAS-VM:900/vm-900-disk-0.raw,size=8G", "mp0": "TrueNAS-FS:900/data.raw,size=50G"},
+        )
+        self.assertEqual([d["key"] for d in _guest_movable_disks(detail)], ["mp0", "rootfs"])
+
+    def test_host_migration_requires_a_different_target_node(self):
+        from core.views.guests import _migrate_guest_from_bulk_request
+
+        request = RequestFactory().post("/", {"migrate_kind": "host", "migrate_target_node": "pve3"})
+        err, _details, response, client = _migrate_guest_from_bulk_request(request, self._detail())
+        self.assertIn("must differ", err)
+        self.assertIsNone(response)
+        self.assertIsNone(client)
+
+    def test_storage_migration_requires_disk_and_storage(self):
+        from core.views.guests import _migrate_guest_from_bulk_request
+
+        request = RequestFactory().post("/", {"migrate_kind": "storage", "migrate_target_storage": ""})
+        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail())
+        self.assertIn("disk", err.lower())
+
+    def test_unknown_kind_is_rejected(self):
+        from core.views.guests import _migrate_guest_from_bulk_request
+
+        request = RequestFactory().post("/", {"migrate_kind": "sideways"})
+        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail())
+        self.assertIn("Choose what to migrate", err)
+
+
 class ClassificationTests(SimpleTestCase):
     def test_extracts_disk_references_from_nested_snapshot_config(self):
         config = {

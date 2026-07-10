@@ -3085,6 +3085,14 @@ def _bulk_action_initial_audit_details(
         return "guest.template.revert", {}
     if action == "pool":
         return "guest.pool.updated", {"pool": request.POST.get("pool_id", "").strip()}
+    if action == "migrate":
+        return "guest.migrate", {
+            "kind": request.POST.get("migrate_kind", "").strip(),
+            "source_node": detail.node,
+            "target_node": request.POST.get("migrate_target_node", "").strip(),
+            "target_storage": request.POST.get("migrate_target_storage", "").strip(),
+            "disk": request.POST.get("migrate_disk", "").strip(),
+        }
     return f"guest.power.{action}", {}
 
 
@@ -3184,6 +3192,11 @@ def vms_bulk_action(request):
         if response:
             return response
         return redirect("core:vms_overview")
+    if action == "migrate" and len(targets) != 1:
+        response = done(False, ["Migrate requires exactly one selected guest."])
+        if response:
+            return response
+        return redirect("core:vms_overview")
     if action == "pool" and "pool_id" not in request.POST:
         response = done(False, ["Choose a target pool or No pool."])
         if response:
@@ -3263,6 +3276,9 @@ def vms_bulk_action(request):
             response = None
             client = None
             error_label = f"Pool update failed: {err}" if err else ""
+        elif action == "migrate":
+            err, audit_details, response, client = _migrate_guest_from_bulk_request(request, detail)
+            error_label = f"Migrate failed: {err}" if err else ""
         else:
             subpath, params = POWER_ACTION_REQUESTS.get(action, (f"status/{action}", {}))
             response, err, client = _guest_post_with_client(detail, subpath, params)
@@ -3288,7 +3304,7 @@ def vms_bulk_action(request):
             _update_latest_guest_scan_config(detail, {"template": "0"}, [])
         if action == "destroy":
             _delete_latest_guest_scan_object(detail)
-        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "pool", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
+        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "pool", "migrate", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
             clear_live_guest_caches()
 
     response = done(not errors, errors)
@@ -3438,6 +3454,189 @@ def _pool_member_matches_guest(member: object, detail: SimpleNamespace) -> bool:
     member_type = str(member.get("type") or "").strip().lower()
     expected = "qemu" if detail.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
     return not member_type or member_type == expected
+
+
+MIGRATE_KINDS = {"host", "storage", "both"}
+# States where a VM/CT is not fully stopped, so a host migration must go online
+# (VM live migration) or restart (LXC) rather than plain offline.
+_MIGRATE_ACTIVE_STATES = {"running", "paused", "hibernated"}
+
+
+def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
+    """Issue one Migrate operation (host / storage / both) for a single guest.
+
+    host/both go through the cluster ``migrate`` endpoint (one UPID, so the same
+    async poll + cancel path as clone); storage-only relocates a single owned
+    volume on the same node via ``move_disk`` (VM) / ``move_volume`` (CT).
+    """
+    kind = request.POST.get("migrate_kind", "").strip()
+    target_node = request.POST.get("migrate_target_node", "").strip()
+    target_storage = request.POST.get("migrate_target_storage", "").strip()
+    disk_key = request.POST.get("migrate_disk", "").strip()
+    is_vm = detail.object_type == ProxmoxInventory.ObjectType.VM
+    active = str(detail.status or "").strip() in _MIGRATE_ACTIVE_STATES
+    audit = {
+        "kind": kind,
+        "source_node": detail.node,
+        "target_node": target_node,
+        "target_storage": target_storage,
+        "disk": disk_key,
+    }
+    if kind not in MIGRATE_KINDS:
+        return "Choose what to migrate (host, storage, or both).", audit, None, None
+    if not detail.node:
+        return "Could not resolve the guest's current node.", audit, None, None
+
+    if kind in {"host", "both"}:
+        if not target_node:
+            return "Choose a target node.", audit, None, None
+        if target_node == detail.node:
+            return "The target node must differ from the current node.", audit, None, None
+        data: dict[str, object] = {"target": target_node}
+        # A running VM must migrate online (live); a running CT has no live
+        # migration, so use restart migration. Stopped guests migrate offline.
+        if active:
+            data["online" if is_vm else "restart"] = 1
+        if kind == "both":
+            if not target_storage:
+                return "Choose a target storage.", audit, None, None
+            data["targetstorage" if is_vm else "target-storage"] = target_storage
+        response, err, client = _guest_post_with_client(detail, "migrate", data)
+        return err or "", audit, response, client
+
+    # kind == "storage": relocate a single owned volume on the same node.
+    if not disk_key:
+        return "Choose a disk/volume to move.", audit, None, None
+    if not target_storage:
+        return "Choose a target storage.", audit, None, None
+    if is_vm:
+        response, err, client = _guest_post_with_client(
+            detail, "move_disk", {"disk": disk_key, "storage": target_storage, "delete": 1}
+        )
+    else:
+        response, err, client = _guest_post_with_client(
+            detail, "move_volume", {"volume": disk_key, "storage": target_storage, "delete": 1}
+        )
+    return err or "", audit, response, client
+
+
+def _guest_movable_disks(detail: SimpleNamespace) -> list[dict]:
+    """Owned disks/volumes that a storage-only migration can relocate."""
+    config = detail.config if isinstance(detail.config, dict) else {}
+    disks: list[dict] = []
+    for key in sorted(config):
+        value = config[key]
+        if not isinstance(value, str):
+            continue
+        if detail.object_type == ProxmoxInventory.ObjectType.VM:
+            if not _is_disk_device_key(key) or "media=cdrom" in value:
+                continue
+        elif key != "rootfs" and not re.match(r"^mp\d+$", key):
+            continue
+        storage = value.split(":", 1)[0] if ":" in value else ""
+        disks.append({"key": key, "storage": storage, "label": f"{key} ({storage})" if storage else key})
+    return disks
+
+
+def _migrate_not_allowed_reason(reason: object) -> str:
+    if isinstance(reason, dict):
+        parts: list[str] = []
+        for key, label in (
+            ("unavailable_storages", "missing storage"),
+            ("unavailable_networks", "missing network"),
+            ("local_resources", "local resources"),
+        ):
+            value = reason.get(key)
+            if isinstance(value, list) and value:
+                parts.append(f"{label}: " + ", ".join(str(item) for item in value))
+        return "; ".join(parts) or "not a valid target"
+    if reason:
+        return str(reason)
+    return "not a valid target"
+
+
+@app_login_required
+def guest_migrate_options(request, object_type: str, vmid: int):
+    if not settings.VM_WRITE_ENABLED:
+        return JsonResponse({"error": "VM/CT writes are disabled."}, status=403)
+    detail = _require_guest(object_type, vmid)
+    is_vm = detail.object_type == ProxmoxInventory.ObjectType.VM
+    content = "images" if is_vm else "rootdir"
+    active = str(detail.status or "").strip() in _MIGRATE_ACTIVE_STATES
+
+    nodes: list[dict] = []
+    storages_by_node: dict[str, list[str]] = {}
+    local_resources: list[str] = []
+    for client in common.configured_clients():
+        try:
+            raw_nodes = client.get("nodes")
+        except ProxmoxAPIError:
+            continue
+        if not isinstance(raw_nodes, list):
+            continue
+        # Proxmox migration preconditions give the real allowed/blocked target
+        # set + reasons (missing storage/bridge, passthrough, ...). Defensive:
+        # if the endpoint can't answer, fall back to "all online nodes allowed".
+        allowed = None
+        not_allowed: dict = {}
+        try:
+            pre = client.get(f"nodes/{quote(detail.node, safe='')}/{_guest_kind(detail)}/{detail.vmid}/migrate")
+        except ProxmoxAPIError:
+            pre = None
+        if isinstance(pre, dict):
+            if isinstance(pre.get("allowed_nodes"), list):
+                allowed = [str(item) for item in pre["allowed_nodes"]]
+            if isinstance(pre.get("not_allowed_nodes"), dict):
+                not_allowed = pre["not_allowed_nodes"]
+            if isinstance(pre.get("local_resources"), list):
+                local_resources = [str(item) for item in pre["local_resources"]]
+
+        node_names: list[str] = []
+        for node in raw_nodes:
+            if not isinstance(node, dict) or not node.get("node"):
+                continue
+            name = str(node["node"])
+            node_names.append(name)
+            if name == detail.node:
+                continue
+            online = str(node.get("status") or "") == "online"
+            entry = {"node": name, "online": online, "allowed": True, "reason": ""}
+            if not online:
+                entry["allowed"] = False
+                entry["reason"] = "node offline"
+            elif allowed is not None and name not in allowed:
+                entry["allowed"] = False
+                entry["reason"] = _migrate_not_allowed_reason(not_allowed.get(name))
+            nodes.append(entry)
+
+        for name in node_names:
+            try:
+                raw_storages = client.get(f"nodes/{quote(name, safe='')}/storage")
+            except ProxmoxAPIError:
+                continue
+            if not isinstance(raw_storages, list):
+                continue
+            ids: list[str] = []
+            for storage in raw_storages:
+                if not isinstance(storage, dict) or not storage.get("storage"):
+                    continue
+                contents = {item.strip() for item in str(storage.get("content", "")).split(",")}
+                if content in contents and str(storage.get("active", "1")) != "0":
+                    ids.append(str(storage["storage"]))
+            storages_by_node[name] = sorted(set(ids))
+        break
+
+    return JsonResponse(
+        {
+            "object_type": object_type,
+            "current_node": detail.node,
+            "running": active,
+            "nodes": nodes,
+            "disks": _guest_movable_disks(detail),
+            "storages_by_node": storages_by_node,
+            "local_resources": local_resources,
+        }
+    )
 
 
 def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
