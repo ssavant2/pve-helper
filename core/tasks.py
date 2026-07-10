@@ -106,6 +106,64 @@ def poll_guest_audit_task(
     clear_live_guest_caches()
 
 
+# A guest audit event stuck at outcome="running" longer than this, with no live
+# Proxmox task backing it, is treated as dead (worker crash / deploy race).
+STALE_GUEST_TASK_SECONDS = 15 * 60
+
+
+def reap_stale_guest_tasks() -> dict[str, int]:
+    """Safety net: finalize guest audit events stuck at ``running``.
+
+    A worker that dies (or a task that fails at the framework level) before
+    finalizing leaves the event at ``running`` forever. For each stale event: if
+    it carries a Proxmox UPID that is still running, leave it; if that task has
+    stopped, resolve the outcome from it; otherwise (no resolvable task) mark it
+    failed so it stops showing as a phantom running row.
+    """
+    threshold = timezone.now() - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
+    stale = AuditEvent.objects.filter(
+        action__startswith="guest.", outcome="running", timestamp__lt=threshold
+    )
+    resolved = 0
+    reaped = 0
+    changed = False
+    for event in stale:
+        details = dict(event.details) if isinstance(event.details, dict) else {}
+        upid = details.get("proxmox_task_upid")
+        node = details.get("proxmox_task_node")
+        endpoint = details.get("proxmox_endpoint") or ""
+        status = None
+        if upid and node:
+            client = ProxmoxClient(endpoint) if endpoint else next(iter(configured_clients()), None)
+            if client is not None:
+                try:
+                    status = client.get(f"nodes/{quote(str(node), safe='')}/tasks/{quote(str(upid), safe='')}/status")
+                except ProxmoxAPIError:
+                    status = None
+        if isinstance(status, dict) and status.get("status") == "running":
+            continue  # genuinely still running — leave it
+        if isinstance(status, dict) and status.get("status") == "stopped":
+            exitstatus = status.get("exitstatus")
+            if exitstatus == "OK":
+                event.outcome = "success"
+            else:
+                event.outcome = "failed"
+                details["error"] = details.get("error") or f"Proxmox task exitstatus: {exitstatus or 'unknown'}"
+            resolved += 1
+        else:
+            event.outcome = "failed"
+            details["error"] = details.get("error") or "Task did not finish (worker unavailable); resolved by reaper."
+            reaped += 1
+        details["finished_at"] = timezone.now().isoformat()
+        details["reaped"] = True
+        event.details = details
+        event.save(update_fields=["outcome", "details"])
+        changed = True
+    if changed:
+        clear_live_guest_caches()
+    return {"resolved_from_proxmox": resolved, "reaped_dead": reaped}
+
+
 def migrate_guest_disks_task(
     audit_event_id: int,
     endpoint_url: str,

@@ -214,6 +214,48 @@ class MigrateActionTests(SimpleTestCase):
         self.assertIn("Choose what to migrate", err)
 
 
+class GuestTaskReaperTests(TestCase):
+    def _running_event(self, age_seconds: int):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        event = AuditEvent.objects.create(
+            action="guest.migrate", object_type="vm", object_id="9990", outcome="running", details={"vmid": 9990}
+        )
+        AuditEvent.objects.filter(pk=event.pk).update(timestamp=timezone.now() - timedelta(seconds=age_seconds))
+        return event
+
+    def test_reaps_stale_running_event_without_upid(self):
+        from core.tasks import STALE_GUEST_TASK_SECONDS, reap_stale_guest_tasks
+
+        event = self._running_event(STALE_GUEST_TASK_SECONDS + 60)
+        result = reap_stale_guest_tasks()
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "failed")
+        self.assertEqual(result["reaped_dead"], 1)
+        self.assertTrue((event.details or {}).get("reaped"))
+
+    def test_leaves_recent_running_event_alone(self):
+        from core.tasks import reap_stale_guest_tasks
+
+        event = self._running_event(30)
+        reap_stale_guest_tasks()
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "running")
+
+    def test_reaper_schedule_is_ensured(self):
+        from django_q.models import Schedule
+
+        from core.services.guest_task_reaper_schedule import (
+            GUEST_TASK_REAPER_SCHEDULE_NAME,
+            ensure_guest_task_reaper_schedule,
+        )
+
+        ensure_guest_task_reaper_schedule()
+        self.assertTrue(Schedule.objects.filter(name=GUEST_TASK_REAPER_SCHEDULE_NAME).exists())
+
+
 class ClassificationTests(SimpleTestCase):
     def test_extracts_disk_references_from_nested_snapshot_config(self):
         config = {

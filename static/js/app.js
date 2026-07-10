@@ -2160,6 +2160,37 @@
       return true;
     };
 
+    // On a guest detail/tab page, refresh the whole page as soon as a migration
+    // for that guest completes — its node, hardware/datastore storage refs and
+    // related-object links all change, and the poll shouldn't lag behind.
+    const maybeRefreshCurrentGuestDetail = (tasks) => {
+      const badge = document.querySelector("[data-active-guest-status-badge][data-guest-target]");
+      if (!badge) {
+        return false;
+      }
+      // Match on type:vmid (node-agnostic) — a host migration changes the node.
+      const activeBare = String(badge.dataset.guestTarget || "").split("@")[0];
+      if (!activeBare) {
+        return false;
+      }
+      const completedMigrate = tasks.find((task) => {
+        if (task.action !== "guest.migrate" || task.status_class !== "completed" || taskWasReloaded(task)) {
+          return false;
+        }
+        const target = task.target_guest || {};
+        if (`${target.type || ""}:${target.vmid || ""}` !== activeBare) {
+          return false;
+        }
+        return Number(task.finished_at_ms || 0) >= renderedAtMs - 300000;
+      });
+      if (!completedMigrate) {
+        return false;
+      }
+      rememberTaskReload(completedMigrate);
+      loadSoftNavigation(new URL(window.location.href), { push: false });
+      return true;
+    };
+
     const taskDetailsHtml = (task) => {
       if (task.pending && task.cancel_upload_id) {
         return `
@@ -2459,7 +2490,11 @@
           previousTaskStatuses = taskStatusesById;
           taskStatusesById = new Map(loadedTasks.map((task) => [task.id, task.status_class]));
         }
-        if (maybeRefreshCurrentStorageBrowser(loadedTasks) || maybeRefreshCurrentGuestInventory(loadedTasks)) {
+        if (
+          maybeRefreshCurrentStorageBrowser(loadedTasks) ||
+          maybeRefreshCurrentGuestInventory(loadedTasks) ||
+          maybeRefreshCurrentGuestDetail(loadedTasks)
+        ) {
           return;
         }
         if (maybeRefreshSnapshotState(loadedTasks)) {
