@@ -3684,6 +3684,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
     nodes: list[dict] = []
     storages_by_node: dict[str, list[str]] = {}
     bridges_by_node: dict[str, list[str]] = {}
+    sdn_vnet_names: list[str] = []
     local_resources: list[str] = []
     for client in common.configured_clients():
         try:
@@ -3700,6 +3701,9 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             }
         except ProxmoxAPIError:
             sdn_vnets = set()
+        # SDN vnets are cluster-scoped, so any of them can be assigned to a NIC on
+        # any node (the per-node realized set below still drives the warning).
+        sdn_vnet_names = sorted(sdn_vnets)
         # Proxmox migration preconditions give the real allowed/blocked target
         # set + reasons (missing storage/bridge, passthrough, ...). Defensive:
         # if the endpoint can't answer, fall back to "all online nodes allowed".
@@ -3793,6 +3797,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
             "guest_cpu": _guest_cpu_model(detail),
             "storages_by_node": storages_by_node,
             "bridges_by_node": bridges_by_node,
+            "sdn_vnets": sdn_vnet_names,
             "local_resources": local_resources,
         }
     )

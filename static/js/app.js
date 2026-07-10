@@ -3080,7 +3080,21 @@
       if (fields.migrate_kind === "storage") {
         return `${fields.migrate_disk || "disk"} → ${fields.migrate_target_storage || "-"}`;
       }
-      return `→ ${fields.migrate_target_node || "-"}${fields.migrate_target_storage ? ` / ${fields.migrate_target_storage}` : ""}`;
+      // Mirror the server-side detail exactly (incl. the remap suffix) so the
+      // optimistic row reconciles with the loaded task instead of lingering.
+      let detail = `→ ${fields.migrate_target_node || "-"}${fields.migrate_target_storage ? ` / ${fields.migrate_target_storage}` : ""}`;
+      if (fields.migrate_net_remap) {
+        try {
+          const remap = JSON.parse(fields.migrate_net_remap);
+          const parts = Object.entries(remap).map(([key, value]) => `${key}→${value}`);
+          if (parts.length) {
+            detail += ` (${parts.join(", ")})`;
+          }
+        } catch (_error) {
+          /* ignore malformed remap */
+        }
+      }
+      return detail;
     }
     if (action === "agent_enable") {
       return "enabled";
@@ -3798,6 +3812,10 @@
         netBody.innerHTML = "";
         return;
       }
+      // Selectable = bridges realized on the node + all cluster SDN vnets (which
+      // are cluster-scoped). "present" (for the warning/default) stays realized-only.
+      const vnets = Array.isArray(optionsData?.sdn_vnets) ? optionsData.sdn_vnets : [];
+      const selectable = Array.from(new Set([...available, ...vnets])).sort();
       netBody.innerHTML = relevant
         .map((nic) => {
           const present = available.includes(nic.bridge);
@@ -3805,7 +3823,7 @@
             ? `<option value="${escapeHtml(nic.bridge)}" selected>${escapeHtml(nic.bridge)} (unchanged)</option>`
             : `<option value="" selected>Keep “${escapeHtml(nic.bridge)}” — missing on ${escapeHtml(node)}</option>`;
           const options = keepOption
-            .concat(available.filter((bridge) => bridge !== nic.bridge).map((bridge) => `<option value="${escapeHtml(bridge)}">${escapeHtml(bridge)}</option>`).join(""));
+            .concat(selectable.filter((bridge) => bridge !== nic.bridge).map((bridge) => `<option value="${escapeHtml(bridge)}">${escapeHtml(bridge)}</option>`).join(""));
           const warn = present
             ? ""
             : `<span class="form-hint">⚠ bridge “${escapeHtml(nic.bridge)}” is not on ${escapeHtml(node)} — the NIC will have no network unless remapped.</span>`;
