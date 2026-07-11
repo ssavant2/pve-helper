@@ -445,7 +445,9 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
 
 def _vms_workspace_context(active_nav: str) -> dict:
     rows, live_available, scan_at = _guest_rows()
-    guest_list = _apply_workspace_lineage(rows)
+    # Only the workspace Inventory list renders the lineage tree; the overview
+    # table stays flat, so don't pay for the lineage fetch there.
+    guest_list = _apply_workspace_lineage(rows) if active_nav == "vms" else rows
     return {
         **navigation_context(active_nav),
         "guests": rows,
