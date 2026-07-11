@@ -4025,6 +4025,10 @@ code {
   line-height: 1;
   color: var(--accent, #3b82f6);
   margin-right: 4px;
+  /* Nudge the glyph right to sit centred under the parent template's icon,
+     using relative positioning so the VM icon after it does not move. */
+  position: relative;
+  left: 4px;
 }
 
 .guest-list-item:hover {
