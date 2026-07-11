@@ -10,7 +10,7 @@ from django.templatetags.static import static
 from .common import *  # noqa: F401,F403
 from . import common
 from core.models import ProxmoxEndpoint, StorageMount
-from core.services.classification import extract_disk_references
+from core.services.classification import DISK_CONFIG_KEYS, extract_disk_references
 from core.services.console_sessions import create_guest_console_session
 
 
@@ -406,6 +406,33 @@ def _mark_linked_clones(
             row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid in child_vmids
         )
     return lineage
+
+
+def _linked_clone_children(vmid: int | None) -> list[int]:
+    """VMIDs of linked clones that depend on this guest's base volume (empty if
+    none / API unreachable). Used to gate operations that would break the backing
+    chain: destroy, storage migration, disk removal/resize on a parent template."""
+    if vmid is None:
+        return []
+    lineage = common.fetch_live_guest_lineage()
+    return sorted(clone for clone, parent in lineage.items() if parent == vmid)
+
+
+def _linked_clone_disk_edit_block(detail: SimpleNamespace, delete: list[str], resizes: list) -> str | None:
+    """Message blocking a disk removal/resize on a template whose base volume still
+    backs linked clones (it would corrupt their backing chain), or None if safe."""
+    disk_deletes = [key for key in delete if DISK_CONFIG_KEYS.match(key)]
+    if not (disk_deletes or resizes):
+        return None
+    children = _linked_clone_children(detail.vmid)
+    if not children:
+        return None
+    labels = ", ".join(str(child) for child in children)
+    verb = "remove" if disk_deletes else "resize"
+    return (
+        f"Cannot {verb} this template's disk — linked clone(s) still depend on its base "
+        f"volume: {labels}. Full-clone or delete them first."
+    )
 
 
 def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespace]:
@@ -1700,6 +1727,9 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
 
     if not (updates or delete or resizes):
         return "No changes to save."
+    block = _linked_clone_disk_edit_block(detail, delete, resizes)
+    if block:
+        return block
 
     try:
         if updates or delete:
@@ -1949,6 +1979,9 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
 
     if not (updates or delete or resizes):
         return "No changes to save."
+    block = _linked_clone_disk_edit_block(detail, delete, resizes)
+    if block:
+        return block
 
     try:
         if updates or delete:
@@ -3813,6 +3846,19 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_e
     }
     if kind not in MIGRATE_KINDS:
         return "Choose what to migrate (host, storage, or both).", audit, None, None
+    # Relocating a template's disks (storage / both) would move the base volume
+    # out from under its linked clones and orphan their backing chain.
+    if kind in {"storage", "both"}:
+        children = _linked_clone_children(detail.vmid)
+        if children:
+            labels = ", ".join(str(child) for child in children)
+            return (
+                "Cannot move this template's storage — linked clone(s) still depend on its "
+                f"base volume: {labels}. Full-clone or delete them first.",
+                {**audit, "linked_children": children},
+                None,
+                None,
+            )
     if not detail.node:
         return "Could not resolve the guest's current node.", audit, None, None
 
@@ -4378,8 +4424,7 @@ def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
         return "Stop the guest before destroying it.", {"status": detail.status}, None, None
     # A template whose base volume still backs linked clones must not be destroyed:
     # Proxmox refuses it anyway, but fail early with a clear message.
-    lineage = common.fetch_live_guest_lineage()
-    children = sorted(clone for clone, parent in lineage.items() if parent == detail.vmid)
+    children = _linked_clone_children(detail.vmid)
     if children:
         labels = ", ".join(str(child) for child in children)
         return (

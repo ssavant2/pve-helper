@@ -421,6 +421,76 @@ class LinkedCloneBaseProtectionTests(TestCase):
         self.assertEqual(details["linked_children"], [102, 103])
 
 
+class LinkedCloneReferenceTests(SimpleTestCase):
+    """A linked clone's compound volid must expand to the base and overlay volids
+    so the overlay file classifies as REFERENCED, not an orphan."""
+
+    def test_expand_compound_volid(self):
+        from core.services.classification import expand_linked_clone_volid
+
+        self.assertEqual(
+            expand_linked_clone_volid("TrueNAS-FS:505/base-505-disk-0.qcow2/102/vm-102-disk-0.qcow2"),
+            ["TrueNAS-FS:505/base-505-disk-0.qcow2", "TrueNAS-FS:102/vm-102-disk-0.qcow2"],
+        )
+
+    def test_plain_volid_unchanged(self):
+        from core.services.classification import expand_linked_clone_volid
+
+        self.assertEqual(
+            expand_linked_clone_volid("TrueNAS-FS:100/vm-100-disk-0.qcow2"),
+            ["TrueNAS-FS:100/vm-100-disk-0.qcow2"],
+        )
+
+    def test_extract_references_includes_clone_overlay(self):
+        from core.services.classification import extract_disk_references
+
+        refs = extract_disk_references(
+            {"scsi0": "TrueNAS-FS:505/base-505-disk-0.qcow2/102/vm-102-disk-0.qcow2,size=40G"}
+        )
+        self.assertIn("TrueNAS-FS:102/vm-102-disk-0.qcow2", refs)
+        self.assertIn("TrueNAS-FS:505/base-505-disk-0.qcow2", refs)
+
+
+class LinkedCloneParentEditGuardTests(SimpleTestCase):
+    """Disk removal/resize on a template whose base volume still backs clones is
+    blocked; safe edits and childless templates pass."""
+
+    def _detail(self):
+        from types import SimpleNamespace
+
+        from core.models import ProxmoxInventory
+
+        return SimpleNamespace(object_type=ProxmoxInventory.ObjectType.VM, vmid=505)
+
+    def test_blocks_disk_delete_with_children(self):
+        from core.views.guests import _linked_clone_disk_edit_block
+
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505}):
+            msg = _linked_clone_disk_edit_block(self._detail(), ["scsi1"], [])
+        self.assertIsNotNone(msg)
+        self.assertIn("remove", msg)
+        self.assertIn("102", msg)
+
+    def test_blocks_resize_with_children(self):
+        from core.views.guests import _linked_clone_disk_edit_block
+
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505}):
+            msg = _linked_clone_disk_edit_block(self._detail(), [], [("scsi0", "50G")])
+        self.assertIn("resize", msg)
+
+    def test_allows_non_disk_delete(self):
+        from core.views.guests import _linked_clone_disk_edit_block
+
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505}):
+            self.assertIsNone(_linked_clone_disk_edit_block(self._detail(), ["net0"], []))
+
+    def test_allows_when_no_children(self):
+        from core.views.guests import _linked_clone_disk_edit_block
+
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={}):
+            self.assertIsNone(_linked_clone_disk_edit_block(self._detail(), ["scsi1"], []))
+
+
 class GuestTaskReaperTests(TestCase):
     def _running_event(self, age_seconds: int):
         from datetime import timedelta

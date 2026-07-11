@@ -383,28 +383,62 @@
   // Re-order the guest list to match how it is labelled: when VMIDs are shown
   // the natural key is the numeric VMID; when they are hidden it is the name.
   const sortGuestList = (showingIds) => {
+    const compare = (a, b) => {
+      if (showingIds) {
+        const av = parseInt(a.dataset.guestVmid || "", 10);
+        const bv = parseInt(b.dataset.guestVmid || "", 10);
+        if (Number.isNaN(av) && Number.isNaN(bv)) return 0;
+        if (Number.isNaN(av)) return 1;
+        if (Number.isNaN(bv)) return -1;
+        return av - bv;
+      }
+      return (a.dataset.guestName || "").localeCompare(b.dataset.guestName || "", undefined, {
+        sensitivity: "base",
+      });
+    };
     document.querySelectorAll("[data-guest-list]").forEach((list) => {
       const items = Array.from(list.querySelectorAll("[data-guest-target]"));
       if (items.length < 2) {
         return;
       }
-      items
-        .sort((a, b) => {
-          if (showingIds) {
-            const av = parseInt(a.dataset.guestVmid || "", 10);
-            const bv = parseInt(b.dataset.guestVmid || "", 10);
-            if (Number.isNaN(av) && Number.isNaN(bv)) return 0;
-            if (Number.isNaN(av)) return 1;
-            if (Number.isNaN(bv)) return -1;
-            return av - bv;
+      // Keep linked-clone subtrees intact: sort roots by the chosen key, then
+      // emit each root immediately followed by its children (recursively), so a
+      // clone always sorts under its parent template — never at its own VMID.
+      const byVmid = new Map();
+      items.forEach((item) => {
+        const vmid = parseInt(item.dataset.guestVmid || "", 10);
+        if (!Number.isNaN(vmid)) {
+          byVmid.set(vmid, item);
+        }
+      });
+      const childrenByParent = new Map();
+      const roots = [];
+      items.forEach((item) => {
+        const parent = parseInt(item.dataset.guestParentVmid || "", 10);
+        if (!Number.isNaN(parent) && byVmid.has(parent)) {
+          if (!childrenByParent.has(parent)) {
+            childrenByParent.set(parent, []);
           }
-          return (a.dataset.guestName || "").localeCompare(b.dataset.guestName || "", undefined, {
-            sensitivity: "base",
-          });
-        })
-        .forEach((item) => {
-          list.appendChild(item);
-        });
+          childrenByParent.get(parent).push(item);
+        } else {
+          roots.push(item);
+        }
+      });
+      const ordered = [];
+      const emit = (item) => {
+        ordered.push(item);
+        const vmid = parseInt(item.dataset.guestVmid || "", 10);
+        const kids = childrenByParent.get(vmid);
+        if (kids) {
+          kids.sort(compare);
+          kids.forEach(emit);
+        }
+      };
+      roots.sort(compare);
+      roots.forEach(emit);
+      ordered.forEach((item) => {
+        list.appendChild(item);
+      });
     });
   };
 

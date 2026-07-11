@@ -50,6 +50,7 @@
              {% if g.parent_vmid %}title="Linked clone of {{ g.lineage_parent_name }} ({{ g.parent_vmid }})"{% endif %}
              data-guest-target="{{ g.target_id }}"
              data-guest-vmid="{{ g.vmid }}"
+             data-guest-parent-vmid="{{ g.parent_vmid|default:'' }}"
              data-guest-type="{{ g.object_type }}"
              data-guest-template="{{ g.is_template|yesno:'true,false' }}"
              data-guest-linked-clone="{{ g.is_linked_clone|yesno:'true,false' }}"

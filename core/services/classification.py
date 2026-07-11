@@ -84,6 +84,23 @@ DISK_CONFIG_KEYS = re.compile(
 )
 
 
+# A linked clone's disk is a compound volid: the template base volume followed by
+# the clone's own overlay, e.g. ``storage:505/base-505-disk-0.qcow2/102/vm-102-disk
+# -0.qcow2``. On disk these are two separate files (the base and the overlay), so
+# the reference must expand to both or the overlay scans as an orphan.
+_LINKED_CLONE_VOLID_RE = re.compile(r"^(?P<storage>[^:]+):(?P<base>.*/base-\d+-disk-\d+\.[^/]+)/(?P<clone>.+)$")
+
+
+def expand_linked_clone_volid(volid: str) -> list[str]:
+    """Split a linked-clone compound volid into its base and overlay volids; a
+    plain volid is returned unchanged."""
+    match = _LINKED_CLONE_VOLID_RE.match(volid)
+    if not match:
+        return [volid]
+    storage = match.group("storage")
+    return [f"{storage}:{match.group('base')}", f"{storage}:{match.group('clone')}"]
+
+
 def extract_disk_references(config: dict[str, Any]) -> list[str]:
     references: list[str] = []
 
@@ -103,7 +120,7 @@ def extract_disk_references(config: dict[str, Any]) -> list[str]:
 
         volid = parse_config_value_volid(value)
         if volid:
-            references.append(volid)
+            references.extend(expand_linked_clone_volid(volid))
 
     visit(config)
     return sorted(set(references))
