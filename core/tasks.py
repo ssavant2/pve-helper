@@ -104,6 +104,34 @@ def poll_guest_audit_task(
     event.details = details
     event.save(update_fields=["outcome", "details"])
     clear_live_guest_caches()
+    if event.outcome == "success":
+        enqueue_storage_rescan(details.get("rescan_storage_ids") or [])
+
+
+def enqueue_storage_rescan(storage_ids: list[str]) -> None:
+    """Kick a storage scan scoped to each affected storage so freshly created or
+    destroyed guest disks reclassify immediately instead of lingering as orphans
+    until the next scheduled scan. Skips storages that already have a scan queued
+    or running, and dedupes."""
+    active = {ScanRun.Status.QUEUED, ScanRun.Status.RUNNING}
+    seen: set[str] = set()
+    for storage_id in storage_ids:
+        if not storage_id or storage_id in seen:
+            continue
+        seen.add(storage_id)
+        storage = StorageMount.objects.filter(storage_id=storage_id, enabled=True).first()
+        if storage is None:
+            continue
+        if ScanRun.objects.filter(target_storage=storage, status__in=active).exists():
+            continue
+        scan = ScanRun.objects.create(
+            progress_message="Auto-scan after clone/destroy",
+            target_storage=storage,
+            target_label=storage.display_name,
+        )
+        task_id = async_task("core.tasks.run_scan", scan.id)
+        scan.queued_task_id = task_id
+        scan.save(update_fields=["queued_task_id", "updated_at"])
 
 
 # A guest audit event stuck at outcome="running" longer than this, with no live

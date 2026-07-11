@@ -491,6 +491,34 @@ class LinkedCloneParentEditGuardTests(SimpleTestCase):
             self.assertIsNone(_linked_clone_disk_edit_block(self._detail(), ["scsi1"], []))
 
 
+class StorageRescanAfterCloneTests(TestCase):
+    """A successful clone/destroy enqueues a scoped scan of the affected storage
+    so new/removed disks reclassify at once instead of lingering as orphans."""
+
+    def _storage(self):
+        return StorageMount.objects.create(storage_id="TrueNAS-FS", display_name="TrueNAS-FS", path="/tmp/x", enabled=True)
+
+    def test_enqueues_scoped_scan_for_affected_storage(self):
+        from core.tasks import enqueue_storage_rescan
+
+        storage = self._storage()
+        with patch("core.tasks.async_task", return_value="task-1") as async_task:
+            enqueue_storage_rescan(["TrueNAS-FS", "TrueNAS-FS", "unknown-storage"])
+        scans = ScanRun.objects.filter(target_storage=storage)
+        self.assertEqual(scans.count(), 1)  # deduped; unknown storage skipped
+        async_task.assert_called_once_with("core.tasks.run_scan", scans.first().id)
+
+    def test_skips_when_scan_already_active(self):
+        from core.tasks import enqueue_storage_rescan
+
+        storage = self._storage()
+        ScanRun.objects.create(target_storage=storage, status=ScanRun.Status.RUNNING)
+        with patch("core.tasks.async_task") as async_task:
+            enqueue_storage_rescan(["TrueNAS-FS"])
+        async_task.assert_not_called()
+        self.assertEqual(ScanRun.objects.filter(target_storage=storage, status=ScanRun.Status.QUEUED).count(), 0)
+
+
 class GuestTaskReaperTests(TestCase):
     def _running_event(self, age_seconds: int):
         from datetime import timedelta

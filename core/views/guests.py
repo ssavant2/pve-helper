@@ -394,17 +394,29 @@ def _mark_linked_clones(
     rows: list[SimpleNamespace], lineage: dict[int, int] | None = None
 ) -> dict[int, int]:
     """Flag VM rows that are linked clones (disk backed by a template's base
-    volume). Independent of whether the parent row is present in ``rows`` — used
-    to gate the 'Convert to Template' action everywhere (a linked clone must not
-    become a template, or it would seed a deeper, fragile lineage chain). Returns
-    the lineage map so callers can reuse it without a second fetch."""
+    volume) and record their parent template (vmid + name when the parent row is
+    present). Independent of tree ordering, so the overview can show a flat
+    'linked clone of X' marker and gate 'Convert to Template' everywhere (a linked
+    clone must not become a template — it would seed a deeper, fragile chain).
+    Returns the lineage map so callers can reuse it without a second fetch."""
     if lineage is None:
         lineage = common.fetch_live_guest_lineage()  # {child VMID: parent VMID}
-    child_vmids = set(lineage)
+    vm_rows = {
+        row.vmid: row
+        for row in rows
+        if row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid is not None
+    }
     for row in rows:
-        row.is_linked_clone = (
-            row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid in child_vmids
-        )
+        parent = lineage.get(row.vmid) if row.object_type == ProxmoxInventory.ObjectType.VM else None
+        if parent is not None and parent != row.vmid:
+            row.is_linked_clone = True
+            row.parent_vmid = parent
+            parent_row = vm_rows.get(parent)
+            row.lineage_parent_name = (parent_row.name if parent_row and parent_row.name else str(parent))
+        else:
+            row.is_linked_clone = False
+            row.parent_vmid = None
+            row.lineage_parent_name = ""
     return lineage
 
 
@@ -442,11 +454,9 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
     ``parent_vmid`` / ``lineage_parent_name`` / ``depth`` (capped at 2) /
     ``deeper_chain`` set for the template to render."""
     for row in rows:
-        row.parent_vmid = None
-        row.lineage_parent_name = ""
         row.depth = 0
         row.deeper_chain = False
-    lineage = _mark_linked_clones(rows)  # {child VMID: parent VMID}
+    lineage = _mark_linked_clones(rows)  # sets is_linked_clone / parent_vmid / name
     if not lineage:
         return rows
     vm_rows = {
@@ -456,13 +466,9 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
     }
     children: dict[int, list[SimpleNamespace]] = {}
     for row in rows:
-        if row.object_type != ProxmoxInventory.ObjectType.VM or row.vmid is None:
-            continue
-        parent = lineage.get(row.vmid)
-        if parent is not None and parent != row.vmid and parent in vm_rows:
-            row.parent_vmid = parent
-            row.lineage_parent_name = vm_rows[parent].name or str(parent)
-            children.setdefault(parent, []).append(row)
+        # Only nest under a parent that is actually present in this view.
+        if row.parent_vmid is not None and row.parent_vmid in vm_rows:
+            children.setdefault(row.parent_vmid, []).append(row)
     if not children:
         return rows
 
@@ -3713,12 +3719,18 @@ def _clone_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[st
         data["storage"] = storage
 
     response, err, client = _guest_post_with_client(detail, "clone", data)
+    # The clone's disks land on the source's storage (linked / same-storage full)
+    # or the chosen target storage; rescan those so the new disks reclassify at once.
+    rescan_storages = list(_config_storage_ids(detail.config))
+    if storage and full and storage not in rescan_storages:
+        rescan_storages.append(storage)
     audit_details = {
         "source_vmid": detail.vmid,
         "new_vmid": int(newid),
         "new_name": clone_name,
         "full": full,
         "storage": storage,
+        "rescan_storage_ids": rescan_storages,
     }
     return err or "", audit_details, response, client
 
@@ -4444,7 +4456,17 @@ def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
         params["destroy-unreferenced-disks"] = "1" if destroy_unreferenced_disks else "0"
     query = urlencode(params)
     response, err, client = _guest_destroy_with_client(detail, query)
-    return err or "", {"purge": purge, "destroy_unreferenced_disks": destroy_unreferenced_disks}, response, client
+    return (
+        err or "",
+        {
+            "purge": purge,
+            "destroy_unreferenced_disks": destroy_unreferenced_disks,
+            # Rescan the freed storage so the removed disks drop out of inventory.
+            "rescan_storage_ids": list(_config_storage_ids(detail.config)),
+        },
+        response,
+        client,
+    )
 
 
 def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict]:

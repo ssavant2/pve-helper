@@ -146,6 +146,7 @@
                     {% guest_label g.guest_identity %}
                     <span class="guest-lock-badge" data-guest-lock-badge title="{% if g.lock %}Locked: {{ g.lock }}{% endif %}"{% if not g.lock %} hidden{% endif %}><i data-lucide="lock" aria-hidden="true"></i></span>
                   </a>
+                  {% if g.is_linked_clone %}<span class="guest-clone-note" title="Linked clone of {{ g.lineage_parent_name }} ({{ g.parent_vmid }})">↳ clone of {{ g.lineage_parent_name }}</span>{% endif %}
                 </td>
                 <td data-column="state" data-guest-state-cell data-sort-value="{{ g.state_label }}">{{ g.state_label }}</td>
                 <td data-column="provisioned" data-sort-value="{{ g.provisioned_bytes }}">{{ g.provisioned_label }}</td>

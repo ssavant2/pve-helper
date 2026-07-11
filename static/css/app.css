@@ -4016,6 +4016,14 @@ code {
   font-weight: 700;
 }
 
+/* Flat 'linked clone of X' marker in the overview name cell (no reordering). */
+.guest-clone-note {
+  color: var(--muted);
+  font-size: 0.82em;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
 .guest-list-item:hover {
   background: var(--surface_alt, rgba(127, 127, 127, 0.10));
 }
