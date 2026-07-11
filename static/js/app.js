@@ -3402,11 +3402,26 @@
       }
       let storageOptions = {};
       try {
-        storageOptions = JSON.parse(page.dataset.storageOptions || "{}");
+        const storageData = document.getElementById(page.dataset.storageOptionsId || "");
+        storageOptions = JSON.parse(storageData?.textContent || "{}");
       } catch (_error) {
         storageOptions = {};
       }
       const selectedArchiveType = () => archiveSelect.selectedOptions[0]?.dataset.archiveType || "vm";
+      const syncTargetNodes = () => {
+        const endpoint = archiveSelect.selectedOptions[0]?.dataset.endpoint || "";
+        const current = nodeSelect.selectedOptions[0];
+        Array.from(nodeSelect.options).forEach((option) => {
+          option.hidden = option.dataset.endpoint !== endpoint;
+          option.disabled = option.dataset.endpoint !== endpoint;
+        });
+        if (!current || current.disabled) {
+          const firstAvailable = Array.from(nodeSelect.options).find((option) => !option.disabled);
+          if (firstAvailable) {
+            firstAvailable.selected = true;
+          }
+        }
+      };
       const refreshStorages = () => {
         const node = nodeSelect.value || "";
         const options = storageOptions[node]?.[selectedArchiveType()] || [];
@@ -3441,9 +3456,13 @@
           }
         }
       };
-      archiveSelect.addEventListener("change", refreshStorages);
+      archiveSelect.addEventListener("change", () => {
+        syncTargetNodes();
+        refreshStorages();
+      });
       nodeSelect.addEventListener("change", refreshStorages);
       overwrite?.addEventListener("change", syncOverwrite);
+      syncTargetNodes();
       refreshStorages();
       syncOverwrite();
     });
@@ -3704,7 +3723,7 @@
         <label class="form-field"><span>Storage</span><select name="storage" disabled><option value="">Loading backup storage…</option></select></label>
         <label class="form-field"><span>Mode</span><select name="mode"><option value="snapshot">Snapshot - no downtime</option><option value="suspend">Suspend - brief pause</option><option value="stop">Stop - offline backup</option></select></label>
         <label class="form-field"><span>Compression</span><select name="compress"><option value="zstd">ZSTD - fast and good</option><option value="gzip">GZIP - best compatibility</option><option value="lzo">LZO - low CPU use</option><option value="0">None</option></select></label>
-        <label class="form-field"><span>Notifications</span><select name="notification_mode"><option value="auto">Use global settings</option><option value="always">Always notify</option><option value="never">Never notify</option></select></label>
+        <label class="form-field"><span>Notifications</span><select name="notification_mode"><option value="auto">Use global settings</option><option value="notification-system">Proxmox notification system</option><option value="legacy-sendmail">Legacy sendmail</option></select></label>
         <label class="form-field"><span>Notes</span><input name="notes_template" value="{{guestname}}"></label>
         <label class="form-field-inline"><input type="checkbox" name="protected"><span>Protect archive from automatic pruning</span></label>
       `,

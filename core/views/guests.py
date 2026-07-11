@@ -2586,6 +2586,7 @@ def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[di
                         "ctime": datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc) if entry.get("ctime") else None,
                         "notes": entry.get("notes", ""),
                         "storage": storage["id"],
+                        "source_endpoint": str(getattr(client, "endpoint", "")),
                         "source_type": detail.object_type,
                         "source_vmid": detail.vmid,
                         "source_node": detail.node,
@@ -2596,10 +2597,35 @@ def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[di
     return [], [], error or "No Proxmox endpoint could read this guest's backup storage."
 
 
+def _guest_backup_storages(detail: SimpleNamespace) -> tuple[list[dict], str]:
+    """Return backup-capable storage without enumerating every archive."""
+    if not detail.node:
+        return [], "The guest's node could not be resolved."
+    error = ""
+    for client in common.configured_clients():
+        try:
+            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
+        except ProxmoxAPIError as exc:
+            error = str(exc)
+            continue
+        return (
+            [
+                {"id": str(storage.get("storage") or ""), "label": str(storage.get("storage") or "")}
+                for storage in (storages if isinstance(storages, list) else [])
+                if storage.get("storage")
+                and _storage_supports_content(storage, "backup")
+                and storage.get("active", 1)
+            ],
+            "",
+        )
+    return [], error or "No Proxmox endpoint could read this guest's backup storage."
+
+
 @app_login_required
 def guest_backup_options(request, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid)
-    _archives, storages, error = _guest_backup_archives(detail)
+    storages, error = _guest_backup_storages(detail)
     return JsonResponse(
         {
             "storages": storages,
@@ -2982,8 +3008,9 @@ def _submit_guest_backup(request, detail: SimpleNamespace):
         "protected": 1 if request.POST.get("protected") in {"1", "on", "true"} else 0,
     }
     notification_mode = request.POST.get("notification_mode", "auto").strip()
-    if notification_mode in {"auto", "always", "never"}:
-        body["notification-mode"] = notification_mode
+    if notification_mode not in {"auto", "legacy-sendmail", "notification-system"}:
+        return None, "Choose a valid notification mode.", None, {"storage": storage}
+    body["notification-mode"] = notification_mode
     notes_template = request.POST.get("notes_template", "").strip()
     if notes_template:
         body["notes-template"] = notes_template
@@ -4691,7 +4718,7 @@ def _backup_archive_type(volid: str) -> str:
     return ""
 
 
-def _restore_options() -> tuple[list[dict], list[str], dict[str, dict[str, list[str]]], str]:
+def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list[str]]], str]:
     """Discover restoreable archives and compatible target storages live.
 
     Archive visibility is deliberately evaluated per node. A local backup on
@@ -4699,11 +4726,13 @@ def _restore_options() -> tuple[list[dict], list[str], dict[str, dict[str, list[
     IDs happen to share a name.
     """
     archives: list[dict] = []
-    nodes: list[str] = []
+    nodes: list[dict] = []
     storage_options: dict[str, dict[str, list[str]]] = {}
     nextid = ""
-    seen_archives: set[tuple[str, str, str]] = set()
+    seen_nodes: set[str] = set()
+    seen_archives: set[tuple[str, str, str, str]] = set()
     for client in common.configured_clients():
+        endpoint = str(getattr(client, "endpoint", ""))
         try:
             client_nodes = client.node_names(fallback="")
             if not nextid:
@@ -4711,13 +4740,15 @@ def _restore_options() -> tuple[list[dict], list[str], dict[str, dict[str, list[
         except ProxmoxAPIError:
             continue
         for node in client_nodes:
-            if node not in nodes:
-                nodes.append(node)
+            node_key = f"{endpoint}|{node}"
+            if node_key not in seen_nodes:
+                seen_nodes.add(node_key)
+                nodes.append({"key": node_key, "label": node, "node": node, "endpoint": endpoint})
             try:
                 storages = client.get(f"nodes/{quote(node, safe='')}/storage")
             except ProxmoxAPIError:
                 continue
-            node_types = storage_options.setdefault(node, {"vm": [], "ct": []})
+            node_types = storage_options.setdefault(node_key, {"vm": [], "ct": []})
             for storage in storages if isinstance(storages, list) else []:
                 storage_id = str(storage.get("storage") or "")
                 if not storage_id or not storage.get("active", 1):
@@ -4737,15 +4768,16 @@ def _restore_options() -> tuple[list[dict], list[str], dict[str, dict[str, list[
                 for entry in entries if isinstance(entries, list) else []:
                     volid = str(entry.get("volid") or "")
                     object_type = _backup_archive_type(volid)
-                    key = (node, storage_id, volid)
+                    key = (endpoint, node, storage_id, volid)
                     if not object_type or key in seen_archives:
                         continue
                     seen_archives.add(key)
                     ctime = datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc) if entry.get("ctime") else None
-                    archive_key = "|".join((str(getattr(client, "endpoint", "")), node, storage_id, volid))
+                    archive_key = "|".join((endpoint, node, storage_id, volid))
                     archives.append(
                         {
                             "key": archive_key,
+                            "endpoint": endpoint,
                             "node": node,
                             "storage": storage_id,
                             "volid": volid,
@@ -4757,7 +4789,12 @@ def _restore_options() -> tuple[list[dict], list[str], dict[str, dict[str, list[
                         }
                     )
     archives.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
-    return archives, sorted(nodes), storage_options, nextid
+    duplicate_names = {item["node"] for item in nodes if sum(other["node"] == item["node"] for other in nodes) > 1}
+    for item in nodes:
+        if item["node"] in duplicate_names:
+            item["label"] = f"{item['node']} · {item['endpoint']}"
+    nodes.sort(key=lambda item: (item["node"].casefold(), item["endpoint"]))
+    return archives, nodes, storage_options, nextid
 
 
 def _restore_archive_from_key(key: str, archives: list[dict]) -> dict | None:
@@ -4769,14 +4806,12 @@ def _restore_archive_from_key(key: str, archives: list[dict]) -> dict | None:
     parts = key.split("|", 2)
     if len(parts) == 3:
         node, storage, volid = parts
-        return next(
-            (
-                archive
-                for archive in archives
-                if archive["node"] == node and archive["storage"] == storage and archive["volid"] == volid
-            ),
-            None,
-        )
+        matches = [
+            archive
+            for archive in archives
+            if archive["node"] == node and archive["storage"] == storage and archive["volid"] == volid
+        ]
+        return matches[0] if len(matches) == 1 else None
     return None
 
 
@@ -4811,16 +4846,17 @@ def guest_backup_restore(request):
         if error:
             messages.error(request, error)
         else:
-            messages.success(request, "Restore queued. Follow progress in Recent Tasks.")
             return redirect("core:vms")
     context = {
         **navigation_context("vms"),
         "archives": archives,
         "nodes": nodes,
-        "storage_options_json": json.dumps(storage_options),
+        "storage_options": storage_options,
         "nextid": nextid,
         "selected_archive_key": selected_archive_key,
-        "form_values": request.POST if request.method == "POST" else {"node": nodes[0] if nodes else "", "vmid": nextid},
+        "form_values": request.POST
+        if request.method == "POST"
+        else {"node": nodes[0]["key"] if nodes else "", "vmid": nextid},
     }
     return render(request, "core/guest_backup_restore.html", context)
 
@@ -4829,13 +4865,14 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
     archive = _restore_archive_from_key(request.POST.get("archive_key", ""), archives)
     if archive is None:
         return "Select a backup archive that is still available."
-    target_node = request.POST.get("node", "").strip()
+    target_node_key = request.POST.get("node", "").strip()
     target_storage = request.POST.get("storage", "").strip()
     vmid_text = request.POST.get("vmid", "").strip()
     overwrite = request.POST.get("overwrite") in {"1", "on", "true"}
     start_after = request.POST.get("start_after") in {"1", "on", "true"}
-    if not target_node or not target_storage:
+    if "|" not in target_node_key or not target_storage:
         return "Choose a target node and target storage."
+    target_endpoint, target_node = target_node_key.rsplit("|", 1)
     if not vmid_text.isdigit() or int(vmid_text) <= 0:
         return "VMID must be a positive whole number."
     vmid = int(vmid_text)
@@ -4845,6 +4882,8 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
     client = _restore_client(str(archive.get("key", "")).split("|", 1)[0])
     if client is None:
         return "The Proxmox endpoint that exposes this archive is unavailable."
+    if target_endpoint != str(getattr(client, "endpoint", "")):
+        return "The target node must belong to the Proxmox endpoint that exposes the backup archive."
     try:
         target_storages = client.get(f"nodes/{quote(target_node, safe='')}/storage")
         target_match = next(
@@ -4862,7 +4901,7 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
     except ProxmoxAPIError as exc:
         return f"Restore preflight failed: {exc}"
 
-    live_guests = [guest for guest in common.fetch_live_guest_inventory() if guest.vmid == vmid]
+    live_guests = [guest for guest in common.fetch_live_guest_inventory(use_cache=False) if guest.vmid == vmid]
     existing = next((guest for guest in live_guests if guest.object_type == archive["object_type"] and guest.node == target_node), None)
     if live_guests and not overwrite:
         return f"VMID {vmid} is already in use. Enable overwrite only when replacing the existing {archive['type_label']}."
@@ -4879,6 +4918,10 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
             return f"The existing guest is locked ({lock})."
         if (existing_config or {}).get("protection") in {1, "1", True}:
             return "The existing guest is protected. Disable protection before overwriting it."
+
+    existing_status = str((existing_current or {}).get("status") or "").lower() if existing else ""
+    if existing and not existing_status:
+        return "Could not confirm the existing guest's current power state. Restore was not queued."
 
     target_name = getattr(existing, "name", "") or f"Restored {archive['type_label']} {vmid}"
     detail = SimpleNamespace(
@@ -4905,7 +4948,7 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
         archive["volid"],
         target_storage,
         overwrite,
-        bool(existing and getattr(existing, "status", "") == "running"),
+        bool(existing and existing_status != "stopped"),
         start_after,
         settings.BACKUP_TASK_TIMEOUT_SECONDS,
     )

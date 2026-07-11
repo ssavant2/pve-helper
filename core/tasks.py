@@ -297,12 +297,34 @@ def restore_guest_backup_task(
         return None
 
     error: str | None = None
-    if overwrite and shutdown_first:
-        error = run_step("shutdown existing guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/shutdown", {})
-        if error == "cancelled":
-            return
-        if error:
-            error = f"Could not shut down the existing guest cleanly: {error}. Restore was not started."
+    if overwrite:
+        try:
+            current = client.guest_current(node=node, object_type=object_type, vmid=vmid)
+            current_status = str((current or {}).get("status") or "").lower()
+        except ProxmoxAPIError as exc:
+            current_status = ""
+            error = f"Could not confirm the existing guest's power state: {exc}. Restore was not started."
+        if error is None and not current_status:
+            error = "Could not confirm the existing guest's power state. Restore was not started."
+        if error is None and current_status != "stopped":
+            error = run_step("shutdown existing guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/shutdown", {})
+            if error == "cancelled":
+                return
+            if error:
+                error = f"Could not shut down the existing guest cleanly: {error}. Restore was not started."
+            else:
+                try:
+                    stopped_status = str(
+                        (client.guest_current(node=node, object_type=object_type, vmid=vmid) or {}).get("status") or ""
+                    ).lower()
+                except ProxmoxAPIError as exc:
+                    stopped_status = ""
+                    error = f"Could not verify shutdown completion: {exc}. Restore was not started."
+                if error is None and stopped_status != "stopped":
+                    error = (
+                        f"The existing guest still reports power state '{stopped_status or 'unknown'}' after shutdown. "
+                        "Restore was not started."
+                    )
 
     if error is None:
         restore_data: dict[str, object] = {"vmid": vmid, "storage": storage}

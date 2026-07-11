@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 
 {% block content %}
-  <section class="guest-create-page" data-backup-restore data-storage-options='{{ storage_options_json|escapejs }}'>
+  {{ storage_options|json_script:"restore-storage-options" }}
+  <section class="guest-create-page" data-backup-restore data-storage-options-id="restore-storage-options">
     <div class="page-heading"><h1>Restore Backup</h1><p>Restore a Proxmox backup archive to a new guest, or deliberately replace an existing guest.</p></div>
     <div class="panel panel-spaced">
       {% if not archives %}
@@ -9,8 +10,8 @@
       {% else %}
         <form method="post" class="guest-create-form" data-backup-restore-form>
           {% csrf_token %}
-          <label class="form-field form-field-wide"><span>Backup archive</span><select name="archive_key" required data-restore-archive>{% for archive in archives %}<option value="{{ archive.key }}" data-archive-type="{{ archive.object_type }}" {% if archive.key == selected_archive_key %}selected{% endif %}>{{ archive.type_label }} · {{ archive.volid }} · {{ archive.node }} / {{ archive.storage }}{% if archive.ctime %} · {{ archive.ctime|date:"Y-m-d H:i" }}{% endif %}</option>{% endfor %}</select></label>
-          <label class="form-field"><span>Target node</span><select name="node" required data-restore-node>{% for node in nodes %}<option value="{{ node }}" {% if form_values.node == node %}selected{% endif %}>{{ node }}</option>{% endfor %}</select></label>
+          <label class="form-field form-field-wide"><span>Backup archive</span><select name="archive_key" required data-restore-archive>{% for archive in archives %}<option value="{{ archive.key }}" data-archive-type="{{ archive.object_type }}" data-endpoint="{{ archive.endpoint }}" {% if archive.key == selected_archive_key %}selected{% endif %}>{{ archive.type_label }} · {{ archive.volid }} · {{ archive.node }} / {{ archive.storage }}{% if archive.ctime %} · {{ archive.ctime|date:"Y-m-d H:i" }}{% endif %}</option>{% endfor %}</select></label>
+          <label class="form-field"><span>Target node</span><select name="node" required data-restore-node>{% for node in nodes %}<option value="{{ node.key }}" data-endpoint="{{ node.endpoint }}" {% if form_values.node == node.key %}selected{% endif %}>{{ node.label }}</option>{% endfor %}</select></label>
           <label class="form-field"><span>VMID</span><input name="vmid" type="number" min="1" step="1" required value="{{ form_values.vmid|default:nextid }}"></label>
           <label class="form-field"><span>Target storage</span><select name="storage" required data-restore-storage></select></label>
           <label class="form-field-inline form-field-wide"><input type="checkbox" name="start_after"><span>Start the restored guest after a successful restore</span></label>
