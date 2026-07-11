@@ -20,6 +20,7 @@ from django_q.tasks import async_task
 
 from core.models import StorageMount
 from core.services.guest_create import create_options
+from core.services.ovf_import import OvfImportError, parse_ovf_package
 from core.services.proxmox import clear_live_guest_caches
 from core.services import vm_register as reg
 
@@ -100,7 +101,7 @@ def register_vm(request):
 
     src = request.POST if request.method == "POST" else request.GET
     mode = src.get("mode", "")
-    if mode not in ("adopt", "import"):
+    if mode not in ("adopt", "import", "ovf"):
         messages.error(request, "Unknown register mode.")
         return redirect("core:vms")
 
@@ -109,6 +110,7 @@ def register_vm(request):
         messages.error(request, "Could not load creation options from Proxmox.")
         return redirect("core:vms")
 
+    default_bridge = (options.get("bridges") or [""])[0]
     if request.method == "POST":
         error = _register_submit(request, mode, options)
         if error is None:
@@ -126,7 +128,7 @@ def register_vm(request):
             "name": f"adopted-{vmid}" if vmid else "",
             "node": options.get("node", ""),
         }
-    else:
+    elif mode == "import":
         path = request.GET.get("path", "")
         volid = request.GET.get("volid", "")
         form_values = {
@@ -140,10 +142,43 @@ def register_vm(request):
             "node": options.get("node", ""),
             "target_storage": (options.get("disk_storages") or [""])[0],
         }
+    else:
+        storage_id = request.GET.get("storage", "").strip()
+        source_path = request.GET.get("path", "").strip()
+        storage = StorageMount.objects.filter(storage_id=storage_id, enabled=True).first()
+        if storage is None:
+            messages.error(request, "Unknown OVA/OVF source storage.")
+            return redirect("core:vms")
+        try:
+            package = parse_ovf_package(storage, source_path)
+        except OvfImportError as exc:
+            messages.error(request, f"Could not read OVA/OVF package: {exc}")
+            return redirect("core:vms")
+        form_values = {
+            **_defaults(),
+            "mode": "ovf",
+            "source_storage": storage_id,
+            "source_path": source_path,
+            "vmid": options.get("nextid", ""),
+            "name": package.name,
+            "node": options.get("node", ""),
+            "target_storage": (options.get("disk_storages") or [""])[0],
+            "cores": str(package.cores or 2),
+            "memory": str(package.memory_mib or 2048),
+            "ostype": package.ostype,
+            "package_kind": package.kind.upper(),
+            "package_disk_count": len(package.disks),
+            "package_disks": package.disks,
+            "package_manifest_present": package.manifest_present,
+        }
 
-    default_bridge = (options.get("bridges") or [""])[0]
     if request.method == "POST":
         nic_rows = _parse_nics(request.POST)
+    elif mode == "ovf":
+        nic_rows = [
+            {"model": nic.model, "bridge": default_bridge, "vlan": "", "network_name": nic.network_name}
+            for nic in package.nics
+        ]
     else:
         nic_rows = []
     if not nic_rows:
@@ -222,6 +257,44 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
     if not params["target_storage"]:
         return "Select a target storage for the imported disk."
     params["format"] = post.get("format", "qcow2").strip() or "qcow2"
+
+    if mode == "ovf":
+        storage = StorageMount.objects.filter(storage_id=storage_id, enabled=True).first()
+        if storage is None:
+            return "Unknown OVA/OVF source storage."
+        try:
+            package = parse_ovf_package(storage, source_path)
+        except OvfImportError as exc:
+            return f"Could not read OVA/OVF package: {exc}"
+        event = record_audit_event(
+            request,
+            action="guest.register.import",
+            object_type="guest",
+            object_id=f"vm:{params['vmid']}",
+            outcome="running",
+            details={
+                "target_type": "vm",
+                "vmid": params["vmid"],
+                "name": params["name"],
+                "node": node,
+                "source": f"{storage_id}:{source_path}",
+                "source_kind": package.kind,
+                "disk_count": len(package.disks),
+                "target_storage": params["target_storage"],
+                "stage": "queued",
+            },
+        )
+        task_id = async_task(
+            "core.ovf_import_tasks.import_ovf_package_task",
+            event.id,
+            node,
+            params,
+            storage_id,
+            source_path,
+        )
+        event.details = {**event.details, "poll_task_id": task_id}
+        event.save(update_fields=["details"])
+        return None
 
     event = record_audit_event(
         request,

@@ -72,6 +72,11 @@
               <i data-lucide="package-plus" aria-hidden="true"></i>
             </a>
           {% endif %}
+          {% if entry.name|is_ovf_package %}
+            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=ovf&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import OVA/OVF package as a new VM" aria-label="Import {{ entry.name }} as a new VM">
+              <i data-lucide="package-plus" aria-hidden="true"></i>
+            </a>
+          {% endif %}
         </span>
       {% endif %}
     </td>

@@ -19,6 +19,7 @@ class DerivedVolume:
 def categorize_proxmox_path(relative_path: str) -> str:
     path = PurePosixPath(relative_path)
     parts = path.parts
+    suffix = path.suffix.lower()
     if not parts:
         return "unknown"
     if parts[0].startswith(".pve-helper"):
@@ -33,11 +34,17 @@ def categorize_proxmox_path(relative_path: str) -> str:
         return "base_image"
     if len(parts) >= 3 and parts[0] == "images" and parts[2].startswith("vm-"):
         return "vm_disk"
+    if suffix in {".ova", ".ovf"}:
+        return "import_package"
+    if suffix == ".mf":
+        return "import_manifest"
     if parts[:1] == ("dump",):
         return "backup"
     if parts == ("template",):
         return "template_directory"
     if parts[:2] == ("template", "iso"):
+        if suffix in DISK_IMAGE_EXTENSIONS - {".img"}:
+            return "import_disk"
         return "iso"
     if parts[:2] == ("template", "cache"):
         return "ct_template"
@@ -49,6 +56,8 @@ def categorize_proxmox_path(relative_path: str) -> str:
         return "import_directory"
     if parts[:1] == ("import",):
         return "import_content"
+    if suffix in DISK_IMAGE_EXTENSIONS:
+        return "import_disk"
     return "unknown"
 
 
@@ -265,6 +274,19 @@ def classify_entry(
             evidence=evidence,
         )
 
+    if content_category in {"import_package", "import_manifest", "import_disk"}:
+        labels = {
+            "import_package": "OVA/OVF package",
+            "import_manifest": "OVF manifest",
+            "import_disk": "importable disk image",
+        }
+        return ClassificationResult(
+            classification=FileInventory.Classification.IMPORT_SOURCE,
+            reason=f"Recognized {labels[content_category]} available for VM import.",
+            matched_object={},
+            evidence=evidence,
+        )
+
     KNOWN_CONTENT_CATEGORIES = {
         "backup", "iso", "ct_template", "ct_private", "snippet", "import_content",
     }
@@ -294,16 +316,11 @@ def classify_entry(
         )
 
     # A recognised disk image that is not a proper vm-<id>-disk volume is not an
-    # orphan — it's a real disk image sitting in the wrong place.
+    # orphan. It is a supported source for the Register/Import workflow.
     if PurePosixPath(relative_path).suffix.lower() in DISK_IMAGE_EXTENSIONS:
         return ClassificationResult(
-            classification=FileInventory.Classification.UNKNOWN,
-            reason=(
-                "Disk image that is not a referenced Proxmox volume — it is probably in the "
-                "wrong folder. A VM disk belongs in images/<vmid>/vm-<vmid>-disk-N.<format>; "
-                "to bring in a loose image, put it in the storage's import/ directory or use "
-                "Import as VM."
-            ),
+            classification=FileInventory.Classification.IMPORT_SOURCE,
+            reason="Recognized importable disk image available for VM import.",
             matched_object={},
             evidence=evidence,
         )

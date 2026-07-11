@@ -2245,7 +2245,11 @@
       }
 
       const completedInventoryTask = tasks.find((task) => {
-        if (!["guest.destroy", "guest.clone.create", "guest.template.clone"].includes(task.action)) {
+        if (
+          !["guest.destroy", "guest.clone.create", "guest.template.clone", "guest.register.import"].includes(
+            task.action
+          )
+        ) {
           return false;
         }
         if (task.status_class !== "completed") {

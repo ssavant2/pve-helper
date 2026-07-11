@@ -114,6 +114,10 @@
               <td><span class="badge proxmox_content">Proxmox content</span></td>
               <td>{{ classification_counts.proxmox_content|default:0 }}</td>
             </tr>
+            <tr>
+              <td><span class="badge import_source">Import source</span></td>
+              <td>{{ classification_counts.import_source|default:0 }}</td>
+            </tr>
             <tr class="total-row">
               <td><strong>Total Files</strong></td>
               <td><strong>{{ total_file_count }}</strong></td>

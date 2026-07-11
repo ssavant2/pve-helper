@@ -297,6 +297,8 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         if details.get("destroy_unreferenced_disks"):
             flags.append("destroy unreferenced disks")
         extra = ", ".join(flags)
+    if not extra and event.outcome == "running" and details.get("stage"):
+        extra = str(details["stage"])
     for key in ("snapshot", "archive", "storage", "volid", "job_id", "target"):
         if not extra and details.get(key):
             extra = str(details[key])

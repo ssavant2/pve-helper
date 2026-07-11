@@ -223,6 +223,7 @@ class FileInventory(TimestampedModel):
         TRASH = "trash", "Trash"
         INFRASTRUCTURE = "infrastructure", "Infrastructure"
         PROXMOX_CONTENT = "proxmox_content", "Proxmox content"
+        IMPORT_SOURCE = "import_source", "Import source"
 
     scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="files")
     storage = models.ForeignKey(StorageMount, on_delete=models.CASCADE, related_name="files")

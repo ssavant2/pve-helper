@@ -2631,7 +2631,8 @@ code {
 }
 
 .badge.infrastructure,
-.badge.proxmox_content {
+.badge.proxmox_content,
+.badge.import_source {
   background: transparent;
   color: var(--muted);
   border: 1px solid var(--line);

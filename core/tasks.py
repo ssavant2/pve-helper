@@ -20,7 +20,7 @@ from .models import (
     StorageSpaceSnapshot,
     TrashItem,
 )
-from .services.classification import classify_entry
+from .services.classification import classify_entry, extract_disk_references
 from .services.config import sync_runtime_configuration
 from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
@@ -438,12 +438,25 @@ def register_import_vm_task(
         # Refresh the target storage's inventory so the freshly created
         # images/<vmid>/ folder and disk show up in the browser immediately.
         _refresh_import_target_inventory(
-            str(params.get("target_storage", "")), str(params.get("vmid", ""))
+            str(params.get("target_storage", "")),
+            str(params.get("vmid", "")),
+            node=node,
         )
     clear_live_guest_caches()
 
 
-def _refresh_import_target_inventory(target_storage_id: str, vmid: str) -> None:
+def _refresh_import_target_inventory(
+    target_storage_id: str,
+    vmid: str,
+    *,
+    node: str = "",
+) -> None:
+    """Refresh an imported VM's disk rows using its current PVE config.
+
+    A filesystem-only partial refresh against an older ScanRun otherwise sees the
+    new disk before that run's stored Proxmox inventory knows about the VM. That
+    briefly and incorrectly classifies the freshly imported disk as an orphan.
+    """
     storage = StorageMount.objects.filter(storage_id=target_storage_id, enabled=True).first()
     if storage is None:
         return
@@ -460,6 +473,48 @@ def _refresh_import_target_inventory(target_storage_id: str, vmid: str) -> None:
     )
     if scan is None:
         return
+
+    try:
+        numeric_vmid = int(vmid)
+    except (TypeError, ValueError):
+        numeric_vmid = None
+
+    if node and numeric_vmid is not None:
+        for client in configured_clients():
+            try:
+                config = client.guest_config(
+                    node=node,
+                    object_type=ProxmoxInventory.ObjectType.VM,
+                    vmid=numeric_vmid,
+                )
+                current = client.guest_current(
+                    node=node,
+                    object_type=ProxmoxInventory.ObjectType.VM,
+                    vmid=numeric_vmid,
+                )
+            except Exception:  # noqa: BLE001 - retain the existing best-effort refresh
+                continue
+
+            ProxmoxInventory.objects.filter(
+                scan_run=scan,
+                node=node,
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=numeric_vmid,
+            ).delete()
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node=node,
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=numeric_vmid,
+                name=str(config.get("name") or ""),
+                status=str(current.get("status") or ""),
+                config=config,
+                disk_references=extract_disk_references(config),
+            )
+            scan.proxmox_inventory_at = timezone.now()
+            scan.save(update_fields=["proxmox_inventory_at", "updated_at"])
+            break
+
     directories = ["images"] + ([f"images/{vmid}"] if vmid else [])
     for directory_path in directories:
         try:

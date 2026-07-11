@@ -4,7 +4,7 @@
   <section class="hardware-editor-page vm-register-page" data-vm-register>
     <div class="hardware-editor-header">
       <div class="hardware-editor-title">
-        <h1>{% if mode == "adopt" %}Register VM from Disk{% else %}Import Disk as New VM{% endif %}</h1>
+        <h1>{% if mode == "adopt" %}Register VM from Disk{% elif mode == "ovf" %}Import OVA/OVF as New VM{% else %}Import Disk as New VM{% endif %}</h1>
         <span class="hardware-title-separator" aria-hidden="true"></span>
         <span class="hardware-editor-guest">{{ form_values.name|default:"New virtual machine" }}</span>
       </div>
@@ -29,11 +29,16 @@
         <span class="vmreg-source-icon" aria-hidden="true"><i data-lucide="hard-drive"></i></span>
         <div class="vmreg-source-main">
           <span class="badge {% if mode == 'adopt' %}infrastructure{% else %}completed{% endif %}">
-            {% if mode == "adopt" %}Register &middot; use disk in place{% else %}Import &middot; copy to storage{% endif %}
+            {% if mode == "adopt" %}Register &middot; use disk in place{% elif mode == "ovf" %}{{ form_values.package_kind }} import &middot; {{ form_values.package_disk_count }} disk{{ form_values.package_disk_count|pluralize }}{% else %}Import &middot; copy to storage{% endif %}
           </span>
           <div class="vmreg-source-path">
             {% if mode == "adopt" %}{{ form_values.volid }}{% elif form_values.source_volid %}{{ form_values.source_volid }}{% else %}{{ form_values.source_storage }}:{{ form_values.source_path }}{% endif %}
           </div>
+          {% if mode == "ovf" and form_values.package_disks %}
+            <div class="vmreg-source-path muted">
+              {% for disk in form_values.package_disks %}{{ disk.href }}{% if disk.capacity_bytes %} ({{ disk.capacity_bytes|filesizeformat }}){% endif %}{% if not forloop.last %} &middot; {% endif %}{% endfor %}
+            </div>
+          {% endif %}
         </div>
         <details class="vmreg-help">
           <summary>What do these mean?</summary>
@@ -48,6 +53,10 @@
               <li><strong>Register</strong> uses the disk in place (no copy) and takes over its VMID — make sure no other VM references it.</li>
             {% else %}
               <li><strong>Import</strong> copies the disk into the target storage (can take a while for large images); the source file is left untouched.</li>
+            {% endif %}
+            {% if mode == "ovf" %}
+              <li><strong>OVA/OVF networks are descriptive.</strong> Each adapter below is mapped explicitly to a Proxmox bridge; review these before importing.</li>
+              <li><strong>Package validation</strong> checks referenced members before importing. A present OVF manifest is checksum-verified by the worker before any VM is created.</li>
             {% endif %}
           </ul>
         </details>
@@ -140,7 +149,7 @@
               <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
               <span class="hw-item-name">Boot disk</span>
             </button>
-            <div class="hw-item-primary"><span class="hw-current-value">{{ form_values.disk_bus|upper }}{% if mode == "import" %} &rarr; {{ form_values.target_storage }}{% endif %}</span></div>
+            <div class="hw-item-primary"><span class="hw-current-value">{{ form_values.disk_bus|upper }}{% if mode != "adopt" %} &rarr; {{ form_values.target_storage }}{% endif %}</span></div>
           </div>
           <div class="hw-item-body hw-field-grid-2">
             <div class="hw-field"><span>Attach as</span>
@@ -149,7 +158,7 @@
               </select>
               <small class="hw-hint">SATA boots almost anything; SCSI/VirtIO need guest drivers.</small>
             </div>
-            {% if mode == "import" %}
+            {% if mode != "adopt" %}
               <div class="hw-field"><span>Target storage</span>
                 <select name="target_storage">
                   {% for s in options.disk_storages %}<option value="{{ s }}" {% if s == form_values.target_storage %}selected{% endif %}>{{ s }}</option>{% endfor %}
@@ -236,7 +245,7 @@
       </template>
 
       <div class="hardware-editor-actions">
-        <button class="primary-action" type="submit">{% if mode == "adopt" %}Register VM{% else %}Import &amp; Create{% endif %}</button>
+        <button class="primary-action" type="submit">{% if mode == "adopt" %}Register VM{% elif mode == "ovf" %}Import Package &amp; Create{% else %}Import &amp; Create{% endif %}</button>
         <a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a>
       </div>
     </form>

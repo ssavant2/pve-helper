@@ -684,14 +684,23 @@ class ClassificationTests(SimpleTestCase):
         )
         self.assertEqual(result.classification, FileInventory.Classification.INFRASTRUCTURE)
 
-    def test_loose_disk_image_is_unknown_with_wrong_folder_hint_not_orphan(self):
+    def test_loose_disk_image_is_a_recognized_import_source_not_an_orphan(self):
         result = self._classify(
             relative_path="images/cirros-0.6.2-x86_64-disk.img",
             content_category="vm_image_directory",
         )
-        self.assertEqual(result.classification, FileInventory.Classification.UNKNOWN)
-        self.assertIn("wrong folder", result.reason)
-        self.assertIn("import/", result.reason)
+        self.assertEqual(result.classification, FileInventory.Classification.IMPORT_SOURCE)
+        self.assertIn("importable disk image", result.reason)
+
+    def test_ova_ovf_and_manifest_are_recognized_import_sources(self):
+        for path, category in (
+            ("template/iso/appliance.ova", "import_package"),
+            ("template/iso/appliance.ovf", "import_package"),
+            ("template/iso/appliance.mf", "import_manifest"),
+            ("template/iso/appliance-disk1.vmdk", "import_disk"),
+        ):
+            result = self._classify(relative_path=path, content_category=category)
+            self.assertEqual(result.classification, FileInventory.Classification.IMPORT_SOURCE)
 
     def test_real_vm_disk_volume_without_reference_is_orphan(self):
         result = self._classify(

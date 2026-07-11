@@ -25,10 +25,11 @@ import secrets
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from core.models import StorageMount
+from core.services.ovf_import import OvfImportError, OvfPackage, package_disk_volids, parse_ovf_package
 from core.services.proxmox import ProxmoxAPIError, configured_clients
 
 # Disk bus -> config key prefix. The default bus is SATA (boots almost any image
@@ -72,6 +73,14 @@ def _bus_key(bus: str) -> str:
     if bus not in {b for b, _ in DISK_BUSES}:
         raise VmRegisterError(f"Unsupported disk bus: {bus}")
     return f"{bus}0"
+
+
+def _disk_key(bus: str, index: int) -> str:
+    if bus not in {item for item, _label in DISK_BUSES} or index < 0:
+        raise VmRegisterError(f"Unsupported disk bus: {bus}")
+    if bus == "ide" and index > 1:
+        raise VmRegisterError("IDE supports at most two imported disks; use SATA or SCSI for this package.")
+    return f"{bus}{index}"
 
 
 def _base_body(params: dict[str, Any]) -> dict[str, Any]:
@@ -277,3 +286,149 @@ def import_volid_as_vm(node: str, params: dict[str, Any], *, source_volid: str) 
     """Import an already-catalogued volume (e.g. a local ``import``-content image)
     into a new VM. No staging needed — the volid is passed straight to import-from."""
     return _create_vm_importing(node, params, source_volid)
+
+
+# --------------------------------------------------------------------------- #
+# OVA / OVF import: parser metadata plus one import-from action per disk.
+# --------------------------------------------------------------------------- #
+def _stage_ovf_package_sources(storage: StorageMount, source_path: str, package: OvfPackage) -> tuple[list[str], list[Path]]:
+    """Return Proxmox import volids, hard-linking non-import sources temporarily.
+
+    A source already under ``import/`` is directly usable by Proxmox.  Browser
+    files elsewhere on the same mounted directory storage are linked into
+    ``import/`` for the duration of the worker task so users need not shuffle a
+    large OVA merely to begin an import.
+    """
+    direct = package_disk_volids(package)
+    if package.source_path.startswith("import/"):
+        return direct, []
+
+    root = Path(storage.path).resolve()
+    source = (root / package.source_path).resolve()
+    if root not in source.parents or not source.is_file():
+        raise VmRegisterError("Package is not available on the source storage.")
+    import_dir = root / "import"
+    try:
+        import_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise VmRegisterError(f"Could not access the storage import directory: {exc}") from exc
+
+    token = secrets.token_hex(8)
+    staged: list[Path] = []
+    try:
+        if package.kind == "ova":
+            staged_archive = import_dir / f"pve-helper-{token}.ova"
+            os.link(source, staged_archive)
+            staged.append(staged_archive)
+            archive_rel = f"import/{staged_archive.name}"
+            return [f"{storage.storage_id}:{archive_rel}/{disk.href}" for disk in package.disks], staged
+
+        volids: list[str] = []
+        source_root = source.parent.resolve()
+        for index, disk in enumerate(package.disks):
+            source_disk = (source_root / disk.href).resolve()
+            if source_root not in source_disk.parents or not source_disk.is_file():
+                raise VmRegisterError(f"OVF disk {disk.href} is not available beside the descriptor.")
+            suffix = source_disk.suffix.lower() or ".vmdk"
+            staged_disk = import_dir / f"pve-helper-{token}-{index}{suffix}"
+            os.link(source_disk, staged_disk)
+            staged.append(staged_disk)
+            volids.append(f"{storage.storage_id}:import/{staged_disk.name}")
+        return volids, staged
+    except OSError as exc:
+        _remove_staged_files(staged)
+        raise VmRegisterError(f"Could not stage OVA/OVF package: {exc}") from exc
+
+
+def _remove_staged_files(paths: list[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _wait_for_upid(client, node: str, upid: object, *, timeout: int = 3600) -> str | None:
+    if not isinstance(upid, str) or not upid.startswith("UPID:"):
+        return None
+    result = client.wait_for_task(node=node, upid=upid, timeout_seconds=timeout)
+    if not result.success:
+        return result.exitstatus or result.status or "unknown error"
+    return None
+
+
+def import_ovf_package_as_vm(
+    node: str,
+    params: dict[str, Any],
+    *,
+    source_storage: StorageMount,
+    source_path: str,
+    progress: Callable[[str, int, int], None] | None = None,
+) -> tuple[list[str], str | None]:
+    """Create a VM from every disk described by an OVF/OVA package.
+
+    The first disk is imported by the VM-create request and establishes the boot
+    order.  Remaining disks are attached sequentially with config writes.  On
+    failure the stopped partial VM remains intentionally, with all completed
+    UPIDs returned to the caller for an exact audit trail.
+    """
+    try:
+        package = parse_ovf_package(source_storage, source_path, validate_manifest=True)
+    except OvfImportError as exc:
+        return [], str(exc)
+    if not package.disks:
+        return [], "OVF package does not contain an importable disk."
+    bus = str(params.get("disk_bus") or "sata")
+    try:
+        disk_keys = [_disk_key(bus, index) for index in range(len(package.disks))]
+    except VmRegisterError as exc:
+        return [], str(exc)
+    try:
+        source_volids, staged_paths = _stage_ovf_package_sources(source_storage, source_path, package)
+    except VmRegisterError as exc:
+        return [], str(exc)
+
+    client = _client()
+    upids: list[str] = []
+    try:
+        if bus == "scsi":
+            params.setdefault("scsihw", "virtio-scsi-single")
+        body = _base_body(params)
+        body[disk_keys[0]] = f"{params['target_storage']}:0,import-from={source_volids[0]},format={params.get('format', 'qcow2')}"
+        body["boot"] = f"order={disk_keys[0]}"
+        if progress:
+            progress("create and import boot disk", 1, len(source_volids))
+        first_upid = client.post(f"nodes/{quote(node, safe='')}/qemu", data=body)
+        if isinstance(first_upid, str):
+            upids.append(first_upid)
+        error = _wait_for_upid(client, node, first_upid)
+        if error:
+            return upids, f"Boot-disk import failed: {error}"
+
+        for index, source_volid in enumerate(source_volids[1:], start=1):
+            if progress:
+                progress(f"import disk {index + 1} of {len(source_volids)}", index + 1, len(source_volids))
+            upid = client.put(
+                f"nodes/{quote(node, safe='')}/qemu/{params['vmid']}/config",
+                data={disk_keys[index]: f"{params['target_storage']}:0,import-from={source_volid},format={params.get('format', 'qcow2')}"},
+            )
+            if isinstance(upid, str):
+                upids.append(upid)
+            error = _wait_for_upid(client, node, upid)
+            if error:
+                return upids, f"Disk {index + 1} import failed: {error}"
+
+        if params.get("start"):
+            if progress:
+                progress("start imported VM", len(source_volids), len(source_volids))
+            upid = client.post(f"nodes/{quote(node, safe='')}/qemu/{params['vmid']}/status/start", data={})
+            if isinstance(upid, str):
+                upids.append(upid)
+            error = _wait_for_upid(client, node, upid, timeout=300)
+            if error:
+                return upids, f"VM imported but could not start: {error}"
+        return upids, None
+    except ProxmoxAPIError as exc:
+        return upids, str(exc)
+    finally:
+        _remove_staged_files(staged_paths)
