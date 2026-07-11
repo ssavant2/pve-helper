@@ -115,6 +115,7 @@
                 data-vm-overview-row
                 data-guest-target="{{ g.target_id }}"
                 data-guest-vmid="{{ g.vmid }}"
+                data-guest-parent-vmid="{{ g.parent_vmid|default:'' }}"
                 data-guest-type="{{ g.object_type }}"
                 data-guest-template="{{ g.is_template|yesno:'true,false' }}"
                 data-guest-linked-clone="{{ g.is_linked_clone|yesno:'true,false' }}"

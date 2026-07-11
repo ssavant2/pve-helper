@@ -382,6 +382,42 @@
 
   // Re-order the guest list to match how it is labelled: when VMIDs are shown
   // the natural key is the numeric VMID; when they are hidden it is the name.
+  // Reorder already-ordered rows so each linked clone sits directly under its
+  // parent template (recursively), preserving the incoming order among roots and
+  // among siblings. Rows carry data-guest-vmid / data-guest-parent-vmid. Used by
+  // the sidebar sort and the overview's name-column sort so a clone never lands
+  // at its own VMID away from its parent.
+  const groupRowsBySubtree = (rows) => {
+    const byVmid = new Map();
+    rows.forEach((row) => {
+      const vmid = parseInt(row.dataset.guestVmid || "", 10);
+      if (!Number.isNaN(vmid)) {
+        byVmid.set(vmid, row);
+      }
+    });
+    const childrenByParent = new Map();
+    const roots = [];
+    rows.forEach((row) => {
+      const parent = parseInt(row.dataset.guestParentVmid || "", 10);
+      if (!Number.isNaN(parent) && byVmid.has(parent)) {
+        if (!childrenByParent.has(parent)) {
+          childrenByParent.set(parent, []);
+        }
+        childrenByParent.get(parent).push(row);
+      } else {
+        roots.push(row);
+      }
+    });
+    const ordered = [];
+    const emit = (row) => {
+      ordered.push(row);
+      const vmid = parseInt(row.dataset.guestVmid || "", 10);
+      (childrenByParent.get(vmid) || []).forEach(emit);
+    };
+    roots.forEach(emit);
+    return ordered;
+  };
+
   const sortGuestList = (showingIds) => {
     const compare = (a, b) => {
       if (showingIds) {
@@ -401,42 +437,9 @@
       if (items.length < 2) {
         return;
       }
-      // Keep linked-clone subtrees intact: sort roots by the chosen key, then
-      // emit each root immediately followed by its children (recursively), so a
-      // clone always sorts under its parent template — never at its own VMID.
-      const byVmid = new Map();
-      items.forEach((item) => {
-        const vmid = parseInt(item.dataset.guestVmid || "", 10);
-        if (!Number.isNaN(vmid)) {
-          byVmid.set(vmid, item);
-        }
-      });
-      const childrenByParent = new Map();
-      const roots = [];
-      items.forEach((item) => {
-        const parent = parseInt(item.dataset.guestParentVmid || "", 10);
-        if (!Number.isNaN(parent) && byVmid.has(parent)) {
-          if (!childrenByParent.has(parent)) {
-            childrenByParent.set(parent, []);
-          }
-          childrenByParent.get(parent).push(item);
-        } else {
-          roots.push(item);
-        }
-      });
-      const ordered = [];
-      const emit = (item) => {
-        ordered.push(item);
-        const vmid = parseInt(item.dataset.guestVmid || "", 10);
-        const kids = childrenByParent.get(vmid);
-        if (kids) {
-          kids.sort(compare);
-          kids.forEach(emit);
-        }
-      };
-      roots.sort(compare);
-      roots.forEach(emit);
-      ordered.forEach((item) => {
+      // Sort flat by the chosen key, then pull each clone back under its parent.
+      items.sort(compare);
+      groupRowsBySubtree(items).forEach((item) => {
         list.appendChild(item);
       });
     });
@@ -6118,7 +6121,11 @@
             : String(aRaw).localeCompare(String(bRaw), undefined, { numeric: true, sensitivity: "base" });
           return direction === "asc" ? result : -result;
         });
-        rows.forEach((row) => {
+        // Sorting the overview by name clumps linked clones under their parent
+        // (children sort by the parent's name); every other column stays flat.
+        const nameClump = tableName === "vm-overview" && (header.dataset.column || "") === "name";
+        const finalRows = nameClump ? groupRowsBySubtree(rows) : rows;
+        finalRows.forEach((row) => {
           tbody.appendChild(row);
         });
         if (persist) {
@@ -6160,6 +6167,17 @@
         });
       });
       table.pveHelperApplyStoredSort();
+      // Default (no stored sort): the overview arrives name-ordered from the
+      // server, so clump linked clones under their parent for the initial view.
+      if (tableName === "vm-overview" && !readStoredSort()) {
+        const tbody = table.tBodies[0];
+        if (tbody) {
+          const rows = Array.from(tbody.querySelectorAll("tr")).filter((row) => row.children.length > 1);
+          groupRowsBySubtree(rows).forEach((row) => {
+            tbody.appendChild(row);
+          });
+        }
+      }
     });
   };
 
