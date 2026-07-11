@@ -259,6 +259,53 @@ class GuestHealthTests(SimpleTestCase):
         self.assertTrue(_guest_health(self._detail(lock="suspended"))["ok"])
 
 
+class GuestLineageTests(SimpleTestCase):
+    def _row(self, vmid, name="", ct=False):
+        from types import SimpleNamespace
+
+        from core.models import ProxmoxInventory
+
+        ot = ProxmoxInventory.ObjectType.CT if ct else ProxmoxInventory.ObjectType.VM
+        return SimpleNamespace(vmid=vmid, object_type=ot, name=name or f"g{vmid}")
+
+    def test_children_indent_under_parent_template(self):
+        from unittest.mock import patch
+
+        from core.views.guests import _apply_workspace_lineage
+
+        rows = [self._row(100, "template"), self._row(101), self._row(102), self._row(200, ct=True)]
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100, 102: 100}):
+            ordered = _apply_workspace_lineage(rows)
+        self.assertEqual([(r.vmid, r.depth) for r in ordered], [(100, 0), (101, 1), (102, 1), (200, 0)])
+        clone = next(r for r in ordered if r.vmid == 101)
+        self.assertEqual(clone.parent_vmid, 100)
+        self.assertEqual(clone.lineage_parent_name, "template")
+
+    def test_no_lineage_leaves_flat(self):
+        from unittest.mock import patch
+
+        from core.views.guests import _apply_workspace_lineage
+
+        rows = [self._row(100), self._row(101), self._row(200, ct=True)]
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={}):
+            ordered = _apply_workspace_lineage(rows)
+        self.assertEqual([r.vmid for r in ordered], [100, 101, 200])
+        self.assertTrue(all(r.depth == 0 and r.parent_vmid is None for r in ordered))
+
+    def test_deep_chain_caps_depth_at_2_with_marker(self):
+        from unittest.mock import patch
+
+        from core.views.guests import _apply_workspace_lineage
+
+        rows = [self._row(100), self._row(101), self._row(102), self._row(103)]  # 100→101→102→103
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100, 102: 101, 103: 102}):
+            ordered = _apply_workspace_lineage(rows)
+        by = {r.vmid: r for r in ordered}
+        self.assertEqual([by[v].depth for v in (100, 101, 102, 103)], [0, 1, 2, 2])
+        self.assertTrue(by[103].deeper_chain)
+        self.assertFalse(by[102].deeper_chain)
+
+
 class GuestTaskReaperTests(TestCase):
     def _running_event(self, age_seconds: int):
         from datetime import timedelta

@@ -390,12 +390,66 @@ def guest_agent_summary_api(request, object_type: str, vmid: int):
     )
 
 
+def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespace]:
+    """Order the Inventory list as a linked-clone tree: children indented under
+    their parent template (read-only). VMs on qcow2 file storage only; everything
+    else stays a flat root. Returns a tree-ordered list; the same row objects get
+    ``parent_vmid`` / ``lineage_parent_name`` / ``depth`` (capped at 2) /
+    ``deeper_chain`` set for the template to render."""
+    for row in rows:
+        row.parent_vmid = None
+        row.lineage_parent_name = ""
+        row.depth = 0
+        row.deeper_chain = False
+    lineage = common.fetch_live_guest_lineage()  # {child VMID: parent VMID}
+    if not lineage:
+        return rows
+    vm_rows = {
+        row.vmid: row
+        for row in rows
+        if row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid is not None
+    }
+    children: dict[int, list[SimpleNamespace]] = {}
+    for row in rows:
+        if row.object_type != ProxmoxInventory.ObjectType.VM or row.vmid is None:
+            continue
+        parent = lineage.get(row.vmid)
+        if parent is not None and parent != row.vmid and parent in vm_rows:
+            row.parent_vmid = parent
+            row.lineage_parent_name = vm_rows[parent].name or str(parent)
+            children.setdefault(parent, []).append(row)
+    if not children:
+        return rows
+
+    ordered: list[SimpleNamespace] = []
+    visited: set[int] = set()
+
+    def emit(row: SimpleNamespace, depth: int) -> None:
+        if row.vmid is not None:
+            if row.vmid in visited:
+                return
+            visited.add(row.vmid)
+        row.depth = min(depth, 2)
+        row.deeper_chain = depth > 2
+        ordered.append(row)
+        for child in children.get(row.vmid, []) if row.vmid is not None else []:
+            emit(child, depth + 1)
+
+    for row in rows:
+        is_vm = row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid is not None
+        if is_vm and row.parent_vmid is not None:
+            continue  # emitted under its parent's subtree
+        emit(row, 0)
+    return ordered
+
+
 def _vms_workspace_context(active_nav: str) -> dict:
     rows, live_available, scan_at = _guest_rows()
+    guest_list = _apply_workspace_lineage(rows)
     return {
         **navigation_context(active_nav),
         "guests": rows,
-        "guest_list": rows,
+        "guest_list": guest_list,
         "guest_count": len(rows),
         "running_count": sum(1 for row in rows if row.status == "running"),
         "live_available": live_available,
@@ -740,6 +794,32 @@ def _guest_health(detail: SimpleNamespace) -> dict:
     return {"ok": not issues, "issues": issues}
 
 
+def _guest_lineage(detail: SimpleNamespace) -> dict:
+    """Linked-clone lineage for the detail page: this VM's parent template and/or
+    its own linked children (read-only). VM/qcow2/file-storage only."""
+    empty = {"parent": None, "children": []}
+    if detail.object_type != ProxmoxInventory.ObjectType.VM or detail.vmid is None:
+        return empty
+    lineage = common.fetch_live_guest_lineage()
+    if not lineage:
+        return empty
+    names = {
+        guest.vmid: guest.name
+        for guest in common.fetch_live_guest_inventory()
+        if guest.object_type == ProxmoxInventory.ObjectType.VM
+    }
+    parent = None
+    parent_vmid = lineage.get(detail.vmid)
+    if parent_vmid:
+        parent = {"vmid": parent_vmid, "name": names.get(parent_vmid) or str(parent_vmid)}
+    children = [
+        {"vmid": child, "name": names.get(child) or str(child)}
+        for child, pvmid in sorted(lineage.items())
+        if pvmid == detail.vmid
+    ]
+    return {"parent": parent, "children": children}
+
+
 @app_login_required
 def guest_summary(request, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
@@ -774,6 +854,7 @@ def guest_summary(request, object_type: str, vmid: int):
     context.update(
         {
             "guest_health": _guest_health(detail),
+            "guest_lineage": _guest_lineage(detail),
             "guest_os_label": _guest_os_label(config),
             "guest_agent_summary": _guest_agent_summary(detail, allow_fetch=False),
             "guest_usage": _guest_usage(current, config, detail.object_type),

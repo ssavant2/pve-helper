@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -16,10 +17,16 @@ from .classification import extract_disk_references
 LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
 LIVE_GUEST_INVENTORY_CACHE_KEY = "pve-helper:live-guest-inventory:v1"
 LIVE_GUEST_LOCKS_CACHE_KEY = "pve-helper:live-guest-locks:v1"
+LIVE_GUEST_LINEAGE_CACHE_KEY = "pve-helper:live-guest-lineage:v1"
 LIVE_GUEST_STATUS_CACHE_SECONDS = 2
 LIVE_GUEST_INVENTORY_CACHE_SECONDS = 30
 LIVE_GUEST_LOCKS_CACHE_SECONDS = 3
+LIVE_GUEST_LINEAGE_CACHE_SECONDS = 30
 LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS = 2.5
+
+# A linked clone's disk is a qcow2 whose storage-content `parent` names the
+# template's base volume, e.g. "../102/base-102-disk-0.qcow2" → parent VMID 102.
+_BASE_VOLUME_RE = re.compile(r"base-(\d+)-disk-")
 
 
 _http_client: httpx.Client | None = None
@@ -548,9 +555,89 @@ def _fetch_live_guest_locks_uncached() -> dict[tuple[str, str, int], str]:
     return locks
 
 
+def fetch_live_guest_lineage() -> dict[int, int]:
+    """Return {child VMID: parent-template VMID} for linked clones — a qcow2 whose
+    storage-content ``parent`` points at a template's ``base-<N>-disk-`` volume.
+    One content listing per images-storage (deduped across nodes); no per-file
+    ``qemu-img`` probing. VM/qcow2/file-storage only; other backends yield nothing."""
+    cached = cache.get(LIVE_GUEST_LINEAGE_CACHE_KEY)
+    if isinstance(cached, dict):
+        return cached
+    result = _fetch_live_guest_lineage_uncached()
+    cache.set(LIVE_GUEST_LINEAGE_CACHE_KEY, result, LIVE_GUEST_LINEAGE_CACHE_SECONDS)
+    return result
+
+
+def _fetch_live_guest_lineage_uncached() -> dict[int, int]:
+    lineage: dict[int, int] = {}
+    seen_storages: set[str] = set()
+    deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
+    for client in configured_clients():
+        timeout = _remaining_display_timeout(deadline)
+        if timeout is None:
+            break
+        try:
+            nodes = client.get("nodes", timeout=timeout)
+        except ProxmoxAPIError:
+            continue
+        if not isinstance(nodes, list):
+            continue
+        for node_info in nodes:
+            node = str(node_info.get("node") or "")
+            if not node or str(node_info.get("status") or "") != "online":
+                continue
+            timeout = _remaining_display_timeout(deadline)
+            if timeout is None:
+                return lineage
+            try:
+                storages = client.get(f"nodes/{quote(node, safe='')}/storage?content=images", timeout=timeout)
+            except ProxmoxAPIError:
+                continue
+            if not isinstance(storages, list):
+                continue
+            for storage in storages:
+                if not isinstance(storage, dict) or not storage.get("storage"):
+                    continue
+                storage_id = str(storage["storage"])
+                if storage_id in seen_storages:
+                    continue
+                seen_storages.add(storage_id)
+                timeout = _remaining_display_timeout(deadline)
+                if timeout is None:
+                    return lineage
+                try:
+                    content = client.get(
+                        f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content?content=images",
+                        timeout=timeout,
+                    )
+                except ProxmoxAPIError:
+                    continue
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    match = _BASE_VOLUME_RE.search(str(item.get("parent") or ""))
+                    if not match:
+                        continue
+                    try:
+                        child = int(item.get("vmid"))
+                        parent = int(match.group(1))
+                    except (TypeError, ValueError):
+                        continue
+                    if child and parent and child != parent:
+                        lineage[child] = parent
+    return lineage
+
+
 def clear_live_guest_caches() -> None:
     cache.delete_many(
-        [LIVE_GUEST_STATUS_CACHE_KEY, LIVE_GUEST_INVENTORY_CACHE_KEY, LIVE_GUEST_LOCKS_CACHE_KEY]
+        [
+            LIVE_GUEST_STATUS_CACHE_KEY,
+            LIVE_GUEST_INVENTORY_CACHE_KEY,
+            LIVE_GUEST_LOCKS_CACHE_KEY,
+            LIVE_GUEST_LINEAGE_CACHE_KEY,
+        ]
     )
 
 
