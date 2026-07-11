@@ -86,6 +86,7 @@ class ProxmoxGuestSummary:
     maxdisk: int = 0
     uptime: int = 0
     lock: str = ""
+    is_template: bool = False
 
 
 @dataclass(frozen=True)
@@ -843,6 +844,7 @@ def _add_guest_summary(
             disk=_int_or_zero(data.get("disk")),
             maxdisk=_int_or_zero(data.get("maxdisk")),
             uptime=_int_or_zero(data.get("uptime")),
+            is_template=_int_or_zero(data.get("template")) == 1,
         ),
     )
 

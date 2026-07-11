@@ -2556,11 +2556,6 @@
     if (rows) {
       rows.addEventListener("click", cancelUpload);
     }
-    registerPageCleanup(() => window.removeEventListener("pve-helper:pending-task", addPendingTask));
-    registerPageCleanup(() => window.removeEventListener("pve-helper:update-pending-task", updatePendingTask));
-    if (rows) {
-      registerPageCleanup(() => rows.removeEventListener("click", cancelUpload));
-    }
 
     const loadTaskPage = async (page) => {
       if (!tasksUrl || loadingTasks) {
@@ -2603,6 +2598,14 @@
           previousTaskStatuses = taskStatusesById;
           taskStatusesById = new Map(loadedTasks.map((task) => [task.id, task.status_class]));
         }
+        lastLoadedTasks = loadedTasks;
+        lastTaskPageData = data;
+        renderTaskRows(loadedTasks);
+        updateTaskControls(data);
+        if (normalizedPage === 0) {
+          applyGuestStatusHintsFromTasks(loadedTasks, previousTaskStatuses);
+          refreshGuestStateAfterTaskTransitions(loadedTasks, previousTaskStatuses);
+        }
         if (
           maybeRefreshCurrentStorageBrowser(loadedTasks) ||
           maybeRefreshCurrentGuestInventory(loadedTasks) ||
@@ -2612,14 +2615,6 @@
         }
         if (maybeRefreshSnapshotState(loadedTasks) || maybeRefreshBackupState(loadedTasks)) {
           return;
-        }
-        lastLoadedTasks = loadedTasks;
-        lastTaskPageData = data;
-        renderTaskRows(loadedTasks);
-        updateTaskControls(data);
-        if (normalizedPage === 0) {
-          applyGuestStatusHintsFromTasks(loadedTasks, previousTaskStatuses);
-          refreshGuestStateAfterTaskTransitions(loadedTasks, previousTaskStatuses);
         }
       } catch (_error) {
         // Recent task refresh is best effort; the server-rendered rows remain usable.
@@ -2633,11 +2628,6 @@
         loadTaskPage(0);
       }
     };
-    registerPageCleanup(() => {
-      if (window.pveHelperRefreshRecentTasks) {
-        delete window.pveHelperRefreshRecentTasks;
-      }
-    });
 
     if (previousButton) {
       previousButton.addEventListener("click", () => {
@@ -3537,7 +3527,7 @@
     });
   };
 
-  const submitVmBulkAction = async (overview, action, fields = {}, targetRows = null) => {
+  const submitVmBulkAction = async (overview, action, fields = {}, targetRows = null, submitUrl = "") => {
     const form = overview.querySelector("[data-vm-bulk-form]");
     const actionInput = overview.querySelector("[data-vm-bulk-action]");
     const snapshotInput = overview.querySelector("[data-vm-bulk-snapshot-name]");
@@ -3592,7 +3582,7 @@
       });
     }, 500);
     try {
-      const response = await fetch(form.action, {
+      const response = await fetch(submitUrl || form.action, {
         method: "POST",
         body: new FormData(form),
         headers: {
@@ -3716,6 +3706,15 @@
   };
 
   const selectedGuestSummary = (rows) => `${rows.length} selected guest${rows.length === 1 ? "" : "s"}`;
+
+  const guestRowIdentity = (row) => {
+    const [target = ""] = String(row?.dataset.guestTarget || "").split("@");
+    const [targetType = "", targetVmid = ""] = target.split(":");
+    return {
+      type: row?.dataset.guestType || targetType,
+      vmid: row?.dataset.guestVmid || targetVmid,
+    };
+  };
 
   const openVmFormDialog = ({ title, summary, bodyHtml, submitLabel, submitClass = "primary-action", onSubmit }) => {
     const dialog = ensureVmActionDialog();
@@ -4548,53 +4547,6 @@
       });
   };
 
-  const submitTemplateClone = async (_overview, rows, fields) => {
-    const row = rows[0];
-    const targetParts = String(row?.dataset.guestTarget || "")
-      .split("@")[0]
-      .split(":");
-    const type = row?.dataset.guestType || targetParts[0] || "";
-    const vmid = row?.dataset.guestVmid || targetParts[1] || "";
-    const pending = createPendingVmTask("clone_to_template", fields, rows);
-    addPendingRecentTask(pending);
-    const url = `/vms/${encodeURIComponent(type)}/${encodeURIComponent(vmid)}/clone-to-template/`;
-    try {
-      const body = new URLSearchParams({
-        clone_newid: fields.clone_newid,
-        clone_name: fields.clone_name,
-        clone_storage: fields.clone_storage || "",
-      });
-      const response = await fetch(url, {
-        method: "POST",
-        body,
-        headers: { Accept: "application/json", "X-Requested-With": "fetch" },
-      });
-      const payload = response.ok ? await response.json() : { ok: false, errors: [`HTTP ${response.status}`] };
-      if (!payload.ok) {
-        updatePendingRecentTask({
-          id: pending.id,
-          status: "Failed",
-          status_class: "failed",
-          details: (payload.errors || ["Clone to template failed."]).join("; "),
-          finished_at: taskDateLabel(new Date()),
-          finished_at_ms: Date.now(),
-        });
-        return;
-      }
-      updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running", details: "Accepted" });
-      window.pveHelperRefreshRecentTasks?.();
-    } catch (_error) {
-      updatePendingRecentTask({
-        id: pending.id,
-        status: "Failed",
-        status_class: "failed",
-        details: "Network error",
-        finished_at: taskDateLabel(new Date()),
-        finished_at_ms: Date.now(),
-      });
-    }
-  };
-
   const openCloneDialog = (overview, rows, { toTemplate = false } = {}) => {
     const row = rows[0];
     const label = row?.dataset.guestLabel || "guest";
@@ -4652,7 +4604,9 @@
           clone_full: fullCheckbox?.checked ? "1" : "0",
         };
         if (toTemplate) {
-          submitTemplateClone(overview, rows, fields);
+          const { type, vmid } = guestRowIdentity(row);
+          const url = `/vms/${encodeURIComponent(type)}/${encodeURIComponent(vmid)}/clone-to-template/`;
+          submitVmBulkAction(overview, "clone_to_template", fields, rows, url);
         } else {
           submitVmBulkAction(overview, "clone", fields, rows);
         }

@@ -63,8 +63,8 @@ def clone_guest_to_template_task(
         details["error"] = str(exc)
         details["finished_at"] = timezone.now().isoformat()
         event.details = details
-        event.save(update_fields=["outcome", "details"])
         clear_live_guest_caches()
+        event.save(update_fields=["outcome", "details"])
         return
 
     if cancelled():
@@ -73,5 +73,5 @@ def clone_guest_to_template_task(
     details["stage"] = "completed"
     details["finished_at"] = timezone.now().isoformat()
     event.details = details
-    event.save(update_fields=["outcome", "details"])
     clear_live_guest_caches()
+    event.save(update_fields=["outcome", "details"])

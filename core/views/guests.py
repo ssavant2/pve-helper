@@ -602,7 +602,9 @@ def _display_lock(value: object) -> str:
 
 def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_guest=None) -> SimpleNamespace:
     config = scan_obj.config if scan_obj is not None and isinstance(scan_obj.config, dict) else {}
-    template = object_type == ProxmoxInventory.ObjectType.VM and is_template(config)
+    template = object_type == ProxmoxInventory.ObjectType.VM and (
+        bool(getattr(live_guest, "is_template", False)) or is_template(config)
+    )
     if template:
         type_label, type_filter, type_sort = "Template", "template", 0
     elif object_type == ProxmoxInventory.ObjectType.CT:
