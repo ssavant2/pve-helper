@@ -565,26 +565,37 @@ class ShutdownForceStopOfferTests(TestCase):
             },
         )
 
-    def test_timed_out_shutdown_offers_force_stop(self):
+    def _task(self, event, *, live_status):
         from core.services.recent_tasks import _guest_task, serialize_task
 
+        with patch("core.services.recent_tasks.fetch_live_guest_status", return_value=live_status):
+            return serialize_task(_guest_task(event))
+
+    def test_timed_out_shutdown_offers_force_stop_while_running(self):
         event = self._event("guest.power.shutdown", "VM quit/powerdown failed - got timeout")
-        task = serialize_task(_guest_task(event))
+        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
         self.assertTrue(task["offer_force_stop"])
         self.assertEqual(task["force_stop_target"], "vm:106@pve3")
 
-    def test_non_timeout_shutdown_failure_does_not_offer(self):
-        from core.services.recent_tasks import _guest_task, serialize_task
+    def test_resolves_to_completed_once_guest_stopped(self):
+        event = self._event("guest.power.shutdown", "VM quit/powerdown failed - got timeout")
+        task = self._task(event, live_status={("pve3", "vm", 106): "stopped"})
+        self.assertFalse(task["offer_force_stop"])
+        self.assertEqual(task["status_class"], "completed")
 
+    def test_offers_when_live_status_unknown(self):
+        event = self._event("guest.power.shutdown", "got timeout")
+        task = self._task(event, live_status={})  # guest not found → keep offering
+        self.assertTrue(task["offer_force_stop"])
+
+    def test_non_timeout_shutdown_failure_does_not_offer(self):
         event = self._event("guest.power.shutdown", "permission denied")
-        task = serialize_task(_guest_task(event))
+        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
         self.assertFalse(task["offer_force_stop"])
 
     def test_other_actions_never_offer(self):
-        from core.services.recent_tasks import _guest_task, serialize_task
-
         event = self._event("guest.power.reboot", "got timeout")
-        task = serialize_task(_guest_task(event))
+        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
         self.assertFalse(task["offer_force_stop"])
 
 

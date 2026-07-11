@@ -10,6 +10,20 @@ from django.db.models import Q
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
+from core.services.proxmox import fetch_live_guest_status
+
+
+def _guest_is_stopped(target_type: str, vmid: int) -> bool | None:
+    """Live status of one guest, ignoring node: True if stopped, False if running/
+    paused, None if unknown (API down / not found). Cached (2s) cluster-wide."""
+    try:
+        statuses = fetch_live_guest_status()
+    except Exception:  # best effort — never break the task feed on a live-call error
+        return None
+    for (_node, otype, vid), status in statuses.items():
+        if otype == target_type and vid == vmid:
+            return status == "stopped"
+    return None
 
 
 GUEST_TASK_NAMES = {
@@ -124,6 +138,13 @@ def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTa
     tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
     tasks.extend(_guest_task(event) for event in _visible_guest_tasks())
     tasks.sort(key=_task_timeline_sort_at, reverse=True)
+    # Pin unanswered "needs a decision" tasks (e.g. a force-stop offer) to the top
+    # of page 0 so a short visible window can't push them off before they are
+    # answered. (We assume only a handful are ever pending at once.)
+    if page == 0:
+        pinned = [task for task in tasks if task.get("offer_force_stop")]
+        if pinned:
+            tasks = pinned + [task for task in tasks if not task.get("offer_force_stop")]
     total = len(tasks)
     return RecentTaskPage(tasks=tasks[offset : offset + limit], page=page, limit=limit, total=total)
 
@@ -310,22 +331,28 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
     if not extra and details.get("error"):
         extra = str(details["error"])
     # A graceful shutdown that timed out (no ACPI handler / no guest agent in the
-    # guest) leaves the guest running. Offer a force-stop follow-up on the task.
+    # guest) leaves the guest running. Offer a force-stop follow-up on the task —
+    # but once the guest is actually stopped, the question is resolved: stop
+    # offering and present the task as completed (green, no longer pulsing/pinned).
     error_text = str(details.get("error") or "").lower()
+    force_stop_target = ""
     offer_force_stop = (
         event.action == "guest.power.shutdown"
         and status_class == "failed"
         and ("timeout" in error_text or "powerdown failed" in error_text)
     )
-    force_stop_target = ""
     if offer_force_stop:
         node = str(details.get("proxmox_task_node") or details.get("node") or "").strip()
         ttype = str(details.get("target_type") or "").strip()
         vmid = details.get("vmid")
-        if ttype and vmid is not None:
-            force_stop_target = f"{ttype}:{vmid}" + (f"@{node}" if node else "")
-        else:
+        if not (ttype and vmid is not None):
             offer_force_stop = False
+        elif _guest_is_stopped(ttype, int(vmid)):
+            # Goal reached (guest is off) — resolve the question.
+            offer_force_stop = False
+            status, status_class = "Completed", "completed"
+        else:
+            force_stop_target = f"{ttype}:{vmid}" + (f"@{node}" if node else "")
     return {
         "id": f"guest:{event.id}",
         "kind": "guest",

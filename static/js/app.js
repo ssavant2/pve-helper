@@ -2379,6 +2379,7 @@
         task.server,
         task.cancel_upload_id,
         task.cancelable ? "1" : "0",
+        task.offer_force_stop ? "1" : "0",
       ]);
 
     const pendingTaskMatchesLoadedTask = (pendingTask, task) => {
@@ -3790,21 +3791,32 @@
     if (!bulkUrl || !target) {
       return;
     }
+    // Build the pending task exactly like the overview's stop action so it
+    // reconciles with (and is replaced by) the real "Power off" server task
+    // instead of lingering as a duplicate.
+    const now = Date.now();
+    const [targetText, server = ""] = target.split("@");
+    const [type = "", vmid = ""] = targetText.split(":");
     const pending = {
-      id: `pending-forcestop-${Date.now()}`,
-      name: "Power off guest",
+      id: `pending-forcestop-${now}-${Math.random().toString(36).slice(2)}`,
+      kind: "guest",
+      pending: true,
+      pending_kind: "guest",
+      action: vmActionAuditAction("stop"),
+      name: vmActionTaskName("stop"),
       target: label || target,
-      target_guest: null,
-      status: "Sending",
+      target_guest: { type, vmid, name: label || "" },
+      status: "Starting",
       status_class: "queued",
       details: "Force stop",
       initiator: "-",
       queued_for: "-",
-      started_at: taskDateLabel(new Date()),
+      started_at: taskDateLabel(new Date(now)),
+      started_at_ms: now,
       finished_at: "-",
-      server: "-",
-      created_at_ms: Date.now(),
-      pending: true,
+      finished_at_ms: 0,
+      server,
+      created_at_ms: now,
     };
     addPendingRecentTask(pending);
     const fail = (message) => {
@@ -3833,6 +3845,11 @@
         return;
       }
       updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running", details: "Force stop" });
+      // Pull the real "Power off" task in now so it reconciles the pending row
+      // and the resolved shutdown question stops pulsing promptly.
+      if (typeof window.pveHelperRefreshRecentTasks === "function") {
+        window.pveHelperRefreshRecentTasks();
+      }
     } catch (_error) {
       fail("Network error");
     }
