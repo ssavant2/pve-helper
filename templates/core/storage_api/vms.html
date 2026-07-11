@@ -32,7 +32,7 @@
               </td>
               <td>{{ guest.node }}</td>
               <td>
-                {% for ref in guest.matching_disk_references %}<code class="disk-ref">{{ ref }}</code>{% if not forloop.last %} {% endif %}{% endfor %}
+                {% for ref in guest.matching_disk_references %}<code class="disk-ref">{{ ref.volid }}</code>{% if ref.backed_by %} <span class="muted disk-ref-note">(backed by {{ ref.backed_by }})</span>{% endif %}{% if not forloop.last %} {% endif %}{% endfor %}
               </td>
             </tr>
           {% empty %}

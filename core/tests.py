@@ -491,6 +491,34 @@ class LinkedCloneParentEditGuardTests(SimpleTestCase):
             self.assertIsNone(_linked_clone_disk_edit_block(self._detail(), ["scsi1"], []))
 
 
+class DisplayDiskReferenceTests(SimpleTestCase):
+    """A linked clone's disk references render as its own overlays annotated
+    '(backed by base-<template>)', with the template's base volumes dropped."""
+
+    def test_linked_clone_annotates_and_drops_base(self):
+        from core.views.storage import _display_disk_references
+
+        refs = _display_disk_references(
+            102,
+            [
+                "TrueNAS-FS:102/vm-102-disk-0.qcow2",
+                "TrueNAS-FS:505/base-505-disk-0.qcow2",
+            ],
+            {102: 505},
+        )
+        self.assertEqual(
+            refs, [{"volid": "TrueNAS-FS:102/vm-102-disk-0.qcow2", "backed_by": "base-505"}]
+        )
+
+    def test_non_clone_unchanged(self):
+        from core.views.storage import _display_disk_references
+
+        refs = _display_disk_references(100, ["TrueNAS-FS:100/vm-100-disk-0.qcow2"], {})
+        self.assertEqual(
+            refs, [{"volid": "TrueNAS-FS:100/vm-100-disk-0.qcow2", "backed_by": ""}]
+        )
+
+
 class StorageRescanAfterCloneTests(TestCase):
     """A successful clone/destroy enqueues a scoped scan of the affected storage
     so new/removed disks reclassify at once instead of lingering as orphans."""

@@ -234,6 +234,7 @@ def api_storage_vms(request, node: str, storage: str):
     guests = []
     if scan:
         prefix = f"{storage}:"
+        lineage = common.fetch_live_guest_lineage()
         for obj in ProxmoxInventory.objects.filter(
             scan_run=scan,
             node=node,
@@ -241,7 +242,7 @@ def api_storage_vms(request, node: str, storage: str):
         ).order_by("object_type", "vmid"):
             matching = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
             if matching:
-                obj.matching_disk_references = matching
+                obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
                 guests.append(obj)
     if guests:
         live_status = common.fetch_live_guest_status()
@@ -1340,6 +1341,21 @@ def storage_hosts(request, storage_id: str):
     return render(request, "core/storage_hosts.html", context)
 
 
+def _display_disk_references(vmid: int | None, matching: list[str], lineage: dict[int, int]) -> list[dict]:
+    """Clean up a linked clone's disk references for display: show its own overlay
+    disks annotated '(backed by base-<templateid>)' and drop the template's base
+    volumes (those show on the template's own row). Non-clone guests unchanged."""
+    parent = lineage.get(vmid) if vmid is not None else None
+    if parent is None:
+        return [{"volid": ref, "backed_by": ""} for ref in matching]
+    base_marker = f"base-{parent}-disk-"
+    return [
+        {"volid": ref, "backed_by": f"base-{parent}"}
+        for ref in matching
+        if base_marker not in ref
+    ]
+
+
 @app_login_required
 def storage_vms(request, storage_id: str):
     storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
@@ -1349,6 +1365,7 @@ def storage_vms(request, storage_id: str):
     guests = []
     if latest_scan:
         prefix = f"{storage.storage_id}:"
+        lineage = common.fetch_live_guest_lineage()
         for obj in ProxmoxInventory.objects.filter(
             scan_run=latest_scan,
             object_type__in=[
@@ -1358,7 +1375,7 @@ def storage_vms(request, storage_id: str):
         ).order_by("object_type", "vmid"):
             matching_refs = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
             if matching_refs:
-                obj.matching_disk_references = matching_refs
+                obj.matching_disk_references = _display_disk_references(obj.vmid, matching_refs, lineage)
                 guests.append(obj)
 
     if guests:
