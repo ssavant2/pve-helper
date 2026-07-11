@@ -289,6 +289,26 @@
     return changed;
   };
 
+  const refreshGuestStateAfterTaskTransitions = (tasks, previousTaskStatuses) => {
+    const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
+    const completedGuestTask = (tasks || []).some((task) => {
+      if (!String(task.action || "").startsWith("guest.") || !terminalStatuses.has(task.status_class)) {
+        return false;
+      }
+      const previousStatus = previousTaskStatuses.get(task.id);
+      return Boolean(previousStatus && previousStatus !== task.status_class);
+    });
+    if (!completedGuestTask) {
+      return;
+    }
+    document.querySelectorAll("[data-vm-overview]").forEach((overview) => {
+      if (typeof overview.refreshVmStatus === "function") {
+        overview.refreshVmStatus({ force: true });
+        window.setTimeout(() => overview.refreshVmStatus({ force: true }), 1000);
+      }
+    });
+  };
+
   const taskDateLabel = (date) => {
     const pad = (value) => String(value).padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
@@ -2565,6 +2585,7 @@
         updateTaskControls(data);
         if (normalizedPage === 0) {
           applyGuestStatusHintsFromTasks(loadedTasks, previousTaskStatuses);
+          refreshGuestStateAfterTaskTransitions(loadedTasks, previousTaskStatuses);
         }
       } catch (_error) {
         // Recent task refresh is best effort; the server-rendered rows remain usable.
@@ -3395,6 +3416,7 @@
       const nodeSelect = page.querySelector("[data-restore-node]");
       const storageSelect = page.querySelector("[data-restore-storage]");
       const overwrite = page.querySelector("[data-restore-overwrite]");
+      const vmidInput = form?.querySelector('input[name="vmid"]');
       const confirmField = page.querySelector("[data-restore-confirm]");
       const confirmInput = confirmField?.querySelector("input");
       if (!form || !archiveSelect || !nodeSelect || !storageSelect) {
@@ -3408,6 +3430,7 @@
         storageOptions = {};
       }
       const selectedArchiveType = () => archiveSelect.selectedOptions[0]?.dataset.archiveType || "vm";
+      const selectedArchiveVmid = () => archiveSelect.selectedOptions[0]?.dataset.sourceVmid || "";
       const syncTargetNodes = () => {
         const endpoint = archiveSelect.selectedOptions[0]?.dataset.endpoint || "";
         const current = nodeSelect.selectedOptions[0];
@@ -3446,6 +3469,15 @@
       };
       const syncOverwrite = () => {
         const enabled = Boolean(overwrite?.checked);
+        if (vmidInput) {
+          if (!vmidInput.dataset.restoreDefaultVmid) {
+            vmidInput.dataset.restoreDefaultVmid = vmidInput.value;
+          }
+          vmidInput.value = enabled ? selectedArchiveVmid() : vmidInput.dataset.restoreDefaultVmid;
+          vmidInput.readOnly = enabled;
+          vmidInput.classList.toggle("restore-vmid-locked", enabled);
+          vmidInput.setAttribute("aria-disabled", enabled ? "true" : "false");
+        }
         if (confirmField) {
           confirmField.hidden = !enabled;
         }
@@ -3459,6 +3491,7 @@
       archiveSelect.addEventListener("change", () => {
         syncTargetNodes();
         refreshStorages();
+        syncOverwrite();
       });
       nodeSelect.addEventListener("change", refreshStorages);
       overwrite?.addEventListener("change", syncOverwrite);
@@ -4804,7 +4837,7 @@
         <div class="context-menu-submenu-panel">
           <button type="button" data-vm-action="backup" ${writable ? "" : "disabled"}><i data-lucide="archive" aria-hidden="true"></i>Back Up Now...</button>
           <button type="button" data-vm-action="open-backup" ${singleSelected ? "" : "disabled"}>Manage Backups</button>
-          <button type="button" data-vm-action="restore-backup" ${writable ? "" : "disabled"}>Restore Backup...</button>
+          <button type="button" data-vm-action="restore-backup" ${singleSelected && writable ? "" : "disabled"}>Restore Backup...</button>
         </div>
       </div>
       <div class="context-menu-separator"></div>
@@ -4998,7 +5031,13 @@
           return;
         }
         if (action === "restore-backup") {
-          loadSoftNavigation(new URL("/vms/restore/", window.location.origin));
+          const restoreUrl = new URL("/vms/restore/", window.location.origin);
+          const targetParts = String(firstRow.dataset.guestTarget || "")
+            .split("@")[0]
+            .split(":");
+          restoreUrl.searchParams.set("source_type", firstRow.dataset.guestType || targetParts[0] || "");
+          restoreUrl.searchParams.set("source_vmid", firstRow.dataset.guestVmid || targetParts[1] || "");
+          loadSoftNavigation(restoreUrl);
           return;
         }
         if (action === "edit-tags") {
@@ -5182,6 +5221,12 @@
 
   const loadSoftNavigation = async (url, options = {}) => {
     const push = options.push !== false;
+
+    const contextMenu = document.getElementById("context-menu");
+    if (contextMenu) {
+      contextMenu.hidden = true;
+    }
+    clearVmContextHighlights();
 
     if (navigationController) {
       navigationController.abort();
@@ -6045,7 +6090,7 @@
   };
 
   const initConfirmForms = (root) => {
-    root.querySelectorAll("form[data-confirm]").forEach((form) => {
+    root.querySelectorAll("form[data-confirm]:not([data-guest-action-form])").forEach((form) => {
       if (form.dataset.confirmBound) return;
       form.dataset.confirmBound = "1";
       form.addEventListener("submit", (e) => {
@@ -6338,7 +6383,8 @@
     const layoutKey = "pve-helper-vm-summary-layout-v2";
     // Hidden cards (via the "Show cards" picker) are display:none — exclude them
     // from layout/order/drag so the packing leaves no gap where they'd sit.
-    const cardList = () => Array.from(grid.querySelectorAll("[data-card-key]")).filter((card) => card.style.display !== "none");
+    const cardList = () =>
+      Array.from(grid.querySelectorAll("[data-card-key]")).filter((card) => card.style.display !== "none");
     const autoCardList = () => cardList().filter((card) => card.dataset.cardSize === "auto");
 
     const savedSizes = () => {

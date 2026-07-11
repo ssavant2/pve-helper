@@ -7304,31 +7304,40 @@ class GuestBackupRestoreTests(TestCase):
 
     def test_restore_page_embeds_parseable_storage_options(self):
         archive = "backup:vzdump-qemu-500-2026_07_11-12_00_00.vma.zst"
+        other_archive = "backup:vzdump-qemu-507-2026_07_11-12_00_00.vma.zst"
 
         class FakeClient:
             endpoint = "https://pve1.invalid:8006"
 
             def node_names(self, fallback=""):
-                return ["pve1"]
+                return ["pve1", "pve2"]
 
             def get(self, path, **_kwargs):
                 if path == "cluster/nextid":
                     return 501
-                if path == "nodes/pve1/storage":
+                if path in {"nodes/pve1/storage", "nodes/pve2/storage"}:
                     return [
                         {"storage": "backup", "content": "backup", "active": 1},
                         {"storage": "images", "content": "images", "active": 1},
                     ]
-                if path == "nodes/pve1/storage/backup/content?content=backup":
-                    return [{"volid": archive}]
+                if path in {
+                    "nodes/pve1/storage/backup/content?content=backup",
+                    "nodes/pve2/storage/backup/content?content=backup",
+                }:
+                    return [{"volid": archive}, {"volid": other_archive}]
                 raise ProxmoxAPIError(path)
 
         with patch("core.views.common.configured_clients", return_value=[FakeClient()]):
-            response = self.client.get(reverse("core:guest_backup_restore"))
+            response = self.client.get(
+                reverse("core:guest_backup_restore"),
+                {"source_type": "vm", "source_vmid": "500"},
+            )
 
         self.assertContains(response, 'id="restore-storage-options"')
         self.assertContains(response, '"vm": ["images"]')
         self.assertNotContains(response, r"{\u0022")
+        self.assertEqual(len(response.context["archives"]), 1)
+        self.assertEqual(response.context["archives"][0]["source_vmid"], 500)
 
     def test_overwrite_uses_fresh_power_state(self):
         archive = "backup:vzdump-qemu-500-2026_07_11-12_00_00.vma.zst"

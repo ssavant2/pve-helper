@@ -4718,6 +4718,11 @@ def _backup_archive_type(volid: str) -> str:
     return ""
 
 
+def _backup_archive_vmid(volid: str) -> int | None:
+    match = re.search(r"(?:^|[:/])vzdump-(?:qemu|lxc)-(\d+)-", str(volid))
+    return int(match.group(1)) if match else None
+
+
 def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list[str]]], str]:
     """Discover restoreable archives and compatible target storages live.
 
@@ -4730,7 +4735,7 @@ def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list
     storage_options: dict[str, dict[str, list[str]]] = {}
     nextid = ""
     seen_nodes: set[str] = set()
-    seen_archives: set[tuple[str, str, str, str]] = set()
+    seen_archives: set[tuple[str, str, str]] = set()
     for client in common.configured_clients():
         endpoint = str(getattr(client, "endpoint", ""))
         try:
@@ -4768,7 +4773,9 @@ def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list
                 for entry in entries if isinstance(entries, list) else []:
                     volid = str(entry.get("volid") or "")
                     object_type = _backup_archive_type(volid)
-                    key = (endpoint, node, storage_id, volid)
+                    # Shared backup storage exposes the same archive through
+                    # every cluster node. It is still one archive in the UI.
+                    key = (endpoint, storage_id, volid)
                     if not object_type or key in seen_archives:
                         continue
                     seen_archives.add(key)
@@ -4781,6 +4788,8 @@ def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list
                             "node": node,
                             "storage": storage_id,
                             "volid": volid,
+                            "name": volid.rsplit("/", 1)[-1],
+                            "source_vmid": _backup_archive_vmid(volid),
                             "object_type": object_type,
                             "type_label": "VM" if object_type == "vm" else "CT",
                             "ctime": ctime,
@@ -4801,6 +4810,17 @@ def _restore_archive_from_key(key: str, archives: list[dict]) -> dict | None:
     exact = next((archive for archive in archives if archive["key"] == key), None)
     if exact is not None:
         return exact
+    endpoint_parts = key.split("|", 3)
+    if len(endpoint_parts) == 4:
+        endpoint, _node, storage, volid = endpoint_parts
+        return next(
+            (
+                archive
+                for archive in archives
+                if archive["endpoint"] == endpoint and archive["storage"] == storage and archive["volid"] == volid
+            ),
+            None,
+        )
     # Archive links from the guest Backup tab intentionally omit the endpoint
     # URL. Resolve them from fresh discovery rather than trusting query data.
     parts = key.split("|", 2)
@@ -4828,7 +4848,16 @@ def guest_backup_restore(request):
         messages.error(request, "VM/CT restore is disabled (VM_WRITE_ENABLED is off).")
         return redirect("core:vms")
     archives, nodes, storage_options, nextid = _restore_options()
+    restore_error = ""
     selected_archive_key = request.POST.get("archive_key", "") if request.method == "POST" else request.GET.get("archive", "")
+    source_type = (request.POST.get("source_type", "") if request.method == "POST" else request.GET.get("source_type", "")).strip()
+    source_vmid_text = (
+        request.POST.get("source_vmid", "") if request.method == "POST" else request.GET.get("source_vmid", "")
+    ).strip()
+    source_vmid = int(source_vmid_text) if source_vmid_text.isdigit() and int(source_vmid_text) > 0 else None
+    if source_type not in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT}:
+        source_type = ""
+        source_vmid = None
     if request.method != "POST" and not selected_archive_key:
         storage_hint = request.GET.get("storage", "").strip()
         path_hint = request.GET.get("path", "").strip()
@@ -4841,10 +4870,27 @@ def guest_backup_restore(request):
             ),
             "",
         )
+    selected_archive = _restore_archive_from_key(selected_archive_key, archives) if selected_archive_key else None
+    if selected_archive is not None and source_vmid is None:
+        source_type = selected_archive["object_type"]
+        source_vmid = selected_archive.get("source_vmid")
+    if source_type and source_vmid:
+        archives = [
+            archive
+            for archive in archives
+            if archive["object_type"] == source_type and archive.get("source_vmid") == source_vmid
+        ]
+    elif selected_archive is not None:
+        archives = [
+            archive
+            for archive in archives
+            if archive["object_type"] == selected_archive["object_type"]
+            and archive.get("source_vmid") == selected_archive.get("source_vmid")
+        ]
     if request.method == "POST":
         error = _queue_guest_backup_restore(request, archives)
         if error:
-            messages.error(request, error)
+            restore_error = error
         else:
             return redirect("core:vms")
     context = {
@@ -4854,6 +4900,9 @@ def guest_backup_restore(request):
         "storage_options": storage_options,
         "nextid": nextid,
         "selected_archive_key": selected_archive_key,
+        "restore_error": restore_error,
+        "source_type": source_type,
+        "source_vmid": source_vmid or "",
         "form_values": request.POST
         if request.method == "POST"
         else {"node": nodes[0]["key"] if nodes else "", "vmid": nextid},

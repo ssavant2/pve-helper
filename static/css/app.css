@@ -4927,6 +4927,56 @@ body.cards-dragging {
   font: inherit;
 }
 
+.restore-page-shell {
+  display: grid;
+  place-items: start center;
+  min-height: 100%;
+  padding: 36px 16px;
+}
+
+.restore-page-dialog {
+  display: block;
+  width: min(820px, calc(100vw - 48px));
+  margin: 0;
+}
+
+.restore-page-dialog .restore-vmid-locked {
+  background: var(--surface-alt);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.restore-dialog-close {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.restore-dialog-close:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+.restore-dialog-summary {
+  margin: 2px 0 0;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.restore-confirmation {
+  display: grid;
+  gap: 10px;
+}
+
 .snapshot-vmstate {
   display: inline-flex;
   align-items: center;
