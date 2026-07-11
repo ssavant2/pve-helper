@@ -6930,6 +6930,19 @@ html[data-theme="dark"] .hardware-editor-page {
   margin-left: auto;
 }
 
+/* Summary "Show cards" picker: sits on its own line under the Schedule Task
+   button, with simple checkbox rows (no drag grip like the overview columns). */
+.page-header-actions .card-picker {
+  flex-basis: 100%;
+  margin-left: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+.card-picker .column-picker-panel label {
+  grid-template-columns: 18px minmax(0, 1fr);
+  cursor: pointer;
+}
+
 .column-picker summary {
   cursor: pointer;
   list-style: none;

@@ -27,6 +27,12 @@
       </div>
       <div class="page-header-actions">
         <a class="secondary-action" href="{{ schedule_action_url }}">Schedule Task</a>
+        {% if active_guest_tab == "summary" %}
+          <details class="column-picker card-picker" data-summary-card-picker>
+            <summary>Show cards</summary>
+            <div class="column-picker-panel" data-summary-card-picker-panel></div>
+          </details>
+        {% endif %}
       </div>
     </div>
     {% if guest.ambiguous %}

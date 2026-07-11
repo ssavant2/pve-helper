@@ -6483,7 +6483,9 @@
     const orderKey = "pve-helper-vm-summary-order";
     const sizeKey = "pve-helper-vm-summary-card-sizes";
     const layoutKey = "pve-helper-vm-summary-layout-v2";
-    const cardList = () => Array.from(grid.querySelectorAll("[data-card-key]"));
+    // Hidden cards (via the "Show cards" picker) are display:none — exclude them
+    // from layout/order/drag so the packing leaves no gap where they'd sit.
+    const cardList = () => Array.from(grid.querySelectorAll("[data-card-key]")).filter((card) => card.style.display !== "none");
     const autoCardList = () => cardList().filter((card) => card.dataset.cardSize === "auto");
 
     const savedSizes = () => {
@@ -6659,6 +6661,13 @@
 
     let activeLayout = resolveLayout(Object.keys(loadLayout()).length ? loadLayout() : layoutFromDom());
     applyLayout(activeLayout);
+
+    // Re-pack after the card picker shows/hides a card.
+    grid.relayoutSummaryCards = () => {
+      activeLayout = resolveLayout(activeLayout);
+      applyLayout(activeLayout);
+      persistLayout(activeLayout);
+    };
 
     grid.querySelectorAll("[data-card-size-toggle]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -7968,6 +7977,71 @@
     });
   };
 
+  const initSummaryCardPicker = (root = document) => {
+    root.querySelectorAll("[data-summary-card-picker]").forEach((picker) => {
+      if (picker.dataset.initialized === "true") {
+        return;
+      }
+      const grid = document.querySelector("[data-summary-cards]");
+      const panel = picker.querySelector("[data-summary-card-picker-panel]");
+      if (!grid || !panel) {
+        return;
+      }
+      picker.dataset.initialized = "true";
+      const storageKey = "pve-helper-vm-summary-hidden";
+      let hidden = [];
+      try {
+        const stored = JSON.parse(localStorage.getItem(storageKey) || "[]");
+        if (Array.isArray(stored)) {
+          hidden = stored.filter((key) => typeof key === "string");
+        }
+      } catch (_error) {
+        hidden = [];
+      }
+      const cards = Array.from(grid.querySelectorAll(":scope > [data-card-key]"));
+      const cardLabel = (card) => card.querySelector(".panel-heading h2")?.textContent?.trim() || card.dataset.cardKey;
+      const applyHidden = () => {
+        cards.forEach((card) => {
+          card.style.display = hidden.includes(card.dataset.cardKey) ? "none" : "";
+        });
+        // display:none uses inline style, which the picker filters on; re-pack.
+        grid.relayoutSummaryCards?.();
+      };
+
+      panel.innerHTML = "";
+      cards.forEach((card) => {
+        const key = card.dataset.cardKey;
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = !hidden.includes(key);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) {
+            hidden = hidden.filter((item) => item !== key);
+          } else if (!hidden.includes(key)) {
+            hidden.push(key);
+          }
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(hidden));
+          } catch (_error) {
+            // persistence is optional
+          }
+          applyHidden();
+        });
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(` ${cardLabel(card)}`));
+        panel.appendChild(label);
+      });
+      applyHidden();
+
+      document.addEventListener("click", (event) => {
+        if (picker.open && !picker.contains(event.target)) {
+          picker.open = false;
+        }
+      });
+    });
+  };
+
   const initPage = (root = document) => {
     initHardwareEditor(root);
     initVmRegister(root);
@@ -7978,6 +8052,7 @@
     sortGuestList(document.documentElement.dataset.guestNameStyle !== "name-only");
     initNodeReload(root);
     initSummaryCards(root);
+    initSummaryCardPicker(root);
     initAutoSubmitForms(root);
     initAuditExportDialog(root);
     initScanActions(root);
