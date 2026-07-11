@@ -8022,8 +8022,12 @@
       } catch (_error) {
         hidden = [];
       }
-      const cards = Array.from(grid.querySelectorAll(":scope > [data-card-key]"));
       const cardLabel = (card) => card.querySelector(".panel-heading h2")?.textContent?.trim() || card.dataset.cardKey;
+      // The picker is a pure show/hide list (cards are reordered by dragging the
+      // cards themselves), so list it alphabetically for easy scanning.
+      const cards = Array.from(grid.querySelectorAll(":scope > [data-card-key]")).sort((a, b) =>
+        cardLabel(a).localeCompare(cardLabel(b))
+      );
       const applyHidden = () => {
         cards.forEach((card) => {
           card.style.display = hidden.includes(card.dataset.cardKey) ? "none" : "";
