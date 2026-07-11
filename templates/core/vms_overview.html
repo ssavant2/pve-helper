@@ -140,6 +140,7 @@
                   <input type="checkbox" data-vm-select value="{{ g.object_type }}:{{ g.vmid }}" aria-label="Select {{ g.guest_identity.full_label_with_type }}">
                 </td>
                 <td data-column="name" data-sort-value="{{ g.name|default:g.vmid }}">
+                  {% if g.is_linked_clone %}<span class="guest-lineage-connector overview-clone-connector" aria-hidden="true">└</span>{% endif %}
                   <a class="vm-name-link" href="{{ g.detail_url }}">
                     <span class="guest-list-icon{% if g.status == 'running' %} running-icon{% elif g.status == 'paused' %} paused-icon{% elif g.status == 'hibernated' %} hibernated-icon{% endif %}" data-guest-status-icon title="{{ g.status|default:'unknown' }}">
                       <i data-vicon="{% if g.object_type == 'ct' %}container{% elif g.is_template %}template{% else %}vm{% endif %}" aria-hidden="true"></i>
