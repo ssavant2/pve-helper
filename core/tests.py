@@ -547,6 +547,47 @@ class StorageRescanAfterCloneTests(TestCase):
         self.assertEqual(ScanRun.objects.filter(target_storage=storage, status=ScanRun.Status.QUEUED).count(), 0)
 
 
+class ShutdownForceStopOfferTests(TestCase):
+    """A timed-out graceful shutdown offers a force-stop follow-up on its task."""
+
+    def _event(self, action, error):
+        return AuditEvent.objects.create(
+            action=action,
+            object_type="guest",
+            object_id="vm:106",
+            outcome="failed",
+            details={
+                "target_type": "vm",
+                "vmid": 106,
+                "node": "pve3",
+                "name": "Linux-Tinycore",
+                "error": error,
+            },
+        )
+
+    def test_timed_out_shutdown_offers_force_stop(self):
+        from core.services.recent_tasks import _guest_task, serialize_task
+
+        event = self._event("guest.power.shutdown", "VM quit/powerdown failed - got timeout")
+        task = serialize_task(_guest_task(event))
+        self.assertTrue(task["offer_force_stop"])
+        self.assertEqual(task["force_stop_target"], "vm:106@pve3")
+
+    def test_non_timeout_shutdown_failure_does_not_offer(self):
+        from core.services.recent_tasks import _guest_task, serialize_task
+
+        event = self._event("guest.power.shutdown", "permission denied")
+        task = serialize_task(_guest_task(event))
+        self.assertFalse(task["offer_force_stop"])
+
+    def test_other_actions_never_offer(self):
+        from core.services.recent_tasks import _guest_task, serialize_task
+
+        event = self._event("guest.power.reboot", "got timeout")
+        task = serialize_task(_guest_task(event))
+        self.assertFalse(task["offer_force_stop"])
+
+
 class GuestTaskReaperTests(TestCase):
     def _running_event(self, age_seconds: int):
         from datetime import timedelta

@@ -227,6 +227,8 @@ def serialize_task(task: dict[str, object]) -> dict[str, object]:
         "path": str(task.get("path", "")),
         "path_parent": str(task.get("path_parent", "")),
         "cancelable": bool(task.get("cancelable")),
+        "offer_force_stop": bool(task.get("offer_force_stop")),
+        "force_stop_target": str(task.get("force_stop_target", "")),
     }
 
 
@@ -307,10 +309,29 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         extra = ", ".join(details["fields"]) if isinstance(details["fields"], list) else str(details["fields"])
     if not extra and details.get("error"):
         extra = str(details["error"])
+    # A graceful shutdown that timed out (no ACPI handler / no guest agent in the
+    # guest) leaves the guest running. Offer a force-stop follow-up on the task.
+    error_text = str(details.get("error") or "").lower()
+    offer_force_stop = (
+        event.action == "guest.power.shutdown"
+        and status_class == "failed"
+        and ("timeout" in error_text or "powerdown failed" in error_text)
+    )
+    force_stop_target = ""
+    if offer_force_stop:
+        node = str(details.get("proxmox_task_node") or details.get("node") or "").strip()
+        ttype = str(details.get("target_type") or "").strip()
+        vmid = details.get("vmid")
+        if ttype and vmid is not None:
+            force_stop_target = f"{ttype}:{vmid}" + (f"@{node}" if node else "")
+        else:
+            offer_force_stop = False
     return {
         "id": f"guest:{event.id}",
         "kind": "guest",
         "action": event.action,
+        "offer_force_stop": offer_force_stop,
+        "force_stop_target": force_stop_target,
         "name": GUEST_TASK_NAMES.get(event.action, event.action),
         "target": identity.full_label_with_type,
         "target_guest": identity.as_dict(),

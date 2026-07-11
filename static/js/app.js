@@ -2025,6 +2025,16 @@
     }
 
     recentTasks.dataset.initialized = "true";
+    // A timed-out graceful shutdown shows a "question" status; clicking it opens
+    // the force-stop follow-up dialog.
+    recentTasks.addEventListener("click", (event) => {
+      const question = event.target.closest("[data-force-stop-target]");
+      if (!question || !recentTasks.contains(question)) {
+        return;
+      }
+      event.preventDefault();
+      openForceStopDialog(question.dataset.forceStopTarget || "", question.dataset.forceStopLabel || "");
+    });
     const rows = recentTasks.querySelector("[data-task-rows]");
     const previousButton = recentTasks.querySelector("[data-task-prev]");
     const nextButton = recentTasks.querySelector("[data-task-next]");
@@ -2403,7 +2413,11 @@
       >
         <td data-column="task-name" data-sort-value="${escapeHtml(task.name)}">${escapeHtml(task.name)}</td>
         <td data-column="target" data-sort-value="${escapeHtml(taskTargetSortValue(task))}">${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
-        <td data-column="status" data-sort-value="${escapeHtml(task.status)}"><span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span></td>
+        <td data-column="status" data-sort-value="${escapeHtml(task.status)}">${
+          task.offer_force_stop
+            ? `<button type="button" class="task-question-badge" data-force-stop-target="${escapeHtml(task.force_stop_target)}" data-force-stop-label="${escapeHtml(task.target)}">A question — click to answer</button>`
+            : `<span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span>`
+        }</td>
         <td data-column="details" data-sort-value="${escapeHtml(task.details)}">${taskDetailsHtml(task)}</td>
         <td data-column="initiator" data-sort-value="${escapeHtml(task.initiator)}">${escapeHtml(task.initiator)}</td>
         <td data-column="queued" data-sort-value="${escapeHtml(task.queued_for)}">${escapeHtml(task.queued_for)}</td>
@@ -3764,6 +3778,81 @@
       dialog.showModal();
     }
     return dialog;
+  };
+
+  // Issue an ungraceful hard stop for one guest straight from the taskbar (used
+  // by the force-stop follow-up on a timed-out graceful shutdown). POSTs the same
+  // bulk "stop" action the overview uses, with an optimistic pending task.
+  const forceStopGuest = async (target, label) => {
+    const taskbar = document.querySelector("[data-recent-tasks]");
+    const bulkUrl = taskbar?.dataset.vmsBulkActionUrl || "";
+    const csrf = taskbar?.dataset.csrfToken || "";
+    if (!bulkUrl || !target) {
+      return;
+    }
+    const pending = {
+      id: `pending-forcestop-${Date.now()}`,
+      name: "Power off guest",
+      target: label || target,
+      target_guest: null,
+      status: "Sending",
+      status_class: "queued",
+      details: "Force stop",
+      initiator: "-",
+      queued_for: "-",
+      started_at: taskDateLabel(new Date()),
+      finished_at: "-",
+      server: "-",
+      created_at_ms: Date.now(),
+      pending: true,
+    };
+    addPendingRecentTask(pending);
+    const fail = (message) => {
+      updatePendingRecentTask({
+        id: pending.id,
+        status: "Failed",
+        status_class: "failed",
+        details: message,
+        finished_at: taskDateLabel(new Date()),
+        finished_at_ms: Date.now(),
+      });
+    };
+    try {
+      const response = await fetch(new URL(bulkUrl, window.location.origin), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-CSRFToken": csrf,
+          "X-Requested-With": "fetch",
+        },
+        body: new URLSearchParams({ bulk_action: "stop", guest: target }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) {
+        fail((payload.errors || [`Force stop failed (HTTP ${response.status})`]).join("; "));
+        return;
+      }
+      updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running", details: "Force stop" });
+    } catch (_error) {
+      fail("Network error");
+    }
+  };
+
+  const openForceStopDialog = (target, label) => {
+    openVmFormDialog({
+      title: "Shutdown timed out",
+      summary: label || target,
+      submitLabel: "Force stop",
+      submitClass: "primary-action danger-action",
+      bodyHtml: `
+        <p>The graceful shutdown of <strong>${escapeHtml(label || target)}</strong> timed out — the guest did not respond to the ACPI power signal (no <code>acpid</code> or QEMU guest agent running), so it is <strong>still running</strong>.</p>
+        <p><strong>Force stop</strong> is an ungraceful hard power-off, like pulling the plug: unsaved data inside the guest may be lost.</p>
+      `,
+      onSubmit: () => {
+        forceStopGuest(target, label);
+        return "";
+      },
+    });
   };
 
   const openSnapshotDialog = (overview, rows) => {

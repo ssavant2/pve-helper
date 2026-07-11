@@ -2614,6 +2614,32 @@ code {
   color: var(--amber);
 }
 
+/* Interactive "A question — click to answer" status on a task that needs a
+   decision (e.g. a timed-out shutdown offering force-stop). Pulses to draw the
+   eye without being modal; clicking opens the follow-up dialog. */
+.task-question-badge {
+  display: inline-block;
+  border: 1px solid var(--amber);
+  background: var(--warning-bg);
+  color: var(--amber);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.85em;
+  font-weight: 600;
+  cursor: pointer;
+  animation: task-question-pulse 1.6s ease-in-out infinite;
+}
+.task-question-badge:hover {
+  filter: brightness(1.08);
+}
+@keyframes task-question-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 164, 65, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(217, 164, 65, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-question-badge { animation: none; }
+}
+
 .badge.referenced {
   background: var(--success-bg);
   color: var(--green);
