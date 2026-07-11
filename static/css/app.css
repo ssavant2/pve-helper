@@ -6946,8 +6946,22 @@ html[data-theme="dark"] .hardware-editor-page {
 .column-picker summary {
   cursor: pointer;
   list-style: none;
-  color: var(--accent);
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.column-picker summary:hover,
+.column-picker[open] summary {
+  background: var(--blue-soft);
+  color: var(--accent-strong);
 }
 
 .column-picker summary::-webkit-details-marker {
