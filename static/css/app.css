@@ -4016,28 +4016,15 @@ code {
   font-weight: 700;
 }
 
-/* Flat 'linked clone of X' marker in the overview name cell (no reordering). */
-.guest-clone-note {
-  color: var(--muted);
-  font-size: 0.82em;
-  margin-left: 6px;
-  white-space: nowrap;
-}
-
-/* The └ connector only applies when the overview is clumped by name (children
-   sit under their parent); it is hidden in flat sorts, where the 'clone of X'
-   text marker carries the lineage instead. */
-.overview-clone-connector {
-  display: none;
-}
-.vm-overview-table[data-name-clumped="true"] tr[data-guest-linked-clone="true"] td[data-column="name"] {
-  padding-left: 22px;
-}
-.vm-overview-table[data-name-clumped="true"] .overview-clone-connector {
-  display: inline;
-}
-.vm-overview-table[data-name-clumped="true"] tr[data-guest-linked-clone="true"] .guest-clone-note {
-  display: none;
+/* Big 'L' before the VM icon on a linked-clone row: a compact lineage marker
+   shown in every sort order (replaces the connector / indent / 'clone of X'
+   text). The icon shifts slightly right to make room. */
+.clone-marker {
+  font-weight: 700;
+  font-size: 1.15em;
+  line-height: 1;
+  color: var(--accent, #3b82f6);
+  margin-right: 4px;
 }
 
 .guest-list-item:hover {

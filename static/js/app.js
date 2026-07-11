@@ -6123,11 +6123,7 @@
         });
         // Sorting the overview by name clumps linked clones under their parent
         // (children sort by the parent's name); every other column stays flat.
-        // The clumped state drives the CSS indent/connector on clone rows.
         const nameClump = tableName === "vm-overview" && (header.dataset.column || "") === "name";
-        if (tableName === "vm-overview") {
-          table.dataset.nameClumped = nameClump ? "true" : "false";
-        }
         const finalRows = nameClump ? groupRowsBySubtree(rows) : rows;
         finalRows.forEach((row) => {
           tbody.appendChild(row);
@@ -6180,7 +6176,6 @@
           groupRowsBySubtree(rows).forEach((row) => {
             tbody.appendChild(row);
           });
-          table.dataset.nameClumped = "true";
         }
       }
     });
