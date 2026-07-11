@@ -488,6 +488,7 @@ def _audit_action_label(event: AuditEvent) -> str:
         "guest.pool.updated": "Move guest to pool",
         "guest.migrate": "Migrate guest",
         "guest.clone.create": "Clone guest",
+        "guest.template.clone": "Clone to template",
         "guest.tags.updated": "Update guest tags",
         "guest.agent.enable": "Enable guest agent",
         "guest.agent.disable": "Disable guest agent",

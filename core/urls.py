@@ -1,6 +1,7 @@
 from django.urls import path
 
 from . import views
+from .template_clone_views import clone_guest_to_template
 
 app_name = "core"
 
@@ -23,6 +24,7 @@ urlpatterns = [
     path("vms/<str:object_type>/<int:vmid>/console/session/", views.guest_console_session, name="guest_console_session"),
     path("vms/<str:object_type>/<int:vmid>/agent-summary/", views.guest_agent_summary_api, name="guest_agent_summary_api"),
     path("vms/<str:object_type>/<int:vmid>/clone-options/", views.guest_clone_options, name="guest_clone_options"),
+    path("vms/<str:object_type>/<int:vmid>/clone-to-template/", clone_guest_to_template, name="guest_clone_to_template"),
     path("vms/<str:object_type>/<int:vmid>/backup-options/", views.guest_backup_options, name="guest_backup_options"),
     path("vms/<str:object_type>/<int:vmid>/pool-options/", views.guest_pool_options, name="guest_pool_options"),
     path("vms/<str:object_type>/<int:vmid>/migrate-options/", views.guest_migrate_options, name="guest_migrate_options"),

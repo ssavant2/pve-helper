@@ -30,6 +30,7 @@ GUEST_TASK_NAMES = {
     "guest.pool.updated": "Move to pool",
     "guest.migrate": "Migrate",
     "guest.clone.create": "Clone guest",
+    "guest.template.clone": "Clone to template",
     "guest.tags.updated": "Update tags",
     "guest.agent.enable": "Enable guest agent",
     "guest.agent.disable": "Disable guest agent",
@@ -270,7 +271,7 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
     status, status_class = _guest_task_status(event)
     finished_at = _guest_task_finished_at(event, details, status_class)
     extra = ""
-    if event.action == "guest.clone.create" and details.get("new_vmid"):
+    if event.action in {"guest.clone.create", "guest.template.clone"} and details.get("new_vmid"):
         new_name = str(details.get("new_name") or "").strip()
         extra = f"new VMID {details['new_vmid']}" + (f" ({new_name})" if new_name else "")
     elif event.action == "guest.tags.updated":

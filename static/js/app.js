@@ -2242,7 +2242,7 @@
       }
 
       const completedInventoryTask = tasks.find((task) => {
-        if (!["guest.destroy", "guest.clone.create"].includes(task.action)) {
+        if (!["guest.destroy", "guest.clone.create", "guest.template.clone"].includes(task.action)) {
           return false;
         }
         if (task.status_class !== "completed") {
@@ -3165,6 +3165,7 @@
         pool: "guest.pool.updated",
         migrate: "guest.migrate",
         clone: "guest.clone.create",
+        clone_to_template: "guest.template.clone",
         tags: "guest.tags.updated",
         agent_enable: "guest.agent.enable",
         agent_disable: "guest.agent.disable",
@@ -3194,6 +3195,7 @@
       pool: "Move to pool",
       migrate: "Migrate",
       clone: "Clone guest",
+      clone_to_template: "Clone to template",
       tags: "Update tags",
       agent_enable: "Enable guest agent",
       agent_disable: "Disable guest agent",
@@ -4546,15 +4548,66 @@
       });
   };
 
-  const openCloneDialog = (overview, rows) => {
+  const submitTemplateClone = async (_overview, rows, fields) => {
+    const row = rows[0];
+    const targetParts = String(row?.dataset.guestTarget || "")
+      .split("@")[0]
+      .split(":");
+    const type = row?.dataset.guestType || targetParts[0] || "";
+    const vmid = row?.dataset.guestVmid || targetParts[1] || "";
+    const pending = createPendingVmTask("clone_to_template", fields, rows);
+    addPendingRecentTask(pending);
+    const url = `/vms/${encodeURIComponent(type)}/${encodeURIComponent(vmid)}/clone-to-template/`;
+    try {
+      const body = new URLSearchParams({
+        clone_newid: fields.clone_newid,
+        clone_name: fields.clone_name,
+        clone_storage: fields.clone_storage || "",
+      });
+      const response = await fetch(url, {
+        method: "POST",
+        body,
+        headers: { Accept: "application/json", "X-Requested-With": "fetch" },
+      });
+      const payload = response.ok ? await response.json() : { ok: false, errors: [`HTTP ${response.status}`] };
+      if (!payload.ok) {
+        updatePendingRecentTask({
+          id: pending.id,
+          status: "Failed",
+          status_class: "failed",
+          details: (payload.errors || ["Clone to template failed."]).join("; "),
+          finished_at: taskDateLabel(new Date()),
+          finished_at_ms: Date.now(),
+        });
+        return;
+      }
+      updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running", details: "Accepted" });
+      window.pveHelperRefreshRecentTasks?.();
+    } catch (_error) {
+      updatePendingRecentTask({
+        id: pending.id,
+        status: "Failed",
+        status_class: "failed",
+        details: "Network error",
+        finished_at: taskDateLabel(new Date()),
+        finished_at_ms: Date.now(),
+      });
+    }
+  };
+
+  const openCloneDialog = (overview, rows, { toTemplate = false } = {}) => {
     const row = rows[0];
     const label = row?.dataset.guestLabel || "guest";
     const guestName = row?.dataset.guestName || "";
     let usedVmids = new Set();
     const dialog = openVmFormDialog({
-      title: "Clone",
+      title: toTemplate
+        ? "Clone to Template"
+        : row?.dataset.guestTemplate === "true"
+          ? "New VM from This Template"
+          : "Clone",
       summary: label,
-      submitLabel: "Clone",
+      submitLabel: toTemplate ? "Clone to Template" : "Clone",
       bodyHtml: `
         <label class="form-field">
           <span>New VMID</span>
@@ -4570,10 +4623,14 @@
             <option value="">Loading storages...</option>
           </select>
         </label>
-        <label class="form-field form-field-inline">
+        ${
+          toTemplate
+            ? '<p class="form-hint">Creates a full clone and converts the new VM to a template after the clone completes.</p>'
+            : `<label class="form-field form-field-inline">
           <input type="checkbox" name="clone_full" value="1" checked>
           <span>Full clone</span>
-        </label>
+        </label>`
+        }
         <p class="form-hint" data-clone-full-hint hidden></p>
       `,
       onSubmit: (formData) => {
@@ -4588,19 +4645,17 @@
         if (!name) {
           return "Name is required.";
         }
-        submitVmBulkAction(
-          overview,
-          "clone",
-          {
-            clone_newid: newid,
-            clone_name: name,
-            clone_storage: String(formData.get("clone_storage") || "").trim(),
-            // Read the property, not FormData: a disabled (forced-full) checkbox
-            // is omitted from FormData and would otherwise read as linked.
-            clone_full: fullCheckbox?.checked ? "1" : "0",
-          },
-          rows
-        );
+        const fields = {
+          clone_newid: newid,
+          clone_name: name,
+          clone_storage: String(formData.get("clone_storage") || "").trim(),
+          clone_full: fullCheckbox?.checked ? "1" : "0",
+        };
+        if (toTemplate) {
+          submitTemplateClone(overview, rows, fields);
+        } else {
+          submitVmBulkAction(overview, "clone", fields, rows);
+        }
         return "";
       },
     });
@@ -4613,8 +4668,9 @@
       submitButton.disabled = true;
     }
     const syncStorageState = () => {
-      if (storageSelect && fullCheckbox) {
-        storageSelect.disabled = !fullCheckbox.checked || storageSelect.options.length === 0;
+      if (storageSelect) {
+        storageSelect.disabled =
+          toTemplate || Boolean(fullCheckbox && !fullCheckbox.checked) || storageSelect.options.length === 0;
       }
     };
     fullCheckbox?.addEventListener("change", syncStorageState);
@@ -4902,7 +4958,8 @@
       <div class="context-menu-submenu">
         <button type="button" class="context-menu-parent">Template <span>›</span></button>
         <div class="context-menu-submenu-panel">
-          <button type="button" data-vm-action="clone" ${singleSelected && writable ? "" : "disabled"}>Clone...</button>
+          <button type="button" data-vm-action="clone" ${singleSelected && writable ? "" : "disabled"}>${allTemplates ? "New VM from This Template..." : "Clone..."}</button>
+          ${allTemplates ? `<button type="button" data-vm-action="clone-to-template" ${singleSelected && writable ? "" : "disabled"}>Clone to Template...</button>` : ""}
           <button type="button" data-vm-action="template" ${writable && allStopped && allVms && noTemplates && noLinkedClones ? "" : "disabled"}>Convert to Template</button>
           <button type="button" data-vm-action="untemplate" ${singleSelected && writable && allStopped && allVms && allTemplates ? "" : "disabled"}>Convert Template to VM...</button>
         </div>
@@ -5129,6 +5186,12 @@
         }
         if (action === "clone") {
           openCloneDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "clone-to-template") {
+          openCloneDialog(activeVmOverview, targetRows, { toTemplate: true });
           menu.hidden = true;
           clearVmContextHighlights();
           return;
