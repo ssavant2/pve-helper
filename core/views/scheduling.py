@@ -178,6 +178,29 @@ def cancel_recent_task(request):
     return JsonResponse({"ok": True})
 
 
+@require_POST
+@app_login_required
+def dismiss_task_question(request):
+    """Mark a task's actionable question (e.g. a timed-out shutdown's force-stop
+    offer) as answered so it stops pulsing/pinning — the user either acted on it
+    or actively chose to ignore it."""
+    task_id = request.POST.get("task_id", "").strip()
+    if not task_id.startswith("guest:"):
+        return JsonResponse({"ok": False, "error": "Unsupported task."}, status=400)
+    try:
+        event_id = int(task_id.split(":", 1)[1])
+    except ValueError:
+        return JsonResponse({"ok": False, "error": "Invalid task id."}, status=400)
+    event = AuditEvent.objects.filter(pk=event_id, action="guest.power.shutdown").first()
+    if event is None:
+        return JsonResponse({"ok": False, "error": "Task not found."}, status=404)
+    details = dict(event.details) if isinstance(event.details, dict) else {}
+    details["force_stop_dismissed"] = True
+    event.details = details
+    event.save(update_fields=["details"])
+    return JsonResponse({"ok": True})
+
+
 def _cancel_guest_recent_task(request, event_id: int) -> None:
     event = get_object_or_404(AuditEvent, pk=event_id, action__startswith="guest.")
     details = dict(event.details) if isinstance(event.details, dict) else {}

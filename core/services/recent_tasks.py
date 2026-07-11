@@ -345,7 +345,12 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         node = str(details.get("proxmox_task_node") or details.get("node") or "").strip()
         ttype = str(details.get("target_type") or "").strip()
         vmid = details.get("vmid")
-        if not (ttype and vmid is not None):
+        if details.get("force_stop_dismissed"):
+            # User actively answered the question (force-stopped or chose to
+            # ignore it) — resolve it and stop pulsing/pinning.
+            offer_force_stop = False
+            status, status_class = "Completed", "completed"
+        elif not (ttype and vmid is not None):
             offer_force_stop = False
         elif _guest_is_stopped(ttype, int(vmid)):
             # Goal reached (guest is off) — resolve the question.

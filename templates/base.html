@@ -39,10 +39,10 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260711-55">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260711-56">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script defer src="{% static 'js/app.js' %}?v=20260711-55"></script>
+    <script defer src="{% static 'js/app.js' %}?v=20260711-56"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -226,6 +226,7 @@
         data-tasks-url="{% url 'core:recent_tasks' %}"
         data-task-cancel-url="{% url 'core:cancel_recent_task' %}"
         data-vms-bulk-action-url="{% url 'core:vms_bulk_action' %}"
+        data-dismiss-question-url="{% url 'core:dismiss_task_question' %}"
         data-task-page="0"
         data-task-poll-ms="10000"
         data-task-rendered-at="{{ app_recent_tasks_rendered_at|date:'c' }}"

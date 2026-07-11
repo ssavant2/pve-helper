@@ -2033,7 +2033,11 @@
         return;
       }
       event.preventDefault();
-      openForceStopDialog(question.dataset.forceStopTarget || "", question.dataset.forceStopLabel || "");
+      openForceStopDialog(
+        question.dataset.forceStopTarget || "",
+        question.dataset.forceStopLabel || "",
+        question.dataset.forceStopTaskId || ""
+      );
     });
     const rows = recentTasks.querySelector("[data-task-rows]");
     const previousButton = recentTasks.querySelector("[data-task-prev]");
@@ -2416,7 +2420,7 @@
         <td data-column="target" data-sort-value="${escapeHtml(taskTargetSortValue(task))}">${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
         <td data-column="status" data-sort-value="${escapeHtml(task.status)}">${
           task.offer_force_stop
-            ? `<button type="button" class="task-question-badge" data-force-stop-target="${escapeHtml(task.force_stop_target)}" data-force-stop-label="${escapeHtml(task.target)}">A question — click to answer</button>`
+            ? `<button type="button" class="task-question-badge" data-force-stop-target="${escapeHtml(task.force_stop_target)}" data-force-stop-label="${escapeHtml(task.target)}" data-force-stop-task-id="${escapeHtml(task.id || "")}">A question — click to answer</button>`
             : `<span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span>`
         }</td>
         <td data-column="details" data-sort-value="${escapeHtml(task.details)}">${taskDetailsHtml(task)}</td>
@@ -3855,8 +3859,35 @@
     }
   };
 
-  const openForceStopDialog = (target, label) => {
-    openVmFormDialog({
+  // Mark a task's question as answered so it stops pulsing/pinning. Any close of
+  // the dialog counts as answering it (acted on it, or actively chose to ignore).
+  const dismissTaskQuestion = async (taskId) => {
+    const taskbar = document.querySelector("[data-recent-tasks]");
+    const url = taskbar?.dataset.dismissQuestionUrl || "";
+    const csrf = taskbar?.dataset.csrfToken || "";
+    if (!url || !taskId) {
+      return;
+    }
+    try {
+      await fetch(new URL(url, window.location.origin), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-CSRFToken": csrf,
+          "X-Requested-With": "fetch",
+        },
+        body: new URLSearchParams({ task_id: taskId }),
+      });
+    } catch (_error) {
+      // Best effort; the next poll still reflects server state.
+    }
+    if (typeof window.pveHelperRefreshRecentTasks === "function") {
+      window.pveHelperRefreshRecentTasks();
+    }
+  };
+
+  const openForceStopDialog = (target, label, taskId) => {
+    const dialog = openVmFormDialog({
       title: "Shutdown timed out",
       summary: label || target,
       submitLabel: "Force stop",
@@ -3870,6 +3901,10 @@
         return "";
       },
     });
+    // Whether the user force-stops or cancels/dismisses, the question is answered.
+    if (taskId) {
+      dialog.addEventListener("close", () => dismissTaskQuestion(taskId), { once: true });
+    }
   };
 
   const openSnapshotDialog = (overview, rows) => {

@@ -98,6 +98,7 @@ urlpatterns = [
     path("audit/export/", views.audit_export, name="audit_export"),
     path("tasks/recent/", views.recent_tasks, name="recent_tasks"),
     path("tasks/cancel/", views.cancel_recent_task, name="cancel_recent_task"),
+    path("tasks/dismiss-question/", views.dismiss_task_question, name="dismiss_task_question"),
     path("scans/schedule/", views.update_scan_schedule_view, name="update_scan_schedule"),
     path("trash/purge-schedule/", views.update_trash_purge_schedule_view, name="update_trash_purge_schedule"),
     path("audit/retention-schedule/", views.update_audit_retention_schedule_view, name="update_audit_retention_schedule"),

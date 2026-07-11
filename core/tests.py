@@ -588,6 +588,29 @@ class ShutdownForceStopOfferTests(TestCase):
         task = self._task(event, live_status={})  # guest not found → keep offering
         self.assertTrue(task["offer_force_stop"])
 
+    def test_dismissed_question_resolves_even_if_running(self):
+        event = self._event("guest.power.shutdown", "got timeout")
+        details = dict(event.details)
+        details["force_stop_dismissed"] = True
+        event.details = details
+        event.save(update_fields=["details"])
+        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
+        self.assertFalse(task["offer_force_stop"])
+        self.assertEqual(task["status_class"], "completed")
+
+    def test_dismiss_endpoint_marks_event(self):
+        event = self._event("guest.power.shutdown", "got timeout")
+        self.client.force_login(get_user_model().objects.create_user("d", password="x"))
+        response = self.client.post(
+            reverse("core:dismiss_task_question"),
+            {"task_id": f"guest:{event.id}"},
+            HTTP_X_REQUESTED_WITH="fetch",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(json.loads(response.content)["ok"])
+        event.refresh_from_db()
+        self.assertTrue(event.details["force_stop_dismissed"])
+
     def test_non_timeout_shutdown_failure_does_not_offer(self):
         event = self._event("guest.power.shutdown", "permission denied")
         task = self._task(event, live_status={("pve3", "vm", 106): "running"})
