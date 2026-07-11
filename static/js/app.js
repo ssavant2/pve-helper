@@ -6595,30 +6595,35 @@
     const resolveLayout = (layout, preferredKey = "") => {
       const metrics = gridMetrics();
       const byKey = new Map(cardList().map((card) => [card.dataset.cardKey, card]));
-      const items = cardList().map((card) => {
-        const saved = layout[card.dataset.cardKey] || {};
-        return {
-          key: card.dataset.cardKey,
-          x: Math.max(0, Math.min(metrics.columns - 1, Number.isFinite(saved.x) ? saved.x : 0)),
-          y: Math.max(0, Number.isFinite(saved.y) ? saved.y : 0),
-          span: cardSpan(card),
-        };
+      const domIndex = (key) => cardList().indexOf(byKey.get(key));
+      // Cards with a saved slot keep it; cards without one (re-shown from the
+      // picker, or brand new) are dropped into the first free slot afterwards
+      // instead of piling onto (0,0).
+      const positioned = [];
+      const unpositioned = [];
+      cardList().forEach((card) => {
+        const key = card.dataset.cardKey;
+        const saved = layout[key] || {};
+        const item = { key, span: cardSpan(card) };
+        if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+          item.x = Math.max(0, Math.min(metrics.columns - 1, saved.x));
+          item.y = Math.max(0, saved.y);
+          positioned.push(item);
+        } else {
+          unpositioned.push(item);
+        }
       });
-      items.sort((left, right) => {
+      positioned.sort((left, right) => {
         if (left.key === preferredKey) {
           return -1;
         }
         if (right.key === preferredKey) {
           return 1;
         }
-        return (
-          left.y - right.y ||
-          left.x - right.x ||
-          cardList().indexOf(byKey.get(left.key)) - cardList().indexOf(byKey.get(right.key))
-        );
+        return left.y - right.y || left.x - right.x || domIndex(left.key) - domIndex(right.key);
       });
       const placed = [];
-      items.forEach((item) => {
+      positioned.forEach((item) => {
         let collision = hasCollision(item, placed);
         while (collision) {
           item.y = collision.y + collision.span;
@@ -6626,6 +6631,25 @@
         }
         placed.push(item);
       });
+      unpositioned
+        .sort((left, right) => domIndex(left.key) - domIndex(right.key))
+        .forEach((item) => {
+          for (let y = 0; ; y += 1) {
+            let slotted = false;
+            for (let x = 0; x < metrics.columns; x += 1) {
+              if (!hasCollision({ x, y, span: item.span }, placed)) {
+                item.x = x;
+                item.y = y;
+                slotted = true;
+                break;
+              }
+            }
+            if (slotted) {
+              break;
+            }
+          }
+          placed.push(item);
+        });
       return Object.fromEntries(placed.map((item) => [item.key, { x: item.x, y: item.y }]));
     };
 
