@@ -27,6 +27,7 @@
                 <div class="actions-menu-panel">
                   <a href="{% url 'core:guest_create' 'vm' %}">New VM</a>
                   <a href="{% url 'core:guest_create' 'ct' %}">New Container</a>
+                  <a href="{% url 'core:guest_backup_restore' %}">Restore Backup</a>
                 </div>
               </details>
             {% endif %}
@@ -55,6 +56,8 @@
              data-guest-name="{{ g.name }}"
              data-detail-url="{{ guest_sticky_url }}"
              data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
+             data-backup-options-url="{% url 'core:guest_backup_options' g.object_type g.vmid %}"
+             data-backup-url="{% url 'core:guest_backup' g.object_type g.vmid %}"
              data-clone-options-url="{% url 'core:guest_clone_options' g.object_type g.vmid %}"
              data-pool-options-url="{% url 'core:guest_pool_options' g.object_type g.vmid %}"
              data-migrate-options-url="{% url 'core:guest_migrate_options' g.object_type g.vmid %}"

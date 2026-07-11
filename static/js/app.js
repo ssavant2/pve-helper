@@ -2122,6 +2122,65 @@
       return false;
     };
 
+    let backupRefreshPending = false;
+    const refreshCurrentBackupView = async (backupView) => {
+      if (!backupView || backupRefreshPending) {
+        return;
+      }
+      const panel = backupView.querySelector("[data-backup-list-panel]");
+      if (!panel) {
+        return;
+      }
+      backupRefreshPending = true;
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("backup_partial", "1");
+        const response = await fetch(url.href, {
+          headers: { Accept: "application/json", "X-Requested-With": "fetch" },
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (data.html) {
+          panel.outerHTML = data.html;
+          backupView.dataset.renderedAtMs = String(data.rendered_at_ms || Date.now());
+          createIcons();
+          initGuestActionForms(backupView);
+        }
+      } catch (_error) {
+        // The archive list is refreshed opportunistically after a tracked job.
+      } finally {
+        backupRefreshPending = false;
+      }
+    };
+
+    const maybeRefreshBackupState = (tasks) => {
+      const backupView = document.querySelector("[data-guest-backup]");
+      if (!backupView) {
+        return false;
+      }
+      const objectType = backupView.dataset.objectType || "";
+      const vmid = String(backupView.dataset.vmid || "");
+      const renderedAtMs = Number(backupView.dataset.renderedAtMs || 0);
+      const completedTask = tasks.find((task) => {
+        if (!["guest.backup.run", "guest.backup.restore", "guest.backup.delete"].includes(String(task.action || ""))) {
+          return false;
+        }
+        if (task.status_class !== "completed" || Number(task.finished_at_ms || 0) <= renderedAtMs) {
+          return false;
+        }
+        const target = task.target_guest || {};
+        return String(target.type || "") === objectType && String(target.vmid || "") === vmid && !taskWasReloaded(task);
+      });
+      if (!completedTask) {
+        return false;
+      }
+      rememberTaskReload(completedTask);
+      refreshCurrentBackupView(backupView);
+      return false;
+    };
+
     const maybeRefreshCurrentGuestInventory = (tasks) => {
       const overview = document.querySelector("[data-vm-overview]");
       if (!overview) {
@@ -2497,7 +2556,7 @@
         ) {
           return;
         }
-        if (maybeRefreshSnapshotState(loadedTasks)) {
+        if (maybeRefreshSnapshotState(loadedTasks) || maybeRefreshBackupState(loadedTasks)) {
           return;
         }
         lastLoadedTasks = loadedTasks;
@@ -3046,6 +3105,8 @@
         agent_enable: "guest.agent.enable",
         agent_disable: "guest.agent.disable",
         destroy: "guest.destroy",
+        backup: "guest.backup.run",
+        backup_delete: "guest.backup.delete",
       }[action] || `guest.${action}`
     );
   };
@@ -3073,6 +3134,8 @@
       agent_enable: "Enable guest agent",
       agent_disable: "Disable guest agent",
       destroy: "Destroy guest",
+      backup: "Backup",
+      backup_delete: "Delete backup",
     })[action] || "VM/CT action";
 
   const pendingVmTaskTarget = (rows) => {
@@ -3292,21 +3355,88 @@
           settled = true;
           updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running" });
           window.pveHelperRefreshRecentTasks?.();
-          // Refresh the page's own state (status badge, action menu) in place.
-          loadSoftNavigation(new URL(window.location.href), { push: false });
-          // The guest's live status (Proxmox cluster/resources) lags a few
-          // seconds behind the action; refresh once more so the status badge/icon
-          // catches up without a manual reload.
-          const here = window.location.href;
-          window.setTimeout(() => {
-            if (window.location.href === here) {
-              loadSoftNavigation(new URL(here), { push: false });
-            }
-          }, 4500);
+          if (form.dataset.skipSoftRefresh !== "true") {
+            // Refresh the page's own state (status badge, action menu) in place.
+            loadSoftNavigation(new URL(window.location.href), { push: false });
+            // The guest's live status (Proxmox cluster/resources) lags a few
+            // seconds behind the action; refresh once more so the status badge/icon
+            // catches up without a manual reload.
+            const here = window.location.href;
+            window.setTimeout(() => {
+              if (window.location.href === here) {
+                loadSoftNavigation(new URL(here), { push: false });
+              }
+            }, 4500);
+          }
         } catch (_error) {
           fail("Network error");
         }
       });
+    });
+  };
+
+  const initBackupRestoreForms = (root = document) => {
+    root.querySelectorAll("[data-backup-restore]").forEach((page) => {
+      if (page.dataset.restoreInit === "true") {
+        return;
+      }
+      page.dataset.restoreInit = "true";
+      const form = page.querySelector("[data-backup-restore-form]");
+      const archiveSelect = page.querySelector("[data-restore-archive]");
+      const nodeSelect = page.querySelector("[data-restore-node]");
+      const storageSelect = page.querySelector("[data-restore-storage]");
+      const overwrite = page.querySelector("[data-restore-overwrite]");
+      const confirmField = page.querySelector("[data-restore-confirm]");
+      const confirmInput = confirmField?.querySelector("input");
+      if (!form || !archiveSelect || !nodeSelect || !storageSelect) {
+        return;
+      }
+      let storageOptions = {};
+      try {
+        storageOptions = JSON.parse(page.dataset.storageOptions || "{}");
+      } catch (_error) {
+        storageOptions = {};
+      }
+      const selectedArchiveType = () => archiveSelect.selectedOptions[0]?.dataset.archiveType || "vm";
+      const refreshStorages = () => {
+        const node = nodeSelect.value || "";
+        const options = storageOptions[node]?.[selectedArchiveType()] || [];
+        const previous = storageSelect.value;
+        storageSelect.innerHTML = "";
+        if (!options.length) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "No compatible target storage";
+          storageSelect.appendChild(option);
+          return;
+        }
+        options.forEach((storage) => {
+          const option = document.createElement("option");
+          option.value = storage;
+          option.textContent = storage;
+          if (storage === previous) {
+            option.selected = true;
+          }
+          storageSelect.appendChild(option);
+        });
+      };
+      const syncOverwrite = () => {
+        const enabled = Boolean(overwrite?.checked);
+        if (confirmField) {
+          confirmField.hidden = !enabled;
+        }
+        if (confirmInput) {
+          confirmInput.required = enabled;
+          if (!enabled) {
+            confirmInput.value = "";
+          }
+        }
+      };
+      archiveSelect.addEventListener("change", refreshStorages);
+      nodeSelect.addEventListener("change", refreshStorages);
+      overwrite?.addEventListener("change", syncOverwrite);
+      refreshStorages();
+      syncOverwrite();
     });
   };
 
@@ -3404,7 +3534,13 @@
         // tasks, so mark the summary accepted; the per-guest rows carry the real
         // running/completed/failed status.
         const bulkMigrate = action === "migrate" && rows.length > 1;
-        if (action === "agent_enable" || action === "agent_disable" || action === "untemplate" || action === "pool" || bulkMigrate) {
+        if (
+          action === "agent_enable" ||
+          action === "agent_disable" ||
+          action === "untemplate" ||
+          action === "pool" ||
+          bulkMigrate
+        ) {
           const finishedAt = new Date();
           updatePendingRecentTask({
             id: pendingTask.id,
@@ -3547,6 +3683,83 @@
         return "";
       },
     });
+  };
+
+  const openBackupDialog = (overview, rows) => {
+    const optionsUrl = rows[0]?.dataset.backupOptionsUrl || "";
+    const dialog = openVmFormDialog({
+      title: "Back Up Now",
+      summary: selectedGuestSummary(rows),
+      submitLabel: "Start Backup",
+      bodyHtml: `
+        <label class="form-field"><span>Storage</span><select name="storage" disabled><option value="">Loading backup storage…</option></select></label>
+        <label class="form-field"><span>Mode</span><select name="mode"><option value="snapshot">Snapshot - no downtime</option><option value="suspend">Suspend - brief pause</option><option value="stop">Stop - offline backup</option></select></label>
+        <label class="form-field"><span>Compression</span><select name="compress"><option value="zstd">ZSTD - fast and good</option><option value="gzip">GZIP - best compatibility</option><option value="lzo">LZO - low CPU use</option><option value="0">None</option></select></label>
+        <label class="form-field"><span>Notifications</span><select name="notification_mode"><option value="auto">Use global settings</option><option value="always">Always notify</option><option value="never">Never notify</option></select></label>
+        <label class="form-field"><span>Notes</span><input name="notes_template" value="{{guestname}}"></label>
+        <label class="form-field-inline"><input type="checkbox" name="protected"><span>Protect archive from automatic pruning</span></label>
+      `,
+      onSubmit: (formData) => {
+        const storage = String(formData.get("storage") || "").trim();
+        if (!storage) {
+          return "Choose a backup storage.";
+        }
+        submitVmBulkAction(
+          overview,
+          "backup",
+          {
+            storage,
+            mode: String(formData.get("mode") || "snapshot"),
+            compress: String(formData.get("compress") || "zstd"),
+            notification_mode: String(formData.get("notification_mode") || "auto"),
+            notes_template: String(formData.get("notes_template") || "").trim(),
+            protected: formData.get("protected") ? "1" : "0",
+          },
+          rows
+        );
+        return "";
+      },
+    });
+    const submit = dialog?.querySelector("[data-vm-dialog-submit]");
+    const select = dialog?.querySelector("[name='storage']");
+    const error = dialog?.querySelector("[data-vm-dialog-error]");
+    if (submit) {
+      submit.disabled = true;
+    }
+    fetch(optionsUrl, { headers: { Accept: "application/json", "X-Requested-With": "fetch" } })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        const storages = data.storages || [];
+        if (!select) {
+          return;
+        }
+        select.innerHTML = "";
+        storages.forEach((storage) => {
+          const option = document.createElement("option");
+          option.value = storage.id;
+          option.textContent = storage.label || storage.id;
+          select.appendChild(option);
+        });
+        select.disabled = !storages.length;
+        if (submit) {
+          submit.disabled = !storages.length;
+        }
+        if (!storages.length && error) {
+          error.textContent = data.error || "No active backup storage is available on this guest's node.";
+          error.hidden = false;
+        }
+      })
+      .catch((errorObject) => {
+        if (error) {
+          error.textContent = errorObject.message || "Could not load backup storage.";
+          error.hidden = false;
+        }
+      });
   };
 
   const openTagsDialog = (overview, rows) => {
@@ -3756,7 +3969,7 @@
         warnBox.hidden = true;
         return;
       }
-      const available = (optionsData.bridges_by_node && optionsData.bridges_by_node[node]) || [];
+      const available = optionsData.bridges_by_node?.[node] || [];
       const affected = [];
       perGuestNics.forEach((guest) => {
         const missing = [...new Set((guest.bridges || []).filter((bridge) => !available.includes(bridge)))];
@@ -3775,7 +3988,7 @@
       if (!storageSelect) {
         return;
       }
-      const ids = (optionsData?.storages_by_node && optionsData.storages_by_node[nodeName]) || [];
+      const ids = optionsData?.storages_by_node?.[nodeName] || [];
       storageSelect.innerHTML = "";
       if (!ids.length) {
         const option = document.createElement("option");
@@ -3804,14 +4017,18 @@
       }
       updateWarnings();
     };
-    dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
+    dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => {
+      radio.addEventListener("change", syncFields);
+    });
     nodeSelect?.addEventListener("change", syncFields);
     // Fetch each selected guest's NIC bridges once for the missing-bridge warning.
     const nicsUrl = overview?.dataset.vmMigrateNicsUrl || "";
     if (nicsUrl) {
       const csrf = overview.querySelector("[data-vm-bulk-form] [name=csrfmiddlewaretoken]")?.value || "";
       const body = new URLSearchParams();
-      rows.forEach((row) => body.append("guest", row.dataset.guestTarget || ""));
+      rows.forEach((row) => {
+        body.append("guest", row.dataset.guestTarget || "");
+      });
       fetch(new URL(nicsUrl, window.location.origin), {
         method: "POST",
         headers: { "X-CSRFToken": csrf, "X-Requested-With": "fetch" },
@@ -3921,10 +4138,14 @@
           }
           const opt = nodeSelect?.selectedOptions?.[0];
           if (opt?.dataset.allowed === "false") {
-            return opt.dataset.reason ? `That node can't be a migration target: ${opt.dataset.reason}.` : "That node can't be a migration target.";
+            return opt.dataset.reason
+              ? `That node can't be a migration target: ${opt.dataset.reason}.`
+              : "That node can't be a migration target.";
           }
           if (opt?.dataset.cpuOk === "false") {
-            return opt.dataset.cpuReason ? `${opt.dataset.cpuReason}.` : "The target host can't run this VM's CPU model.";
+            return opt.dataset.cpuReason
+              ? `${opt.dataset.cpuReason}.`
+              : "The target host can't run this VM's CPU model.";
           }
         }
         if ((kind === "both" || kind === "storage") && !targetStorage) {
@@ -3965,7 +4186,7 @@
       if (!storageSelect) {
         return;
       }
-      const ids = (optionsData?.storages_by_node && optionsData.storages_by_node[nodeName]) || [];
+      const ids = optionsData?.storages_by_node?.[nodeName] || [];
       storageSelect.innerHTML = "";
       if (!ids.length) {
         const option = document.createElement("option");
@@ -3988,7 +4209,9 @@
       const kind = currentKind();
       const opt = nodeSelect?.selectedOptions?.[0];
       if ((kind === "host" || kind === "both") && opt?.dataset.allowed === "false") {
-        hint.textContent = opt.dataset.reason ? `Blocked target: ${opt.dataset.reason}.` : "This node can't be a migration target.";
+        hint.textContent = opt.dataset.reason
+          ? `Blocked target: ${opt.dataset.reason}.`
+          : "This node can't be a migration target.";
         hint.hidden = false;
         return;
       }
@@ -4039,7 +4262,7 @@
       const kind = currentKind();
       const node = nodeSelect?.value || "";
       const nics = Array.isArray(optionsData?.guest_nics) ? optionsData.guest_nics : [];
-      const available = (optionsData?.bridges_by_node && optionsData.bridges_by_node[node]) || [];
+      const available = optionsData?.bridges_by_node?.[node] || [];
       const relevant =
         kind === "storage" || !node
           ? []
@@ -4064,8 +4287,12 @@
           const keepOption = present
             ? `<option value="${escapeHtml(nic.bridge)}" selected>${escapeHtml(nic.bridge)} (unchanged)</option>`
             : `<option value="" selected>Keep “${escapeHtml(nic.bridge)}” — missing on ${escapeHtml(node)}</option>`;
-          const options = keepOption
-            .concat(selectable.filter((bridge) => bridge !== nic.bridge).map((bridge) => `<option value="${escapeHtml(bridge)}">${escapeHtml(bridge)}</option>`).join(""));
+          const options = keepOption.concat(
+            selectable
+              .filter((bridge) => bridge !== nic.bridge)
+              .map((bridge) => `<option value="${escapeHtml(bridge)}">${escapeHtml(bridge)}</option>`)
+              .join("")
+          );
           const warn = present
             ? ""
             : `<span class="form-hint">⚠ bridge “${escapeHtml(nic.bridge)}” is not on ${escapeHtml(node)} — the NIC will have no network unless remapped.</span>`;
@@ -4098,8 +4325,14 @@
         }
         // cpu=host is only risky for a live migration between differing hosts;
         // silent when the guest is stopped (offline) or the CPUs match.
-        if ((optionsData?.guest_cpu || "") === "host" && optionsData?.running && opt?.dataset.hostCpuMatch === "false") {
-          lines.push(`⚠ cpu=host and ${opt.dataset.hostCpuReason || "the target host CPU differs"} — live migration will likely crash the guest (pin a CPU model, or migrate while stopped).`);
+        if (
+          (optionsData?.guest_cpu || "") === "host" &&
+          optionsData?.running &&
+          opt?.dataset.hostCpuMatch === "false"
+        ) {
+          lines.push(
+            `⚠ cpu=host and ${opt.dataset.hostCpuReason || "the target host CPU differs"} — live migration will likely crash the guest (pin a CPU model, or migrate while stopped).`
+          );
         }
       }
       // Target-storage capacity: warn when free space looks short of the guest's
@@ -4110,7 +4343,9 @@
         const need = Number(optionsData?.guest_disk_bytes || 0);
         const free = optionsData?.storage_free_by_node?.[storageNode]?.[storageId];
         if (need > 0 && typeof free === "number" && free < need) {
-          lines.push(`⚠ Target storage ${storageId} has ${formatMigrateBytes(free)} free, but the guest's disks are provisioned at ${formatMigrateBytes(need)} (thin/sparse disks may still fit).`);
+          lines.push(
+            `⚠ Target storage ${storageId} has ${formatMigrateBytes(free)} free, but the guest's disks are provisioned at ${formatMigrateBytes(need)} (thin/sparse disks may still fit).`
+          );
         }
       }
       if (lines.length) {
@@ -4136,7 +4371,9 @@
       renderNetCheck();
       updateWarnings();
     };
-    dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => radio.addEventListener("change", syncFields));
+    dialog?.querySelectorAll("[name='migrate_kind']").forEach((radio) => {
+      radio.addEventListener("change", syncFields);
+    });
     nodeSelect?.addEventListener("change", syncFields);
     // Storage choice only affects the capacity warning — don't re-run syncFields
     // (which would repopulate and reset the select).
@@ -4181,7 +4418,11 @@
             nodes.forEach((node) => {
               const option = document.createElement("option");
               option.value = node.node;
-              const blockReason = !node.allowed ? node.reason || "blocked" : node.cpu_ok === false ? node.cpu_reason || "CPU incompatible" : "";
+              const blockReason = !node.allowed
+                ? node.reason || "blocked"
+                : node.cpu_ok === false
+                  ? node.cpu_reason || "CPU incompatible"
+                  : "";
               option.textContent = blockReason ? `${node.node} — ${blockReason}` : node.node;
               option.dataset.allowed = node.allowed ? "true" : "false";
               option.dataset.reason = node.reason || "";
@@ -4191,7 +4432,8 @@
               option.dataset.hostCpuReason = node.host_cpu_reason || "";
               nodeSelect.appendChild(option);
             });
-            const firstAllowed = nodes.find((node) => node.allowed && node.cpu_ok !== false) || nodes.find((node) => node.allowed);
+            const firstAllowed =
+              nodes.find((node) => node.allowed && node.cpu_ok !== false) || nodes.find((node) => node.allowed);
             nodeSelect.value = firstAllowed ? firstAllowed.node : nodes[0].node;
             nodeSelect.disabled = false;
           }
@@ -4529,6 +4771,14 @@
           <button type="button" data-vm-action="delete-snapshots" ${writable ? "" : "disabled"}>Delete All Snapshots...</button>
         </div>
       </div>
+      <div class="context-menu-submenu">
+        <button type="button" class="context-menu-parent">Backup <span>›</span></button>
+        <div class="context-menu-submenu-panel">
+          <button type="button" data-vm-action="backup" ${writable ? "" : "disabled"}><i data-lucide="archive" aria-hidden="true"></i>Back Up Now...</button>
+          <button type="button" data-vm-action="open-backup" ${singleSelected ? "" : "disabled"}>Manage Backups</button>
+          <button type="button" data-vm-action="restore-backup" ${writable ? "" : "disabled"}>Restore Backup...</button>
+        </div>
+      </div>
       <div class="context-menu-separator"></div>
       <button type="button" data-vm-action="migrate" ${writable ? "" : "disabled"}><i data-lucide="move-right" aria-hidden="true"></i>Migrate...</button>
       <div class="context-menu-submenu">
@@ -4715,6 +4965,14 @@
           loadSoftNavigation(new URL(firstRow.dataset.snapshotsUrl || window.location.href, window.location.origin));
           return;
         }
+        if (action === "open-backup") {
+          loadSoftNavigation(new URL(firstRow.dataset.backupUrl || window.location.href, window.location.origin));
+          return;
+        }
+        if (action === "restore-backup") {
+          loadSoftNavigation(new URL("/vms/restore/", window.location.origin));
+          return;
+        }
         if (action === "edit-tags") {
           openTagsDialog(activeVmOverview, targetRows);
           menu.hidden = true;
@@ -4735,6 +4993,12 @@
         }
         if (action === "snapshot") {
           openSnapshotDialog(activeVmOverview, targetRows);
+          menu.hidden = true;
+          clearVmContextHighlights();
+          return;
+        }
+        if (action === "backup") {
+          openBackupDialog(activeVmOverview, targetRows);
           menu.hidden = true;
           clearVmContextHighlights();
           return;
@@ -7649,6 +7913,7 @@
     initHardwareEditor(root);
     initVmRegister(root);
     initGuestActionForms(root);
+    initBackupRestoreForms(root);
     initGuestListFilter(root);
     sortGuestList(document.documentElement.dataset.guestNameStyle !== "name-only");
     initNodeReload(root);

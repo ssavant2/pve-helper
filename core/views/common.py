@@ -271,6 +271,7 @@ VM_BULK_ACTIONS = {
     "destroy",
     "agent_enable",
     "agent_disable",
+    "backup",
 }
 
 
@@ -500,6 +501,7 @@ def _audit_action_label(event: AuditEvent) -> str:
         "guest.firewall.rule_delete": "Delete firewall rule",
         "guest.firewall.rule_toggle": "Toggle firewall rule",
         "guest.backup.run": "Run backup",
+        "guest.backup.restore": "Restore backup",
         "guest.backup.delete": "Delete backup",
         "guest.replication.create": "Create replication job",
         "guest.replication.delete": "Delete replication job",

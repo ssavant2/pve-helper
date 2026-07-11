@@ -260,6 +260,7 @@ PVE_API_TOKEN_ID=<token-id>
 PVE_API_TOKEN_SECRET=<token-secret>
 SCHEDULED_ACTIONS_ENABLED=true
 SCHEDULED_ACTION_TIMEOUT_SECONDS=1800
+BACKUP_TASK_TIMEOUT_SECONDS=21600
 SCHEDULED_ACTION_POLL_INTERVAL_SECONDS=5
 SCHEDULED_ACTION_RUN_RETENTION_DAYS=90
 ```
@@ -271,6 +272,8 @@ power actions at runtime even when the pve-helper token has administrator
 permissions.
 When enabled, `SCHEDULED_ACTION_TIMEOUT_SECONDS` is the max time pve-helper will
 wait for a submitted Proxmox task before marking it timed out.
+`BACKUP_TASK_TIMEOUT_SECONDS` applies independently to long-running vzdump
+backup and restore jobs; the default is six hours.
 
 ## Storage consumer safety
 

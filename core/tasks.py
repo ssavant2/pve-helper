@@ -237,6 +237,106 @@ def migrate_guest_disks_task(
     clear_live_guest_caches()
 
 
+def restore_guest_backup_task(
+    audit_event_id: int,
+    endpoint_url: str,
+    node: str,
+    object_type: str,
+    vmid: int,
+    archive: str,
+    storage: str,
+    overwrite: bool,
+    shutdown_first: bool,
+    start_after: bool,
+    timeout_seconds: int,
+) -> None:
+    """Restore a vzdump archive, optionally replacing an existing guest.
+
+    A replace is deliberately a staged worker operation: request a normal guest
+    shutdown, wait for it, restore, then optionally start the restored guest.
+    The current UPID is kept on the audit row throughout so Recent Tasks can
+    cancel the Proxmox operation that is actually in flight.  We never turn a
+    failed graceful shutdown into a hard stop.
+    """
+    event = AuditEvent.objects.filter(pk=audit_event_id).first()
+    if event is None:
+        return
+    details = dict(event.details) if isinstance(event.details, dict) else {}
+    client = ProxmoxClient(endpoint_url)
+    kind = "qemu" if object_type == ProxmoxInventory.ObjectType.VM else "lxc"
+
+    def cancelled() -> bool:
+        return AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists()
+
+    def run_step(stage: str, path: str, data: dict) -> str | None:
+        if cancelled():
+            return "cancelled"
+        try:
+            upid = client.post(path, data=data)
+        except ProxmoxAPIError as exc:
+            return str(exc)
+        if not (isinstance(upid, str) and upid.startswith("UPID:")):
+            return f"unexpected Proxmox response during {stage}"
+        details.update(
+            {
+                "stage": stage,
+                "proxmox_task_upid": upid,
+                "proxmox_task_node": node,
+                "proxmox_endpoint": endpoint_url,
+            }
+        )
+        event.details = details
+        event.save(update_fields=["details"])
+        try:
+            result = client.wait_for_task(node=node, upid=upid, timeout_seconds=timeout_seconds)
+        except (ProxmoxTaskTimeout, ProxmoxAPIError) as exc:
+            return str(exc)
+        if not result.success:
+            return f"Proxmox task exitstatus: {result.exitstatus or result.status or 'unknown'}"
+        details.setdefault("completed_stages", []).append(stage)
+        return None
+
+    error: str | None = None
+    if overwrite and shutdown_first:
+        error = run_step("shutdown existing guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/shutdown", {})
+        if error == "cancelled":
+            return
+        if error:
+            error = f"Could not shut down the existing guest cleanly: {error}. Restore was not started."
+
+    if error is None:
+        restore_data: dict[str, object] = {"vmid": vmid, "storage": storage}
+        restore_path = f"nodes/{quote(node, safe='')}/{kind}"
+        if kind == "qemu":
+            restore_data["archive"] = archive
+        else:
+            restore_data.update({"ostemplate": archive, "restore": 1})
+        if overwrite:
+            restore_data["force"] = 1
+        error = run_step("restore archive", restore_path, restore_data)
+        if error == "cancelled":
+            return
+
+    if error is None and start_after:
+        error = run_step("start restored guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/start", {})
+        if error == "cancelled":
+            return
+
+    if cancelled():
+        return
+    details.pop("proxmox_task_upid", None)
+    details["finished_at"] = timezone.now().isoformat()
+    if error:
+        event.outcome = "failed"
+        details["error"] = error
+    else:
+        event.outcome = "success"
+        details["stage"] = "completed"
+    event.details = details
+    event.save(update_fields=["outcome", "details"])
+    clear_live_guest_caches()
+
+
 def register_import_vm_task(
     audit_event_id: int,
     node: str,

@@ -1,18 +1,18 @@
 {% extends "core/guest_base.html" %}
 
 {% block guest_content %}
-  <section class="storage-tab-content">
+  <section class="storage-tab-content" data-guest-backup data-object-type="{{ guest.object_type }}" data-vmid="{{ guest.vmid }}" data-rendered-at-ms="{% now 'U' %}000">
     {% if guest_write_enabled %}
       <div class="panel panel-spaced">
         <div class="panel-heading"><h2>Back up now</h2></div>
-        <form class="snapshot-form" method="post" action="{% url 'core:guest_backup_now' guest.object_type guest.vmid %}">
+        <form class="snapshot-form backup-now-form" method="post" action="{% url 'core:guest_backup_now' guest.object_type guest.vmid %}" data-guest-action-form data-action="backup" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-skip-soft-refresh="true">
           {% csrf_token %}
-          <select name="storage" required>
-            <option value="">storage...</option>
-            {% for s in backup_storages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-          </select>
-          <select name="mode"><option value="snapshot">snapshot</option><option value="suspend">suspend</option><option value="stop">stop</option></select>
-          <select name="compress"><option value="zstd">zstd</option><option value="gzip">gzip</option><option value="lzo">lzo</option><option value="0">none</option></select>
+          <label class="form-field"><span>Storage</span><select name="storage" required><option value="">Select storage...</option>{% for storage in backup_storages %}<option value="{{ storage.id }}">{{ storage.label }}</option>{% endfor %}</select></label>
+          <label class="form-field"><span>Mode</span><select name="mode"><option value="snapshot">Snapshot - no downtime</option><option value="suspend">Suspend - brief pause</option><option value="stop">Stop - offline backup</option></select></label>
+          <label class="form-field"><span>Compression</span><select name="compress"><option value="zstd">ZSTD - fast and good</option><option value="gzip">GZIP - best compatibility</option><option value="lzo">LZO - low CPU use</option><option value="0">None</option></select></label>
+          <label class="form-field"><span>Notifications</span><select name="notification_mode"><option value="auto">Use global settings</option><option value="always">Always notify</option><option value="never">Never notify</option></select></label>
+          <label class="form-field"><span>Notes</span><input name="notes_template" value="{% templatetag openvariable %}guestname{% templatetag closevariable %}" maxlength="255"></label>
+          <label class="form-field-inline"><input type="checkbox" name="protected"><span>Protect archive from automatic pruning</span></label>
           <button class="primary-action" type="submit">Back up now</button>
         </form>
       </div>
@@ -38,35 +38,6 @@
       </table>
     </div>
 
-    <div class="panel panel-spaced">
-      <div class="panel-heading"><h2>Backups <span class="muted">({{ backups|length }})</span></h2></div>
-      {% if backup_error %}<p class="panel-meta"><span class="badge failed">Error</span> {{ backup_error }}</p>{% endif %}
-      <table class="data-table compact">
-        <thead><tr><th>Archive</th><th>Storage</th><th>Created</th><th>Size</th><th>Notes</th>{% if guest_write_enabled %}<th></th>{% endif %}</tr></thead>
-        <tbody>
-          {% for b in backups %}
-            <tr>
-              <td><code class="disk-ref">{{ b.volid }}</code></td>
-              <td>{{ b.storage }}</td>
-              <td>{% if b.ctime %}{{ b.ctime|date:"Y-m-d H:i" }}{% else %}-{% endif %}</td>
-              <td>{% if b.size %}{{ b.size|filesizeformat }}{% else %}-{% endif %}</td>
-              <td>{{ b.notes|default:"-" }}</td>
-              {% if guest_write_enabled %}
-                <td class="row-actions">
-                  <form class="inline-action-form" method="post" action="{% url 'core:guest_backup_delete' guest.object_type guest.vmid %}" onsubmit="return confirm('Delete this backup archive?');">
-                    {% csrf_token %}
-                    <input type="hidden" name="volid" value="{{ b.volid }}">
-                    <input type="hidden" name="storage" value="{{ b.storage }}">
-                    <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
-                  </form>
-                </td>
-              {% endif %}
-            </tr>
-          {% empty %}
-            <tr><td colspan="{% if guest_write_enabled %}6{% else %}5{% endif %}" class="empty-state">No backup archives for this guest.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    {% include "core/partials/guest_backup_panel.html" %}
   </section>
 {% endblock %}

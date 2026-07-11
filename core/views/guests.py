@@ -2475,39 +2475,7 @@ def guest_cloudinit(request, object_type: str, vmid: int):
 @app_login_required
 def guest_backup(request, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid)
-    backups = []
-    backup_storages = []
-    error = ""
-    node = detail.node
-    if node:
-        client = common.configured_clients()[0] if common.configured_clients() else None
-        if client:
-            try:
-                storages = client.get(f"nodes/{quote(node, safe='')}/storage")
-            except ProxmoxAPIError as exc:
-                storages, error = [], str(exc)
-            for storage in storages if isinstance(storages, list) else []:
-                if "backup" not in str(storage.get("content", "")).split(","):
-                    continue
-                sid = storage.get("storage")
-                backup_storages.append(sid)
-                try:
-                    content = client.get(
-                        f"nodes/{quote(node, safe='')}/storage/{quote(sid, safe='')}/content?content=backup&vmid={vmid}"
-                    )
-                except ProxmoxAPIError:
-                    continue
-                for entry in content if isinstance(content, list) else []:
-                    backups.append(
-                        {
-                            "volid": entry.get("volid", ""),
-                            "size": entry.get("size"),
-                            "ctime": datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc) if entry.get("ctime") else None,
-                            "notes": entry.get("notes", ""),
-                            "storage": sid,
-                        }
-                    )
-    backups.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
+    backups, backup_storages, error = _guest_backup_archives(detail)
 
     jobs = []
     try:
@@ -2528,7 +2496,81 @@ def guest_backup(request, object_type: str, vmid: int):
 
     context = _guest_tab_context(detail, "backup")
     context.update({"backups": backups, "backup_jobs": jobs, "backup_error": error, "backup_storages": backup_storages})
+    if request.GET.get("backup_partial") == "1":
+        return JsonResponse(
+            {
+                "html": render_to_string("core/partials/guest_backup_panel.html", context, request=request),
+                "rendered_at_ms": int(tz.now().timestamp() * 1000),
+            }
+        )
     return render(request, "core/guest_backup.html", context)
+
+
+def _storage_supports_content(storage: dict, content_type: str) -> bool:
+    return content_type in {value.strip() for value in str(storage.get("content", "")).split(",") if value.strip()}
+
+
+def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[dict], str]:
+    """Return backup-capable storage and archive records from the endpoint that
+    owns this guest.  Storage is node-scoped in PVE, so never assume client 0.
+    """
+    if not detail.node:
+        return [], [], "The guest's node could not be resolved."
+    error = ""
+    for client in common.configured_clients():
+        try:
+            # A cheap live request also proves this configured endpoint owns the
+            # guest instead of accepting a same-named node on another endpoint.
+            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
+        except ProxmoxAPIError as exc:
+            error = str(exc)
+            continue
+        backup_storages = [
+            {"id": str(storage.get("storage") or ""), "label": str(storage.get("storage") or "")}
+            for storage in (storages if isinstance(storages, list) else [])
+            if storage.get("storage") and _storage_supports_content(storage, "backup") and storage.get("active", 1)
+        ]
+        backups: list[dict] = []
+        for storage in backup_storages:
+            try:
+                content = client.get(
+                    f"nodes/{quote(detail.node, safe='')}/storage/{quote(storage['id'], safe='')}/content?content=backup&vmid={detail.vmid}"
+                )
+            except ProxmoxAPIError:
+                continue
+            for entry in content if isinstance(content, list) else []:
+                volid = str(entry.get("volid") or "")
+                if not volid:
+                    continue
+                backups.append(
+                    {
+                        "volid": volid,
+                        "size": entry.get("size"),
+                        "ctime": datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc) if entry.get("ctime") else None,
+                        "notes": entry.get("notes", ""),
+                        "storage": storage["id"],
+                        "source_type": detail.object_type,
+                        "source_vmid": detail.vmid,
+                        "source_node": detail.node,
+                    }
+                )
+        backups.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
+        return backups, backup_storages, ""
+    return [], [], error or "No Proxmox endpoint could read this guest's backup storage."
+
+
+@app_login_required
+def guest_backup_options(request, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid)
+    _archives, storages, error = _guest_backup_archives(detail)
+    return JsonResponse(
+        {
+            "storages": storages,
+            "error": error,
+            "guest": {"type": detail.object_type, "vmid": detail.vmid, "node": detail.node},
+        }
+    )
 
 
 def _backup_job_covers(job: dict, vmid: int) -> bool:
@@ -2852,53 +2894,133 @@ def guest_cloudinit_edit(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_backup_now(request, object_type, vmid):
+    def result(error_label: str = ""):
+        return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_backup")
+
     disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_backup")
     if disabled:
-        return disabled
+        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
+    response, err, client, audit_details = _submit_guest_backup(request, detail)
+    running_event = _audit_guest(request, detail, "guest.backup.run", audit_details, outcome="running")
+    if err:
+        error_label = _backup_error(err)
+        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details=audit_details)
+        return result(error_label)
+    _finish_guest_running_audit(
+        running_event,
+        detail,
+        response,
+        client,
+        audit_details=audit_details,
+        timeout_seconds=settings.BACKUP_TASK_TIMEOUT_SECONDS,
+    )
+    return result()
+
+
+def _backup_error(err: str) -> str:
+    if "403" in err:
+        return proxmox_permission_hint("VM.Backup")
+    return f"Backup failed: {err}"
+
+
+def _submit_guest_backup(request, detail: SimpleNamespace):
     storage = request.POST.get("storage", "").strip()
+    mode = request.POST.get("mode", "snapshot").strip()
+    compress = request.POST.get("compress", "zstd").strip()
     if not storage:
-        messages.error(request, "Select a backup storage.")
-        return redirect("core:guest_backup", object_type=object_type, vmid=vmid)
-    body = {
-        "vmid": vmid,
+        return None, "Select a backup storage.", None, {}
+    if mode not in {"snapshot", "suspend", "stop"}:
+        return None, "Choose a valid backup mode.", None, {"storage": storage}
+    if compress not in {"zstd", "gzip", "lzo", "0"}:
+        return None, "Choose a valid compression mode.", None, {"storage": storage}
+    if detail.config.get("lock") or detail.current.get("lock"):
+        return None, f"This guest is locked ({detail.config.get('lock') or detail.current.get('lock')}).", None, {"storage": storage}
+
+    body: dict[str, object] = {
+        "vmid": detail.vmid,
         "storage": storage,
-        "mode": request.POST.get("mode", "snapshot"),
-        "compress": request.POST.get("compress", "zstd"),
-        "remove": "0",
+        "mode": mode,
+        "compress": compress,
+        "remove": 0,
+        "protected": 1 if request.POST.get("protected") in {"1", "on", "true"} else 0,
     }
-    err = ""
+    notification_mode = request.POST.get("notification_mode", "auto").strip()
+    if notification_mode in {"auto", "always", "never"}:
+        body["notification-mode"] = notification_mode
+    notes_template = request.POST.get("notes_template", "").strip()
+    if notes_template:
+        body["notes-template"] = notes_template
+    audit_details = {
+        "storage": storage,
+        "mode": mode,
+        "compression": compress or "none",
+        "protected": bool(body["protected"]),
+        "notification_mode": notification_mode,
+        "notes_template": notes_template,
+    }
+
+    if not detail.node:
+        return None, "The guest's node could not be resolved.", None, audit_details
+    last_error = "No Proxmox endpoint could reach this guest."
     for client in common.configured_clients():
         try:
-            client.post(f"nodes/{quote(detail.node, safe='')}/vzdump", data=body)
-            err = ""
-            break
+            # Resolve storage through the endpoint that currently owns the guest.
+            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
+            storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
+            match = next(
+                (
+                    item
+                    for item in (storages if isinstance(storages, list) else [])
+                    if str(item.get("storage") or "") == storage
+                ),
+                None,
+            )
+            if not match or not match.get("active", 1) or not _storage_supports_content(match, "backup"):
+                return None, f"Storage '{storage}' is not an active backup storage on {detail.node}.", client, audit_details
+            return client.post(f"nodes/{quote(detail.node, safe='')}/vzdump", data=body), None, client, audit_details
         except ProxmoxAPIError as exc:
-            err = str(exc)
-    return _write_result(request, detail, "core:guest_backup", err, "guest.backup.run", {"storage": storage})
+            last_error = str(exc)
+    return None, last_error, None, audit_details
 
 
 @require_POST
 @app_login_required
 def guest_backup_delete(request, object_type, vmid):
+    def result(error_label: str = ""):
+        return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_backup")
+
     disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_backup")
     if disabled:
-        return disabled
+        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     volid = request.POST.get("volid", "").strip()
     storage = request.POST.get("storage", "").strip()
     if not volid or not storage:
-        messages.error(request, "Missing backup reference.")
-        return redirect("core:guest_backup", object_type=object_type, vmid=vmid)
-    err = ""
+        return result("Missing backup reference.")
+    response = None
+    client = None
+    err = "No Proxmox endpoint could reach this guest."
     for client in common.configured_clients():
         try:
-            client.delete(f"nodes/{quote(detail.node, safe='')}/storage/{quote(storage, safe='')}/content/{quote(volid, safe='')}")
+            response = client.delete(f"nodes/{quote(detail.node, safe='')}/storage/{quote(storage, safe='')}/content/{quote(volid, safe='')}")
             err = ""
             break
         except ProxmoxAPIError as exc:
             err = str(exc)
-    return _write_result(request, detail, "core:guest_backup", err, "guest.backup.delete", {"volid": volid})
+    running_event = _audit_guest(request, detail, "guest.backup.delete", {"storage": storage, "volid": volid}, outcome="running")
+    if err:
+        _finish_guest_running_audit(running_event, detail, response, client, err=f"Delete backup failed: {err}")
+        return result(f"Delete backup failed: {err}")
+    _finish_guest_running_audit(
+        running_event,
+        detail,
+        response,
+        client,
+        audit_details={"storage": storage, "volid": volid},
+        timeout_seconds=settings.BACKUP_TASK_TIMEOUT_SECONDS,
+    )
+    return result()
 
 
 @require_POST
@@ -3101,6 +3223,12 @@ def _bulk_action_initial_audit_details(
             "target_node": request.POST.get("migrate_target_node", "").strip(),
             "target_storage": request.POST.get("migrate_target_storage", "").strip(),
         }
+    if action == "backup":
+        return "guest.backup.run", {
+            "storage": request.POST.get("storage", "").strip(),
+            "mode": request.POST.get("mode", "snapshot").strip(),
+            "compression": request.POST.get("compress", "zstd").strip(),
+        }
     return f"guest.power.{action}", {}
 
 
@@ -3285,6 +3413,9 @@ def vms_bulk_action(request):
         elif action == "migrate":
             err, audit_details, response, client = _migrate_guest_from_bulk_request(request, detail, running_event)
             error_label = f"Migrate failed: {err}" if err else ""
+        elif action == "backup":
+            response, err, client, audit_details = _submit_guest_backup(request, detail)
+            error_label = _backup_error(err) if err else ""
         else:
             subpath, params = POWER_ACTION_REQUESTS.get(action, (f"status/{action}", {}))
             response, err, client = _guest_post_with_client(detail, subpath, params)
@@ -3303,14 +3434,21 @@ def vms_bulk_action(request):
             errors.append(error_label)
             continue
 
-        _finish_guest_running_audit(running_event, detail, response, client, audit_details=audit_details)
+        _finish_guest_running_audit(
+            running_event,
+            detail,
+            response,
+            client,
+            audit_details=audit_details,
+            timeout_seconds=settings.BACKUP_TASK_TIMEOUT_SECONDS if action == "backup" else None,
+        )
         if action == "template":
             _update_latest_guest_scan_config(detail, {"template": "1"}, [])
         if action == "untemplate":
             _update_latest_guest_scan_config(detail, {"template": "0"}, [])
         if action == "destroy":
             _delete_latest_guest_scan_object(detail)
-        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "pool", "migrate", "clone", "tags", "destroy", "agent_enable", "agent_disable"}:
+        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "pool", "migrate", "clone", "tags", "destroy", "agent_enable", "agent_disable", "backup"}:
             clear_live_guest_caches()
 
     response = done(not errors, errors)
@@ -4506,6 +4644,238 @@ def _create_guest(request, object_type: str, options: dict):
         system_username="system",
     )
     return None
+
+
+def _backup_archive_type(volid: str) -> str:
+    name = str(volid).rsplit("/", 1)[-1]
+    if "vzdump-qemu-" in name:
+        return ProxmoxInventory.ObjectType.VM
+    if "vzdump-lxc-" in name:
+        return ProxmoxInventory.ObjectType.CT
+    return ""
+
+
+def _restore_options() -> tuple[list[dict], list[str], dict[str, dict[str, list[str]]], str]:
+    """Discover restoreable archives and compatible target storages live.
+
+    Archive visibility is deliberately evaluated per node. A local backup on
+    pve3 must not be presented as restorable on pve99 just because the storage
+    IDs happen to share a name.
+    """
+    archives: list[dict] = []
+    nodes: list[str] = []
+    storage_options: dict[str, dict[str, list[str]]] = {}
+    nextid = ""
+    seen_archives: set[tuple[str, str, str]] = set()
+    for client in common.configured_clients():
+        try:
+            client_nodes = client.node_names(fallback="")
+            if not nextid:
+                nextid = str(client.get("cluster/nextid"))
+        except ProxmoxAPIError:
+            continue
+        for node in client_nodes:
+            if node not in nodes:
+                nodes.append(node)
+            try:
+                storages = client.get(f"nodes/{quote(node, safe='')}/storage")
+            except ProxmoxAPIError:
+                continue
+            node_types = storage_options.setdefault(node, {"vm": [], "ct": []})
+            for storage in storages if isinstance(storages, list) else []:
+                storage_id = str(storage.get("storage") or "")
+                if not storage_id or not storage.get("active", 1):
+                    continue
+                if _storage_supports_content(storage, "images") and storage_id not in node_types["vm"]:
+                    node_types["vm"].append(storage_id)
+                if _storage_supports_content(storage, "rootdir") and storage_id not in node_types["ct"]:
+                    node_types["ct"].append(storage_id)
+                if not _storage_supports_content(storage, "backup"):
+                    continue
+                try:
+                    entries = client.get(
+                        f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content?content=backup"
+                    )
+                except ProxmoxAPIError:
+                    continue
+                for entry in entries if isinstance(entries, list) else []:
+                    volid = str(entry.get("volid") or "")
+                    object_type = _backup_archive_type(volid)
+                    key = (node, storage_id, volid)
+                    if not object_type or key in seen_archives:
+                        continue
+                    seen_archives.add(key)
+                    ctime = datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc) if entry.get("ctime") else None
+                    archive_key = "|".join((str(getattr(client, "endpoint", "")), node, storage_id, volid))
+                    archives.append(
+                        {
+                            "key": archive_key,
+                            "node": node,
+                            "storage": storage_id,
+                            "volid": volid,
+                            "object_type": object_type,
+                            "type_label": "VM" if object_type == "vm" else "CT",
+                            "ctime": ctime,
+                            "size": entry.get("size"),
+                            "notes": entry.get("notes", ""),
+                        }
+                    )
+    archives.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
+    return archives, sorted(nodes), storage_options, nextid
+
+
+def _restore_archive_from_key(key: str, archives: list[dict]) -> dict | None:
+    exact = next((archive for archive in archives if archive["key"] == key), None)
+    if exact is not None:
+        return exact
+    # Archive links from the guest Backup tab intentionally omit the endpoint
+    # URL. Resolve them from fresh discovery rather than trusting query data.
+    parts = key.split("|", 2)
+    if len(parts) == 3:
+        node, storage, volid = parts
+        return next(
+            (
+                archive
+                for archive in archives
+                if archive["node"] == node and archive["storage"] == storage and archive["volid"] == volid
+            ),
+            None,
+        )
+    return None
+
+
+def _restore_client(endpoint: str):
+    for client in common.configured_clients():
+        if str(getattr(client, "endpoint", "")) == endpoint:
+            return client
+    return None
+
+
+@app_login_required
+def guest_backup_restore(request):
+    if not settings.VM_WRITE_ENABLED:
+        messages.error(request, "VM/CT restore is disabled (VM_WRITE_ENABLED is off).")
+        return redirect("core:vms")
+    archives, nodes, storage_options, nextid = _restore_options()
+    selected_archive_key = request.POST.get("archive_key", "") if request.method == "POST" else request.GET.get("archive", "")
+    if request.method != "POST" and not selected_archive_key:
+        storage_hint = request.GET.get("storage", "").strip()
+        path_hint = request.GET.get("path", "").strip()
+        hinted_volid = f"{storage_hint}:{path_hint}" if storage_hint and path_hint else ""
+        selected_archive_key = next(
+            (
+                archive["key"]
+                for archive in archives
+                if archive["storage"] == storage_hint and archive["volid"] == hinted_volid
+            ),
+            "",
+        )
+    if request.method == "POST":
+        error = _queue_guest_backup_restore(request, archives)
+        if error:
+            messages.error(request, error)
+        else:
+            messages.success(request, "Restore queued. Follow progress in Recent Tasks.")
+            return redirect("core:vms")
+    context = {
+        **navigation_context("vms"),
+        "archives": archives,
+        "nodes": nodes,
+        "storage_options_json": json.dumps(storage_options),
+        "nextid": nextid,
+        "selected_archive_key": selected_archive_key,
+        "form_values": request.POST if request.method == "POST" else {"node": nodes[0] if nodes else "", "vmid": nextid},
+    }
+    return render(request, "core/guest_backup_restore.html", context)
+
+
+def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
+    archive = _restore_archive_from_key(request.POST.get("archive_key", ""), archives)
+    if archive is None:
+        return "Select a backup archive that is still available."
+    target_node = request.POST.get("node", "").strip()
+    target_storage = request.POST.get("storage", "").strip()
+    vmid_text = request.POST.get("vmid", "").strip()
+    overwrite = request.POST.get("overwrite") in {"1", "on", "true"}
+    start_after = request.POST.get("start_after") in {"1", "on", "true"}
+    if not target_node or not target_storage:
+        return "Choose a target node and target storage."
+    if not vmid_text.isdigit() or int(vmid_text) <= 0:
+        return "VMID must be a positive whole number."
+    vmid = int(vmid_text)
+    if overwrite and request.POST.get("overwrite_confirm", "").strip() != vmid_text:
+        return f"Enter {vmid} to confirm replacement of the existing guest."
+
+    client = _restore_client(str(archive.get("key", "")).split("|", 1)[0])
+    if client is None:
+        return "The Proxmox endpoint that exposes this archive is unavailable."
+    try:
+        target_storages = client.get(f"nodes/{quote(target_node, safe='')}/storage")
+        target_match = next(
+            (item for item in (target_storages if isinstance(target_storages, list) else []) if str(item.get("storage") or "") == target_storage),
+            None,
+        )
+        content_type = "images" if archive["object_type"] == ProxmoxInventory.ObjectType.VM else "rootdir"
+        if not target_match or not target_match.get("active", 1) or not _storage_supports_content(target_match, content_type):
+            return f"Storage '{target_storage}' cannot hold {archive['type_label']} disks on {target_node}."
+        archive_entries = client.get(
+            f"nodes/{quote(target_node, safe='')}/storage/{quote(str(archive['storage']), safe='')}/content?content=backup"
+        )
+        if not any(str(entry.get("volid") or "") == archive["volid"] for entry in archive_entries if isinstance(entry, dict)):
+            return f"Archive {archive['volid']} is not accessible from {target_node}."
+    except ProxmoxAPIError as exc:
+        return f"Restore preflight failed: {exc}"
+
+    live_guests = [guest for guest in common.fetch_live_guest_inventory() if guest.vmid == vmid]
+    existing = next((guest for guest in live_guests if guest.object_type == archive["object_type"] and guest.node == target_node), None)
+    if live_guests and not overwrite:
+        return f"VMID {vmid} is already in use. Enable overwrite only when replacing the existing {archive['type_label']}."
+    if overwrite and existing is None:
+        return f"No existing {archive['type_label']} with VMID {vmid} exists on {target_node} to overwrite."
+    if existing:
+        try:
+            existing_config = client.guest_config(node=target_node, object_type=archive["object_type"], vmid=vmid)
+            existing_current = client.guest_current(node=target_node, object_type=archive["object_type"], vmid=vmid)
+        except ProxmoxAPIError as exc:
+            return f"Could not inspect the existing guest before overwrite: {exc}"
+        lock = (existing_config or {}).get("lock") or (existing_current or {}).get("lock")
+        if lock:
+            return f"The existing guest is locked ({lock})."
+        if (existing_config or {}).get("protection") in {1, "1", True}:
+            return "The existing guest is protected. Disable protection before overwriting it."
+
+    target_name = getattr(existing, "name", "") or f"Restored {archive['type_label']} {vmid}"
+    detail = SimpleNamespace(
+        object_type=archive["object_type"], vmid=vmid, node=target_node, name=target_name, config={}, current={}
+    )
+    audit_details = {
+        "archive": archive["volid"],
+        "archive_storage": archive["storage"],
+        "source_node": archive["node"],
+        "target_storage": target_storage,
+        "overwrite": overwrite,
+        "start_after": start_after,
+        "stage": "queued",
+        "proxmox_endpoint": getattr(client, "endpoint", ""),
+    }
+    event = _audit_guest(request, detail, "guest.backup.restore", audit_details, outcome="running")
+    task_id = common.async_task(
+        "core.tasks.restore_guest_backup_task",
+        event.id,
+        getattr(client, "endpoint", ""),
+        target_node,
+        archive["object_type"],
+        vmid,
+        archive["volid"],
+        target_storage,
+        overwrite,
+        bool(existing and getattr(existing, "status", "") == "running"),
+        start_after,
+        settings.BACKUP_TASK_TIMEOUT_SECONDS,
+    )
+    event.details = {**event.details, "worker_task_id": task_id}
+    event.save(update_fields=["details"])
+    return ""
 
 
 def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> SimpleNamespace:

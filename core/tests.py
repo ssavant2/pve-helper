@@ -39,7 +39,7 @@ from core.models import (
     TrashItem,
 )
 from core.signals import ensure_always_on_schedules
-from core.tasks import poll_guest_audit_task
+from core.tasks import poll_guest_audit_task, restore_guest_backup_task
 from core.services.audit_retention_schedule import AUDIT_RETENTION_SCHEDULE_NAME, audit_retention_schedule_state
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.config import sync_runtime_configuration
@@ -7152,3 +7152,139 @@ class VmRegisterViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)  # re-rendered with an error message
         self.assertContains(resp, "VMID must be a whole number")
+
+
+@override_settings(VM_WRITE_ENABLED=True, BACKUP_TASK_TIMEOUT_SECONDS=3600)
+class GuestBackupRestoreTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user("backup-operator", password="unused")
+        self.client.force_login(self.user)
+
+    @staticmethod
+    def _guest(*, vmid=500, object_type="vm", node="pve1", name="Lab VM", status="stopped"):
+        guest = Mock()
+        guest.vmid = vmid
+        guest.object_type = object_type
+        guest.node = node
+        guest.name = name
+        guest.status = status
+        return guest
+
+    def test_backup_now_tracks_the_vzdump_upid(self):
+        class FakeClient:
+            endpoint = "https://pve1.invalid:8006"
+
+            def guest_current(self, **_kwargs):
+                return {"status": "running"}
+
+            def guest_config(self, **_kwargs):
+                return {"name": "Lab VM"}
+
+            def get(self, path, **_kwargs):
+                if path == "nodes/pve1/storage":
+                    return [{"storage": "backup", "content": "backup", "active": 1}]
+                raise ProxmoxAPIError(path)
+
+            def post(self, path, data):
+                self.path, self.data = path, data
+                return "UPID:pve1:vzdump:500:root@pam:"
+
+        fake = FakeClient()
+        with (
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._guest()]),
+            patch("core.views.common.configured_clients", return_value=[fake]),
+            patch("core.views.common.async_task", return_value="poll-backup-1") as enqueue,
+        ):
+            response = self.client.post(
+                reverse("core:guest_backup_now", args=["vm", 500]),
+                {"storage": "backup", "mode": "snapshot", "compress": "zstd", "protected": "on"},
+                HTTP_X_REQUESTED_WITH="fetch",
+            )
+
+        self.assertEqual(response.json(), {"ok": True, "errors": []})
+        self.assertEqual(fake.path, "nodes/pve1/vzdump")
+        self.assertEqual(fake.data["protected"], 1)
+        event = AuditEvent.objects.get(action="guest.backup.run")
+        self.assertEqual(event.outcome, "running")
+        self.assertEqual(event.details["proxmox_task_upid"], "UPID:pve1:vzdump:500:root@pam:")
+        self.assertEqual(enqueue.call_args.args[0], "core.tasks.poll_guest_audit_task")
+
+    def test_restore_queues_a_worker_for_a_new_vmid(self):
+        archive = "backup:vzdump-qemu-500-2026_07_11-12_00_00.vma.zst"
+
+        class FakeClient:
+            endpoint = "https://pve1.invalid:8006"
+
+            def node_names(self, fallback=""):
+                return ["pve1"]
+
+            def get(self, path, **_kwargs):
+                if path == "cluster/nextid":
+                    return 501
+                if path == "nodes/pve1/storage":
+                    return [
+                        {"storage": "backup", "content": "backup", "active": 1},
+                        {"storage": "images", "content": "images", "active": 1},
+                    ]
+                if path == "nodes/pve1/storage/backup/content?content=backup":
+                    return [{"volid": archive, "ctime": 1, "size": 42}]
+                raise ProxmoxAPIError(path)
+
+        fake = FakeClient()
+        key = f"{fake.endpoint}|pve1|backup|{archive}"
+        with (
+            patch("core.views.common.configured_clients", return_value=[fake]),
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[]),
+            patch("core.views.common.async_task", return_value="restore-worker-1") as enqueue,
+        ):
+            response = self.client.post(
+                reverse("core:guest_backup_restore"),
+                {"archive_key": key, "node": "pve1", "storage": "images", "vmid": "501", "start_after": "on"},
+            )
+
+        self.assertRedirects(response, reverse("core:vms"), fetch_redirect_response=False)
+        event = AuditEvent.objects.get(action="guest.backup.restore")
+        self.assertEqual(event.outcome, "running")
+        self.assertEqual(event.details["archive"], archive)
+        self.assertEqual(enqueue.call_args.args[0], "core.tasks.restore_guest_backup_task")
+        self.assertEqual(enqueue.call_args.args[4], "vm")
+        self.assertEqual(enqueue.call_args.args[5], 501)
+
+    def test_restore_worker_records_each_proxmox_stage(self):
+        event = AuditEvent.objects.create(
+            action="guest.backup.restore",
+            object_type="guest",
+            object_id="vm:501",
+            outcome="running",
+            details={"node": "pve1", "vmid": 501, "target_type": "vm", "name": "Restored VM"},
+        )
+
+        class FakeClient:
+            def __init__(self, _endpoint):
+                self.posts = []
+
+            def post(self, path, data):
+                self.posts.append((path, data))
+                return f"UPID:pve1:{len(self.posts)}"
+
+            def wait_for_task(self, *, node, upid, timeout_seconds):
+                return ProxmoxTaskResult(node=node, upid=upid, status="stopped", exitstatus="OK", raw={})
+
+        with patch("core.tasks.ProxmoxClient", FakeClient):
+            restore_guest_backup_task(
+                event.id,
+                "https://pve1.invalid:8006",
+                "pve1",
+                "vm",
+                501,
+                "backup:vzdump-qemu-500.vma.zst",
+                "images",
+                False,
+                False,
+                True,
+                3600,
+            )
+
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "success")
+        self.assertEqual(event.details["completed_stages"], ["restore archive", "start restored guest"])

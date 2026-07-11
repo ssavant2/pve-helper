@@ -45,6 +45,7 @@ GUEST_TASK_NAMES = {
     "guest.firewall.rule_delete": "Delete firewall rule",
     "guest.firewall.rule_toggle": "Toggle firewall rule",
     "guest.backup.run": "Backup",
+    "guest.backup.restore": "Restore backup",
     "guest.backup.delete": "Delete backup",
     "guest.replication.create": "Create replication",
     "guest.replication.delete": "Delete replication",
@@ -295,7 +296,7 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         if details.get("destroy_unreferenced_disks"):
             flags.append("destroy unreferenced disks")
         extra = ", ".join(flags)
-    for key in ("snapshot", "storage", "volid", "job_id", "target"):
+    for key in ("snapshot", "archive", "storage", "volid", "job_id", "target"):
         if not extra and details.get(key):
             extra = str(details[key])
             break
