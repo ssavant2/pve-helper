@@ -214,6 +214,51 @@ class MigrateActionTests(SimpleTestCase):
         self.assertIn("Choose what to migrate", err)
 
 
+class GuestHealthTests(SimpleTestCase):
+    def _detail(self, *, object_type=None, lock=""):
+        from types import SimpleNamespace
+
+        from core.models import ProxmoxInventory
+
+        return SimpleNamespace(
+            object_type=object_type or ProxmoxInventory.ObjectType.VM,
+            vmid=501,
+            node="pve3",
+            current={"lock": lock} if lock else {},
+            config={},
+        )
+
+    def test_display_lock_drops_suspended(self):
+        from core.views.guests import _display_lock
+
+        self.assertEqual(_display_lock("suspended"), "")
+        self.assertEqual(_display_lock("backup"), "backup")
+        self.assertEqual(_display_lock(""), "")
+
+    def test_health_flags_lock_with_qm_unlock_command(self):
+        from core.views.guests import _guest_health
+
+        health = _guest_health(self._detail(lock="backup"))
+        self.assertFalse(health["ok"])
+        issue = health["issues"][0]
+        self.assertEqual(issue["command"], "qm unlock 501")
+        self.assertIn("backup", issue["title"])
+
+    def test_health_uses_pct_unlock_for_containers(self):
+        from core.models import ProxmoxInventory
+        from core.views.guests import _guest_health
+
+        health = _guest_health(self._detail(object_type=ProxmoxInventory.ObjectType.CT, lock="snapshot"))
+        self.assertEqual(health["issues"][0]["command"], "pct unlock 501")
+
+    def test_health_ok_when_unlocked_or_hibernated(self):
+        from core.views.guests import _guest_health
+
+        self.assertTrue(_guest_health(self._detail())["ok"])
+        # 'suspended' is hibernate, not a health problem
+        self.assertTrue(_guest_health(self._detail(lock="suspended"))["ok"])
+
+
 class GuestTaskReaperTests(TestCase):
     def _running_event(self, age_seconds: int):
         from datetime import timedelta

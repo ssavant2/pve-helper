@@ -63,6 +63,7 @@ from ..services.proxmox import (
     clear_live_guest_caches,
     configured_clients,
     fetch_live_guest_inventory,
+    fetch_live_guest_locks,
     fetch_live_guest_status,
 )
 from ..services.recent_tasks import recent_task_page, serialize_task_page
@@ -787,6 +788,7 @@ _PATCHABLE_TEST_DEPS = {
     'async_task',
     'configured_clients',
     'fetch_live_guest_inventory',
+    'fetch_live_guest_locks',
     'fetch_live_guest_status',
     'storage_space_info',
 }

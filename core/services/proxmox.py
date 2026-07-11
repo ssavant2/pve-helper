@@ -15,8 +15,10 @@ from .classification import extract_disk_references
 
 LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
 LIVE_GUEST_INVENTORY_CACHE_KEY = "pve-helper:live-guest-inventory:v1"
+LIVE_GUEST_LOCKS_CACHE_KEY = "pve-helper:live-guest-locks:v1"
 LIVE_GUEST_STATUS_CACHE_SECONDS = 2
 LIVE_GUEST_INVENTORY_CACHE_SECONDS = 30
+LIVE_GUEST_LOCKS_CACHE_SECONDS = 3
 LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS = 2.5
 
 
@@ -76,6 +78,7 @@ class ProxmoxGuestSummary:
     disk: int = 0
     maxdisk: int = 0
     uptime: int = 0
+    lock: str = ""
 
 
 @dataclass(frozen=True)
@@ -493,8 +496,62 @@ def fetch_live_guest_inventory(*, use_cache: bool = True) -> list[ProxmoxGuestSu
     return result
 
 
+def fetch_live_guest_locks() -> dict[tuple[str, str, int], str]:
+    """Return {(node, object_type, vmid): lock} for guests that carry a Proxmox
+    config lock (``backup``, ``migrate``, ``snapshot``, ``suspended``, ...). The
+    lock rides on the per-node ``qemu``/``lxc`` listing (one call per node per
+    type), so this is a cluster-wide health signal without any per-VM polling."""
+    cached = cache.get(LIVE_GUEST_LOCKS_CACHE_KEY)
+    if isinstance(cached, dict):
+        return cached
+    result = _fetch_live_guest_locks_uncached()
+    cache.set(LIVE_GUEST_LOCKS_CACHE_KEY, result, LIVE_GUEST_LOCKS_CACHE_SECONDS)
+    return result
+
+
+def _fetch_live_guest_locks_uncached() -> dict[tuple[str, str, int], str]:
+    locks: dict[tuple[str, str, int], str] = {}
+    deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
+    for client in configured_clients():
+        timeout = _remaining_display_timeout(deadline)
+        if timeout is None:
+            break
+        try:
+            nodes = client.get("nodes", timeout=timeout)
+        except ProxmoxAPIError:
+            continue
+        if not isinstance(nodes, list):
+            continue
+        for node_info in nodes:
+            node = str(node_info.get("node") or "")
+            if not node or str(node_info.get("status") or "") != "online":
+                continue
+            for resource_type, object_type in (("qemu", "vm"), ("lxc", "ct")):
+                timeout = _remaining_display_timeout(deadline)
+                if timeout is None:
+                    return locks
+                try:
+                    guests = client.get(f"nodes/{quote(node, safe='')}/{resource_type}", timeout=timeout)
+                except ProxmoxAPIError:
+                    continue
+                if not isinstance(guests, list):
+                    continue
+                for guest in guests:
+                    lock = str(guest.get("lock") or "").strip() if isinstance(guest, dict) else ""
+                    if not lock:
+                        continue
+                    try:
+                        vmid = int(guest.get("vmid"))
+                    except (TypeError, ValueError):
+                        continue
+                    locks[(node, object_type, vmid)] = lock
+    return locks
+
+
 def clear_live_guest_caches() -> None:
-    cache.delete_many([LIVE_GUEST_STATUS_CACHE_KEY, LIVE_GUEST_INVENTORY_CACHE_KEY])
+    cache.delete_many(
+        [LIVE_GUEST_STATUS_CACHE_KEY, LIVE_GUEST_INVENTORY_CACHE_KEY, LIVE_GUEST_LOCKS_CACHE_KEY]
+    )
 
 
 def _paused_vm_keys(unknown_vm_keys, deadline) -> set[tuple[str, str, int]]:
@@ -642,6 +699,9 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
     stopped_vm_keys = [key for key, guest in guests_by_key.items() if guest.status == "stopped" and key[1] == "vm"]
     for key in _hibernated_vm_keys(stopped_vm_keys, deadline):
         guests_by_key[key] = replace(guests_by_key[key], status="hibernated")
+    for key, lock in fetch_live_guest_locks().items():
+        if key in guests_by_key:
+            guests_by_key[key] = replace(guests_by_key[key], lock=lock)
     return sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
 
 

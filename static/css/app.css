@@ -4544,6 +4544,61 @@ code {
   box-shadow: inset -2.5px -1px 0 0 #5aa0e0;
 }
 
+/* Lock badge: a small amber padlock next to a guest's name (list + overview)
+   when it carries a Proxmox config lock — "take a look at this one". */
+.guest-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  color: #e0a83c;
+  vertical-align: middle;
+}
+.guest-lock-badge[hidden] {
+  display: none;
+}
+.guest-lock-badge i,
+.guest-lock-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Health card on the guest detail page (stale/active lock, ...). */
+.summary-card-health {
+  border-color: #e0a83c;
+}
+.summary-card-health .panel-heading h2 {
+  color: #e0a83c;
+}
+.health-issue {
+  padding: 4px 14px 12px;
+}
+.health-issue-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 650;
+  color: #e0a83c;
+}
+.health-issue-title i,
+.health-issue-title svg {
+  width: 16px;
+  height: 16px;
+}
+.health-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.health-command code {
+  flex: 1 1 auto;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.12));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-x: auto;
+}
+
 /* equal-size cards across the grid */
 .vm-summary-grid {
   --summary-card-gap: 16px;

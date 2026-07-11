@@ -2,6 +2,24 @@
 
 {% block guest_content %}
   <section class="vm-summary-grid" data-summary-cards>
+    {% if guest_health.issues %}
+      <div class="panel summary-card summary-card-health" data-card-size="full">
+        <div class="panel-heading"><h2>Health</h2></div>
+        {% for issue in guest_health.issues %}
+          <div class="health-issue">
+            <div class="health-issue-title"><i data-lucide="alert-triangle" aria-hidden="true"></i> {{ issue.title }}</div>
+            <p class="muted">{{ issue.detail }}</p>
+            {% if issue.command %}
+              <p class="muted">Clear it on node <strong>{{ issue.node|default:"the guest's node" }}</strong> (as root):</p>
+              <div class="health-command">
+                <code data-health-command>{{ issue.command }}</code>
+                <button type="button" class="taskbar-page-button" data-copy-command title="Copy to clipboard">Copy</button>
+              </div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
     <div
       class="panel summary-card"
       data-card-key="guest-os"

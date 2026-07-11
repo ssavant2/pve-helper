@@ -52,6 +52,7 @@
              data-guest-template="{{ g.is_template|yesno:'true,false' }}"
              data-guest-agent-enabled="{{ g.agent_enabled|yesno:'true,false' }}"
              data-guest-status="{{ g.status }}"
+             data-guest-lock="{{ g.lock }}"
              data-guest-label="{{ g.guest_identity.full_label_with_type }}"
              data-guest-name="{{ g.name }}"
              data-detail-url="{{ guest_sticky_url }}"
@@ -69,6 +70,7 @@
               <i data-vicon="{% if g.object_type == 'ct' %}container{% elif g.is_template %}template{% else %}vm{% endif %}" aria-hidden="true"></i>
             </span>
             <span class="guest-list-label">{% guest_label g %}</span>
+            <span class="guest-lock-badge" data-guest-lock-badge title="{% if g.lock %}Locked: {{ g.lock }}{% endif %}"{% if not g.lock %} hidden{% endif %}><i data-lucide="lock" aria-hidden="true"></i></span>
           </a>
         {% empty %}
           <p class="muted guest-list-empty">No guests found.</p>

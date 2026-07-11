@@ -103,11 +103,13 @@ def vms_overview_snapshot_info(request):
 @app_login_required
 def vms_status(request):
     statuses = common.fetch_live_guest_status()
+    locks = common.fetch_live_guest_locks()
     guests = [
         {
             "target": _guest_target_value(object_type, vmid, node),
             "status": status,
             "state_label": _guest_state_label(status),
+            "lock": _display_lock(locks.get((node, object_type, vmid), "")),
         }
         for (node, object_type, vmid), status in sorted(statuses.items(), key=lambda item: (item[0][1], item[0][2], item[0][0]))
     ]
@@ -485,6 +487,13 @@ def _guest_target_value(object_type: str, vmid: int | str | None, node: str = ""
     return f"{base}@{node}" if node else base
 
 
+def _display_lock(value: object) -> str:
+    """A guest's config lock for the 'needs a look' badge — but ``suspended`` is
+    hibernate (an expected state shown by the moon icon), not a problem, so drop it."""
+    lock = str(value or "").strip()
+    return "" if lock == "suspended" else lock
+
+
 def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_guest=None) -> SimpleNamespace:
     config = scan_obj.config if scan_obj is not None and isinstance(scan_obj.config, dict) else {}
     template = object_type == ProxmoxInventory.ObjectType.VM and is_template(config)
@@ -514,6 +523,7 @@ def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_gu
         status=status or "",
         state_label=_guest_state_label(status),
         node=node or "",
+        lock=_display_lock(getattr(live_guest, "lock", "") or config.get("lock")),
         is_template=template,
         type_label=type_label,
         type_filter=type_filter,
@@ -705,6 +715,31 @@ def _size_text_to_bytes(value: str) -> int:
     return int(number * factor)
 
 
+def _guest_health(detail: SimpleNamespace) -> dict:
+    """Read-only health signals for a guest. Currently a stale/active config lock,
+    with a copy/paste unlock command for the specific guest (clearing a lock via
+    our API token is root@pam-only, so we point at the node CLI instead)."""
+    lock = str((detail.current or {}).get("lock") or (detail.config or {}).get("lock") or "").strip()
+    issues: list[dict] = []
+    # A 'suspended' lock is hibernate (expected state), not a health problem.
+    if lock and lock != "suspended":
+        unlock_cmd = "qm" if detail.object_type == ProxmoxInventory.ObjectType.VM else "pct"
+        issues.append(
+            {
+                "kind": "lock",
+                "title": f"Locked by “{lock}”",
+                "detail": (
+                    "A Proxmox operation holds a config lock on this guest. If no matching "
+                    "task is still running (check Recent Tasks), the lock is stale."
+                ),
+                "lock": lock,
+                "node": detail.node,
+                "command": f"{unlock_cmd} unlock {detail.vmid}",
+            }
+        )
+    return {"ok": not issues, "issues": issues}
+
+
 @app_login_required
 def guest_summary(request, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
@@ -738,6 +773,7 @@ def guest_summary(request, object_type: str, vmid: int):
     guest_ha = _guest_ha_summary(detail)
     context.update(
         {
+            "guest_health": _guest_health(detail),
             "guest_os_label": _guest_os_label(config),
             "guest_agent_summary": _guest_agent_summary(detail, allow_fetch=False),
             "guest_usage": _guest_usage(current, config, detail.object_type),

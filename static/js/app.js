@@ -2893,6 +2893,15 @@
       statusIcon.title = status || "unknown";
     }
 
+    // Lock badge (stale/active Proxmox config lock) — orthogonal to power state.
+    const lock = guest.lock || "";
+    row.dataset.guestLock = lock;
+    const lockBadge = row.querySelector("[data-guest-lock-badge]");
+    if (lockBadge) {
+      lockBadge.hidden = !lock;
+      lockBadge.title = lock ? `Locked: ${lock}` : "";
+    }
+
     const activeBadge = row
       .closest("[data-vm-overview]")
       ?.querySelector(`[data-active-guest-status-badge][data-guest-target="${CSS.escape(guest.target || "")}"]`);
@@ -7909,10 +7918,42 @@
     });
   };
 
+  const initCopyButtons = (root = document) => {
+    root.querySelectorAll("[data-copy-command]").forEach((button) => {
+      if (button.dataset.copyInit === "true") {
+        return;
+      }
+      button.dataset.copyInit = "true";
+      button.addEventListener("click", async () => {
+        const code = button.closest(".health-command")?.querySelector("[data-health-command]");
+        const text = (code?.textContent || "").trim();
+        if (!text) {
+          return;
+        }
+        const original = button.textContent;
+        try {
+          await navigator.clipboard.writeText(text);
+          button.textContent = "Copied";
+          window.setTimeout(() => {
+            button.textContent = original;
+          }, 1500);
+        } catch (_error) {
+          // Non-secure context or no clipboard API — select the text so the user can copy manually.
+          const range = document.createRange();
+          range.selectNodeContents(code);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      });
+    });
+  };
+
   const initPage = (root = document) => {
     initHardwareEditor(root);
     initVmRegister(root);
     initGuestActionForms(root);
+    initCopyButtons(root);
     initBackupRestoreForms(root);
     initGuestListFilter(root);
     sortGuestList(document.documentElement.dataset.guestNameStyle !== "name-only");
