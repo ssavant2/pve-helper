@@ -2034,7 +2034,36 @@ def _require_file_action_confirmations(request, risk: FileActionRisk) -> None:
         raise StorageActionError("Risk confirmation was not confirmed.")
 
 
+def _require_linked_clone_base_unblocked(entries: list[FileInventory]) -> None:
+    """Hard-block trashing/moving a template's base volume while linked clones
+    still ride it. Proxmox cannot protect a raw filesystem delete, so removing the
+    backing file would corrupt every clone. Now feasible because lineage gives the
+    backing-chain the V1 risk gate lacked. (A base volume's images/<vmid> folder is
+    already covered by the 'guest image directories must be empty' rule.)"""
+    from collections import Counter
+
+    from core.services.classification import extract_vmid_from_image_path
+
+    base_entries = [entry for entry in entries if entry.content_category == "base_image"]
+    if not base_entries:
+        return
+    lineage = common.fetch_live_guest_lineage()  # {clone VMID: template VMID}
+    if not lineage:
+        return
+    clone_counts = Counter(lineage.values())
+    for entry in base_entries:
+        vmid = extract_vmid_from_image_path(entry.path)
+        count = clone_counts.get(vmid or -1, 0)
+        if count:
+            raise StorageActionError(
+                f"This is the base volume of template {vmid}, which {count} linked "
+                f"clone{'s' if count != 1 else ''} still depend on. Delete the linked "
+                "clones first (or full-clone them to detach) before removing it."
+            )
+
+
 def _require_file_action_confirmations_for_entries(request, entries: list[FileInventory]) -> None:
+    _require_linked_clone_base_unblocked(entries)
     risks = [file_action_risk(entry) for entry in entries]
     blocked_risk = next((risk for risk in risks if risk.blocked), None)
     if blocked_risk:

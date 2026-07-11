@@ -361,6 +361,66 @@ class LinkedCloneTemplateGuardTests(TestCase):
         self.assertTrue(any("linked clone" in e.lower() for e in payload["errors"]))
 
 
+class LinkedCloneBaseProtectionTests(TestCase):
+    """A template's base volume backs its linked clones read-only; removing or
+    destroying it out from under them corrupts the clones. Both the raw-filesystem
+    path (storage view) and the guest destroy are guarded."""
+
+    def _entry(self, path, *, category="base_image", directory=False):
+        from types import SimpleNamespace
+
+        from core.models import FileInventory
+
+        return SimpleNamespace(
+            path=path,
+            content_category=category,
+            entry_type=FileInventory.EntryType.DIRECTORY if directory else FileInventory.EntryType.FILE,
+        )
+
+    def test_storage_gate_blocks_base_volume_with_clones(self):
+        from core.services.storage_actions import StorageActionError
+        from core.views.storage import _require_linked_clone_base_unblocked
+
+        entry = self._entry("images/505/base-505-disk-0.qcow2")
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505, 103: 505}):
+            with self.assertRaises(StorageActionError) as ctx:
+                _require_linked_clone_base_unblocked([entry])
+        self.assertIn("2 linked clones", str(ctx.exception))
+
+    def test_storage_gate_ignores_non_base_entries_without_live_call(self):
+        # A plain directory is not a base volume; the guard must short-circuit
+        # before any live lineage call (the empty-dir rule covers directories).
+        from core.views.storage import _require_linked_clone_base_unblocked
+
+        entry = self._entry("images/505", category="", directory=True)
+        with patch("core.views.common.fetch_live_guest_lineage") as fetch:
+            _require_linked_clone_base_unblocked([entry])  # no raise
+        fetch.assert_not_called()
+
+    def test_storage_gate_allows_base_volume_without_clones(self):
+        from core.views.storage import _require_linked_clone_base_unblocked
+
+        entry = self._entry("images/505/base-505-disk-0.qcow2")
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={}):
+            _require_linked_clone_base_unblocked([entry])  # no raise
+
+    def test_destroy_blocks_template_with_linked_clones(self):
+        from types import SimpleNamespace
+
+        from core.models import ProxmoxInventory
+        from core.views import guests as G
+
+        detail = SimpleNamespace(
+            object_type=ProxmoxInventory.ObjectType.VM, vmid=505, name="tmpl", node="pve3", status="stopped"
+        )
+        request = RequestFactory().post("/", {"destroy_confirm_vmid": "505"})
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505, 103: 505}):
+            err, details, response, client = G._destroy_guest_from_bulk_request(request, detail)
+        self.assertIn("linked clone", err.lower())
+        self.assertIsNone(response)
+        self.assertEqual(details["linked_children"], [102, 103])
+
+
 class GuestTaskReaperTests(TestCase):
     def _running_event(self, age_seconds: int):
         from datetime import timedelta

@@ -4376,6 +4376,19 @@ def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
         return "The confirmation VMID did not match.", {}, None, None
     if detail.status == "running":
         return "Stop the guest before destroying it.", {"status": detail.status}, None, None
+    # A template whose base volume still backs linked clones must not be destroyed:
+    # Proxmox refuses it anyway, but fail early with a clear message.
+    lineage = common.fetch_live_guest_lineage()
+    children = sorted(clone for clone, parent in lineage.items() if parent == detail.vmid)
+    if children:
+        labels = ", ".join(str(child) for child in children)
+        return (
+            "Cannot destroy this template — linked clone(s) still depend on its base "
+            f"volume: {labels}. Delete the linked clones first.",
+            {"linked_children": children},
+            None,
+            None,
+        )
 
     purge = request.POST.get("destroy_purge") == "1"
     destroy_unreferenced_disks = request.POST.get("destroy_unreferenced_disks") == "1"
