@@ -4516,6 +4516,7 @@
     const row = rows[0];
     const label = row?.dataset.guestLabel || "guest";
     const guestName = row?.dataset.guestName || "";
+    let usedVmids = new Set();
     const dialog = openVmFormDialog({
       title: "Clone",
       summary: label,
@@ -4545,6 +4546,9 @@
         const newid = String(formData.get("clone_newid") || "").trim();
         if (!/^[0-9]+$/.test(newid) || Number(newid) <= 0) {
           return "New VMID must be a positive whole number.";
+        }
+        if (usedVmids.has(Number(newid))) {
+          return `VMID ${newid} is already in use — pick a free ID.`;
         }
         const name = String(formData.get("clone_name") || "").trim();
         if (!name) {
@@ -4596,9 +4600,25 @@
         return response.json();
       })
       .then((data) => {
+        usedVmids = new Set((Array.isArray(data.used_vmids) ? data.used_vmids : []).map(Number));
         if (idInput) {
           idInput.value = data.nextid || "";
           idInput.disabled = false;
+          // Live feedback so a taken ID is caught before submit, not after.
+          const validateId = () => {
+            const value = Number(idInput.value);
+            const taken = Number.isFinite(value) && value > 0 && usedVmids.has(value);
+            idInput.setCustomValidity(taken ? "VMID already in use" : "");
+            if (error) {
+              if (taken) {
+                error.textContent = `VMID ${idInput.value} is already in use — pick a free ID.`;
+                error.hidden = false;
+              } else if (error.textContent.includes("already in use")) {
+                error.hidden = true;
+              }
+            }
+          };
+          idInput.addEventListener("input", validateId);
         }
         if (storageSelect) {
           storageSelect.innerHTML = "";
@@ -4788,6 +4808,9 @@
     const allVms = contextRows.every((item) => item.dataset.guestType === "vm");
     const noTemplates = contextRows.every((item) => item.dataset.guestTemplate !== "true");
     const allTemplates = contextRows.every((item) => item.dataset.guestTemplate === "true");
+    // A linked clone must not become a template — it would seed a fragile,
+    // chained lineage. Full-clone it first.
+    const noLinkedClones = contextRows.every((item) => item.dataset.guestLinkedClone !== "true");
     const allAgentEnabled = contextRows.every((item) => item.dataset.guestAgentEnabled === "true");
     const allAgentDisabled = contextRows.every((item) => item.dataset.guestAgentEnabled !== "true");
     const singleSelected = contextRows.length === 1;
@@ -4846,7 +4869,7 @@
         <button type="button" class="context-menu-parent">Template <span>›</span></button>
         <div class="context-menu-submenu-panel">
           <button type="button" data-vm-action="clone" ${singleSelected && writable ? "" : "disabled"}>Clone...</button>
-          <button type="button" data-vm-action="template" ${writable && allStopped && allVms && noTemplates ? "" : "disabled"}>Convert to Template</button>
+          <button type="button" data-vm-action="template" ${writable && allStopped && allVms && noTemplates && noLinkedClones ? "" : "disabled"}>Convert to Template</button>
           <button type="button" data-vm-action="untemplate" ${singleSelected && writable && allStopped && allVms && allTemplates ? "" : "disabled"}>Convert Template to VM...</button>
         </div>
       </div>

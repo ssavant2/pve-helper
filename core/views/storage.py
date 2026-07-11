@@ -512,17 +512,50 @@ def storage_browser(request, storage_id: str):
             vmid__isnull=False,
         ):
             guest_map.setdefault(obj.vmid, obj)
+
+    # Linked-clone lineage: which template each clone descends from, and how many
+    # clones each template's base volume backs. Cached live fetch; empty if the
+    # API is unreachable, so the browser degrades to plain classification.
+    import re
+    from collections import Counter
+
+    lineage = common.fetch_live_guest_lineage()  # {clone VMID: template VMID}
+    clone_counts = Counter(lineage.values())
+    base_volume_re = re.compile(r"base-(\d+)-disk-")
+
+    def _template_link(vmid: int) -> dict:
+        guest = guest_map.get(vmid)
+        return {
+            "vmid": vmid,
+            "name": guest.name if guest and guest.name else f"VM {vmid}",
+            "url": reverse("core:guest_summary", args=[guest.object_type, guest.vmid]) if guest else "",
+        }
+
     for entry in entries:
         entry.referenced_guest = None
-        if (
-            entry.entry_type == FileInventory.EntryType.FILE
-            and entry.classification == FileInventory.Classification.REFERENCED
-        ):
-            guest = guest_map.get(extract_vmid_from_image_path(entry.path) or -1)
+        entry.template_base = None
+        if entry.entry_type != FileInventory.EntryType.FILE:
+            continue
+        # A template's base volume (base-<vmid>-disk-*), shared read-only by every
+        # linked clone. Surface which template owns it and how many clones ride it.
+        base_match = base_volume_re.search(entry.name)
+        if base_match:
+            tmpl_vmid = int(base_match.group(1))
+            entry.template_base = {
+                **_template_link(tmpl_vmid),
+                "clone_count": clone_counts.get(tmpl_vmid, 0),
+            }
+        if entry.classification == FileInventory.Classification.REFERENCED:
+            owner_vmid = extract_vmid_from_image_path(entry.path)
+            guest = guest_map.get(owner_vmid or -1)
             if guest is not None:
                 entry.referenced_guest = {
                     "name": guest.name or f"VM {guest.vmid}",
                     "url": reverse("core:guest_summary", args=[guest.object_type, guest.vmid]),
+                    # If this disk belongs to a linked clone, name its base template.
+                    "linked_clone_of": _template_link(lineage[owner_vmid])
+                    if owner_vmid in lineage
+                    else None,
                 }
 
     file_next_offset = file_offset + FILE_BROWSER_BATCH_SIZE

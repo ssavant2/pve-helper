@@ -390,6 +390,24 @@ def guest_agent_summary_api(request, object_type: str, vmid: int):
     )
 
 
+def _mark_linked_clones(
+    rows: list[SimpleNamespace], lineage: dict[int, int] | None = None
+) -> dict[int, int]:
+    """Flag VM rows that are linked clones (disk backed by a template's base
+    volume). Independent of whether the parent row is present in ``rows`` — used
+    to gate the 'Convert to Template' action everywhere (a linked clone must not
+    become a template, or it would seed a deeper, fragile lineage chain). Returns
+    the lineage map so callers can reuse it without a second fetch."""
+    if lineage is None:
+        lineage = common.fetch_live_guest_lineage()  # {child VMID: parent VMID}
+    child_vmids = set(lineage)
+    for row in rows:
+        row.is_linked_clone = (
+            row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid in child_vmids
+        )
+    return lineage
+
+
 def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespace]:
     """Order the Inventory list as a linked-clone tree: children indented under
     their parent template (read-only). VMs on qcow2 file storage only; everything
@@ -401,7 +419,7 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
         row.lineage_parent_name = ""
         row.depth = 0
         row.deeper_chain = False
-    lineage = common.fetch_live_guest_lineage()  # {child VMID: parent VMID}
+    lineage = _mark_linked_clones(rows)  # {child VMID: parent VMID}
     if not lineage:
         return rows
     vm_rows = {
@@ -445,9 +463,14 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
 
 def _vms_workspace_context(active_nav: str) -> dict:
     rows, live_available, scan_at = _guest_rows()
-    # Only the workspace Inventory list renders the lineage tree; the overview
-    # table stays flat, so don't pay for the lineage fetch there.
-    guest_list = _apply_workspace_lineage(rows) if active_nav == "vms" else rows
+    # The workspace Inventory list renders the full lineage tree; the overview
+    # stays flat but still flags linked clones so the toolbar can gate 'Convert
+    # to Template'. Both share the same cached lineage fetch.
+    if active_nav == "vms":
+        guest_list = _apply_workspace_lineage(rows)
+    else:
+        _mark_linked_clones(rows)
+        guest_list = rows
     return {
         **navigation_context(active_nav),
         "guests": rows,
@@ -622,6 +645,12 @@ def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_gu
         # rather than a misleading "No".
         has_snapshot=None,
         has_snapshot_label="-",
+        # Lineage flags; populated by _mark_linked_clones / _apply_workspace_lineage.
+        is_linked_clone=False,
+        parent_vmid=None,
+        lineage_parent_name="",
+        depth=0,
+        deeper_chain=False,
     )
 
 
@@ -3545,6 +3574,14 @@ def vms_bulk_action(request):
                 )
                 errors.append("Only VMs can be converted to templates.")
                 continue
+            if detail.vmid in common.fetch_live_guest_lineage():
+                msg = (
+                    f"{detail.name or detail.vmid} is a linked clone; converting it to a "
+                    "template would create a fragile chained lineage. Full-clone it first."
+                )
+                _finish_guest_running_audit(running_event, detail, None, None, err=msg)
+                errors.append(msg)
+                continue
             response, err, client = _guest_post_with_client(detail, "template")
             audit_details = None
             error_label = f"Template conversion failed: {err}" if err else ""
@@ -4543,9 +4580,14 @@ def guest_clone_options(request, object_type: str, vmid: int):
     if not default_storage and storages:
         default_storage = storages[0]
 
+    used_vmids = sorted(
+        {guest.vmid for guest in common.fetch_live_guest_inventory() if guest.vmid is not None}
+    )
+
     return JsonResponse(
         {
             "nextid": nextid,
+            "used_vmids": used_vmids,
             "storages": [{"id": storage, "label": storage} for storage in storages],
             "default_storage": default_storage,
             "source_storages": source_storages,
@@ -5174,7 +5216,10 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         type_label = "VM"
     target = f"{detail.object_type}:{detail.vmid}"
     active_target = _guest_target_value(detail.object_type, detail.vmid, detail.node)
-    guest_list, live_available, scan_at = _guest_rows()
+    rows, live_available, scan_at = _guest_rows()
+    # The sidebar list on every detail/Summary page is the same workspace tree,
+    # so it must render the lineage indentation too (not a flat list).
+    guest_list = _apply_workspace_lineage(rows)
     return {
         **navigation_context("vms"),
         "guest": detail,

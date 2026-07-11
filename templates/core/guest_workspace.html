@@ -52,6 +52,7 @@
              data-guest-vmid="{{ g.vmid }}"
              data-guest-type="{{ g.object_type }}"
              data-guest-template="{{ g.is_template|yesno:'true,false' }}"
+             data-guest-linked-clone="{{ g.is_linked_clone|yesno:'true,false' }}"
              data-guest-agent-enabled="{{ g.agent_enabled|yesno:'true,false' }}"
              data-guest-status="{{ g.status }}"
              data-guest-lock="{{ g.lock }}"

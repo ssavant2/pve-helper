@@ -305,6 +305,61 @@ class GuestLineageTests(SimpleTestCase):
         self.assertTrue(by[103].deeper_chain)
         self.assertFalse(by[102].deeper_chain)
 
+    def test_mark_linked_clones_flags_children_regardless_of_parent_presence(self):
+        from unittest.mock import patch
+
+        from core.views.guests import _mark_linked_clones
+
+        # 101 is a linked clone; its parent template (100) is NOT in this view.
+        rows = [self._row(101), self._row(102), self._row(200, ct=True)]
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100}):
+            _mark_linked_clones(rows)
+        flags = {r.vmid: r.is_linked_clone for r in rows}
+        self.assertEqual(flags, {101: True, 102: False, 200: False})
+
+    def test_apply_lineage_also_sets_linked_clone_flag(self):
+        from unittest.mock import patch
+
+        from core.views.guests import _apply_workspace_lineage
+
+        rows = [self._row(100, "template"), self._row(101), self._row(102)]
+        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100}):
+            ordered = _apply_workspace_lineage(rows)
+        by = {r.vmid: r for r in ordered}
+        self.assertTrue(by[101].is_linked_clone)
+        self.assertFalse(by[100].is_linked_clone)
+
+
+class LinkedCloneTemplateGuardTests(TestCase):
+    """A linked clone must not be converted to a template (it would seed a
+    fragile chained lineage). The action is gated server-side."""
+
+    @override_settings(VM_WRITE_ENABLED=True)
+    def test_template_action_rejects_linked_clone(self):
+        from types import SimpleNamespace
+
+        from core.models import ProxmoxInventory
+        from core.views import guests as G  # noqa: F401 (import path patched below)
+
+        detail = SimpleNamespace(
+            object_type=ProxmoxInventory.ObjectType.VM, vmid=101, name="clone", node="pve3", config={}
+        )
+        self.client.force_login(get_user_model().objects.create_user("tester", password="x"))
+        with patch("core.views.guests._require_guest", return_value=detail), patch(
+            "core.views.common.fetch_live_guest_lineage", return_value={101: 100}
+        ), patch("core.views.guests._guest_post_with_client") as post:
+            response = self.client.post(
+                reverse("core:vms_bulk_action"),
+                {"bulk_action": "template", "guest": "vm:101@pve3"},
+                HTTP_X_REQUESTED_WITH="fetch",
+            )
+        # The clone → template POST must never be issued.
+        post.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(any("linked clone" in e.lower() for e in payload["errors"]))
+
 
 class GuestTaskReaperTests(TestCase):
     def _running_event(self, age_seconds: int):
