@@ -5486,7 +5486,6 @@
       if (!table) return;
 
       const storageKey = `pve-helper-columns-${tableName}`;
-      const orderStorageKey = `${storageKey}-order`;
       const toggles = Array.from(picker.querySelectorAll("[data-column-toggle]"));
       const panel = picker.querySelector(".column-picker-panel");
       const defaultState = {};
@@ -5498,21 +5497,6 @@
           picker.open = false;
         }
       });
-      const defaultOrder = toggles.map((toggle) => toggle.dataset.columnToggle).filter(Boolean);
-
-      let order = [...defaultOrder];
-      try {
-        const storedOrder = JSON.parse(localStorage.getItem(orderStorageKey) || "[]");
-        if (Array.isArray(storedOrder)) {
-          const known = new Set(defaultOrder);
-          order = [
-            ...storedOrder.filter((column) => known.has(column)),
-            ...defaultOrder.filter((column) => !storedOrder.includes(column)),
-          ];
-        }
-      } catch (_error) {
-        order = [...defaultOrder];
-      }
 
       let state = { ...defaultState };
       try {
@@ -5524,100 +5508,23 @@
         state = { ...defaultState };
       }
 
-      const applyColumnOrder = () => {
-        const preferredOrder = [
-          ...order.filter((column) => defaultOrder.includes(column)),
-          ...defaultOrder.filter((column) => !order.includes(column)),
-        ];
-        const normalizedOrder = preferredOrder.includes("name")
-          ? ["name", ...preferredOrder.filter((column) => column !== "name")]
-          : preferredOrder;
-        order = normalizedOrder;
-        Array.from(table.rows).forEach((row) => {
-          const cells = Array.from(row.children);
-          const fixedCells = cells.filter((cell) => !cell.dataset.column);
-          const cellsByColumn = new Map();
-          cells
-            .filter((cell) => cell.dataset.column)
-            .forEach((cell) => {
-              cellsByColumn.set(cell.dataset.column, cell);
-            });
-          fixedCells.forEach((cell) => {
-            row.appendChild(cell);
-          });
-          normalizedOrder.forEach((column) => {
-            const cell = cellsByColumn.get(column);
-            if (cell) {
-              row.appendChild(cell);
+      // Visibility-only picker: list the columns alphabetically for easy
+      // scanning. Column *reordering* lives in the table headers
+      // (initResizableColumns), so the picker no longer drags/orders.
+      if (panel) {
+        const labelText = (toggle) => (toggle.closest("label")?.textContent || "").trim();
+        toggles
+          .slice()
+          .sort((left, right) => labelText(left).localeCompare(labelText(right)))
+          .forEach((toggle) => {
+            const label = toggle.closest("label");
+            if (label) {
+              panel.appendChild(label);
             }
           });
-        });
-      };
-
-      const saveColumnOrder = () => {
-        try {
-          localStorage.setItem(orderStorageKey, JSON.stringify(order));
-        } catch (_error) {
-          // Column order preferences are optional.
-        }
-      };
-
-      const applyNewOrder = (nextOrder) => {
-        const known = new Set(defaultOrder);
-        order = [
-          ...nextOrder.filter((column) => known.has(column)),
-          ...defaultOrder.filter((column) => !nextOrder.includes(column)),
-        ];
-        saveColumnOrder();
-        apply();
-      };
-
-      const columnFromOption = (option) => option?.querySelector("[data-column-toggle]")?.dataset.columnToggle || "";
-
-      const clearDragMarkers = () => {
-        picker.querySelectorAll(".drag-over-before, .drag-over-after").forEach((option) => {
-          option.classList.remove("drag-over-before", "drag-over-after");
-        });
-      };
-
-      const syncPickerOrder = () => {
-        if (!panel) return;
-        const labelsByColumn = new Map(
-          toggles.map((toggle) => [
-            toggle.dataset.columnToggle,
-            toggle.closest("[data-column-picker-option]") || toggle.closest("label"),
-          ])
-        );
-        order.forEach((column) => {
-          const label = labelsByColumn.get(column);
-          if (label) {
-            panel.appendChild(label);
-          }
-        });
-      };
-
-      toggles.forEach((toggle) => {
-        const label = toggle.closest("label");
-        if (!label || label.dataset.columnPickerOption === "true") return;
-        label.dataset.columnPickerOption = "true";
-        label.classList.add("column-picker-option");
-        if (toggle.disabled || toggle.dataset.columnToggle === "name") return;
-        const grip = document.createElement("span");
-        grip.className = "column-picker-grip";
-        grip.dataset.columnDragHandle = "true";
-        grip.draggable = true;
-        grip.title = "Drag to reorder";
-        grip.setAttribute("aria-label", "Drag to reorder");
-        grip.textContent = "⋮⋮";
-        grip.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        });
-        label.prepend(grip);
-      });
+      }
 
       const apply = () => {
-        applyColumnOrder();
         toggles.forEach((toggle) => {
           const column = toggle.dataset.columnToggle;
           if (!column) return;
@@ -5629,7 +5536,6 @@
             cell.hidden = !visible;
           });
         });
-        syncPickerOrder();
         table.dispatchEvent(new CustomEvent("pve-helper-columns-changed"));
       };
 
@@ -5642,59 +5548,6 @@
             // Column preferences are optional.
           }
           apply();
-        });
-      });
-
-      table.addEventListener("pve-helper-column-order-changed", (event) => {
-        if (!Array.isArray(event.detail?.order)) return;
-        order = event.detail.order;
-        syncPickerOrder();
-      });
-
-      let draggedColumn = "";
-      picker.addEventListener("dragstart", (event) => {
-        const handle = event.target.closest("[data-column-drag-handle]");
-        if (!handle || !picker.contains(handle)) return;
-        const option = handle.closest("[data-column-picker-option]");
-        draggedColumn = columnFromOption(option);
-        if (!draggedColumn) return;
-        option?.classList.add("dragging");
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", draggedColumn);
-      });
-
-      picker.addEventListener("dragover", (event) => {
-        if (!draggedColumn) return;
-        const option = event.target.closest("[data-column-picker-option]");
-        const targetColumn = columnFromOption(option);
-        if (!option || !picker.contains(option) || !targetColumn || targetColumn === draggedColumn) return;
-        event.preventDefault();
-        const rect = option.getBoundingClientRect();
-        const after = event.clientY > rect.top + rect.height / 2;
-        clearDragMarkers();
-        option.classList.toggle("drag-over-before", !after);
-        option.classList.toggle("drag-over-after", after);
-      });
-
-      picker.addEventListener("drop", (event) => {
-        if (!draggedColumn) return;
-        const option = event.target.closest("[data-column-picker-option]");
-        const targetColumn = columnFromOption(option);
-        if (!option || !picker.contains(option) || !targetColumn || targetColumn === draggedColumn) return;
-        event.preventDefault();
-        const after = option.classList.contains("drag-over-after");
-        const nextOrder = order.filter((column) => column !== draggedColumn);
-        const targetIndex = nextOrder.indexOf(targetColumn);
-        if (targetIndex < 0) return;
-        nextOrder.splice(targetIndex + (after ? 1 : 0), 0, draggedColumn);
-        applyNewOrder(nextOrder);
-      });
-
-      picker.addEventListener("dragend", () => {
-        draggedColumn = "";
-        clearDragMarkers();
-        picker.querySelectorAll("[data-column-picker-option].dragging").forEach((option) => {
-          option.classList.remove("dragging");
         });
       });
 

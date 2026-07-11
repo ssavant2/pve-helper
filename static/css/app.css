@@ -6946,11 +6946,6 @@ html[data-theme="dark"] .hardware-editor-page {
   display: flex;
   justify-content: flex-end;
 }
-.card-picker .column-picker-panel label {
-  grid-template-columns: 18px minmax(0, 1fr);
-  cursor: pointer;
-}
-
 .column-picker summary {
   cursor: pointer;
   list-style: none;
@@ -6996,7 +6991,7 @@ html[data-theme="dark"] .hardware-editor-page {
 .column-picker-panel label {
   position: relative;
   display: grid;
-  grid-template-columns: 22px 18px minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 30px;
@@ -7004,47 +6999,11 @@ html[data-theme="dark"] .hardware-editor-page {
   border-radius: 5px;
   font-size: 13px;
   color: var(--text);
+  cursor: pointer;
 }
 
-.column-picker-option input {
+.column-picker-panel label input {
   margin: 0;
-}
-
-.column-picker-grip {
-  color: var(--muted);
-  cursor: grab;
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0.75;
-  text-align: center;
-  user-select: none;
-}
-
-.column-picker-grip:active {
-  cursor: grabbing;
-}
-
-.column-picker-option.dragging {
-  opacity: 0.45;
-}
-
-.column-picker-option.drag-over-before::before,
-.column-picker-option.drag-over-after::after {
-  content: "";
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent);
-}
-
-.column-picker-option.drag-over-before::before {
-  top: -3px;
-}
-
-.column-picker-option.drag-over-after::after {
-  bottom: -3px;
 }
 
 /* --- advanced hardware cards --- */
