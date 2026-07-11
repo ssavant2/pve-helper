@@ -4569,6 +4569,9 @@ code {
 .summary-card-health .panel-heading h2 {
   color: #e0a83c;
 }
+.health-ok {
+  padding: 4px 14px 14px;
+}
 .health-issue {
   padding: 4px 14px 12px;
 }
