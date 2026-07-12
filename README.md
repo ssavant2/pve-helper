@@ -61,7 +61,8 @@ or supported as an enterprise storage-management product.
 
 ## Setup
 
-Start with `docs/deployment-runbook.md`. For Authentik, see
+Start with `docs/deployment-runbook.md`. For day-to-day administration, see
+`docs/user-manual.md`. For Authentik, see
 `docs/authentik-oidc-setup.md`. For Proxmox API credentials, see
 `docs/proxmox-api-token.md`. For database role separation, see
 `docs/postgres-hardening.md`.
@@ -94,7 +95,7 @@ Then restart the running app containers so the browser sees the same code that
 was tested:
 
 ```bash
-docker compose up -d web worker worker-bulk
+docker compose up -d web worker worker-bulk console nginx
 ```
 
 JavaScript linting/formatting runs through Docker, so Node.js does not need to

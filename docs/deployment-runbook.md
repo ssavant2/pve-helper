@@ -3,6 +3,9 @@
 > Hostnames, groups, IPs and exports below are generic placeholders. Substitute your own
 > environment's values in `.env` (which is gitignored) — do not commit real values.
 
+This document is for deployment and operation of the platform. For day-to-day
+use of the administration client, see the [user manual](user-manual.md).
+
 ## First local skeleton run
 
 1. Copy `.env.example` to `.env`.
@@ -28,7 +31,7 @@
 6. Start the app:
 
    ```bash
-   docker compose up -d nginx web worker worker-bulk
+   docker compose up -d nginx web worker worker-bulk console
    ```
 
 7. Open `http://dockerhost:21080` directly or configure NPM for `https://pve-helper.example.com`.
@@ -137,11 +140,12 @@ findmnt -T /mnt/pve-helper/truenas-fs
 findmnt -T /mnt/pve-helper/truenas-vm
 ```
 
-Then recreate the app containers so Docker binds the mounted NFS trees, not the empty
-underlying directories:
+Then recreate the web and worker containers so Docker binds the mounted NFS
+trees, not the empty underlying directories. `worker-bulk` needs the same
+mounts as `worker` because it performs scans and other storage-heavy work:
 
 ```bash
-docker compose up -d --force-recreate nginx web worker
+docker compose up -d --force-recreate nginx web worker worker-bulk
 ```
 
 Keep both the host NFS mounts and the Docker bind mounts read-only until you are ready
