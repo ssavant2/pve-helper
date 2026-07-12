@@ -38,6 +38,31 @@ internal Django/Gunicorn `web` service. Authorized datastore downloads are serve
 directly by nginx from read-only storage mounts after Django has performed auth,
 path validation, and audit logging.
 
+### Worker topology and resources
+
+Background work runs as two Django-Q clusters, deployed as separate services:
+
+- **`worker`** — the *control plane*: schedules, retention, trash purge, space
+  snapshots, and the stale-task reapers. It is the **only** cluster that runs the
+  Django-Q scheduler, so `Schedule` rows fire exactly once.
+- **`worker-bulk`** — the *data plane*: scans, inflate, backup/restore, migration,
+  OVA/OVF import, and long (up to 6 h) Proxmox UPID polling. It runs with
+  `Q_CLUSTER_NAME=bulk` (6 h timeout, scheduler **off**) and only drains jobs that
+  the app explicitly routes to the `bulk` queue.
+
+`Q_BULK_WORKERS` (default **2**) is the number of worker **processes** the bulk
+cluster forks — not threads, and not a core requirement. Two lets a long
+backup/restore poll and quick guest status polls proceed concurrently instead of
+serializing. Bulk work is mostly **I/O-bound** — Proxmox performs the actual disk
+work while the worker sleeps in `wait_for_task` — so **two bulk workers do not
+require two dedicated cores**; a single core time-slices them fine. Extra vCPUs
+only help when genuinely CPU-bound bulk jobs overlap (two scans at once, or OVA
+SHA hashing during a scan). A 2-core host is comfortable for the whole set
+(web + control worker + 2 bulk workers + console).
+
+Always keep `Q_BULK_RETRY` **greater than** `Q_BULK_TIMEOUT`; otherwise Django-Q
+retries — and thus double-runs — a job that is still legitimately running.
+
 ### Preserve source IP through Nginx Proxy Manager
 
 By default, audit events record the direct peer of pve-helper's nginx sidecar.
