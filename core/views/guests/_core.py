@@ -7,8 +7,8 @@ from pathlib import Path, PurePosixPath
 
 from django.templatetags.static import static
 
-from .common import *  # noqa: F401,F403
-from . import common
+from ..common import *  # noqa: F401,F403
+from .. import common
 from core.models import ProxmoxEndpoint, StorageMount
 from core.services.classification import DISK_CONFIG_KEYS, extract_disk_references
 from core.services.console_sessions import create_guest_console_session
