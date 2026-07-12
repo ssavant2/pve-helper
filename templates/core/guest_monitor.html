@@ -9,9 +9,9 @@
       {% endfor %}
     </div>
     {% if monitor_error %}
-      <div class="panel"><p class="muted" style="padding:14px;"><span class="badge failed">Unavailable</span> {{ monitor_error }}</p></div>
+      <div class="panel"><p class="muted panel-empty-note"><span class="badge failed">Unavailable</span> {{ monitor_error }}</p></div>
     {% elif not has_rrd %}
-      <div class="panel"><p class="muted" style="padding:14px;">No metric data for this timeframe.</p></div>
+      <div class="panel"><p class="muted panel-empty-note">No metric data for this timeframe.</p></div>
     {% else %}
       <div class="vm-monitor-grid">
         {% for c in charts %}

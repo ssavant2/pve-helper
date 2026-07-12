@@ -3,7 +3,7 @@
 {% block guest_content %}
   <section class="storage-tab-content">
     {% if not has_cloudinit and not guest_write_enabled %}
-      <div class="panel"><p class="muted" style="padding:14px;">This guest has no Cloud-Init configuration or drive.</p></div>
+      <div class="panel"><p class="muted panel-empty-note">This guest has no Cloud-Init configuration or drive.</p></div>
     {% else %}
       {% if guest_write_enabled %}
         <div class="panel panel-spaced guest-edit-panel">
