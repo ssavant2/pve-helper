@@ -2327,7 +2327,11 @@ def guest_configure(request, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid)
     agent_summary = _guest_agent_summary(detail, allow_fetch=True)
     actions = list(
-        ScheduledAction.objects.filter(target_type=object_type, target_vmid=vmid).order_by("-enabled", "next_run_at", "name")
+        ScheduledAction.objects.filter(
+            target_type=object_type,
+            target_vmid=vmid,
+            deleted_at__isnull=True,
+        ).order_by("-enabled", "next_run_at", "name")
     )
     for action in actions:
         action.display_schedule = _scheduled_action_schedule_label(action)
@@ -3319,7 +3323,7 @@ def _audit_guest_task_or_success(
             }
         )
         event = _audit_guest(request, detail, audit_action, details, outcome="running")
-        task_id = common.async_task(
+        task_id = common.enqueue_bulk_task(
             "core.tasks.poll_guest_audit_task",
             event.id,
             getattr(client, "endpoint", ""),
@@ -3367,7 +3371,7 @@ def _finish_guest_running_audit(
                 "proxmox_endpoint": getattr(client, "endpoint", ""),
             }
         )
-        task_id = common.async_task(
+        task_id = common.enqueue_bulk_task(
             "core.tasks.poll_guest_audit_task",
             event.id,
             getattr(client, "endpoint", ""),
@@ -3925,7 +3929,7 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_e
             continue
     if not endpoint:
         return "Could not reach the guest's Proxmox endpoint.", audit, None, None
-    common.async_task(
+    common.enqueue_bulk_task(
         "core.tasks.migrate_guest_disks_task",
         running_event.id,
         endpoint,
@@ -5194,7 +5198,7 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
         "proxmox_endpoint": getattr(client, "endpoint", ""),
     }
     event = _audit_guest(request, detail, "guest.backup.restore", audit_details, outcome="running")
-    task_id = common.async_task(
+    task_id = common.enqueue_bulk_task(
         "core.tasks.restore_guest_backup_task",
         event.id,
         getattr(client, "endpoint", ""),

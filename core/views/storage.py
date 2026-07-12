@@ -958,6 +958,7 @@ def storage_content(request, storage_id: str):
         **_storage_tab_context(storage, latest_scan, "content"),
         "content_options": _storage_content_options(storage, content_scan, current_content=current_content),
         "current_content": current_content,
+        "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
     }
     return render(request, "core/storage_content.html", context)
 
@@ -965,6 +966,9 @@ def storage_content(request, storage_id: str):
 @require_POST
 @app_login_required
 def update_storage_content(request, storage_id: str):
+    if not settings.STORAGE_WRITE_ENABLED:
+        return _storage_write_disabled_response()
+
     storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
@@ -1682,7 +1686,7 @@ def inflate_storage_file_view(request, storage_id: str):
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
-    task_id = common.async_task(
+    task_id = common.enqueue_bulk_task(
         "core.tasks.inflate_storage_file_task",
         storage.id,
         entry.id,
@@ -2029,7 +2033,7 @@ def _queue_upload_normalization(storage: StorageMount, paths: list[str], user) -
     image_paths = [path for path in paths if _is_proxmox_image_upload_path(path)]
     if not image_paths:
         return
-    common.async_task(
+    common.enqueue_bulk_task(
         "core.tasks.normalize_uploaded_proxmox_image_paths_task",
         storage.id,
         image_paths,

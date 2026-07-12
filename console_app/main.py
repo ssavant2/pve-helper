@@ -211,14 +211,27 @@ def _consume_session(token: str) -> ConsoleSession | None:
         if session.consumed_at or session.status != ConsoleSession.Status.PENDING:
             return None
         if session.expires_at < now:
-            session.status = ConsoleSession.Status.EXPIRED
-            session.closed_at = now
-            session.close_reason = "expired"
-            session.save(update_fields=["status", "closed_at", "close_reason", "updated_at"])
+            ConsoleSession.objects.filter(pk=session.pk).update(
+                status=ConsoleSession.Status.EXPIRED,
+                closed_at=now,
+                close_reason="expired",
+                proxmox_ticket="",
+                proxmox_password="",
+                updated_at=now,
+            )
             return None
+        # Keep credentials only in this in-memory object for the upstream
+        # handshake. Once the one-time token is consumed, no database row needs
+        # to retain them.
         session.consumed_at = now
         session.status = ConsoleSession.Status.CONNECTING
-        session.save(update_fields=["consumed_at", "status", "updated_at"])
+        ConsoleSession.objects.filter(pk=session.pk).update(
+            consumed_at=now,
+            status=ConsoleSession.Status.CONNECTING,
+            proxmox_ticket="",
+            proxmox_password="",
+            updated_at=now,
+        )
         return session
 
 

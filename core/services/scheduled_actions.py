@@ -107,6 +107,7 @@ def dispatch_due_scheduled_actions(
             ScheduledAction.objects.select_for_update(skip_locked=True)
             .filter(
                 enabled=True,
+                deleted_at__isnull=True,
                 next_run_at__isnull=False,
                 next_run_at__lte=now,
             )
@@ -189,6 +190,8 @@ def queue_manual_scheduled_action_run(
     now = now or timezone.now()
     with transaction.atomic():
         action = ScheduledAction.objects.select_for_update().get(pk=action.pk)
+        if action.deleted_at is not None:
+            raise ScheduledActionQueueError("This scheduled action has been deleted.")
         if _has_in_flight_run(action):
             raise ScheduledActionQueueError("This scheduled action already has a run in progress.")
 

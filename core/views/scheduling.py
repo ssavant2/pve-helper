@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from django.db import transaction
+
 from .common import *  # noqa: F401,F403
 from . import common
 from ..services.proxmox import ProxmoxClient, configured_clients
+from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
 
 
 @app_login_required
@@ -11,7 +14,7 @@ def scheduled_tasks(request):
     target_type, target_vmid = _parse_scheduled_target(target_filter)
     target_filter_value = f"{target_type}:{target_vmid}" if target_type and target_vmid else ""
 
-    actions_query = ScheduledAction.objects.select_related("created_by")
+    actions_query = ScheduledAction.objects.select_related("created_by").filter(deleted_at__isnull=True)
     if target_filter_value:
         actions_query = actions_query.filter(target_type=target_type, target_vmid=target_vmid)
 
@@ -85,7 +88,7 @@ def scheduled_task_create(request):
 
 @app_login_required
 def scheduled_task_edit(request, action_id: int):
-    action = get_object_or_404(ScheduledAction, pk=action_id)
+    action = get_object_or_404(ScheduledAction, pk=action_id, deleted_at__isnull=True)
     if request.method == "POST":
         errors = _apply_scheduled_action_form(action, request.POST, request.user)
         if not errors:
@@ -106,7 +109,7 @@ def scheduled_task_edit(request, action_id: int):
 @require_POST
 @app_login_required
 def scheduled_task_toggle(request, action_id: int):
-    action = get_object_or_404(ScheduledAction, pk=action_id)
+    action = get_object_or_404(ScheduledAction, pk=action_id, deleted_at__isnull=True)
     enabled = request.POST.get("enabled") == "1"
     if enabled:
         try:
@@ -127,16 +130,28 @@ def scheduled_task_toggle(request, action_id: int):
 @require_POST
 @app_login_required
 def scheduled_task_delete(request, action_id: int):
-    action = get_object_or_404(ScheduledAction, pk=action_id)
+    with transaction.atomic():
+        action = get_object_or_404(
+            ScheduledAction.objects.select_for_update(),
+            pk=action_id,
+            deleted_at__isnull=True,
+        )
+        if action.runs.filter(status__in=IN_FLIGHT_RUN_STATUSES).exists():
+            messages.error(request, "This scheduled task has a run in progress and cannot be deleted yet.")
+            return redirect("core:scheduled_tasks")
+        action.enabled = False
+        action.next_run_at = None
+        action.deleted_at = tz.now()
+        action.save(update_fields=["enabled", "next_run_at", "deleted_at", "updated_at"])
     _audit_scheduled_action_definition(request, "scheduled_action.deleted", action)
-    action.delete()
+    messages.success(request, "Scheduled task removed. Completed run history is retained.")
     return redirect("core:scheduled_tasks")
 
 
 @require_POST
 @app_login_required
 def scheduled_task_run_now(request, action_id: int):
-    action = get_object_or_404(ScheduledAction, pk=action_id)
+    action = get_object_or_404(ScheduledAction, pk=action_id, deleted_at__isnull=True)
     try:
         queue_manual_scheduled_action_run(action, triggered_by=request.user)
     except ScheduledActionQueueError as exc:
@@ -363,7 +378,7 @@ def start_scan(request):
         target_storage=target_storage,
         target_label=target_storage.display_name if target_storage else "",
     )
-    task_id = common.async_task("core.tasks.run_scan", scan.id)
+    task_id = common.enqueue_bulk_task("core.tasks.run_scan", scan.id)
     scan.queued_task_id = task_id
     scan.save(update_fields=["queued_task_id", "updated_at"])
 
@@ -566,7 +581,7 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     name = post.get("name", "").strip()[:160]
     if not name:
         errors.append("Name is required.")
-    elif ScheduledAction.objects.filter(name=name).exclude(pk=action.pk).exists():
+    elif ScheduledAction.objects.filter(name=name, deleted_at__isnull=True).exclude(pk=action.pk).exists():
         errors.append("A scheduled task with this name already exists.")
     target_type, target_vmid = _parse_scheduled_target(post.get("target", ""))
     if target_type is None or target_vmid is None:

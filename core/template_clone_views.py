@@ -106,7 +106,7 @@ def clone_guest_to_template(request, object_type: str, vmid: int):
         },
         outcome="running",
     )
-    task_id = common.async_task(
+    task_id = common.enqueue_bulk_task(
         "core.template_clone_tasks.clone_guest_to_template_task",
         event.id,
         getattr(client, "endpoint", ""),

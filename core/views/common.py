@@ -68,6 +68,8 @@ from ..services.proxmox import (
     fetch_live_guest_status,
 )
 from ..services.recent_tasks import recent_task_page, serialize_task_page
+from ..services.request_metadata import client_ip
+from ..services.task_queues import BULK_QUEUE_NAME
 from ..services.scan_schedule import scan_schedule_state, update_scan_schedule
 from ..services.scheduled_actions import ScheduledActionQueueError, queue_manual_scheduled_action_run
 from ..services.scheduled_recurrence import RecurrenceError, next_run_after
@@ -632,7 +634,7 @@ def _decorate_guests_with_scheduled_actions(guests: list[ProxmoxInventory]) -> N
 
     actions_by_target: dict[tuple[str, int], list[ScheduledAction]] = {}
     if action_filter:
-        actions = ScheduledAction.objects.filter(action_filter).order_by("-enabled", "next_run_at", "name")
+        actions = ScheduledAction.objects.filter(action_filter, deleted_at__isnull=True).order_by("-enabled", "next_run_at", "name")
         for action in actions:
             action.display_schedule = _scheduled_action_schedule_label(action)
             action.display_status_class = _scheduled_action_status_class(action.last_status)
@@ -740,13 +742,6 @@ def proxmox_permission_hint(privilege: str) -> str:
     return f"Proxmox denied the operation (403) - the token needs {privilege}."
 
 
-def _client_ip(request) -> str | None:
-    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip() or None
-    return request.META.get("REMOTE_ADDR") or None
-
-
 def _audit_actor(request):
     """Resolve (user, username) for an audit record from the request."""
     user = getattr(request, "user", None)
@@ -776,7 +771,7 @@ def record_audit_event(
     return AuditEvent.objects.create(
         user=user,
         username=username if user is not None else system_username,
-        source_ip=_client_ip(request),
+        source_ip=client_ip(request),
         action=action,
         object_type=object_type,
         object_id=object_id,
@@ -784,6 +779,13 @@ def record_audit_event(
         module=_audit_module_key_for(action, object_type, details),
         details=details,
     )
+
+
+def enqueue_bulk_task(func, *args, **kwargs):
+    """Queue data-plane work away from the scheduler/control worker."""
+    q_options = dict(kwargs.pop("q_options", {}))
+    q_options["cluster"] = BULK_QUEUE_NAME
+    return async_task(func, *args, q_options=q_options, **kwargs)
 
 
 _PATCHABLE_TEST_DEPS = {

@@ -28,7 +28,7 @@
 6. Start the app:
 
    ```bash
-   docker compose up -d nginx web worker
+   docker compose up -d nginx web worker worker-bulk
    ```
 
 7. Open `http://dockerhost:21080` directly or configure NPM for `https://pve-helper.example.com`.
@@ -37,6 +37,34 @@ The `nginx` service owns the public app port and proxies normal requests to the
 internal Django/Gunicorn `web` service. Authorized datastore downloads are served
 directly by nginx from read-only storage mounts after Django has performed auth,
 path validation, and audit logging.
+
+### Preserve source IP through Nginx Proxy Manager
+
+By default, audit events record the direct peer of pve-helper's nginx sidecar.
+That is safe: client-supplied `X-Forwarded-For` values are ignored. If Nginx
+Proxy Manager (NPM) is in front of the app and audit events should retain the
+browser's IP, explicitly trust *only* NPM's fixed IP address or private subnet:
+
+```env
+# Example only — use NPM's actual address or subnet, never 0.0.0.0/0.
+NGINX_TRUSTED_PROXY=192.0.2.20
+```
+
+In the NPM Proxy Host's Advanced configuration, preserve the normal proxy
+headers (these are NPM's usual defaults, but make them explicit if customised):
+
+```nginx
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+Restart the pve-helper `nginx` service after changing the setting. Its nginx
+sidecar trusts `X-Forwarded-For` only when the immediate peer matches
+`NGINX_TRUSTED_PROXY`, then passes the validated client IP as `X-Real-IP` to the
+app. Do not expose the sidecar port publicly when NPM is intended to be the only
+entry point; direct callers still cannot forge audit IPs, but bypassing NPM
+defeats its own access and TLS policies.
 
 ## NFS mounts
 

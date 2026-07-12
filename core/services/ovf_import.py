@@ -20,6 +20,8 @@ from core.models import StorageMount
 
 MAX_OVF_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 256
+MAX_OVF_DISKS = 32
+MAX_MANIFEST_MEMBERS = 256
 MAX_DECLARED_DISK_BYTES = 16 * 1024**4
 _MANIFEST_LINE = re.compile(r"^([A-Za-z0-9-]+)\((.+)\)=\s*([0-9A-Fa-f]+)\s*$")
 
@@ -70,9 +72,13 @@ def parse_ovf_package(storage: StorageMount, source_path: str, *, validate_manif
         metadata, members, manifest = _read_ova(path, validate_manifest=validate_manifest)
         kind = "ova"
     else:
-        metadata, members, manifest = _read_ovf(path, validate_manifest=validate_manifest)
+        metadata, manifest = _read_ovf(path)
         kind = "ovf"
     package = _parse_ovf_xml(metadata)
+    if kind == "ovf":
+        members = _directory_disk_members(path.parent.resolve(), package.disks)
+        if validate_manifest and manifest is not None:
+            _validate_directory_manifest(path.parent.resolve(), manifest)
     _validate_disks(package.disks, members)
     package_name = package.name
     if package_name == "imported-vm":
@@ -162,23 +168,34 @@ def _read_ova(path: Path, *, validate_manifest: bool) -> tuple[bytes, set[str], 
         raise OvfImportError(f"Could not read OVA archive: {exc}") from exc
 
 
-def _read_ovf(path: Path, *, validate_manifest: bool) -> tuple[bytes, set[str], str | None]:
+def _read_ovf(path: Path) -> tuple[bytes, str | None]:
     try:
         with path.open("rb") as handle:
             metadata = _read_limited(handle, path.stat().st_size)
     except OSError as exc:
         raise OvfImportError(f"Could not read OVF descriptor: {exc}") from exc
-    root = path.parent.resolve()
-    members = {
-        _safe_member_name(child.relative_to(root).as_posix())
-        for child in root.rglob("*")
-        if child.is_file() and not child.is_symlink()
-    }
     manifest_path = path.with_suffix(".mf")
-    manifest = manifest_path.read_text(encoding="utf-8", errors="strict") if manifest_path.is_file() else None
-    if validate_manifest and manifest is not None:
-        _validate_directory_manifest(root, manifest)
-    return metadata, {_safe_member_name(name) for name in members}, manifest
+    manifest = _read_directory_manifest(manifest_path) if manifest_path.is_file() else None
+    return metadata, manifest
+
+
+def _read_directory_manifest(path: Path) -> str:
+    try:
+        with path.open("rb") as handle:
+            return _read_limited(handle, path.stat().st_size).decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise OvfImportError(f"Could not read OVF manifest: {exc}") from exc
+
+
+def _directory_disk_members(root: Path, disks: tuple[OvfDisk, ...]) -> set[str]:
+    """Check only disks named by the descriptor; never walk the datastore."""
+    members: set[str] = set()
+    for disk in disks:
+        candidate = (root / disk.href).resolve()
+        if root not in candidate.parents or not candidate.is_file() or candidate.is_symlink():
+            continue
+        members.add(disk.href)
+    return members
 
 
 def _archive_manifest(archive: tarfile.TarFile, members: list[tarfile.TarInfo]) -> str | None:
@@ -206,6 +223,8 @@ def _manifest_entries(manifest: str) -> list[tuple[str, str, str]]:
         if algorithm.lower() not in hashlib.algorithms_available:
             raise OvfImportError(f"OVF manifest uses unsupported checksum {algorithm}.")
         result.append((algorithm.lower(), _safe_member_name(name), expected.lower()))
+        if len(result) > MAX_MANIFEST_MEMBERS:
+            raise OvfImportError("OVF manifest contains too many checksum entries.")
     return result
 
 
@@ -386,6 +405,8 @@ def _safe_name(value: str) -> str:
 
 
 def _validate_disks(disks: tuple[OvfDisk, ...], members: set[str]) -> None:
+    if len(disks) > MAX_OVF_DISKS:
+        raise OvfImportError("OVF declares too many disks.")
     for disk in disks:
         if disk.href not in members:
             raise OvfImportError(f"OVF references missing disk {disk.href}.")

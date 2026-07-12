@@ -16,7 +16,6 @@ import os
 from django.conf import settings
 from django.contrib import messages
 from django.shortcuts import redirect, render
-from django_q.tasks import async_task
 
 from core.models import StorageMount
 from core.services.guest_create import create_options
@@ -24,7 +23,7 @@ from core.services.ovf_import import OvfImportError, parse_ovf_package
 from core.services.proxmox import clear_live_guest_caches
 from core.services import vm_register as reg
 
-from .common import app_login_required, navigation_context, record_audit_event
+from .common import app_login_required, enqueue_bulk_task, navigation_context, record_audit_event
 
 
 def _register_options(node: str | None = None) -> dict:
@@ -284,7 +283,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
                 "stage": "queued",
             },
         )
-        task_id = async_task(
+        task_id = enqueue_bulk_task(
             "core.ovf_import_tasks.import_ovf_package_task",
             event.id,
             node,
@@ -311,7 +310,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
             "target_storage": params["target_storage"],
         },
     )
-    task_id = async_task(
+    task_id = enqueue_bulk_task(
         "core.tasks.register_import_vm_task",
         event.id,
         node,

@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from django.db import transaction
 from django.db.models import Count, F, Q
+from django.conf import settings
 from django.utils import timezone
 from django_q.tasks import async_task
 
@@ -21,6 +22,7 @@ from .models import (
     TrashItem,
 )
 from .services.classification import classify_entry, extract_disk_references
+from .services.console_session_cleanup import prune_console_sessions
 from .services.config import sync_runtime_configuration
 from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
@@ -31,6 +33,7 @@ from .services.proxmox import (
     ProxmoxTaskTimeout,
     clear_live_guest_caches,
     configured_clients,
+    fetch_live_guest_status,
 )
 from .services.scan_schedule import scan_schedule_state
 from .services.scan_retention import prune_scan_history
@@ -43,6 +46,7 @@ from .services.storage_actions import (
     purge_trash_item,
 )
 from .services.storage_visibility import ignored_relative_paths_for_storage
+from .services.task_queues import BULK_QUEUE_NAME
 
 
 SPACE_SNAPSHOT_RETENTION_DAYS = 8
@@ -129,7 +133,7 @@ def enqueue_storage_rescan(storage_ids: list[str]) -> None:
             target_storage=storage,
             target_label=storage.display_name,
         )
-        task_id = async_task("core.tasks.run_scan", scan.id)
+        task_id = async_task("core.tasks.run_scan", scan.id, q_options={"cluster": BULK_QUEUE_NAME})
         scan.queued_task_id = task_id
         scan.save(update_fields=["queued_task_id", "updated_at"])
 
@@ -137,6 +141,7 @@ def enqueue_storage_rescan(storage_ids: list[str]) -> None:
 # A guest audit event stuck at outcome="running" longer than this, with no live
 # Proxmox task backing it, is treated as dead (worker crash / deploy race).
 STALE_GUEST_TASK_SECONDS = 15 * 60
+STALE_BULK_TASK_GRACE_SECONDS = 15 * 60
 
 
 def reap_stale_guest_tasks() -> dict[str, int]:
@@ -189,7 +194,138 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         changed = True
     if changed:
         clear_live_guest_caches()
-    return {"resolved_from_proxmox": resolved, "reaped_dead": reaped}
+    resolved_force_stop_questions = _resolve_force_stop_questions(now=timezone.now())
+    return {
+        "resolved_from_proxmox": resolved,
+        "reaped_dead": reaped,
+        "resolved_force_stop_questions": resolved_force_stop_questions,
+    }
+
+
+def _resolve_force_stop_questions(*, now) -> int:
+    """Resolve timed-out shutdown questions outside the request/HTML path."""
+    candidates = list(
+        AuditEvent.objects.filter(
+            action="guest.power.shutdown",
+            outcome="failed",
+            timestamp__gte=now - timedelta(minutes=60),
+        ).order_by("-timestamp")
+    )
+    candidates = [
+        event
+        for event in candidates
+        if _is_open_force_stop_question(event)
+    ]
+    if not candidates:
+        return 0
+
+    try:
+        statuses = fetch_live_guest_status()
+    except Exception:  # best-effort control-plane reconciliation
+        return 0
+
+    resolved = 0
+    for event in candidates:
+        details = dict(event.details) if isinstance(event.details, dict) else {}
+        target_type = str(details.get("target_type") or "")
+        try:
+            vmid = int(details.get("vmid"))
+        except (TypeError, ValueError):
+            continue
+        stopped = any(
+            object_type == target_type and guest_vmid == vmid and status == "stopped"
+            for (_node, object_type, guest_vmid), status in statuses.items()
+        )
+        if not stopped:
+            continue
+        details["force_stop_resolved_at"] = now.isoformat()
+        details["force_stop_resolution"] = "guest_stopped"
+        event.details = details
+        event.save(update_fields=["details"])
+        resolved += 1
+    return resolved
+
+
+def _is_open_force_stop_question(event: AuditEvent) -> bool:
+    details = event.details if isinstance(event.details, dict) else {}
+    error_text = str(details.get("error") or "").lower()
+    return (
+        not details.get("force_stop_dismissed")
+        and not details.get("force_stop_resolved_at")
+        and bool(details.get("target_type"))
+        and details.get("vmid") is not None
+        and ("timeout" in error_text or "powerdown failed" in error_text)
+    )
+
+
+def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
+    """Resolve bulk work whose Django-Q worker died before finalization.
+
+    A scan sets itself to running before doing I/O, while an inflate leaves a
+    queued audit event until its terminal event is written. If the worker is
+    killed by the queue or a deploy, neither path has its normal exception
+    handler. Reconcile only after the workflow timeout plus a conservative
+    grace period so valid work is never marked failed prematurely.
+    """
+    now = now or timezone.now()
+    scan_cutoff = now - timedelta(seconds=settings.SCAN_TASK_TIMEOUT_SECONDS + STALE_BULK_TASK_GRACE_SECONDS)
+    inflate_cutoff = now - timedelta(
+        seconds=settings.STORAGE_INFLATE_TIMEOUT_SECONDS + STALE_BULK_TASK_GRACE_SECONDS
+    )
+
+    scans_reaped = 0
+    scans = ScanRun.objects.filter(status=ScanRun.Status.RUNNING, started_at__lt=scan_cutoff)
+    for scan in scans:
+        scan.status = ScanRun.Status.FAILED
+        scan.finished_at = now
+        scan.progress_message = "Scan did not finish before the worker timeout."
+        scan.error_details = {
+            "error": "WorkerTimeout",
+            "message": "Reconciled after exceeding the scan timeout and grace period.",
+            "reaped": True,
+        }
+        scan.save(update_fields=["status", "finished_at", "progress_message", "error_details", "updated_at"])
+        _audit_scan_terminal(scan, "scan.failed", "failed")
+        scans_reaped += 1
+
+    inflates_reaped = 0
+    queued_inflates = AuditEvent.objects.filter(action="file.inflate_queued", timestamp__lt=inflate_cutoff)
+    for queued in queued_inflates:
+        details = dict(queued.details) if isinstance(queued.details, dict) else {}
+        storage_id = queued.storage_id or str(details.get("storage_id") or "")
+        path = queued.path or str(details.get("path") or "")
+        if not storage_id or not path:
+            continue
+        has_terminal_event = AuditEvent.objects.filter(
+            action__in=["file.inflated", "file.inflate_failed"],
+            storage_id=storage_id,
+            path=path,
+            timestamp__gte=queued.timestamp,
+        ).exists()
+        if has_terminal_event:
+            continue
+        AuditEvent.objects.create(
+            username="system",
+            action="file.inflate_failed",
+            object_type="file",
+            object_id=queued.object_id,
+            outcome="failed",
+            storage_id=storage_id,
+            path=path,
+            target_preallocation=str(details.get("target_preallocation") or ""),
+            details={
+                "storage_id": storage_id,
+                "path": path,
+                "target_preallocation": details.get("target_preallocation") or "",
+                "task_id": details.get("task_id") or "",
+                "error": "Inflate did not finish before the worker timeout.",
+                "error_type": "WorkerTimeout",
+                "reaped": True,
+            },
+        )
+        inflates_reaped += 1
+
+    return {"scans_reaped": scans_reaped, "inflates_reaped": inflates_reaped}
 
 
 def migrate_guest_disks_task(
@@ -543,7 +679,7 @@ def enqueue_scheduled_scan() -> int | None:
         return None
 
     scan = ScanRun.objects.create(progress_message="Queued from schedule")
-    task_id = async_task("core.tasks.run_scan", scan.id)
+    task_id = async_task("core.tasks.run_scan", scan.id, q_options={"cluster": BULK_QUEUE_NAME})
     scan.queued_task_id = task_id
     scan.save(update_fields=["queued_task_id", "updated_at"])
 
@@ -607,6 +743,10 @@ def purge_expired_audit_events(retention_days: int = 90) -> None:
             "purged": deleted_count,
         },
     )
+
+
+def prune_expired_console_sessions() -> dict[str, int]:
+    return prune_console_sessions()
 
 
 def record_storage_space_snapshots(retention_days: int = SPACE_SNAPSHOT_RETENTION_DAYS) -> int:

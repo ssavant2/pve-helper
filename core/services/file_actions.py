@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 
 from core.models import FileInventory, ProxmoxInventory
 from core.services.classification import extract_vmid_from_image_path
+from core.services.proxmox import fetch_live_guest_status
 
 
 @dataclass(frozen=True)
@@ -120,8 +121,6 @@ def guest_objects_for_entry(entry: FileInventory) -> list[ReferencedObject]:
     # Override each scanned status with the live status so an action-time
     # warning ("belongs to a running guest") is honest, not stale from the last
     # scan. Live status is cached and falls back to the scanned value on error.
-    from core.services.proxmox import fetch_live_guest_status
-
     live = fetch_live_guest_status()
     return [
         replace(item, status=live.get((item.node or "", item.object_type, item.vmid), item.status))

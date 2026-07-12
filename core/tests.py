@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import httpx
+from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -27,6 +28,7 @@ from core.auth import PveHelperOIDCBackend
 from core.checks import production_startup_errors
 from core.models import (
     AuditEvent,
+    ConsoleSession,
     FileInventory,
     OidcIdentity,
     ProxmoxEndpoint,
@@ -86,9 +88,29 @@ from core.tasks import (
     normalize_uploaded_proxmox_image_paths_task,
     purge_expired_audit_events,
     purge_expired_trash,
+    reap_stale_guest_tasks,
     record_storage_space_snapshots,
     run_scan,
 )
+
+
+class HermeticProxmoxMixin:
+    """Explicit default live-data doubles for view tests.
+
+    Individual tests that exercise a live-data branch override these patches
+    locally with the precise inventory/status they need.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for target in (
+            "core.views.common.fetch_live_guest_lineage",
+            "core.views.common.fetch_live_guest_status",
+            "core.services.file_actions.fetch_live_guest_status",
+        ):
+            mocked = patch(target, return_value={})
+            mocked.start()
+            self.addCleanup(mocked.stop)
 
 
 class PowerActionMapTests(SimpleTestCase):
@@ -109,7 +131,7 @@ class PowerActionMapTests(SimpleTestCase):
         self.assertEqual(set(POWER_ACTION_REQUESTS), GUEST_POWER_ACTIONS)
 
 
-class MigrateActionTests(SimpleTestCase):
+class MigrateActionTests(HermeticProxmoxMixin, SimpleTestCase):
     def _detail(self, **kwargs):
         from types import SimpleNamespace
 
@@ -534,7 +556,11 @@ class StorageRescanAfterCloneTests(TestCase):
             enqueue_storage_rescan(["TrueNAS-FS", "TrueNAS-FS", "unknown-storage"])
         scans = ScanRun.objects.filter(target_storage=storage)
         self.assertEqual(scans.count(), 1)  # deduped; unknown storage skipped
-        async_task.assert_called_once_with("core.tasks.run_scan", scans.first().id)
+        async_task.assert_called_once_with(
+            "core.tasks.run_scan",
+            scans.first().id,
+            q_options={"cluster": "bulk"},
+        )
 
     def test_skips_when_scan_already_active(self):
         from core.tasks import enqueue_storage_rescan
@@ -565,27 +591,30 @@ class ShutdownForceStopOfferTests(TestCase):
             },
         )
 
-    def _task(self, event, *, live_status):
+    def _task(self, event):
         from core.services.recent_tasks import _guest_task, serialize_task
 
-        with patch("core.services.recent_tasks.fetch_live_guest_status", return_value=live_status):
-            return serialize_task(_guest_task(event))
+        return serialize_task(_guest_task(event))
 
     def test_timed_out_shutdown_offers_force_stop_while_running(self):
         event = self._event("guest.power.shutdown", "VM quit/powerdown failed - got timeout")
-        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
+        task = self._task(event)
         self.assertTrue(task["offer_force_stop"])
         self.assertEqual(task["force_stop_target"], "vm:106@pve3")
 
     def test_resolves_to_completed_once_guest_stopped(self):
         event = self._event("guest.power.shutdown", "VM quit/powerdown failed - got timeout")
-        task = self._task(event, live_status={("pve3", "vm", 106): "stopped"})
+        details = dict(event.details)
+        details["force_stop_resolved_at"] = timezone.now().isoformat()
+        event.details = details
+        event.save(update_fields=["details"])
+        task = self._task(event)
         self.assertFalse(task["offer_force_stop"])
         self.assertEqual(task["status_class"], "completed")
 
-    def test_offers_when_live_status_unknown(self):
+    def test_offers_when_reconciliation_has_not_resolved_the_question(self):
         event = self._event("guest.power.shutdown", "got timeout")
-        task = self._task(event, live_status={})  # guest not found → keep offering
+        task = self._task(event)
         self.assertTrue(task["offer_force_stop"])
 
     def test_dismissed_question_resolves_even_if_running(self):
@@ -594,7 +623,7 @@ class ShutdownForceStopOfferTests(TestCase):
         details["force_stop_dismissed"] = True
         event.details = details
         event.save(update_fields=["details"])
-        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
+        task = self._task(event)
         self.assertFalse(task["offer_force_stop"])
         self.assertEqual(task["status_class"], "completed")
 
@@ -613,12 +642,12 @@ class ShutdownForceStopOfferTests(TestCase):
 
     def test_non_timeout_shutdown_failure_does_not_offer(self):
         event = self._event("guest.power.shutdown", "permission denied")
-        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
+        task = self._task(event)
         self.assertFalse(task["offer_force_stop"])
 
     def test_other_actions_never_offer(self):
         event = self._event("guest.power.reboot", "got timeout")
-        task = self._task(event, live_status={("pve3", "vm", 106): "running"})
+        task = self._task(event)
         self.assertFalse(task["offer_force_stop"])
 
 
@@ -662,6 +691,195 @@ class GuestTaskReaperTests(TestCase):
 
         ensure_guest_task_reaper_schedule()
         self.assertTrue(Schedule.objects.filter(name=GUEST_TASK_REAPER_SCHEDULE_NAME).exists())
+
+    def test_reaper_resolves_force_stop_question_when_guest_is_already_stopped(self):
+        now = timezone.now()
+        event = AuditEvent.objects.create(
+            action="guest.power.shutdown",
+            outcome="failed",
+            details={
+                "target_type": "vm",
+                "vmid": 100,
+                "node": "pve1",
+                "error": "powerdown failed - timeout",
+            },
+        )
+
+        with patch("core.tasks.fetch_live_guest_status", return_value={("pve1", "vm", 100): "stopped"}):
+            result = reap_stale_guest_tasks()
+
+        event.refresh_from_db()
+        self.assertEqual(result["resolved_force_stop_questions"], 1)
+        self.assertEqual(event.details["force_stop_resolution"], "guest_stopped")
+        self.assertIn("force_stop_resolved_at", event.details)
+
+
+class BulkTaskReaperTests(TestCase):
+    @override_settings(SCAN_TASK_TIMEOUT_SECONDS=60, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_reaps_timed_out_scan_and_inflate_without_terminal_event(self):
+        from core.tasks import STALE_BULK_TASK_GRACE_SECONDS, reap_stale_bulk_tasks
+
+        now = timezone.now()
+        expired_at = now - timedelta(seconds=61 + STALE_BULK_TASK_GRACE_SECONDS)
+        scan = ScanRun.objects.create(status=ScanRun.Status.RUNNING, started_at=expired_at)
+        queued = AuditEvent.objects.create(
+            action="file.inflate_queued",
+            object_type="file",
+            object_id="nfs-vm:images/100/disk.qcow2",
+            details={
+                "storage_id": "nfs-vm",
+                "path": "images/100/disk.qcow2",
+                "target_preallocation": "full",
+                "task_id": "bulk-task-1",
+            },
+        )
+        AuditEvent.objects.filter(pk=queued.pk).update(timestamp=expired_at)
+
+        result = reap_stale_bulk_tasks(now=now)
+
+        self.assertEqual(result, {"scans_reaped": 1, "inflates_reaped": 1})
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.FAILED)
+        self.assertTrue(scan.error_details["reaped"])
+        failure = AuditEvent.objects.get(action="file.inflate_failed")
+        self.assertTrue(failure.details["reaped"])
+        self.assertEqual(failure.details["task_id"], "bulk-task-1")
+
+    @override_settings(SCAN_TASK_TIMEOUT_SECONDS=60, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_leaves_recent_or_already_terminal_bulk_work_alone(self):
+        from core.tasks import reap_stale_bulk_tasks
+
+        now = timezone.now()
+        scan = ScanRun.objects.create(status=ScanRun.Status.RUNNING, started_at=now - timedelta(seconds=30))
+        queued = AuditEvent.objects.create(
+            action="file.inflate_queued",
+            object_type="file",
+            object_id="nfs-vm:images/100/disk.qcow2",
+            details={"storage_id": "nfs-vm", "path": "images/100/disk.qcow2"},
+        )
+        AuditEvent.objects.create(
+            action="file.inflated",
+            object_type="file",
+            object_id=queued.object_id,
+            details={"storage_id": "nfs-vm", "path": "images/100/disk.qcow2"},
+        )
+
+        result = reap_stale_bulk_tasks(now=now)
+
+        self.assertEqual(result, {"scans_reaped": 0, "inflates_reaped": 0})
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.RUNNING)
+
+    def test_bulk_reaper_schedule_is_ensured(self):
+        from core.services.bulk_task_reaper_schedule import (
+            BULK_TASK_REAPER_SCHEDULE_NAME,
+            ensure_bulk_task_reaper_schedule,
+        )
+
+        ensure_bulk_task_reaper_schedule()
+        self.assertTrue(Schedule.objects.filter(name=BULK_TASK_REAPER_SCHEDULE_NAME).exists())
+
+
+class ConsoleSessionLifecycleTests(TestCase):
+    def _session(self, *, token_hash: str, expires_at=None, status=ConsoleSession.Status.PENDING, closed_at=None):
+        return ConsoleSession.objects.create(
+            token_hash=token_hash,
+            target_type=ConsoleSession.TargetType.VM,
+            target_vmid=100,
+            target_node="pve1",
+            expires_at=expires_at or timezone.now() + timedelta(seconds=30),
+            status=status,
+            closed_at=closed_at,
+            proxmox_ticket="PVEVNC:secret-ticket",
+            proxmox_password="secret-password",
+        )
+
+    def test_consuming_session_clears_database_credentials_but_keeps_handshake_copy(self):
+        from asgiref.sync import async_to_sync
+
+        from console_app.main import _consume_session
+        from core.services.console_sessions import console_token_hash
+
+        token = "one-time-console-token"
+        session = self._session(token_hash=console_token_hash(token))
+
+        consumed = async_to_sync(_consume_session)(token)
+
+        self.assertIsNotNone(consumed)
+        self.assertEqual(consumed.proxmox_ticket, "PVEVNC:secret-ticket")
+        self.assertEqual(consumed.proxmox_password, "secret-password")
+        self.assertEqual(consumed.status, ConsoleSession.Status.CONNECTING)
+        session.refresh_from_db()
+        self.assertEqual(session.proxmox_ticket, "")
+        self.assertEqual(session.proxmox_password, "")
+        self.assertEqual(session.status, ConsoleSession.Status.CONNECTING)
+
+    def test_pruning_expires_unconsumed_sessions_and_deletes_old_terminal_rows(self):
+        from core.services.console_session_cleanup import prune_console_sessions
+
+        now = timezone.now()
+        expired = self._session(token_hash="1" * 64, expires_at=now - timedelta(seconds=1))
+        old_closed = self._session(
+            token_hash="2" * 64,
+            status=ConsoleSession.Status.CLOSED,
+            closed_at=now - timedelta(hours=25),
+        )
+        recent_closed = self._session(
+            token_hash="3" * 64,
+            status=ConsoleSession.Status.CLOSED,
+            closed_at=now - timedelta(hours=1),
+        )
+
+        result = prune_console_sessions(now=now, retention_hours=24)
+
+        self.assertEqual(result["expired"], 1)
+        self.assertEqual(result["deleted"], 1)
+        expired.refresh_from_db()
+        self.assertEqual(expired.status, ConsoleSession.Status.EXPIRED)
+        self.assertEqual(expired.proxmox_ticket, "")
+        self.assertEqual(expired.proxmox_password, "")
+        self.assertFalse(ConsoleSession.objects.filter(pk=old_closed.pk).exists())
+        self.assertTrue(ConsoleSession.objects.filter(pk=recent_closed.pk).exists())
+
+    def test_cleanup_schedule_is_ensured(self):
+        from core.services.console_session_cleanup_schedule import (
+            CONSOLE_SESSION_CLEANUP_SCHEDULE_NAME,
+            ensure_console_session_cleanup_schedule,
+        )
+
+        ensure_console_session_cleanup_schedule()
+        self.assertTrue(Schedule.objects.filter(name=CONSOLE_SESSION_CLEANUP_SCHEDULE_NAME).exists())
+
+
+class RequestMetadataTests(SimpleTestCase):
+    def test_prefers_trusted_real_ip_over_client_supplied_xff(self):
+        from core.services.request_metadata import client_ip
+
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="192.0.2.10",
+            HTTP_X_REAL_IP="198.51.100.42",
+            HTTP_X_FORWARDED_FOR="forged-address, 198.51.100.42",
+        )
+
+        self.assertEqual(client_ip(request), "198.51.100.42")
+
+    def test_falls_back_to_remote_address_and_rejects_invalid_values(self):
+        from core.services.request_metadata import client_ip
+
+        fallback = RequestFactory().get("/", REMOTE_ADDR="2001:db8::42")
+        invalid = RequestFactory().get("/", REMOTE_ADDR="not-an-ip", HTTP_X_REAL_IP="also-not-an-ip")
+
+        self.assertEqual(client_ip(fallback), "2001:db8::42")
+        self.assertIsNone(client_ip(invalid))
+
+
+class TaskQueueConfigurationTests(SimpleTestCase):
+    def test_bulk_cluster_cannot_run_schedules_and_retries_after_its_timeout(self):
+        bulk = settings.Q_CLUSTER["ALT_CLUSTERS"]["bulk"]
+
+        self.assertFalse(bulk["scheduler"])
+        self.assertGreater(bulk["retry"], bulk["timeout"])
 
 
 class ClassificationTests(SimpleTestCase):
@@ -995,6 +1213,41 @@ class ProxmoxClientTests(SimpleTestCase):
             with self.assertRaisesMessage(ProxmoxAPIError, "Linked clone feature is not supported"):
                 client.post("nodes/pve3/qemu/507/clone", data={"newid": 102, "full": 0})
 
+    @override_settings(PVE_TEST_NETWORK_DISABLED=True)
+    def test_test_network_guard_rejects_unmocked_proxmox_requests(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+
+        with self.assertRaisesMessage(AssertionError, "unmocked Proxmox HTTP request"):
+            client.get("version")
+
+    def test_request_normalizes_successful_invalid_response_payloads(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+        responses = {
+            "html": httpx.Response(
+                200,
+                content=b"<html>proxy error</html>",
+                request=httpx.Request("GET", "https://pve.example.com/api2/json/version"),
+            ),
+            "json list": httpx.Response(
+                200,
+                json=["not", "an", "object"],
+                request=httpx.Request("GET", "https://pve.example.com/api2/json/version"),
+            ),
+            "missing data": httpx.Response(
+                200,
+                json={"status": "ok"},
+                request=httpx.Request("GET", "https://pve.example.com/api2/json/version"),
+            ),
+        }
+
+        for label, response in responses.items():
+            with self.subTest(label=label):
+                mock_http = Mock()
+                mock_http.request.return_value = response
+                with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+                    with self.assertRaises(ProxmoxAPIError):
+                        client.get("version")
+
     @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
     def test_power_action_refuses_when_disabled(self):
         client = ProxmoxClient("https://pve.example.com:8006")
@@ -1003,6 +1256,17 @@ class ProxmoxClientTests(SimpleTestCase):
         with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
             with self.assertRaisesMessage(ProxmoxAPIError, "disabled"):
                 client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
+
+        mock_http.request.assert_not_called()
+
+    @override_settings(STORAGE_WRITE_ENABLED=False)
+    def test_set_storage_content_refuses_when_storage_writes_are_disabled(self):
+        client = ProxmoxClient("https://pve.example.com:8006")
+        mock_http = Mock()
+
+        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+            with self.assertRaisesMessage(ProxmoxAPIError, "disabled"):
+                client.set_storage_content("nfs-vm", ["images"])
 
         mock_http.request.assert_not_called()
 
@@ -1836,7 +2100,7 @@ class StartupCheckTests(SimpleTestCase):
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)
-class ViewSmokeTests(TestCase):
+class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
     def _live_guest(self, *, object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped"):
         guest = Mock()
         guest.object_type = object_type
@@ -2329,7 +2593,12 @@ class ViewSmokeTests(TestCase):
             last_status=ScheduledAction.LastStatus.NEVER_RUN,
         )
 
-        with patch("core.services.proxmox._fetch_live_guest_status_uncached", return_value={("pve-node-1", "vm", 100): "running"}) as fetch:
+        from core.services.proxmox import fetch_live_guest_status
+
+        with (
+            patch("core.views.common.fetch_live_guest_status", side_effect=fetch_live_guest_status),
+            patch("core.services.proxmox._fetch_live_guest_status_uncached", return_value={("pve-node-1", "vm", 100): "running"}) as fetch,
+        ):
             response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
             second_response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
 
@@ -2898,6 +3167,7 @@ class ViewSmokeTests(TestCase):
                 FileInventory.objects.get(path="images/501/vm-501-disk-0.qcow2").id,
                 "viewer",
                 "metadata",
+                q_options={"cluster": "bulk"},
             )
             event = AuditEvent.objects.get(action="file.inflate_queued")
             self.assertEqual(event.details["task_id"], "inflate-task-1")
@@ -3964,7 +4234,13 @@ class ViewSmokeTests(TestCase):
                 {"file": SimpleUploadedFile("test.txt", b"blocked")},
             )
 
+            content_response = self.client.post(
+                reverse("core:storage_content_update", args=[storage.storage_id]),
+                {"content": ["images"]},
+            )
+
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(content_response.status_code, 403)
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_storage_write_actions_are_hidden_when_app_mount_is_read_only(self):
@@ -7230,12 +7506,50 @@ class ViewSmokeTests(TestCase):
         self.assertTrue(action.enabled)
         self.assertIsNotNone(action.next_run_at)
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.enabled").exists())
+        run = ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=timezone.now(),
+            occurrence_key="completed-before-delete",
+            status=ScheduledActionRun.Status.COMPLETED,
+            outcome=ScheduledActionRun.Outcome.SUCCESS,
+            finished_at=timezone.now(),
+        )
 
         response = self.client.post(reverse("core:scheduled_task_delete", args=[action.id]))
 
         self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
-        self.assertFalse(ScheduledAction.objects.filter(pk=action.pk).exists())
+        action.refresh_from_db()
+        self.assertIsNotNone(action.deleted_at)
+        self.assertFalse(action.enabled)
+        self.assertIsNone(action.next_run_at)
+        self.assertTrue(ScheduledActionRun.objects.filter(pk=run.pk).exists())
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.deleted").exists())
+
+        response = self.client.get(reverse("core:scheduled_tasks"))
+        self.assertEqual(response.context["scheduled_actions"], [])
+
+    def test_scheduled_task_delete_refuses_an_in_flight_run(self):
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+        action = ScheduledAction.objects.create(
+            name="In-flight shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+        )
+        ScheduledActionRun.objects.create(
+            scheduled_action=action,
+            planned_for=timezone.now(),
+            occurrence_key="in-flight",
+            status=ScheduledActionRun.Status.POLLING,
+        )
+
+        response = self.client.post(reverse("core:scheduled_task_delete", args=[action.id]), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        action.refresh_from_db()
+        self.assertIsNone(action.deleted_at)
+        self.assertContains(response, "run in progress and cannot be deleted")
 
     @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_scheduled_task_run_now_queues_manual_run(self):

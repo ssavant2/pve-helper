@@ -83,14 +83,18 @@ docker compose build web worker
 docker compose run --rm \
   -e DB_USER="$DB_ADMIN_USER" \
   -e DB_PASSWORD="$DB_ADMIN_PASSWORD" \
-  web python manage.py test --keepdb
+  web python manage.py test --settings=pve_helper.test_settings --keepdb
 ```
+
+The default test settings block every unmocked Proxmox HTTP request. Run live
+integration checks only as a separately reviewed, explicit command with the
+normal settings and suitable non-production infrastructure.
 
 Then restart the running app containers so the browser sees the same code that
 was tested:
 
 ```bash
-docker compose up -d web worker
+docker compose up -d web worker worker-bulk
 ```
 
 JavaScript linting/formatting runs through Docker, so Node.js does not need to

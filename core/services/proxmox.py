@@ -33,10 +33,20 @@ _http_client: httpx.Client | None = None
 _http_client_lock = threading.Lock()
 
 
+class _TestNetworkDisabledClient:
+    def request(self, *_args, **_kwargs):
+        raise AssertionError(
+            "Test attempted an unmocked Proxmox HTTP request. Patch the client or use an explicit integration suite."
+        )
+
+
 def _shared_http_client() -> httpx.Client:
     """Process-wide pooled HTTP client so Proxmox calls reuse keep-alive TLS
     connections instead of doing a fresh handshake on every request (inventory
     loops and polling endpoints issue many small calls to the same hosts)."""
+    if settings.PVE_TEST_NETWORK_DISABLED:
+        return _TestNetworkDisabledClient()  # type: ignore[return-value]
+
     global _http_client
     client = _http_client
     if client is None:
@@ -393,6 +403,8 @@ class ProxmoxClient:
         return self.put(f"nodes/{quote(node, safe='')}/{guest_kind}/{vmid}/config", data=data)
 
     def set_storage_content(self, storage_id: str, content: list[str]) -> Any:
+        if not settings.STORAGE_WRITE_ENABLED:
+            raise ProxmoxAPIError("Storage content writes are disabled.")
         content = [item for index, item in enumerate(content) if item and item not in content[:index]]
         normalized = ",".join(content)
         if not normalized:
@@ -433,8 +445,13 @@ class ProxmoxClient:
         except httpx.HTTPError as exc:
             raise ProxmoxAPIError(f"{exc.__class__.__name__} from {path}") from exc
 
-        payload = response.json()
-        return payload.get("data")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ProxmoxAPIError(f"Invalid JSON response from {path}") from exc
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise ProxmoxAPIError(f"Unexpected response schema from {path}")
+        return payload["data"]
 
     def _get_list(self, path: str, errors: list[dict[str, Any]], action: str) -> list[dict[str, Any]]:
         try:

@@ -348,7 +348,7 @@ class ScheduledAction(TimestampedModel):
         TIMEOUT = "timeout", "Timed out"
         CANCELLED = "cancelled", "Cancelled"
 
-    name = models.CharField(max_length=160, unique=True)
+    name = models.CharField(max_length=160)
     enabled = models.BooleanField(default=True)
     action_type = models.CharField(max_length=40, choices=ActionType.choices)
     action_timeout_seconds = models.PositiveIntegerField(default=1800)
@@ -386,6 +386,7 @@ class ScheduledAction(TimestampedModel):
         choices=LastStatus.choices,
         default=LastStatus.NEVER_RUN,
     )
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-enabled", "next_run_at", "name"]
@@ -394,6 +395,13 @@ class ScheduledAction(TimestampedModel):
             models.Index(fields=["target_type", "target_vmid"], name="core_sched_target_idx"),
             models.Index(fields=["action_type"], name="core_sched_action_idx"),
             models.Index(fields=["created_by"], name="core_sched_created_by_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="uniq_active_scheduled_action_name",
+            )
         ]
 
     def __str__(self) -> str:
@@ -427,7 +435,7 @@ class ScheduledActionRun(TimestampedModel):
 
     scheduled_action = models.ForeignKey(
         ScheduledAction,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="runs",
     )
     planned_for = models.DateTimeField()

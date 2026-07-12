@@ -5,7 +5,10 @@ from django.db.models.signals import post_migrate
 from django.dispatch import receiver
 
 from .models import AuditEvent
+from .services.bulk_task_reaper_schedule import ensure_bulk_task_reaper_schedule
+from .services.console_session_cleanup_schedule import ensure_console_session_cleanup_schedule
 from .services.guest_task_reaper_schedule import ensure_guest_task_reaper_schedule
+from .services.request_metadata import client_ip
 from .services.scheduled_actions import ensure_scheduled_action_dispatch_schedule
 from .services.space_snapshot_schedule import ensure_space_snapshot_schedule
 
@@ -17,6 +20,8 @@ def ensure_always_on_schedules(sender, app_config, **kwargs):
     ensure_space_snapshot_schedule()
     ensure_scheduled_action_dispatch_schedule()
     ensure_guest_task_reaper_schedule()
+    ensure_console_session_cleanup_schedule()
+    ensure_bulk_task_reaper_schedule()
 
 
 @receiver(user_logged_in)
@@ -25,7 +30,7 @@ def audit_user_login(sender, request, user, **kwargs):
     AuditEvent.objects.create(
         user=user,
         username=username,
-        source_ip=_client_ip(request),
+        source_ip=client_ip(request),
         action="auth.login",
         module="auth",
         object_type="user",
@@ -41,7 +46,7 @@ def audit_user_logout(sender, request, user, **kwargs):
     AuditEvent.objects.create(
         user=user if user and user.is_authenticated else None,
         username=username,
-        source_ip=_client_ip(request),
+        source_ip=client_ip(request),
         action="auth.logout",
         module="auth",
         object_type="user",
@@ -56,7 +61,7 @@ def audit_user_login_failed(sender, credentials, request, **kwargs):
     username = _credential_username(credentials)
     AuditEvent.objects.create(
         username=username,
-        source_ip=_client_ip(request),
+        source_ip=client_ip(request),
         action="auth.login_failed",
         module="auth",
         object_type="user",
@@ -64,16 +69,6 @@ def audit_user_login_failed(sender, credentials, request, **kwargs):
         outcome="failed",
         details={"path": request.path if request else ""},
     )
-
-
-def _client_ip(request) -> str | None:
-    if request is None:
-        return None
-
-    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip() or None
-    return request.META.get("REMOTE_ADDR") or None
 
 
 def _credential_username(credentials) -> str:

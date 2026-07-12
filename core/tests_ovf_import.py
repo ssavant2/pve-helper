@@ -55,6 +55,19 @@ class OvfImportTests(SimpleTestCase):
         self.assertEqual(package.nics[0].network_name, "Production")
         self.assertEqual(package.nics[0].model, "vmxnet3")
 
+    def test_standalone_ovf_checks_only_referenced_disks_without_walking_the_datastore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_ovf(root)
+            unrelated = root / "unrelated" / "deep" / "directory"
+            unrelated.mkdir(parents=True)
+            (unrelated / "large-unrelated-file.vmdk").write_bytes(b"not part of the package")
+
+            with patch.object(Path, "rglob", side_effect=AssertionError("datastore walk is not allowed")):
+                package = parse_ovf_package(self._storage(root), "packages/appliance.ovf")
+
+        self.assertEqual([disk.href for disk in package.disks], ["boot.vmdk", "data.vmdk"])
+
     def test_parse_rejects_external_entities(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

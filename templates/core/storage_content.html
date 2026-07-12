@@ -7,7 +7,10 @@
       <div class="panel-heading">
         <div>
           <h2>Content</h2>
-          <p class="panel-meta">Controls which Proxmox content types this storage accepts. Saving runs a fresh storage scan before applying changes.</p>
+          <p class="panel-meta">
+            Controls which Proxmox content types this storage accepts. Saving runs a fresh storage scan before applying changes.
+            {% if not storage_write_enabled %}<strong>Storage writes are disabled (STORAGE_WRITE_ENABLED is off).</strong>{% endif %}
+          </p>
         </div>
       </div>
 
@@ -15,7 +18,7 @@
         {% for option in content_options %}
           <label class="storage-content-row{% if option.usage_count %} has-usage{% endif %}">
             <span class="storage-content-main">
-              <input type="checkbox" name="content" value="{{ option.key }}" {% if option.selected %}checked{% endif %}>
+              <input type="checkbox" name="content" value="{{ option.key }}" {% if option.selected %}checked{% endif %} {% if not storage_write_enabled %}disabled{% endif %}>
               <span>
                 <strong>{{ option.label }}</strong>
                 <span class="storage-content-key">{{ option.key }}</span>
@@ -35,9 +38,11 @@
           </label>
         {% endfor %}
       </div>
-      <div class="storage-content-actions">
-        <button class="primary-action" type="submit">Save</button>
-      </div>
+      {% if storage_write_enabled %}
+        <div class="storage-content-actions">
+          <button class="primary-action" type="submit">Save</button>
+        </div>
+      {% endif %}
     </form>
   </section>
 {% endblock storage_content %}

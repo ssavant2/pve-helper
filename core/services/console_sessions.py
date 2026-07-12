@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from core.models import ConsoleSession
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, clear_live_guest_caches, configured_clients
+from core.services.request_metadata import client_ip
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,7 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     token = secrets.token_urlsafe(32)
     user = getattr(request, "user", None)
     authenticated = user is not None and getattr(user, "is_authenticated", False)
-    source_ip = _client_ip(request)
+    source_ip = client_ip(request)
     expires_at = timezone.now() + timezone.timedelta(seconds=max(settings.CONSOLE_SESSION_TTL_SECONDS, 5))
     session = ConsoleSession.objects.create(
         token_hash=console_token_hash(token),
@@ -89,10 +90,3 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     )
     clear_live_guest_caches()
     return ConsoleSessionResult(session=session, token=token, password=password, console_type=console_type)
-
-
-def _client_ip(request) -> str | None:
-    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip() or None
-    return request.META.get("REMOTE_ADDR") or None

@@ -102,7 +102,7 @@
                   <i data-lucide="{% if action.enabled %}pause{% else %}power{% endif %}" aria-hidden="true"></i>
                 </button>
               </form>
-              <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_delete' action.id %}" onsubmit="return confirm('Delete {{ action.name|escapejs }}?');">
+              <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_delete' action.id %}" onsubmit="return confirm('Remove {{ action.name|escapejs }}? Future runs stop; completed run history is retained.');">
                 {% csrf_token %}
                 <button class="icon-button danger" type="submit" title="Delete" aria-label="Delete {{ action.name }}">
                   <i data-lucide="trash-2" aria-hidden="true"></i>

@@ -10,22 +10,6 @@ from django.db.models import Q
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
-from core.services.proxmox import fetch_live_guest_status
-
-
-def _guest_is_stopped(target_type: str, vmid: int) -> bool | None:
-    """Live status of one guest, ignoring node: True if stopped, False if running/
-    paused, None if unknown (API down / not found). Cached (2s) cluster-wide."""
-    try:
-        statuses = fetch_live_guest_status()
-    except Exception:  # best effort — never break the task feed on a live-call error
-        return None
-    for (_node, otype, vid), status in statuses.items():
-        if otype == target_type and vid == vmid:
-            return status == "stopped"
-    return None
-
-
 GUEST_TASK_NAMES = {
     "guest.power.start": "Power on",
     "guest.power.shutdown": "Shut down guest",
@@ -352,8 +336,8 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
             status, status_class = "Completed", "completed"
         elif not (ttype and vmid is not None):
             offer_force_stop = False
-        elif _guest_is_stopped(ttype, int(vmid)):
-            # Goal reached (guest is off) — resolve the question.
+        elif details.get("force_stop_resolved_at"):
+            # The control-plane reaper confirmed the guest is already off.
             offer_force_stop = False
             status, status_class = "Completed", "completed"
         else:

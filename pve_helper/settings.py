@@ -176,6 +176,9 @@ PVE_VERIFY_TLS = env_bool("PVE_VERIFY_TLS", True)
 PVE_CA_BUNDLE = env("PVE_CA_BUNDLE", "")
 PVE_API_TOKEN_ID = env("PVE_API_TOKEN_ID", "")
 PVE_API_TOKEN_SECRET = env("PVE_API_TOKEN_SECRET", "")
+# Only enabled by pve_helper.test_settings: turns an unmocked Proxmox request
+# into an immediate test failure instead of a real infrastructure call.
+PVE_TEST_NETWORK_DISABLED = env_bool("PVE_TEST_NETWORK_DISABLED", False)
 PVE_EXPECTED_CONSUMERS = env_list("PVE_EXPECTED_CONSUMERS", "pve-node-1")
 SCHEDULED_ACTIONS_ENABLED = env_bool("SCHEDULED_ACTIONS_ENABLED", True)
 SCHEDULED_ACTION_TIMEOUT_SECONDS = env_int("SCHEDULED_ACTION_TIMEOUT_SECONDS", 1800)
@@ -200,12 +203,16 @@ VM_WRITE_ENABLED = env_bool("VM_WRITE_ENABLED", True)
 CONSOLE_ENABLED = env_bool("CONSOLE_ENABLED", True)
 CONSOLE_SESSION_TTL_SECONDS = env_int("CONSOLE_SESSION_TTL_SECONDS", 30)
 CONSOLE_CONNECT_TIMEOUT_SECONDS = env_int("CONSOLE_CONNECT_TIMEOUT_SECONDS", 10)
+# Terminal console-session metadata is short-lived; credentials are cleared as
+# soon as a session is consumed or expires.
+CONSOLE_SESSION_RETENTION_HOURS = env_int("CONSOLE_SESSION_RETENTION_HOURS", 24)
 STORAGE_UPLOAD_MAX_SIZE_MB = env_int("STORAGE_UPLOAD_MAX_SIZE_MB", 0)
 FILE_UPLOAD_TEMP_DIR = env("FILE_UPLOAD_TEMP_DIR", "") or None
 STORAGE_IMAGE_INFO_ENABLED = env_bool("STORAGE_IMAGE_INFO_ENABLED", True)
 STORAGE_IMAGE_INFO_TIMEOUT_SECONDS = env_int("STORAGE_IMAGE_INFO_TIMEOUT_SECONDS", 15)
 STORAGE_INFLATE_TIMEOUT_SECONDS = env_int("STORAGE_INFLATE_TIMEOUT_SECONDS", 14400)
 STORAGE_INFLATE_WORKER_PRESERVES_OWNER = env_bool("STORAGE_INFLATE_WORKER_PRESERVES_OWNER", False)
+SCAN_TASK_TIMEOUT_SECONDS = env_int("SCAN_TASK_TIMEOUT_SECONDS", 21600)
 STORAGE_DOWNLOAD_ACCEL_ENABLED = env_bool("STORAGE_DOWNLOAD_ACCEL_ENABLED", False)
 STORAGE_DOWNLOAD_ACCEL_PREFIX = env("STORAGE_DOWNLOAD_ACCEL_PREFIX", "/_pve_helper_download")
 
@@ -214,6 +221,17 @@ Q_CLUSTER = {
     "workers": env_int("Q_CLUSTER_WORKERS", 1),
     "timeout": env_int("Q_CLUSTER_TIMEOUT", 1800),
     "retry": env_int("Q_CLUSTER_RETRY", 2100),
+    "ALT_CLUSTERS": {
+        # Only the default/control cluster runs Django-Q's scheduler. The
+        # separate bulk cluster receives explicitly routed data-plane payloads.
+        "bulk": {
+            "workers": env_int("Q_BULK_WORKERS", 1),
+            "timeout": env_int("Q_BULK_TIMEOUT", 21600),
+            # Must exceed timeout: django-q retries a task once retry elapses.
+            "retry": env_int("Q_BULK_RETRY", 22200),
+            "scheduler": False,
+        },
+    },
     "queue_limit": 50,
     "bulk": 10,
     "orm": "default",
