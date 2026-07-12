@@ -10,7 +10,7 @@ patch targets must point at the module that *defines* a name (e.g.
 won't intercept intra-module calls.
 """
 
-from . import _core, firewall, console, tabs, replication, panels, hardware, read_models, dialogs, mutations, actions
+from . import _core, firewall, console, tabs, replication, panels, hardware, read_models, dialogs, mutations, actions, create
 from ._core import *  # noqa: F401,F403
 from .firewall import *  # noqa: F401,F403
 from .console import *  # noqa: F401,F403
@@ -22,6 +22,7 @@ from .read_models import *  # noqa: F401,F403
 from .dialogs import *  # noqa: F401,F403
 from .mutations import *  # noqa: F401,F403
 from .actions import *  # noqa: F401,F403
+from .create import *  # noqa: F401,F403
 
 
 def _surface_private(module):
@@ -43,3 +44,4 @@ _surface_private(read_models)
 _surface_private(dialogs)
 _surface_private(mutations)
 _surface_private(actions)
+_surface_private(create)
