@@ -10,12 +10,13 @@ patch targets must point at the module that *defines* a name (e.g.
 won't intercept intra-module calls.
 """
 
-from . import _core, firewall, console, tabs, replication
+from . import _core, firewall, console, tabs, replication, panels
 from ._core import *  # noqa: F401,F403
 from .firewall import *  # noqa: F401,F403
 from .console import *  # noqa: F401,F403
 from .tabs import *  # noqa: F401,F403
 from .replication import *  # noqa: F401,F403
+from .panels import *  # noqa: F401,F403
 
 
 def _surface_private(module):
@@ -31,3 +32,4 @@ _surface_private(firewall)
 _surface_private(console)
 _surface_private(tabs)
 _surface_private(replication)
+_surface_private(panels)
