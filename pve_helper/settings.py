@@ -225,7 +225,7 @@ Q_CLUSTER = {
         # Only the default/control cluster runs Django-Q's scheduler. The
         # separate bulk cluster receives explicitly routed data-plane payloads.
         "bulk": {
-            "workers": env_int("Q_BULK_WORKERS", 1),
+            "workers": env_int("Q_BULK_WORKERS", 2),
             "timeout": env_int("Q_BULK_TIMEOUT", 21600),
             # Must exceed timeout: django-q retries a task once retry elapses.
             "retry": env_int("Q_BULK_RETRY", 22200),
