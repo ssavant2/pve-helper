@@ -54,6 +54,7 @@ test("CSS layers load in the intended cascade order", async ({ page }) => {
     "/static/css/app/topbar.css",
     "/static/css/app/workspace.css",
     "/static/css/app/components.css",
+    "/static/css/app/storage-browser.css",
     "/static/css/app.css",
   ]);
 
