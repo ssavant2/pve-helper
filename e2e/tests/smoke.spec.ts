@@ -61,6 +61,14 @@ test("CSS layers load in the intended cascade order", async ({ page }) => {
     "/static/css/app/taskbar.css",
     "/static/css/app/context-menu.css",
     "/static/css/app/action-dialog.css",
+    "/static/css/app/shared.css",
+    "/static/css/app/guest-workspace.css",
+    "/static/css/app/hardware-editor.css",
+    "/static/css/app/register-import.css",
+    "/static/css/app/hardware-devices.css",
+    "/static/css/app/guest-tabs.css",
+    "/static/css/app/vm-overview.css",
+    "/static/css/app/hardware-forms.css",
     "/static/css/app.css",
   ]);
 

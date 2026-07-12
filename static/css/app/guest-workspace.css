@@ -1,0 +1,1159 @@
+/* --- VM/CT master-detail workspace --- */
+.guest-workspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.guest-list-pane {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 150px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.guest-list-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guest-list-title {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.guest-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.guest-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.guest-list-item[hidden],
+.guest-list-empty[hidden] {
+  display: none;
+}
+
+/* Linked-clone lineage: children indent under their parent template. */
+.guest-list-item[data-lineage-depth="1"] {
+  padding-left: 22px;
+}
+.guest-list-item[data-lineage-depth="2"] {
+  padding-left: 40px;
+}
+.guest-lineage-connector {
+  color: var(--muted);
+  opacity: 0.7;
+  margin-right: -4px;
+}
+.guest-lineage-deeper {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* Big 'L' before the VM icon on a linked-clone row: a compact lineage marker
+   shown in every sort order (replaces the connector / indent / 'clone of X'
+   text). The icon shifts slightly right to make room. */
+.clone-marker {
+  font-weight: 700;
+  font-size: 1.15em;
+  line-height: 1;
+  color: var(--accent, #3b82f6);
+  margin-right: 4px;
+  /* Nudge the glyph right so the L's vertical stroke lines up under the centre
+     of the parent template's icon, using relative positioning so the VM icon
+     after it does not move. */
+  position: relative;
+  left: 8px;
+}
+
+/* Empty-state / info note padded inside a panel (was inline style="padding:14px"). */
+.panel-empty-note {
+  padding: 14px;
+}
+
+.guest-list-item:hover {
+  background: var(--surface_alt, rgba(127, 127, 127, 0.10));
+}
+
+.guest-list-item.active {
+  background: var(--accent-soft, rgba(59, 130, 246, 0.15));
+  font-weight: 600;
+}
+
+/* vSphere dims inventory-tree labels to a muted blue-grey. The selected row is
+   a subtle dark highlight (#1b2b32) with the same muted text; only hover lifts
+   the text. Dark mode only — light keeps its readable dark text + selection. */
+:root[data-theme="dark"] .guest-list-item {
+  color: #acbac3;
+}
+
+/* Keep the object-type icon a neutral grey everywhere (a touch brighter than
+   the label), even inside the Overview where the name link is accent-blue. */
+:root[data-theme="dark"] .guest-list-icon {
+  color: #c3ced5;
+}
+
+:root[data-theme="dark"] .guest-list-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+/* vSphere's selected row is a light "chip": pale fill, dark text, regular weight. */
+:root[data-theme="dark"] .guest-list-item.active,
+:root[data-theme="dark"] .guest-list-item.active:hover {
+  background: #dce5ea;
+  color: #16242c;
+  font-weight: 400;
+}
+
+:root[data-theme="dark"] .guest-list-item.active .guest-list-icon,
+:root[data-theme="dark"] .guest-list-item.active:hover .guest-list-icon {
+  color: #3f515c;
+  filter: none;
+}
+
+:root[data-theme="dark"] .guest-list-item.active .guest-list-icon.running-icon::after,
+:root[data-theme="dark"] .guest-list-item.active:hover .guest-list-icon.running-icon::after {
+  border-left-color: #2ca85f;
+  filter: none;
+}
+
+.guest-list-item .status-dot {
+  flex: none;
+  background: var(--muted, #9ca3af);
+}
+
+.guest-list-item .status-dot.running {
+  background: var(--status-ok);
+}
+
+.guest-list-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  opacity: 1;
+}
+
+.guest-list-icon i {
+  width: 16px;
+  height: 16px;
+}
+
+.guest-list-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.guest-list-empty {
+  padding: 12px;
+}
+
+.guest-detail-empty .panel {
+  max-width: 640px;
+}
+
+/* --- vSphere-style summary card grid --- */
+.vm-summary-grid {
+  --summary-card-height: 415px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-auto-rows: var(--summary-card-height);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.summary-card {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  height: var(--summary-card-height);
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.summary-card > :not(.panel-heading) {
+  min-height: 0;
+  overflow: visible;
+}
+
+/* Guest Agent tab: flex row so each card takes only the width its content
+   needs (NIC card wider, Filesystems narrower) instead of rigid equal thirds.
+   Cards grow to fit their content (no vertical scroll), stay equal height per
+   row, wrap to a new row on narrow screens, and never scroll horizontally. */
+.agent-summary-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.agent-summary-grid .summary-card {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+/* Tables size to their content (not 100% of the card) so a card is only as
+   wide as it needs — no dead space stretching each card across the row. */
+.agent-summary-grid .summary-card .data-table {
+  width: auto;
+}
+
+/* Long free-text values (OS version, IPv6) may wrap; atomic tokens must not
+   split mid-value, so only wrap where genuinely needed. */
+.agent-summary-grid .summary-card td,
+.agent-summary-grid .summary-card .details-list dd {
+  overflow-wrap: anywhere;
+}
+
+/* Interface name + MAC are atomic — keep them on one line so a MAC never
+   breaks across two rows. The addresses column absorbs the flexing. */
+.agent-nic-table td:nth-child(1),
+.agent-nic-table td:nth-child(2) {
+  white-space: nowrap;
+}
+
+.summary-os {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.summary-os-icon {
+  display: inline-flex;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface_alt, rgba(127, 127, 127, 0.12));
+}
+
+.summary-os-icon i {
+  width: 26px;
+  height: 26px;
+}
+
+.summary-os-name {
+  font-weight: 650;
+  font-size: 15px;
+}
+
+.usage-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-row-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.summary-notes {
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+@media (max-width: 860px) {
+  .guest-workspace {
+    grid-template-columns: 1fr;
+  }
+  .guest-list-pane {
+    position: static;
+    max-height: 320px;
+  }
+}
+
+/* --- Fixes/polish for the VM workspace --- */
+.guest-list-header .datastore-search {
+  flex: none;
+  width: 100%;
+}
+
+.guest-list-pane {
+  align-self: start;
+}
+
+/* vSphere-style two-column stacked label/value pairs inside summary cards */
+.summary-card .details-list {
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 24px;
+}
+
+.summary-card .details-list > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.summary-card .details-list dt {
+  font-size: 12px;
+}
+
+.summary-card .panel-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex: 0 0 auto;
+  background: var(--surface);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.summary-card .panel-heading h2 {
+  font-size: 14px;
+}
+
+/* --- design polish v2: full-height sidebar, running icon, draggable cards --- */
+.guest-workspace {
+  gap: 20px;
+}
+
+.guest-list-pane {
+  align-self: start;
+  position: sticky;
+  top: 16px;
+  height: calc(100vh - 128px);
+  box-shadow: 1px 0 0 var(--border);
+}
+
+.guest-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.guest-detail-pane {
+  min-width: 0;
+}
+
+/* running indicator: green play triangle over the screen/box icon */
+.guest-icon-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.guest-icon-wrap.running::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -58%);
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 3px 0 3px 5px;
+  border-color: transparent transparent transparent #22c55e;
+}
+
+.summary-os-icon.guest-icon-wrap.running::after {
+  border-width: 4px 0 4px 7px;
+  transform: translate(-50%, -62%);
+}
+
+/* draggable summary cards */
+.summary-card .panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.card-drag {
+  width: 16px;
+  height: 12px;
+  cursor: grab;
+  flex: none;
+  opacity: 0.35;
+  background-image: radial-gradient(currentColor 1px, transparent 1.4px);
+  background-size: 4px 4px;
+  background-position: center;
+}
+
+.card-drag:active {
+  cursor: grabbing;
+}
+
+.card-drag:hover {
+  opacity: 0.7;
+}
+
+.summary-card.dragging {
+  opacity: 0.5;
+}
+
+.usage-note {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* --- polish v3: dynamic sidebar height, icon sizing, running badge, spacing --- */
+.guest-list-pane {
+  top: 0;
+  height: calc(100vh - 48px - var(--taskbar-height) - 36px);
+  max-height: calc(100vh - 48px - var(--taskbar-height) - 36px);
+}
+
+/* lucide replaces <i> with <svg>; size the svg, not the <i> */
+.guest-list-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Clarity object-type icons are fill-based (unlike Lucide's stroke). The <i>
+   wrapper is a centered flex box so the icon sits dead-centre in tree/list
+   slots, and .vicon has a concrete size so it never falls back to the huge
+   intrinsic SVG size in a table cell. */
+[data-vicon] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.vicon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  stroke: none;
+  display: block;
+}
+
+.guest-list-icon {
+  position: relative;
+}
+
+.summary-os-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* clear running badge: green circle + white play, only in the left list */
+.guest-icon-wrap.running::after {
+  content: none;
+}
+
+.summary-os-icon.guest-icon-wrap.running::after {
+  content: none;
+}
+
+.guest-list-item .guest-icon-wrap {
+  overflow: visible;
+}
+
+.guest-list-item .guest-icon-wrap.running::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #22c55e url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M4 3 L9 6 L4 9 Z' fill='white'/%3E%3C/svg%3E") no-repeat center / 6px 6px;
+  box-shadow: 0 0 0 1.5px var(--surface);
+}
+
+/* breathing room between the tab bar and the cards */
+.vm-summary-grid {
+  margin-top: 18px;
+}
+
+/* --- Actions card: two centered buttons, compact --- */
+.summary-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+
+.summary-actions .secondary-action {
+  min-width: 200px;
+  justify-content: center;
+  text-align: center;
+}
+
+.summary-actions-note {
+  text-align: center;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+/* --- card edit affordance + guest edit form --- */
+.card-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.card-edit {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.card-edit:hover {
+  text-decoration: underline;
+}
+
+.card-size-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.card-size-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.card-size-toggle svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.14s ease;
+}
+
+.summary-card[data-card-expanded="true"] .card-size-toggle svg {
+  transform: rotate(180deg);
+}
+
+.guest-edit-panel .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  max-width: 560px;
+}
+
+.guest-edit-panel .form-field > label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.guest-edit-panel input[type="text"],
+.guest-edit-panel textarea {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.guest-edit-panel .form-field-inline > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.guest-edit-panel .form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* --- polish v4: equal cards, padding, actions, drag hint --- */
+/* vSphere shows the type icon plus a small green "running" triangle overlay in
+   the lower-left corner, rather than replacing the icon. */
+.guest-list-icon.running-icon::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 4px 0 4px 7px;
+  border-color: transparent transparent transparent #5bb974;
+}
+
+/* Suspended/paused: two amber "pause" bars in the same corner as the running
+   triangle (only one overlay shows at a time). */
+.guest-list-icon.paused-icon::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 8px;
+  background: linear-gradient(to right, #e0a83c 0 40%, transparent 40% 60%, #e0a83c 60% 100%);
+}
+
+/* Hibernated (suspend-to-disk): a blue crescent "moon" badge. */
+.guest-list-icon.hibernated-icon::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: inset -2.5px -1px 0 0 #5aa0e0;
+}
+
+/* Lock badge: a small amber padlock next to a guest's name (list + overview)
+   when it carries a Proxmox config lock — "take a look at this one". */
+.guest-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  color: #e0a83c;
+  vertical-align: middle;
+}
+.guest-lock-badge[hidden] {
+  display: none;
+}
+.guest-lock-badge i,
+.guest-lock-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Health card on the guest detail page (stale/active lock, ...). */
+.summary-card-health {
+  border-color: #e0a83c;
+}
+.summary-card-health .panel-heading h2 {
+  color: #e0a83c;
+}
+.health-ok {
+  padding: 4px 14px 14px;
+}
+.health-issue {
+  padding: 4px 14px 12px;
+}
+.health-issue-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 650;
+  color: #e0a83c;
+}
+.health-issue-title i,
+.health-issue-title svg {
+  width: 16px;
+  height: 16px;
+}
+.health-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.health-command code {
+  flex: 1 1 auto;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.12));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-x: auto;
+}
+
+/* equal-size cards across the grid */
+.vm-summary-grid {
+  --summary-card-gap: 16px;
+  --summary-card-row-height: calc((var(--summary-card-height) - var(--summary-card-gap)) / 2);
+  align-items: stretch;
+  gap: var(--summary-card-gap);
+  grid-auto-rows: var(--summary-card-row-height);
+  grid-auto-flow: row;
+}
+
+.summary-card {
+  height: auto;
+}
+
+.summary-card[data-card-size="full"],
+.summary-card[data-card-size="auto"][data-card-expanded="true"] {
+  grid-row: span 2;
+}
+
+.summary-card[data-card-size="half"],
+.summary-card[data-card-size="auto"]:not([data-card-expanded="true"]) {
+  grid-row: span 1;
+}
+
+/* consistent body padding + bottom breathing room (VM Details/Hardware as the template) */
+.summary-os,
+.usage-block,
+.tag-list,
+.summary-notes,
+.summary-actions {
+  padding: 12px 14px 16px;
+}
+
+.summary-notes {
+  margin: 0;
+}
+
+/* Actions: left-aligned, clearly two buttons */
+.summary-actions {
+  align-items: flex-start;
+}
+
+.summary-actions .secondary-action {
+  min-width: 0;
+  width: auto;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+/* drag affordance on cards */
+.summary-card .panel-heading {
+  cursor: move;
+}
+
+.summary-card.dragging {
+  cursor: grabbing;
+  opacity: 0.5;
+}
+
+/* --- guest detail tabs (configure/monitor) --- */
+.monitor-timeframes {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.monitor-timeframes a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.monitor-timeframes a.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.monitor-chart {
+  padding: 10px 14px 16px;
+}
+
+.monitor-chart svg {
+  width: 100%;
+  height: 70px;
+}
+
+.config-list dd code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.guest-config-scheduled-heading {
+  gap: 16px;
+}
+
+.guest-config-scheduled-heading h2 {
+  margin-right: auto;
+}
+
+.config-multiline {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --- drag state (pointer-based card reorder) --- */
+body.cards-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
+.summary-card.dragging {
+  opacity: 0.55;
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+/* --- monitor metric charts --- */
+.vm-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.monitor-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 260px;
+  overflow: hidden;
+}
+
+.monitor-card .panel-heading {
+  flex: 0 0 auto;
+  align-items: flex-start;
+}
+
+.monitor-title-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.monitor-title-stack h2 {
+  margin: 0;
+}
+
+.monitor-current {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.metric-chart {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  padding: 10px 14px 16px;
+  min-height: 0;
+}
+
+.metric-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 52px;
+  text-align: right;
+  padding: 2px 0;
+}
+
+.metric-chart svg {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-height: 170px;
+  height: auto;
+  border-left: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.metric-grid-line {
+  stroke: var(--line);
+  stroke-width: 0.75;
+  opacity: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.metric-area {
+  fill: var(--accent);
+  opacity: 0.14;
+}
+
+.metric-line {
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.metric-line.ms1 {
+  stroke: var(--accent);
+}
+
+.metric-line.ms2 {
+  stroke: #22c55e;
+}
+
+.chart-legend {
+  font-size: 11px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chart-legend::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.chart-legend.s2::before {
+  background: #22c55e;
+}
+
+/* --- card drag placeholder + empty detail spacing --- */
+.card-placeholder {
+  background: transparent !important;
+  border: 2px dashed var(--line) !important;
+  box-shadow: none !important;
+}
+
+.guest-detail-empty p {
+  padding: 12px 16px;
+  margin: 0;
+}
+
+/* --- Actions dropdown (vSphere-style) on cards --- */
+.actions-menu {
+  position: relative;
+}
+
+.actions-menu summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.actions-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.actions-menu summary::after {
+  content: " \25be";
+}
+
+.actions-menu-panel {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 6px;
+  z-index: 50;
+  min-width: 210px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.actions-menu-panel form {
+  margin: 0;
+}
+
+.actions-menu-panel button,
+.actions-menu-panel a {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.actions-menu-panel button:hover,
+.actions-menu-panel a:hover {
+  background: var(--surface-alt);
+}
+
+.actions-menu-panel button.danger {
+  color: var(--danger_bg, #ef4444);
+}
+
+/* --- snapshot create form --- */
+.snapshot-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.snapshot-form input[type="text"] {
+  padding: 7px 10px;
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.restore-page-shell {
+  display: grid;
+  place-items: start center;
+  min-height: 100%;
+  padding: 36px 16px;
+}
+
+.restore-page-dialog {
+  display: block;
+  width: min(820px, calc(100vw - 48px));
+  margin: 0;
+}
+
+.restore-page-dialog .restore-vmid-locked {
+  background: var(--surface-alt);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.restore-dialog-close {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.restore-dialog-close:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+.restore-dialog-summary {
+  margin: 2px 0 0;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.restore-confirmation {
+  display: grid;
+  gap: 10px;
+}
+
+.snapshot-vmstate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.guest-edit-panel input[type="number"] {
+  width: 160px;
+  padding: 8px 10px;
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+/* --- create VM/CT form + create menu --- */
+.guest-list-title-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.create-menu summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.create-menu summary::-webkit-details-marker { display: none; }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px 20px;
+  max-width: 780px;
+  margin-bottom: 8px;
+}
+
+.form-grid .form-field {
+  margin-bottom: 0;
+  max-width: none;
+}
+
+.form-grid .form-field-wide {
+  grid-column: 1 / -1;
+}
+
+.guest-edit-panel select,
+.guest-edit-panel input[type="password"] {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.form-grid input[type="number"] {
+  width: 100%;
+}
+
+/* --- more breathing room in edit/create forms --- */
+.guest-edit-panel form {
+  padding: 18px 20px 20px;
+}
+
+.guest-edit-panel .form-field {
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.guest-edit-panel .form-field > label {
+  margin-bottom: 2px;
+}
+
+.guest-edit-panel .form-actions {
+  margin-top: 6px;
+}
+
+

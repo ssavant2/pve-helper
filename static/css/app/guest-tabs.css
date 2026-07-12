@@ -1,0 +1,53 @@
+/* --- tab write forms (firewall) --- */
+.fw-options-form,
+.fw-add-rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.fw-options-form select,
+.fw-add-rule select,
+.fw-add-rule input[type="text"] {
+  padding: 6px 9px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.fw-add-rule input[type="text"] { width: 130px; }
+
+/* --- snapshot tree/chain (Proxmox-style) --- */
+.snapshot-tree .snap-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.snapshot-tree .snap-icon {
+  width: 15px;
+  height: 15px;
+  opacity: 0.7;
+  flex: none;
+}
+
+.snapshot-tree .snap-icon-now {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.snapshot-tree .snap-now-row td {
+  color: var(--muted);
+}
+
+.summary-os-agent {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+

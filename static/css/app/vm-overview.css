@@ -1,0 +1,403 @@
+/* --- VM overview table + column picker --- */
+.vm-overview-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.vm-overview-page > .panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.vm-overview-heading {
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 16px 6px;
+}
+
+/* The "N running ..." line is a sub-line under the heading, not its own bordered
+   strip — drop the panel-meta border/inset so it sits neatly under "N guests". */
+.vm-overview-heading .panel-meta {
+  padding: 2px 0 0;
+  border-bottom: none;
+}
+
+.vm-overview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.vm-overview-search {
+  max-width: 320px;
+}
+
+.vm-selection-status {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.vm-overview-scroll {
+  flex: 1 1 auto;
+  min-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.vm-overview-table {
+  min-width: 100%;
+  table-layout: fixed;
+}
+
+[data-resizable-columns].column-resizing,
+[data-resizable-columns].column-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+[data-resizable-columns][data-column-dragging="true"],
+[data-resizable-columns][data-column-dragging="true"] * {
+  cursor: grabbing !important;
+}
+
+.vm-overview-table th,
+.vm-overview-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 17px;
+  color: #f0f7fb;
+}
+
+.vm-overview-table th {
+  position: relative;
+  height: 30px;
+  padding: 5px 20px 5px 8px;
+  border-right: 1px solid rgba(174, 194, 204, 0.38);
+}
+
+/* Match the Inventory list density instead of the roomy default table rows.
+   Needs to out-specify .data-table.compact td. */
+.data-table.compact.vm-overview-table td {
+  height: 25px;
+  padding: 1px 8px;
+}
+
+.vm-overview-table .guest-list-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.vm-overview-table .guest-list-icon i {
+  width: 16px;
+  height: 16px;
+}
+
+.vm-overview-table [data-column="name"] {
+  width: 260px;
+}
+
+.vm-overview-table [data-column="state"] {
+  width: 120px;
+}
+
+.vm-overview-table [data-column="provisioned"],
+.vm-overview-table [data-column="active-mem"] {
+  width: 130px;
+}
+
+.vm-overview-table [data-column="used"],
+.vm-overview-table [data-column="host-mem"],
+.vm-overview-table [data-column="memory-size"],
+.vm-overview-table [data-column="has-snapshot"] {
+  width: 110px;
+}
+
+.vm-overview-table [data-column="node"],
+.vm-overview-table [data-column="uptime"] {
+  width: 100px;
+}
+
+.vm-overview-table [data-column="cpu"] {
+  width: 74px;
+}
+
+.vm-overview-table [data-column="guest-os"] {
+  width: 200px;
+}
+
+.vm-overview-table [data-column="agent"] {
+  width: 120px;
+}
+
+.vm-overview-table [data-column="vmid"],
+.vm-overview-table [data-column="type"] {
+  width: 70px;
+}
+
+.vm-overview-table [data-column="cpus"],
+.vm-overview-table [data-column="nics"],
+.vm-overview-table [data-column="disks"] {
+  width: 58px;
+}
+
+.vm-overview-table [data-column="ip"],
+.vm-overview-table [data-column="mac"],
+.vm-overview-table [data-column="storage"],
+.vm-overview-table [data-column="tags"] {
+  width: 170px;
+}
+
+.vm-overview-table tr.selected td {
+  background: var(--tree-active-bg);
+  color: var(--tree-active-text);
+}
+
+.vm-overview-table tr.selected .vm-name-link {
+  color: var(--tree-active-text);
+}
+
+.vm-overview-table tr.context-selected:not(.selected) td {
+  background: var(--table-hover);
+}
+
+.guest-list-item.context-selected:not(.active) {
+  background: var(--table-hover);
+}
+
+.vm-select-column {
+  padding: 0 !important;
+  width: 36px;
+  min-width: 36px;
+  max-width: 36px;
+  text-align: center;
+  line-height: 0;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+.vm-overview-table th.vm-select-column,
+.vm-overview-table td.vm-select-column {
+  text-align: center;
+}
+
+.vm-select-column input[type="checkbox"] {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 0 auto;
+  accent-color: var(--accent);
+  vertical-align: middle;
+}
+
+.vm-name-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.vm-name-link .guest-label,
+.vm-name-link .guest-name,
+.vm-name-link .guest-vmid {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vm-name-link .guest-label {
+  display: inline-flex;
+  flex: 1 1 auto;
+  max-width: none;
+}
+
+.vm-name-link:hover {
+  text-decoration: underline;
+}
+
+.status-normal {
+  color: #4ade80;
+  font-weight: 700;
+}
+
+.sortable-heading {
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+}
+
+[data-resizable-columns] th[draggable="true"] {
+  cursor: grab;
+}
+
+[data-resizable-columns] th.column-dragging {
+  opacity: 0.55;
+}
+
+[data-resizable-columns] th.drag-over-before::before,
+[data-resizable-columns] th.drag-over-after::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  z-index: 3;
+  border-left: 2px solid var(--accent);
+}
+
+[data-resizable-columns] th.drag-over-before::before {
+  left: 0;
+}
+
+[data-resizable-columns] th.drag-over-after::before {
+  right: 0;
+}
+
+.sortable-heading::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-52%);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.sortable-heading[aria-sort="ascending"]::after {
+  content: "↑";
+  color: var(--accent);
+}
+
+.sortable-heading[aria-sort="descending"]::after {
+  content: "↓";
+  color: var(--accent);
+}
+
+.fixed-sort-heading {
+  position: relative;
+}
+
+.fixed-sort-heading[aria-sort="descending"]::after {
+  content: "↓";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-52%);
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.column-resize-handle {
+  position: absolute;
+  top: 5px;
+  right: -4px;
+  bottom: 5px;
+  z-index: 2;
+  width: 8px;
+  cursor: col-resize;
+}
+
+.column-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 3px;
+  bottom: 0;
+  border-right: 1px solid rgba(174, 194, 204, 0.45);
+}
+
+.column-resize-handle:hover::after,
+.column-resize-handle:focus-visible::after,
+[data-resizable-columns].column-resizing .column-resize-handle.active::after {
+  border-right-color: var(--accent);
+}
+
+.column-picker {
+  position: relative;
+  margin-left: auto;
+}
+
+/* Summary "Show cards" picker: sits on its own line under the Schedule Task
+   button, with simple checkbox rows (no drag grip like the overview columns). */
+.page-header-actions .card-picker {
+  flex-basis: 100%;
+  margin-left: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+.column-picker summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.column-picker summary:hover,
+.column-picker[open] summary {
+  background: var(--blue-soft);
+  color: var(--accent-strong);
+}
+
+.column-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.column-picker-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 160px));
+  overflow-y: auto;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.column-picker-panel label {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.column-picker-panel label input {
+  margin: 0;
+}
+
+
