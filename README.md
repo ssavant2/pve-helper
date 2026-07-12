@@ -108,3 +108,23 @@ docker compose -f docker-compose.tools.yml run --rm js-format
 
 The tools container writes `node_modules/` locally for speed; it is ignored by
 git.
+
+Browser end-to-end tests (Playwright) run the same way — Node is not needed on the
+host. Run them after any frontend change (the ES-module bundles under
+`static/js/app/`, CSS under `static/css/app/`, or interaction templates):
+
+```bash
+docker compose build web   # so e2e-web uses the current app image
+docker compose -f docker-compose.tools.yml run --rm e2e
+```
+
+This brings up an isolated `e2e-web` (the app image with `APP_REQUIRE_LOGIN=false`,
+`PVE_TEST_NETWORK_DISABLED`, a throwaway SQLite DB and two seeded guests) and drives
+real Chromium against it. The suite (`e2e/tests/*.spec.ts`) checks that every main
+page loads and `app.js` initialises, the app-shell controllers work, and the shared
+confirm/clone dialogs open — so a broken ES module fails here instead of shipping.
+
+The whole E2E stack is **dev-only and never in a deployed image**: it lives in
+`docker-compose.tools.yml` + `e2e/`, is excluded via `.dockerignore`, and the
+`DB_ENGINE=sqlite` branch in settings is inert unless explicitly set. `e2e/node_modules`
+and Playwright reports are git-ignored.
