@@ -42,3 +42,17 @@ test("theme toggle button is wired (app.js event handlers attached)", async ({ p
     .poll(() => page.evaluate(() => document.documentElement.dataset.theme))
     .not.toBe(before);
 });
+
+test("CSS layers load in the intended cascade order", async ({ page }) => {
+  await page.goto("/vms/overview/", { waitUntil: "load" });
+  const hrefs = await page.locator('link[rel="stylesheet"]').evaluateAll((links) => links.map((link) => link.href));
+
+  expect(hrefs).toHaveLength(2);
+  expect(hrefs[0]).toContain("/static/css/app/foundation");
+  expect(hrefs[1]).toContain("/static/css/app.");
+
+  for (const href of hrefs) {
+    const response = await page.request.get(href);
+    expect(response.ok(), `${href} loads`).toBe(true);
+  }
+});
