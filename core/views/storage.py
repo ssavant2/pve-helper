@@ -106,7 +106,7 @@ _API_STORAGE_TABS = [
     ("monitor", "Monitor", "core:api_storage_monitor"),
     ("volumes", "Volumes", "core:api_storage_volumes"),
     ("vms", "VMs/CTs", "core:api_storage_vms"),
-    ("content", "Content", "core:api_storage_content"),
+    ("content", "Content Types", "core:api_storage_content"),
     ("configure", "Configuration", "core:api_storage_configure"),
 ]
 

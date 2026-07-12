@@ -26,6 +26,9 @@ AUDIT_MODULE_FILTERS = [
 AUDIT_VALID_MODULES = {item["key"] for item in AUDIT_MODULE_FILTERS}
 AUDIT_EXPORT_COLUMNS = ["Time", "Module", "User", "Source IP", "Action", "Object", "Outcome"]
 AUDIT_EXPORT_TECH_COLUMNS = ["Raw Action", "Object Type", "Object ID", "Details"]
+# XLSX must be assembled as a ZIP archive in the web worker. CSV/JSON are
+# streamed instead, so keep the only in-memory format deliberately bounded.
+AUDIT_XLSX_MAX_ROWS = 5_000
 
 
 @app_login_required
@@ -59,6 +62,7 @@ def audit_log(request):
         "audit_query": query,
         "audit_retention_schedule": audit_retention_schedule_state(),
         "audit_filters": AUDIT_MODULE_FILTERS,
+        "audit_xlsx_max_rows": AUDIT_XLSX_MAX_ROWS,
     }
     return render(request, "core/audit_log.html", context)
 
@@ -84,16 +88,25 @@ def audit_export(request):
             audit_page = 0
         events_qs = events_qs[audit_page * AUDIT_PAGE_SIZE : audit_page * AUDIT_PAGE_SIZE + AUDIT_PAGE_SIZE]
 
-    events = list(events_qs.order_by("-timestamp"))
-    _decorate_audit_events(events)
-    rows = [_audit_export_row(event, include_technical=include_technical) for event in events]
+    events_qs = events_qs.order_by("-timestamp")
     columns = AUDIT_EXPORT_COLUMNS + (AUDIT_EXPORT_TECH_COLUMNS if include_technical else [])
     filename = f"pve-helper-audit-{timezone.now().strftime('%Y%m%d-%H%M%S')}.{export_format}"
 
     if export_format == "csv":
-        return _audit_csv_response(columns, rows, filename)
+        return _audit_csv_response(columns, events_qs, include_technical, filename)
     if export_format == "json":
-        return _audit_json_response(columns, rows, filename)
+        return _audit_json_response(columns, events_qs, include_technical, filename)
+
+    event_count = events_qs.count()
+    if event_count > AUDIT_XLSX_MAX_ROWS:
+        messages.error(
+            request,
+            f"Excel export is limited to {AUDIT_XLSX_MAX_ROWS:,} events; narrow the filters or export CSV/JSON instead.",
+        )
+        return redirect("core:audit_log")
+    events = list(events_qs)
+    _decorate_audit_events(events)
+    rows = [_audit_export_row(event, include_technical=include_technical) for event in events]
     return _audit_xlsx_response(columns, rows, filename)
 
 
@@ -191,23 +204,45 @@ def _audit_export_row(event: AuditEvent, *, include_technical: bool) -> dict[str
     return row
 
 
-def _audit_csv_response(columns: list[str], rows: list[dict[str, str]], filename: str) -> HttpResponse:
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=columns)
-    writer.writeheader()
-    for row in rows:
-        writer.writerow(row)
-    response = HttpResponse(output.getvalue(), content_type="text/csv; charset=utf-8")
+def _audit_export_rows(events_qs, *, include_technical: bool):
+    for event in events_qs.iterator(chunk_size=AUDIT_PAGE_SIZE):
+        _decorate_audit_events([event])
+        yield _audit_export_row(event, include_technical=include_technical)
+
+
+def _audit_csv_response(columns: list[str], events_qs, include_technical: bool, filename: str) -> StreamingHttpResponse:
+    def stream():
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+        for row in _audit_export_rows(events_qs, include_technical=include_technical):
+            writer.writerow(row)
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
+    response = StreamingHttpResponse(stream(), content_type="text/csv; charset=utf-8")
     response["Content-Disposition"] = content_disposition_header(as_attachment=True, filename=filename)
     return response
 
 
-def _audit_json_response(columns: list[str], rows: list[dict[str, str]], filename: str) -> HttpResponse:
-    payload = {
-        "columns": columns,
-        "rows": rows,
-    }
-    response = HttpResponse(json.dumps(payload, ensure_ascii=False, indent=2), content_type="application/json; charset=utf-8")
+def _audit_json_response(columns: list[str], events_qs, include_technical: bool, filename: str) -> StreamingHttpResponse:
+    def stream():
+        yield '{"columns":'
+        yield json.dumps(columns, ensure_ascii=False)
+        yield ',"rows":['
+        first = True
+        for row in _audit_export_rows(events_qs, include_technical=include_technical):
+            if not first:
+                yield ","
+            yield json.dumps(row, ensure_ascii=False)
+            first = False
+        yield "]}"
+
+    response = StreamingHttpResponse(stream(), content_type="application/json; charset=utf-8")
     response["Content-Disposition"] = content_disposition_header(as_attachment=True, filename=filename)
     return response
 

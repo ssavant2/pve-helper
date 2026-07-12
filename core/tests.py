@@ -2272,6 +2272,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with patch("core.views.storage.common.configured_clients", return_value=[]):
             response = self.client.get(reverse("core:storage_content", args=["nfs-vm"]))
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Content Types")
         self.assertContains(response, "Disk image")
         self.assertContains(response, "Container template")
         self.assertContains(response, "In use: 1")
@@ -3759,7 +3760,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
-        body = response.content.decode()
+        self.assertTrue(response.streaming)
+        body = b"".join(response.streaming_content).decode()
         self.assertIn("Download file", body)
         self.assertIn("nfs-vm:template/iso/ubuntu.iso", body)
         self.assertNotIn("Login", body)
@@ -3780,7 +3782,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         response = self.client.get(reverse("core:audit_export"), {"format": "json", "include_technical": "on"})
 
         self.assertEqual(response.status_code, 200)
-        payload = json.loads(response.content)
+        self.assertTrue(response.streaming)
+        payload = json.loads(b"".join(response.streaming_content))
         self.assertIn("Raw Action", payload["columns"])
         self.assertEqual(payload["rows"][0]["Action"], "Power on guest")
         self.assertEqual(payload["rows"][0]["Raw Action"], "guest.power.start")
@@ -3807,6 +3810,19 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertIn("Full scan completed", strings)
         self.assertIn("Storage inventory scan", strings)
         self.assertIn("HeadingPairs", app_properties)
+
+    def test_audit_export_xlsx_refuses_more_than_the_safe_row_limit(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        AuditEvent.objects.all().delete()
+        AuditEvent.objects.create(username="viewer", action="scan.completed")
+        AuditEvent.objects.create(username="viewer", action="scan.completed")
+
+        with patch("core.views.audit.AUDIT_XLSX_MAX_ROWS", 1):
+            response = self.client.get(reverse("core:audit_export"), {"format": "xlsx"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Excel export is limited to 1 events")
 
     def test_audit_log_records_authentication_events(self):
         get_user_model().objects.create_user(username="viewer", password="secret")
