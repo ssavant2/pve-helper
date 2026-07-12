@@ -1,0 +1,378 @@
+/* Sidebar navigation and the scrollable application content surface. */
+
+.sidebar {
+  grid-area: sidebar;
+  position: relative;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.nav-tree {
+  display: block;
+  height: 100%;
+  overflow: auto;
+  padding: 40px 7px 10px;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 11px;
+  right: 10px;
+  z-index: 25;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--sidebar-bg);
+  color: var(--tree-text);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.sidebar-toggle:hover {
+  background: var(--tree-active-bg);
+  color: var(--tree-active-text);
+}
+
+.sidebar-toggle svg {
+  width: 17px;
+  height: 17px;
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle {
+  right: auto;
+  left: 50%;
+  width: 24px;
+  height: 22px;
+  transform: translateX(-50%);
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle svg {
+  width: 17px;
+  height: 17px;
+}
+
+.sidebar-toggle [data-sidebar-collapsed-icon],
+.app-shell.sidebar-collapsed .sidebar-toggle [data-sidebar-expanded-icon] {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle [data-sidebar-collapsed-icon] {
+  display: block;
+}
+
+.sidebar-top-divider {
+  position: absolute;
+  top: 22px;
+  right: 48px;
+  left: 12px;
+  height: 1px;
+  background: var(--line);
+  opacity: 0.85;
+}
+
+.app-shell.sidebar-collapsed .sidebar-top-divider {
+  display: none;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 20;
+  width: 8px;
+  cursor: col-resize;
+}
+
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  width: 3px;
+  height: 56px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 66%, transparent);
+  opacity: 0.6;
+  transform: translateY(-50%);
+}
+
+.sidebar-resize-handle:hover::after,
+.app-shell.sidebar-resizing .sidebar-resize-handle::after {
+  background: var(--accent);
+  opacity: 0.95;
+}
+
+.app-shell.sidebar-collapsed .sidebar-resize-handle {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .nav-tree {
+  padding-top: 40px;
+  padding-right: 6px;
+  padding-left: 6px;
+}
+
+.sidebar-measure-probe {
+  position: absolute;
+  inset: auto auto 0 0;
+  visibility: hidden;
+  white-space: nowrap;
+  font: inherit;
+  font-weight: 400;
+  pointer-events: none;
+}
+
+.sidebar-measure-tree {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  width: max-content;
+  min-width: 0;
+  height: auto;
+  overflow: visible;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.sidebar-measure-tree .tree-children,
+.sidebar-measure-tree .tree-module.collapsed .tree-children {
+  display: block;
+}
+
+.tree-root,
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 9px;
+  border-radius: 4px;
+  color: var(--tree-text);
+}
+
+.tree-root {
+  margin-bottom: 7px;
+  color: var(--tree-root-text);
+  font-weight: 650;
+}
+
+.tree-root::after {
+  content: "";
+  display: block;
+  flex: 1;
+  height: 1px;
+  margin-left: 4px;
+  background: var(--line);
+}
+
+.tree-module {
+  margin: 1px 0;
+}
+
+.tree-node {
+  width: 100%;
+}
+
+a.tree-node,
+button.tree-node {
+  font: inherit;
+}
+
+a.tree-node {
+  text-decoration: none;
+}
+
+button.tree-node {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-node.active,
+.tree-node:hover:not(.disabled) {
+  background: var(--tree-active-bg);
+  color: var(--tree-active-text);
+}
+
+.active-module {
+  color: var(--tree-module-text);
+  font-weight: 650;
+}
+
+.tree-children {
+  position: relative;
+  margin-left: 20px;
+  padding-left: 10px;
+}
+
+.tree-module.collapsed .tree-children {
+  display: none;
+}
+
+.tree-children::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 5px;
+  left: 5px;
+  width: 1px;
+  background: var(--tree-line);
+}
+
+.tree-subchildren {
+  position: relative;
+  margin-left: 34px;
+  padding-left: 10px;
+}
+
+.tree-subchildren::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  bottom: 5px;
+  left: 5px;
+  width: 1px;
+  background: var(--tree-line);
+}
+
+.tree-leaf {
+  min-height: 31px;
+}
+
+.storage-leaf {
+  min-height: 29px;
+  padding-left: 7px;
+}
+
+/* Nested datastore groups (Local / Shared, and per-node hosts) */
+.tree-group > .tree-children {
+  margin-left: 14px;
+}
+
+.tree-subhead {
+  display: flex;
+  align-items: center;
+  min-height: 29px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.tree-subhead .tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-leaf .tree-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-leaf-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tree-caret {
+  width: 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tree-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  border: 1px solid var(--tree-icon-border);
+  border-radius: 4px;
+  background: var(--tree-icon-bg);
+  color: var(--tree-icon-text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  flex: 0 0 auto;
+}
+
+.tree-icon svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.9;
+}
+
+.root-icon {
+  border-color: var(--root-icon-border);
+  background: var(--root-icon-bg);
+  color: var(--root-icon-text);
+}
+
+.storage-icon {
+  border-color: var(--storage-icon-border);
+  background: var(--storage-icon-bg);
+  color: var(--storage-icon-text);
+}
+
+.tree-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-node.disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.tree-node.disabled .tree-icon {
+  background: var(--tree-icon-disabled-bg);
+  color: var(--tree-icon-disabled-text);
+}
+
+.app-shell.sidebar-collapsed .tree-root,
+.app-shell.sidebar-collapsed .tree-node {
+  justify-content: center;
+  gap: 0;
+  padding-right: 5px;
+  padding-left: 5px;
+}
+
+.app-shell.sidebar-collapsed .tree-root::after,
+.app-shell.sidebar-collapsed .tree-caret,
+.app-shell.sidebar-collapsed .tree-label,
+.app-shell.sidebar-collapsed .tree-children {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .tree-module {
+  margin: 4px 0;
+}
+
+.app-shell.sidebar-collapsed .nav-tree > .tree-node.module-node {
+  margin: 4px 0;
+}
+
+.content {
+  grid-area: content;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+}
