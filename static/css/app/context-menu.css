@@ -1,0 +1,108 @@
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 220px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--context-shadow);
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu button:hover {
+  background: var(--blue-soft);
+}
+
+.context-menu-title {
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--line);
+}
+
+.context-menu button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.context-menu button:disabled:hover {
+  background: transparent;
+}
+
+.context-menu button.danger {
+  color: #fca5a5;
+}
+
+.context-menu button.danger:hover:not(:disabled) {
+  background: rgb(127 29 29 / 0.28);
+  color: #fecaca;
+}
+
+.context-menu button svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.context-menu-submenu {
+  position: relative;
+}
+
+.context-menu-submenu::after {
+  position: absolute;
+  top: -8px;
+  right: -18px;
+  bottom: -8px;
+  width: 18px;
+  content: "";
+}
+
+.context-menu-submenu:hover > .context-menu-parent,
+.context-menu-submenu:focus-within > .context-menu-parent {
+  background: var(--blue-soft);
+}
+
+.context-menu-parent span {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.context-menu-submenu-panel {
+  position: absolute;
+  top: -5px;
+  left: calc(100% + 2px);
+  display: none;
+  min-width: 260px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--context-shadow);
+}
+
+.context-menu-submenu:hover > .context-menu-submenu-panel,
+.context-menu-submenu:focus-within > .context-menu-submenu-panel {
+  display: block;
+}
