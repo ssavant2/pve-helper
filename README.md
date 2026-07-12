@@ -69,62 +69,12 @@ Start with `docs/deployment-runbook.md`. For day-to-day administration, see
 
 The compose defaults are for local skeleton verification. Before real internal use, create `.env`, set real secrets, configure Authentik OIDC, and keep `APP_REQUIRE_LOGIN=true`. `APP_BASE_URL` should be the canonical URL that Authentik redirects back to; the URL shown in the app header is taken from the current request.
 
-## Development Checks
+## Documentation
 
-The app image copies the source tree at build time. The running `web`/`worker`
-containers do not bind-mount the checkout, so Python/template changes are not
-visible inside `docker compose exec web ...` until the image is rebuilt and the
-container is recreated.
+- Deployment: `docs/deployment-runbook.md`
+- End-user guide: `docs/user-manual.md`
+- OIDC / Authentik setup: `docs/authentik-oidc-setup.md`
 
-After changing Python, templates, or bundled static assets, rebuild before
-container-based tests:
-
-```bash
-docker compose build web worker
-docker compose run --rm \
-  -e DB_USER="$DB_ADMIN_USER" \
-  -e DB_PASSWORD="$DB_ADMIN_PASSWORD" \
-  web python manage.py test --settings=pve_helper.test_settings --keepdb
-```
-
-The default test settings block every unmocked Proxmox HTTP request. Run live
-integration checks only as a separately reviewed, explicit command with the
-normal settings and suitable non-production infrastructure.
-
-Then restart the running app containers so the browser sees the same code that
-was tested:
-
-```bash
-docker compose up -d web worker worker-bulk console nginx
-```
-
-JavaScript linting/formatting runs through Docker, so Node.js does not need to
-be installed on the host:
-
-```bash
-docker compose -f docker-compose.tools.yml run --rm js-check
-docker compose -f docker-compose.tools.yml run --rm js-format
-```
-
-The tools container writes `node_modules/` locally for speed; it is ignored by
-git.
-
-Browser end-to-end tests (Playwright) run the same way — Node is not needed on the
-host. Run them after any frontend change (the ES-module bundles under
-`static/js/app/`, CSS under `static/css/app/`, or interaction templates):
-
-```bash
-docker compose build web   # so e2e-web uses the current app image
-docker compose -f docker-compose.tools.yml run --rm e2e
-```
-
-This brings up an isolated `e2e-web` (the app image with `APP_REQUIRE_LOGIN=false`,
-`PVE_TEST_NETWORK_DISABLED`, a throwaway SQLite DB and two seeded guests) and drives
-real Chromium against it. The suite (`e2e/tests/*.spec.ts`) checks that every main
-page loads and `app.js` initialises, the app-shell controllers work, and the shared
-confirm/clone dialogs open — so a broken ES module fails here instead of shipping.
-
-The whole E2E stack is **dev-only and never in a deployed image**: it lives in
-`docker-compose.tools.yml` + `e2e/`, is excluded via `.dockerignore`, and the
-`DB_ENGINE=sqlite` branch in settings is inert unless explicitly set. `e2e/node_modules`
-and Playwright reports are git-ignored.
+Build/test/lint and the Playwright E2E workflow for working on the source live in
+a local `AGENTS.md` (kept out of git and out of published images — the deliverable
+is a built image, not the source tree).
