@@ -1,28 +1,3 @@
-.app-shell {
-  height: 100vh;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-  grid-template-rows: 48px minmax(0, 1fr) var(--taskbar-height);
-  grid-template-areas:
-    "topbar topbar"
-    "sidebar content"
-    "taskbar taskbar";
-}
-
-.app-shell.tasks-collapsed {
-  --taskbar-height: 38px;
-}
-
-.app-shell.sidebar-collapsed {
-  grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
-}
-
-.app-shell.sidebar-resizing {
-  user-select: none;
-  cursor: col-resize;
-}
-
 .topbar {
   grid-area: topbar;
   display: flex;
