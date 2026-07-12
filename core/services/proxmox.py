@@ -390,8 +390,6 @@ class ProxmoxClient:
         delete: list[str] | None = None,
         digest: str | None = None,
     ) -> Any:
-        if not settings.VM_WRITE_ENABLED:
-            raise ProxmoxAPIError("VM/CT config writes are disabled.")
         guest_kind = self._guest_kind(object_type)
         data: dict[str, Any] = dict(updates)
         if delete:

@@ -141,9 +141,6 @@ def guest_cloudinit(request, object_type: str, vmid: int):
 @app_login_required
 def guest_cloudinit_edit(request, object_type, vmid):
     detail = _require_guest(object_type, vmid)
-    if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "Editing is disabled.")
-        return redirect("core:guest_cloudinit", object_type=object_type, vmid=vmid)
     updates, delete = {}, []
     for field in ("ciuser", "nameserver", "searchdomain", "ipconfig0"):
         val = request.POST.get(field, "").strip()

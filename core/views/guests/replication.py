@@ -1,7 +1,7 @@
 """Guest replication tab + create/delete (extracted from _core)."""
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_guest_tab_context,_require_guest,_vm_write_disabled_redirect,_write_result)
+from ._core import (_guest_tab_context,_require_guest,_write_result)
 
 
 @app_login_required
@@ -38,9 +38,6 @@ def guest_replication(request, object_type: str, vmid: int):
 @require_POST
 @app_login_required
 def guest_replication_create(request, object_type, vmid):
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_replication")
-    if disabled:
-        return disabled
     detail = _require_guest(object_type, vmid)
     target = request.POST.get("target", "").strip()
     if not target:
@@ -66,9 +63,6 @@ def guest_replication_create(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_replication_delete(request, object_type, vmid):
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_replication")
-    if disabled:
-        return disabled
     detail = _require_guest(object_type, vmid)
     job_id = request.POST.get("job_id", "").strip()
     if not job_id:

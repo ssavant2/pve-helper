@@ -356,7 +356,6 @@ class LinkedCloneTemplateGuardTests(TestCase):
     """A linked clone must not be converted to a template (it would seed a
     fragile chained lineage). The action is gated server-side."""
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_template_action_rejects_linked_clone(self):
         from types import SimpleNamespace
 
@@ -5802,7 +5801,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         # Probe could not answer -> unknown "-", never a misleading "No".
         self.assertEqual(response.json()["guests"][0]["has_snapshot_label"], "-")
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_snapshots_orders_current_after_real_snapshots_and_shows_delete_all(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -5984,68 +5982,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Started")
         self.assertContains(response, "preferred-nodes")
 
-    @override_settings(VM_WRITE_ENABLED=False)
-    def test_guest_summary_hides_power_actions_when_writes_are_disabled(self):
-        user = get_user_model().objects.create_user(username="viewer", password="unused")
-        self.client.force_login(user)
-
-        class FakeClient:
-            def guest_current(self, *, node, object_type, vmid):
-                return {"status": "running"}
-
-            def guest_config(self, *, node, object_type, vmid):
-                return {"name": "Lab VM", "memory": "2048", "cores": "2"}
-
-        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
-        with (
-            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
-        ):
-            response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
-
-        self.assertEqual(response.status_code, 200)
-        content = response.content.decode()
-        self.assertNotIn(reverse("core:guest_power", args=["vm", 500]), content)
-        self.assertNotContains(response, "Power Off")
-        self.assertNotContains(response, "Shut Down Guest OS")
-        self.assertNotContains(response, "Restart Guest OS")
-
-    @override_settings(VM_WRITE_ENABLED=False)
-    def test_guest_mutation_views_respect_vm_write_gate_before_proxmox_calls(self):
-        user = get_user_model().objects.create_user(username="operator", password="unused")
-        self.client.force_login(user)
-
-        cases = [
-            ("core:guest_power", ["vm", 500], {"action": "start"}, "core:guest_summary"),
-            ("core:guest_snapshot_create", ["vm", 500], {"snapname": "snap-a"}, "core:guest_snapshots"),
-            ("core:guest_snapshot_delete", ["vm", 500, "snap-a"], {}, "core:guest_snapshots"),
-            ("core:guest_snapshot_delete_all", ["vm", 500], {}, "core:guest_snapshots"),
-            ("core:guest_snapshot_rollback", ["vm", 500, "snap-a"], {}, "core:guest_snapshots"),
-            ("core:guest_firewall_options", ["vm", 500], {"enable": "on"}, "core:guest_firewall"),
-            ("core:guest_firewall_rule_add", ["vm", 500], {"type": "in", "action": "ACCEPT"}, "core:guest_firewall"),
-            ("core:guest_firewall_rule_delete", ["vm", 500, 0], {}, "core:guest_firewall"),
-            ("core:guest_firewall_rule_toggle", ["vm", 500, 0], {"enable": "0"}, "core:guest_firewall"),
-            ("core:guest_backup_now", ["vm", 500], {"storage": "backup"}, "core:guest_backup"),
-            ("core:guest_backup_delete", ["vm", 500], {"storage": "backup", "volid": "backup:foo"}, "core:guest_backup"),
-            ("core:guest_replication_create", ["vm", 500], {"target": "pve2"}, "core:guest_replication"),
-            ("core:guest_replication_delete", ["vm", 500], {"job_id": "500-0"}, "core:guest_replication"),
-        ]
-
-        with (
-            patch("core.views.common.fetch_live_guest_inventory", side_effect=AssertionError("guest should not be resolved")),
-            patch("core.views.common.configured_clients", side_effect=AssertionError("Proxmox should not be called")),
-        ):
-            for route_name, args, post_data, redirect_name in cases:
-                with self.subTest(route_name=route_name):
-                    response = self.client.post(reverse(route_name, args=args), post_data)
-
-                self.assertRedirects(
-                    response,
-                    reverse(redirect_name, args=["vm", 500]),
-                    fetch_redirect_response=False,
-                )
-
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_renders_for_vm_disks_and_networks(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6104,7 +6040,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "scsi0")
         self.assertContains(response, "vmbr0")
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_create_vm_lists_windows_server_2025_as_win11_family(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6136,7 +6071,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '<option value="win11">Windows 11/2022/2025</option>', html=True)
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_updates_vm_options(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6226,7 +6160,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             },
         )
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_adds_multiple_devices_of_same_type(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6286,7 +6219,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             },
         )
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_renders_for_ct_mounts_and_networks(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6344,7 +6276,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "nfs;cifs")
         self.assertContains(response, 'data-add-device="mount"')
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_hardware_edit_updates_ct_config_and_resizes(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6456,7 +6387,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             ],
         )
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_create_vm_requires_name_before_posting_to_proxmox(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6507,7 +6437,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Name is required.")
         self.assertEqual(fake_client.posts, [])
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_power_action_posts_to_selected_guest_and_audit_uses_guest_label(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6552,7 +6481,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(audit_response, '<span class="guest-name">Lab VM</span>', html=True)
         self.assertNotContains(audit_response, "guest.power.start")
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_clone_posts_clone_request(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6603,7 +6531,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(event.details["new_vmid"], 600)
         self.assertEqual(event.details["new_name"], "Lab Clone")
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_untemplate_clears_template_flag_for_standalone_template(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6667,7 +6594,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(event.details["storage_ids"], ["nfs-vm"])
         self.assertIn("Convert template to VM", [task["name"] for task in recent_task_page(limit=10).tasks])
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_untemplate_blocks_linked_clone(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6738,7 +6664,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(event.outcome, "failed")
         self.assertEqual(event.details["linked_children"][0]["vmid"], 600)
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_pool_move_reassigns_membership_and_records_task(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6790,7 +6715,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(event.details["target_pool"], "new-pool")
         self.assertIn("Move to pool", [task["name"] for task in recent_task_page(limit=10).tasks])
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_pool_options_returns_current_membership(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6827,7 +6751,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             },
         )
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_delete_all_snapshots_deletes_leaf_first(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6877,7 +6800,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         event = AuditEvent.objects.get(action="guest.snapshot.delete_all")
         self.assertEqual(event.details["deleted"], 2)
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_snapshot_delete_waits_for_proxmox_task(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6927,7 +6849,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(event.outcome, "running")
         self.assertEqual(event.details["proxmox_task_upid"], "UPID:pve1:snapshot-delete:500:root@pam:")
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_guest_clone_options_returns_nextid_and_storage_default(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -6964,7 +6885,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(payload["storages"], [{"id": "nfs-vm", "label": "nfs-vm"}])
         self.assertEqual(payload["suggested_name"], "Lab VM-clone")
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_clone_requires_name(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -7007,7 +6927,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(event.outcome, "failed")
         self.assertIn("Name is required", event.details["error"])
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_destroy_requires_matching_vmid_and_calls_delete(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -7062,7 +6981,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(AuditEvent.objects.filter(action="guest.destroy", outcome="failed").count(), 1)
         self.assertEqual(AuditEvent.objects.filter(action="guest.destroy", outcome="running").count(), 1)
 
-    @override_settings(VM_WRITE_ENABLED=True)
     def test_vms_bulk_tags_updates_multiple_guests(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
@@ -7854,7 +7772,6 @@ class VmRegisterServiceTests(SimpleTestCase):
         self.assertNotIn("net2", body)
 
 
-@override_settings(VM_WRITE_ENABLED=True)
 class VmRegisterViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("vmreg-tester", is_staff=True, is_superuser=True)
@@ -7901,7 +7818,7 @@ class VmRegisterViewTests(TestCase):
         self.assertContains(resp, "VMID must be a whole number")
 
 
-@override_settings(VM_WRITE_ENABLED=True, BACKUP_TASK_TIMEOUT_SECONDS=3600)
+@override_settings(BACKUP_TASK_TIMEOUT_SECONDS=3600)
 class GuestBackupRestoreTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("backup-operator", password="unused")

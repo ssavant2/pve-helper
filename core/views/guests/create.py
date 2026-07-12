@@ -9,9 +9,6 @@ from ._core import (_create_guest,_guest_agent_summary,_guest_config_sections,_g
 def guest_create(request, object_type: str):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "VM/CT creation is disabled (VM_WRITE_ENABLED is off).")
-        return redirect("core:vms")
 
     is_vm = object_type == ProxmoxInventory.ObjectType.VM
     node_param = request.POST.get("node") if request.method == "POST" else request.GET.get("node")

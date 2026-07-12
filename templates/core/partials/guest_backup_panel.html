@@ -2,7 +2,7 @@
   <div class="panel-heading"><h2>Backups <span class="muted">({{ backups|length }})</span></h2></div>
   {% if backup_error %}<p class="panel-meta"><span class="badge failed">Error</span> {{ backup_error }}</p>{% endif %}
   <table class="data-table compact">
-    <thead><tr><th>Archive</th><th>Storage</th><th>Created</th><th>Size</th><th>Notes</th>{% if guest_write_enabled %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>Archive</th><th>Storage</th><th>Created</th><th>Size</th><th>Notes</th><th></th></tr></thead>
     <tbody>
       {% for b in backups %}
         <tr>
@@ -11,7 +11,7 @@
           <td>{% if b.ctime %}{{ b.ctime|date:"Y-m-d H:i" }}{% else %}-{% endif %}</td>
           <td>{% if b.size %}{{ b.size|filesizeformat }}{% else %}-{% endif %}</td>
           <td>{{ b.notes|default:"-" }}</td>
-          {% if guest_write_enabled %}
+
             <td class="row-actions">
               <a class="icon-button" title="Restore this backup" href="{% url 'core:guest_backup_restore' %}?archive={{ b.source_endpoint|urlencode }}%7C{{ b.source_node }}%7C{{ b.storage }}%7C{{ b.volid|urlencode }}"><i data-lucide="rotate-ccw" aria-hidden="true"></i></a>
               <form class="inline-action-form" method="post" action="{% url 'core:guest_backup_delete' guest.object_type guest.vmid %}" data-guest-action-form data-action="backup_delete" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete this backup archive?" data-skip-soft-refresh="true">
@@ -21,10 +21,10 @@
                 <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
               </form>
             </td>
-          {% endif %}
+
         </tr>
       {% empty %}
-        <tr><td colspan="{% if guest_write_enabled %}6{% else %}5{% endif %}" class="empty-state">No backup archives for this guest.</td></tr>
+        <tr><td colspan="6" class="empty-state">No backup archives for this guest.</td></tr>
       {% endfor %}
     </tbody>
   </table>

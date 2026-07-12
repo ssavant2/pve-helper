@@ -8,7 +8,7 @@
     data-vmid="{{ guest.vmid }}"
     data-rendered-at-ms="{{ snapshot_rendered_at_ms }}"
   >
-    {% if guest_write_enabled %}
+
       <div class="panel panel-spaced">
         <div class="panel-heading"><h2>Take Snapshot</h2></div>
         <form class="snapshot-form" method="post" action="{% url 'core:guest_snapshot_create' guest.object_type guest.vmid %}" data-guest-action-form data-action="snapshot" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}">
@@ -19,7 +19,7 @@
           <button class="primary-action" type="submit">Take snapshot</button>
         </form>
       </div>
-    {% endif %}
+
 
     {% include "core/partials/guest_snapshot_panel.html" %}
   </section>

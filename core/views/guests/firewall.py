@@ -5,8 +5,7 @@ from ._core import (
     _require_guest,
     _resolve_guest_detail,
     _guest_tab_context,
-    _vm_write_disabled_redirect,
-    _write_result,
+        _write_result,
     _guest_put,
     _guest_post,
     _guest_delete,
@@ -61,9 +60,6 @@ def guest_firewall(request, object_type: str, vmid: int):
 
 
 def guest_firewall_options(request, object_type, vmid):
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
-    if disabled:
-        return disabled
     detail = _require_guest(object_type, vmid)
     data = {"enable": "1" if request.POST.get("enable") == "on" else "0"}
     for key in ("policy_in", "policy_out"):
@@ -77,9 +73,6 @@ def guest_firewall_options(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_firewall_rule_add(request, object_type, vmid):
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
-    if disabled:
-        return disabled
     detail = _require_guest(object_type, vmid)
     data = {
         "type": request.POST.get("type", "in"),
@@ -97,9 +90,6 @@ def guest_firewall_rule_add(request, object_type, vmid):
 @require_POST
 @app_login_required
 def guest_firewall_rule_delete(request, object_type, vmid, pos):
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
-    if disabled:
-        return disabled
     detail = _require_guest(object_type, vmid)
     _d, err = _guest_delete(detail, f"firewall/rules/{pos}")
     return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.rule_delete", {"pos": pos})
@@ -108,9 +98,6 @@ def guest_firewall_rule_delete(request, object_type, vmid, pos):
 @require_POST
 @app_login_required
 def guest_firewall_rule_toggle(request, object_type, vmid, pos):
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_firewall")
-    if disabled:
-        return disabled
     detail = _require_guest(object_type, vmid)
     enable = "1" if request.POST.get("enable") == "1" else "0"
     _d, err = _guest_put(detail, f"firewall/rules/{pos}", {"enable": enable})

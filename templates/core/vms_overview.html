@@ -5,7 +5,6 @@
   <section
     class="vm-overview-page"
     data-vm-overview
-    data-vm-write-enabled="{{ guest_write_enabled|yesno:'true,false' }}"
     data-vm-agent-info-url="{% url 'core:vms_overview_agent_info' %}"
     data-vm-snapshot-info-url="{% url 'core:vms_overview_snapshot_info' %}"
     data-vm-status-url="{% url 'core:vms_status' %}"

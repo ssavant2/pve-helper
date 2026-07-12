@@ -1,3 +1,16 @@
+import { initConsolePages } from "./console.js";
+import { initBackupRestoreForms, initContextMenu, initGuestActionForms, initSoftNavigation } from "./guest-actions.js";
+import { initHardwareEditor } from "./hardware.js";
+import { initRecentTasks } from "./recent-tasks.js";
+import { initVmRegister } from "./register.js";
+import {
+  initAuditExportDialog,
+  initAutoSubmitForms,
+  initConfirmForms,
+  initScanActions,
+  initScheduledRuns,
+  initScheduledTaskForms,
+} from "./scheduling.js";
 import {
   applyGuestNameStyle,
   applyIpVersionStyle,
@@ -5,51 +18,40 @@ import {
   applyTaskbarState,
   applyTheme,
   createIcons,
-  initAuditExportDialog,
-  initAutoSubmitForms,
-  initBackupRestoreForms,
-  initColumnPickers,
-  initConfirmedFileActions,
-  initConfirmForms,
-  initConsolePages,
-  initContextMenu,
-  initCopyButtons,
   initGlobalSearch,
-  initGuestActionForms,
-  initGuestAgentSummaries,
-  initGuestListFilter,
   initGuestNameToggle,
-  initHardwareEditor,
   initIpVersionToggle,
-  initNodeReload,
-  initRecentTasks,
-  initResizableColumns,
-  initScanActions,
-  initScheduledRuns,
-  initScheduledTaskForms,
   initSidebarControls,
-  initSoftNavigation,
-  initSortableTables,
-  initSpaceCharts,
-  initStorageFileManagers,
-  initSummaryCardPicker,
-  initSummaryCards,
-  initTableFilters,
   initTaskbarToggle,
   initThemeToggle,
   initTreeModules,
-  initVmOverviewAgentInfo,
-  initVmOverviewSelection,
-  initVmOverviewSnapshotInfo,
-  initVmRegister,
-  initVmStatusRefresh,
   preferredGuestNameStyle,
   preferredIpVersionStyle,
   preferredTheme,
   sidebarCollapsedKey,
   sortGuestList,
   taskbarKey,
-} from "./main.js";
+} from "./shell.js";
+import { initConfirmedFileActions, initStorageFileManagers } from "./storage-browser.js";
+import {
+  initColumnPickers,
+  initCopyButtons,
+  initGuestListFilter,
+  initNodeReload,
+  initResizableColumns,
+  initSortableTables,
+  initSpaceCharts,
+  initSummaryCardPicker,
+  initSummaryCards,
+  initTableFilters,
+} from "./tables.js";
+import {
+  initGuestAgentSummaries,
+  initVmOverviewAgentInfo,
+  initVmOverviewSelection,
+  initVmOverviewSnapshotInfo,
+  initVmStatusRefresh,
+} from "./vm-overview.js";
 
 const initPage = (root = document) => {
   initHardwareEditor(root);

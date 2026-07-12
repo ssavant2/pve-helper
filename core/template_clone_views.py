@@ -19,8 +19,6 @@ def _json_result(ok: bool, error: str = "") -> JsonResponse:
 def clone_guest_to_template(request, object_type: str, vmid: int):
     if not request.user.is_authenticated:
         return _json_result(False, "Authentication required.")
-    if not settings.VM_WRITE_ENABLED:
-        return _json_result(False, "VM/CT write actions are disabled.")
     if object_type != ProxmoxInventory.ObjectType.VM:
         return _json_result(False, "Only VMs can be cloned to a template.")
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_audit_guest,_backup_error,_delete_all_guest_snapshots,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_nic_bridges,_guest_post_with_client,_parse_guest_target_value,_queue_guest_backup_restore,_require_guest,_restore_archive_from_key,_restore_options,_snapshot_error,_submit_guest_backup,_vm_write_disabled_redirect,_wants_task_json)
+from ._core import (_audit_guest,_backup_error,_delete_all_guest_snapshots,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_nic_bridges,_guest_post_with_client,_parse_guest_target_value,_queue_guest_backup_restore,_require_guest,_restore_archive_from_key,_restore_options,_snapshot_error,_submit_guest_backup,_wants_task_json)
 
 
 @require_POST
@@ -11,9 +11,6 @@ def guest_power(request, object_type: str, vmid: int):
     def result(error_label: str = ""):
         return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_summary")
 
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_summary")
-    if disabled:
-        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     action = request.POST.get("action", "")
     if action not in GUEST_POWER_ACTIONS:
@@ -40,9 +37,6 @@ def guest_snapshot_create(request, object_type: str, vmid: int):
     def result(error_label: str = ""):
         return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
 
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
-    if disabled:
-        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     name = request.POST.get("snapname", "").strip()
     if not name:
@@ -74,9 +68,6 @@ def guest_snapshot_delete(request, object_type: str, vmid: int, snapname: str):
     def result(error_label: str = ""):
         return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
 
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
-    if disabled:
-        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     running_event = _audit_guest(request, detail, "guest.snapshot.delete", {"snapshot": snapname}, outcome="running")
     response, err, client = _guest_delete_with_client(detail, f"snapshot/{quote(snapname, safe='')}")
@@ -96,9 +87,6 @@ def guest_snapshot_delete_all(request, object_type: str, vmid: int):
     def result(error_label: str = ""):
         return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
 
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
-    if disabled:
-        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     running_event = _audit_guest(request, detail, "guest.snapshot.delete_all", outcome="running")
     deleted, err = _delete_all_guest_snapshots(detail)
@@ -118,9 +106,6 @@ def guest_snapshot_rollback(request, object_type: str, vmid: int, snapname: str)
     def result(error_label: str = ""):
         return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
 
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_snapshots")
-    if disabled:
-        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     running_event = _audit_guest(request, detail, "guest.snapshot.rollback", {"snapshot": snapname}, outcome="running")
     response, err, client = _guest_post_with_client(detail, f"snapshot/{quote(snapname, safe='')}/rollback")
@@ -140,9 +125,6 @@ def guest_backup_now(request, object_type, vmid):
     def result(error_label: str = ""):
         return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_backup")
 
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_backup")
-    if disabled:
-        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     response, err, client, audit_details = _submit_guest_backup(request, detail)
     running_event = _audit_guest(request, detail, "guest.backup.run", audit_details, outcome="running")
@@ -169,9 +151,6 @@ def guest_backup_delete(request, object_type, vmid):
     def result(error_label: str = ""):
         return _guest_action_response(request, object_type, vmid, error_label, redirect_name="core:guest_backup")
 
-    disabled = _vm_write_disabled_redirect(request, object_type, vmid, "core:guest_backup")
-    if disabled:
-        return result("VM/CT writes are disabled.") if _wants_task_json(request) else disabled
     detail = _require_guest(object_type, vmid)
     volid = request.POST.get("volid", "").strip()
     storage = request.POST.get("storage", "").strip()
@@ -206,9 +185,6 @@ def guest_backup_delete(request, object_type, vmid):
 
 @app_login_required
 def guest_backup_restore(request):
-    if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "VM/CT restore is disabled (VM_WRITE_ENABLED is off).")
-        return redirect("core:vms")
     archives, nodes, storage_options, nextid = _restore_options()
     restore_error = ""
     selected_archive_key = request.POST.get("archive_key", "") if request.method == "POST" else request.GET.get("archive", "")
@@ -279,8 +255,6 @@ def guest_backup_restore(request):
 def guest_bulk_nics(request):
     """Per-guest NIC bridges for a set of guests, for the bulk-migrate network
     preflight (which guests would land without a network on the target node)."""
-    if not settings.VM_WRITE_ENABLED:
-        return JsonResponse({"error": "VM/CT writes are disabled."}, status=403)
     guests: list[dict] = []
     for value in request.POST.getlist("guest"):
         object_type, vmid, node = _parse_guest_target_value(value)

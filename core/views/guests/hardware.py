@@ -118,9 +118,6 @@ def _hotplug_options(config: dict) -> list[dict]:
 def guest_hardware_edit(request, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "VM/CT editing is disabled (VM_WRITE_ENABLED is off).")
-        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
 
     detail = _resolve_guest_detail(object_type, vmid)
     if not detail.found:
@@ -848,9 +845,6 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
 def guest_edit(request, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "VM/CT editing is disabled (VM_WRITE_ENABLED is off).")
-        return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
 
     detail = _resolve_guest_detail(object_type, vmid)
     if not detail.found:

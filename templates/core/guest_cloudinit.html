@@ -2,10 +2,8 @@
 
 {% block guest_content %}
   <section class="storage-tab-content">
-    {% if not has_cloudinit and not guest_write_enabled %}
-      <div class="panel"><p class="muted panel-empty-note">This guest has no Cloud-Init configuration or drive.</p></div>
-    {% else %}
-      {% if guest_write_enabled %}
+
+
         <div class="panel panel-spaced guest-edit-panel">
           <div class="panel-heading"><h2>Edit Cloud-Init</h2></div>
           <form method="post" action="{% url 'core:guest_cloudinit_edit' guest.object_type guest.vmid %}">
@@ -21,8 +19,8 @@
             <div class="form-actions"><button class="primary-action" type="submit">Save Cloud-Init</button></div>
           </form>
         </div>
-      {% endif %}
-    {% endif %}
+
+
     {% if has_cloudinit %}
       <div class="panel panel-spaced">
         <div class="panel-heading"><h2>Cloud-Init</h2></div>

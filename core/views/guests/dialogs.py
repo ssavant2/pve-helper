@@ -84,8 +84,6 @@ def guest_backup_options(request, object_type: str, vmid: int):
 
 @app_login_required
 def guest_migrate_options(request, object_type: str, vmid: int):
-    if not settings.VM_WRITE_ENABLED:
-        return JsonResponse({"error": "VM/CT writes are disabled."}, status=403)
     detail = _require_guest(object_type, vmid)
     is_vm = detail.object_type == ProxmoxInventory.ObjectType.VM
     content = "images" if is_vm else "rootdir"
@@ -227,8 +225,6 @@ def guest_migrate_options(request, object_type: str, vmid: int):
 
 @app_login_required
 def guest_clone_options(request, object_type: str, vmid: int):
-    if not settings.VM_WRITE_ENABLED:
-        return JsonResponse({"error": "VM/CT writes are disabled."}, status=403)
     detail = _require_guest(object_type, vmid)
     nextid = ""
     storages: list[str] = []
@@ -280,8 +276,6 @@ def guest_clone_options(request, object_type: str, vmid: int):
 
 @app_login_required
 def guest_pool_options(request, object_type: str, vmid: int):
-    if not settings.VM_WRITE_ENABLED:
-        return JsonResponse({"error": "VM/CT writes are disabled."}, status=403)
     detail = _require_guest(object_type, vmid)
     for client in common.configured_clients():
         try:

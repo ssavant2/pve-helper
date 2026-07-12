@@ -94,9 +94,6 @@ def _params_from_post(post, node: str) -> dict:
 
 @app_login_required
 def register_vm(request):
-    if not settings.VM_WRITE_ENABLED:
-        messages.error(request, "VM creation is disabled (VM_WRITE_ENABLED is off).")
-        return redirect("core:vms")
 
     src = request.POST if request.method == "POST" else request.GET
     mode = src.get("mode", "")

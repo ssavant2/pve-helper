@@ -15,12 +15,6 @@ def vms_bulk_action(request):
             return JsonResponse({"ok": ok and not errors, "errors": errors or []})
         return None
 
-    if not settings.VM_WRITE_ENABLED:
-        response = done(False, ["VM/CT write actions are disabled."])
-        if response:
-            return response
-        return redirect("core:vms_overview")
-
     action = request.POST.get("bulk_action", "").strip()
     targets = request.POST.getlist("guest")
     if action not in VM_BULK_ACTIONS:

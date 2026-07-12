@@ -10,7 +10,7 @@
         </div>
       </div>
       {% if fw_error %}<p class="panel-meta"><span class="badge failed">Error</span> {{ fw_error }}</p>{% endif %}
-      {% if guest_write_enabled %}
+
         <form class="fw-options-form" method="post" action="{% url 'core:guest_firewall_options' guest.object_type guest.vmid %}">
           {% csrf_token %}
           <label class="hw-inline"><input type="checkbox" name="enable" {% if fw_enabled %}checked{% endif %}> Firewall enabled</label>
@@ -30,17 +30,13 @@
           </label>
           <button class="secondary-action" type="submit">Save options</button>
         </form>
-      {% else %}
-        <dl class="details-list">
-          {% for row in fw_options %}<div><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>{% endfor %}
-        </dl>
-      {% endif %}
+
     </div>
 
     <div class="panel panel-spaced">
       <div class="panel-heading"><h2>Rules <span class="muted">({{ fw_rules|length }})</span></h2></div>
       <table class="data-table compact">
-        <thead><tr><th>#</th><th>Type</th><th>Action</th><th>Source</th><th>Dest</th><th>Proto</th><th>Dport</th><th>On</th><th>Comment</th>{% if guest_write_enabled %}<th></th>{% endif %}</tr></thead>
+        <thead><tr><th>#</th><th>Type</th><th>Action</th><th>Source</th><th>Dest</th><th>Proto</th><th>Dport</th><th>On</th><th>Comment</th><th></th></tr></thead>
         <tbody>
           {% for rule in fw_rules %}
             <tr>
@@ -53,7 +49,7 @@
               <td>{{ rule.dport|default:"-" }}</td>
               <td>{% if rule.enable %}Yes{% else %}No{% endif %}</td>
               <td>{{ rule.comment|default:"-" }}</td>
-              {% if guest_write_enabled %}
+
                 <td class="row-actions">
                   <form class="inline-action-form" method="post" action="{% url 'core:guest_firewall_rule_toggle' guest.object_type guest.vmid rule.pos %}">
                     {% csrf_token %}<input type="hidden" name="enable" value="{% if rule.enable %}0{% else %}1{% endif %}">
@@ -64,14 +60,14 @@
                     <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
                   </form>
                 </td>
-              {% endif %}
+
             </tr>
           {% empty %}
-            <tr><td colspan="{% if guest_write_enabled %}10{% else %}9{% endif %}" class="empty-state">No firewall rules on this guest.</td></tr>
+            <tr><td colspan="10" class="empty-state">No firewall rules on this guest.</td></tr>
           {% endfor %}
         </tbody>
       </table>
-      {% if guest_write_enabled %}
+
         <form class="fw-add-rule" method="post" action="{% url 'core:guest_firewall_rule_add' guest.object_type guest.vmid %}">
           {% csrf_token %}
           <select name="type"><option value="in">in</option><option value="out">out</option></select>
@@ -83,7 +79,7 @@
           <input type="text" name="comment" placeholder="comment">
           <button class="secondary-action" type="submit">Add rule</button>
         </form>
-      {% endif %}
+
     </div>
   </section>
 {% endblock %}

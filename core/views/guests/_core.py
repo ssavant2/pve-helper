@@ -394,7 +394,6 @@ def _vms_workspace_context(active_nav: str) -> dict:
         "inventory_scan_at": scan_at,
         "live_inventory_cache_seconds": LIVE_GUEST_INVENTORY_CACHE_SECONDS,
         "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS,
-        "guest_write_enabled": settings.VM_WRITE_ENABLED,
         "active_object_type": "",
         "active_vmid": None,
     }
@@ -1274,15 +1273,6 @@ def _require_guest(object_type: str, vmid: int, *, node: str = "") -> SimpleName
     if not detail.found:
         raise Http404("Guest not found")
     return detail
-
-
-def _vm_write_disabled_redirect(request, object_type: str, vmid: int, redirect_name: str):
-    if object_type not in GUEST_OBJECT_TYPES:
-        raise Http404("Unknown guest type")
-    if settings.VM_WRITE_ENABLED:
-        return None
-    messages.error(request, "VM/CT write actions are disabled (VM_WRITE_ENABLED is off).")
-    return redirect(redirect_name, object_type=object_type, vmid=vmid)
 
 
 def _guest_kind(detail: SimpleNamespace) -> str:
@@ -2334,7 +2324,6 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         "guest_tags": parse_guest_tags(detail.config),
         "guest_tabs": _guest_tabs(detail, active_tab),
         "active_guest_tab": active_tab,
-        "guest_write_enabled": settings.VM_WRITE_ENABLED,
         "guest_list": guest_list,
         "live_available": live_available,
         "inventory_scan_at": scan_at,

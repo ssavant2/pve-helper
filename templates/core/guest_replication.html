@@ -6,7 +6,7 @@
       <div class="panel-heading"><h2>Replication Jobs</h2></div>
       {% if replication_error %}<p class="panel-meta"><span class="badge failed">Error</span> {{ replication_error }}</p>{% endif %}
       <table class="data-table compact">
-        <thead><tr><th>Job</th><th>Target</th><th>Schedule</th><th>Rate</th><th>State</th><th>Comment</th>{% if guest_write_enabled %}<th></th>{% endif %}</tr></thead>
+        <thead><tr><th>Job</th><th>Target</th><th>Schedule</th><th>Rate</th><th>State</th><th>Comment</th><th></th></tr></thead>
         <tbody>
           {% for job in replication_jobs %}
             <tr>
@@ -16,21 +16,21 @@
               <td>{{ job.rate|default:"-" }}</td>
               <td>{% if job.disabled %}<span class="badge">Disabled</span>{% else %}<span class="badge completed">Enabled</span>{% endif %}</td>
               <td>{{ job.comment|default:"-" }}</td>
-              {% if guest_write_enabled %}
+
                 <td class="row-actions">
                   <form class="inline-action-form" method="post" action="{% url 'core:guest_replication_delete' guest.object_type guest.vmid %}" onsubmit="return confirm('Delete replication job {{ job.id|escapejs }}?');">
                     {% csrf_token %}<input type="hidden" name="job_id" value="{{ job.id }}">
                     <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
                   </form>
                 </td>
-              {% endif %}
+
             </tr>
           {% empty %}
-            <tr><td colspan="{% if guest_write_enabled %}7{% else %}6{% endif %}" class="empty-state">No replication jobs for this guest.</td></tr>
+            <tr><td colspan="7" class="empty-state">No replication jobs for this guest.</td></tr>
           {% endfor %}
         </tbody>
       </table>
-      {% if guest_write_enabled %}
+
         {% if target_nodes %}
           <form class="snapshot-form" method="post" action="{% url 'core:guest_replication_create' guest.object_type guest.vmid %}">
             {% csrf_token %}
@@ -45,7 +45,7 @@
         {% else %}
           <p class="panel-meta muted">Replication needs a second node with ZFS as a target &mdash; none available on this single-node cluster.</p>
         {% endif %}
-      {% endif %}
+
     </div>
   </section>
 {% endblock %}

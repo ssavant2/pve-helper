@@ -1,7 +1,7 @@
 <div class="panel panel-spaced" data-snapshot-list-panel>
   <div class="panel-heading">
     <h2>Snapshots <span class="muted">({{ snapshot_count }})</span></h2>
-    {% if guest_write_enabled and snapshot_count %}
+    {% if snapshot_count %}
       <form method="post" action="{% url 'core:guest_snapshot_delete_all' guest.object_type guest.vmid %}" data-guest-action-form data-action="delete_snapshots" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete all {{ snapshot_count }} snapshots for this guest? This cannot be undone.">
         {% csrf_token %}
         <button class="secondary-action danger" type="submit">Delete all</button>
@@ -11,7 +11,7 @@
   {% if snapshot_error %}<p class="panel-meta"><span class="badge failed">Unavailable</span> {{ snapshot_error }}</p>{% endif %}
   <table class="data-table compact snapshot-tree">
     <thead>
-      <tr><th>Name</th><th>RAM</th><th>Date / Status</th><th>Description</th>{% if guest_write_enabled %}<th aria-label="Actions"></th>{% endif %}</tr>
+      <tr><th>Name</th><th>RAM</th><th>Date / Status</th><th>Description</th><th aria-label="Actions"></th></tr>
     </thead>
     <tbody>
       {% for snap in snapshot_tree %}
@@ -34,7 +34,7 @@
             {% endif %}
           </td>
           <td>{{ snap.description|default:"" }}</td>
-          {% if guest_write_enabled %}
+
             <td class="row-actions">
               {% if not snap.is_current %}
                 <form class="inline-action-form" method="post" action="{% url 'core:guest_snapshot_rollback' guest.object_type guest.vmid snap.name %}" data-guest-action-form data-action="snapshot_rollback" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Roll back to snapshot {{ snap.name }}? Current state will be lost.">
@@ -47,10 +47,10 @@
                 </form>
               {% endif %}
             </td>
-          {% endif %}
+
         </tr>
       {% empty %}
-        <tr><td colspan="{% if guest_write_enabled %}5{% else %}4{% endif %}" class="empty-state">No snapshots.</td></tr>
+        <tr><td colspan="5" class="empty-state">No snapshots.</td></tr>
       {% endfor %}
     </tbody>
   </table>

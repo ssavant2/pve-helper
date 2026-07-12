@@ -204,11 +204,6 @@ TRUENAS_VM_EXPORT = env("TRUENAS_VM_EXPORT", "")
 TRUENAS_FS_CONTAINER_PATH = env("TRUENAS_FS_CONTAINER_PATH", "/storages/truenas-fs")
 TRUENAS_VM_CONTAINER_PATH = env("TRUENAS_VM_CONTAINER_PATH", "/storages/truenas-vm")
 STORAGE_WRITE_ENABLED = env_bool("STORAGE_WRITE_ENABLED", True)
-# Master gate for all guest (VM/CT) writes in the VM view: card/hardware edits,
-# create, clone, destroy, power, snapshots, firewall, backup, replication, and
-# cloud-init. On by default like the other write gates; needs the Proxmox token
-# to hold the relevant VM.* privileges (otherwise the writes fail with a 403).
-VM_WRITE_ENABLED = env_bool("VM_WRITE_ENABLED", True)
 CONSOLE_ENABLED = env_bool("CONSOLE_ENABLED", True)
 CONSOLE_SESSION_TTL_SECONDS = env_int("CONSOLE_SESSION_TTL_SECONDS", 30)
 CONSOLE_CONNECT_TIMEOUT_SECONDS = env_int("CONSOLE_CONNECT_TIMEOUT_SECONDS", 10)
