@@ -102,6 +102,15 @@ DATABASES = {
     }
 }
 
+# Dev-only escape hatch: a throwaway SQLite file needing no Postgres server or
+# CREATEDB role. Used by the Playwright E2E stack (docker-compose.tools.yml).
+# Never set DB_ENGINE=sqlite in production — the deploy compose does not.
+if env("DB_ENGINE", "") == "sqlite":
+    DATABASES["default"] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": env("DB_NAME", "/tmp/e2e/db.sqlite3"),
+    }
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},

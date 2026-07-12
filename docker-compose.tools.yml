@@ -22,3 +22,39 @@ services:
       NPM_CONFIG_UPDATE_NOTIFIER: "false"
     volumes:
       - .:/workspace
+
+  # --- Dev-only Playwright E2E stack. Isolated + prod-safe: uses the app image
+  # with APP_REQUIRE_LOGIN off, PVE network disabled and a throwaway SQLite DB, so
+  # it needs no login, no Proxmox and no Postgres role. None of this ships in the
+  # deployed image (docker-compose.yml + Dockerfile never reference it).
+  # Run: docker compose -f docker-compose.tools.yml run --rm e2e
+  e2e-web:
+    image: pve-helper:local
+    environment:
+      DEBUG: "true"
+      APP_REQUIRE_LOGIN: "false"
+      PVE_TEST_NETWORK_DISABLED: "true"
+      PVE_ENDPOINTS: ""
+      DB_ENGINE: sqlite
+      DB_NAME: /tmp/e2e/db.sqlite3
+      APP_SECRET_KEY: e2e-not-a-secret
+      ALLOWED_HOSTS: "e2e-web,localhost,127.0.0.1"
+    command: sh -lc "mkdir -p /tmp/e2e && python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/vms/overview/')"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.49.1-noble
+    working_dir: /workspace/e2e
+    environment:
+      BASE_URL: http://e2e-web:8000
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    command: sh -lc "npm install --no-audit --no-fund && npx playwright test"
+    volumes:
+      - .:/workspace
+    depends_on:
+      e2e-web:
+        condition: service_healthy

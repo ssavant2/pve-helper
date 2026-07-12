@@ -24,3 +24,6 @@ venv/
 dist/
 build/
 *.egg-info/
+
+# Dev-only Playwright E2E — never in the app image
+e2e/
