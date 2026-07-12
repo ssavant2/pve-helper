@@ -3400,7 +3400,15 @@
       form.dataset.actionFormInit = "true";
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) {
+        if (
+          form.dataset.confirm &&
+          !(await openConfirmDialog({
+            title: "Confirm action",
+            body: `<p>${escapeHtml(form.dataset.confirm)}</p>`,
+            confirmLabel: "Confirm",
+            danger: true,
+          }))
+        ) {
           return;
         }
         const pending = createPendingGuestFormTask(form);
@@ -3784,6 +3792,43 @@
     }
     return dialog;
   };
+
+  // Shared confirm/consequence dialog. Returns a Promise<boolean> so it drops in
+  // for window.confirm inside async handlers: `if (!(await openConfirmDialog(...)))
+  // return;`. `body` is trusted HTML — escape any user/DB text before passing it.
+  const openConfirmDialog = ({ title = "Please confirm", body = "", confirmLabel = "Confirm", danger = false }) =>
+    new Promise((resolve) => {
+      const dialog = ensureVmActionDialog();
+      let decided = false;
+      dialog.innerHTML = `
+        <div class="vm-action-dialog-form">
+          <div class="vm-action-dialog-heading">
+            <h2>${escapeHtml(title)}</h2>
+            <button type="button" data-confirm-dismiss aria-label="Close">×</button>
+          </div>
+          <div class="vm-action-dialog-body">${body}</div>
+          <div class="form-actions">
+            <button class="primary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>
+            <button class="secondary-action" type="button" data-confirm-no>Cancel</button>
+          </div>
+        </div>
+      `;
+      const finish = (result) => {
+        if (decided) {
+          return;
+        }
+        decided = true;
+        resolve(result);
+        dialog.close();
+      };
+      dialog.querySelector("[data-confirm-yes]")?.addEventListener("click", () => finish(true));
+      dialog.querySelector("[data-confirm-no]")?.addEventListener("click", () => finish(false));
+      dialog.querySelector("[data-confirm-dismiss]")?.addEventListener("click", () => finish(false));
+      dialog.addEventListener("close", () => finish(false), { once: true });
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      }
+    });
 
   // Issue an ungraceful hard stop for one guest straight from the taskbar (used
   // by the force-stop follow-up on a timed-out graceful shutdown). POSTs the same
