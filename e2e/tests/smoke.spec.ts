@@ -48,7 +48,12 @@ test("CSS layers load in the intended cascade order", async ({ page }) => {
   const hrefs = await page.locator('link[rel="stylesheet"]').evaluateAll((links) => links.map((link) => link.href));
   const paths = hrefs.map((href) => new URL(href).pathname);
 
-  expect(paths).toEqual(["/static/css/app/foundation.css", "/static/css/app/layout.css", "/static/css/app.css"]);
+  expect(paths).toEqual([
+    "/static/css/app/foundation.css",
+    "/static/css/app/layout.css",
+    "/static/css/app/topbar.css",
+    "/static/css/app.css",
+  ]);
 
   for (const href of hrefs) {
     const response = await page.request.get(href);
