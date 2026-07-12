@@ -1,3 +1,3 @@
-import { initShell } from "./app/main.js";
+import { initShell } from "./app/bootstrap.js";
 
 initShell();

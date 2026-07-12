@@ -8341,7 +8341,7 @@ const initPage = (root = document) => {
   createIcons();
 };
 
-const initShell = () => {
+const _initShell = () => {
   applyTheme(preferredTheme());
   applyGuestNameStyle(preferredGuestNameStyle());
   applyIpVersionStyle(preferredIpVersionStyle());
@@ -8369,4 +8369,56 @@ const initShell = () => {
   initRecentTasks();
 };
 
-export { initShell };
+export {
+  applyGuestNameStyle,
+  applyIpVersionStyle,
+  applySidebarState,
+  applyTaskbarState,
+  applyTheme,
+  createIcons,
+  initAuditExportDialog,
+  initAutoSubmitForms,
+  initBackupRestoreForms,
+  initColumnPickers,
+  initConfirmedFileActions,
+  initConfirmForms,
+  initConsolePages,
+  initContextMenu,
+  initCopyButtons,
+  initGlobalSearch,
+  initGuestActionForms,
+  initGuestAgentSummaries,
+  initGuestListFilter,
+  initGuestNameToggle,
+  initHardwareEditor,
+  initIpVersionToggle,
+  initNodeReload,
+  initRecentTasks,
+  initResizableColumns,
+  initScanActions,
+  initScheduledRuns,
+  initScheduledTaskForms,
+  initSidebarControls,
+  initSoftNavigation,
+  initSortableTables,
+  initSpaceCharts,
+  initStorageFileManagers,
+  initSummaryCardPicker,
+  initSummaryCards,
+  initTableFilters,
+  initTaskbarToggle,
+  initThemeToggle,
+  initTreeModules,
+  initVmOverviewAgentInfo,
+  initVmOverviewSelection,
+  initVmOverviewSnapshotInfo,
+  initVmRegister,
+  initVmStatusRefresh,
+  ipVersionStyleKey,
+  preferredGuestNameStyle,
+  preferredIpVersionStyle,
+  preferredTheme,
+  sidebarCollapsedKey,
+  sortGuestList,
+  taskbarKey,
+};
