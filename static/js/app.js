@@ -1247,10 +1247,19 @@
     }
   };
 
-  const completeConfirmedFileAction = (form, { requiresRiskConfirmation, riskMessage }) => {
+  const completeConfirmedFileAction = async (form, { requiresRiskConfirmation, riskMessage }) => {
     const basicInput = form.querySelector('input[name="confirm_basic"]');
     const riskInput = form.querySelector('input[name="confirm_risk"]');
-    if (requiresRiskConfirmation && riskMessage && !window.confirm(`${riskMessage}\n\nAre you completely sure?`)) {
+    if (
+      requiresRiskConfirmation &&
+      riskMessage &&
+      !(await openConfirmDialog({
+        title: "Are you sure?",
+        body: `<p>${escapeHtml(riskMessage)}</p><p>Are you completely sure?</p>`,
+        confirmLabel: "Proceed",
+        danger: true,
+      }))
+    ) {
       return;
     }
     if (basicInput) {
@@ -1354,10 +1363,8 @@
         if (!selectedTarget) {
           return;
         }
-        const subject = options.selectedCount > 1 ? `${options.selectedCount} files` : options.currentPath;
-        if (!window.confirm(`Move ${subject} to ${selectedLabel}?`)) {
-          return;
-        }
+        // Selecting a destination and clicking the picker's own submit IS the
+        // confirmation; completeConfirmedFileAction still gates risky moves.
         moveInput.value = selectedTarget;
         dialog.close();
         completeConfirmedFileAction(form, options);
@@ -1469,7 +1476,7 @@
       }
 
       form.dataset.initialized = "true";
-      form.addEventListener("submit", (event) => {
+      form.addEventListener("submit", async (event) => {
         if (form.dataset.confirmed === "true") {
           return;
         }
@@ -1495,7 +1502,11 @@
 
         if (actionKind === "new-folder") {
           const folderInput = form.querySelector("[data-new-folder-input]");
-          const folderName = window.prompt("New folder name");
+          const folderName = await openInputDialog({
+            title: "New folder",
+            label: "Folder name",
+            confirmLabel: "Create",
+          });
           if (!folderName) {
             return;
           }
@@ -1504,12 +1515,14 @@
             return;
           }
           folderInput.value = folderName;
-          if (!window.confirm(`Create folder ${folderName}?`)) {
-            return;
-          }
         } else if (actionKind === "rename") {
           const renameInput = form.querySelector("[data-rename-input]");
-          const nextName = window.prompt(`New name for ${fileName}`, fileName);
+          const nextName = await openInputDialog({
+            title: "Rename",
+            label: `New name for ${fileName}`,
+            value: fileName,
+            confirmLabel: "Rename",
+          });
           if (!nextName || nextName === fileName) {
             return;
           }
@@ -1518,9 +1531,6 @@
             return;
           }
           renameInput.value = nextName;
-          if (!window.confirm(`Rename ${fileName} to ${nextName}?`)) {
-            return;
-          }
         } else if (actionKind === "move" || actionKind === "copy") {
           if (openDestPicker(form, actionKind, confirmationOptions)) {
             return;
@@ -1535,19 +1545,35 @@
               ? "Metadata preallocation allocates the QCOW2 map without zero-filling the whole virtual disk."
               : "Full preallocation writes out the whole virtual disk.";
           if (
-            !window.confirm(
-              `Inflate ${currentPath} to ${targetLabel}?\n\n${modeDescription}\n\nThe related VM/CT must be stopped. This can take a long time and requires enough free storage space.`
-            )
+            !(await openConfirmDialog({
+              title: "Inflate disk image",
+              body: `<p>Inflate <strong>${escapeHtml(currentPath)}</strong> to ${escapeHtml(targetLabel)}?</p><p>${escapeHtml(modeDescription)}</p><p>The related VM/CT must be stopped. This can take a long time and requires enough free storage space.</p>`,
+              confirmLabel: "Inflate",
+              danger: true,
+            }))
           ) {
             return;
           }
         } else if (actionKind === "purge") {
-          if (!window.confirm(`Permanently delete ${fileName}?\n\nThis cannot be undone.`)) {
+          if (
+            !(await openConfirmDialog({
+              title: "Permanently delete",
+              body: `<p>Permanently delete <strong>${escapeHtml(fileName)}</strong>?</p><p>This cannot be undone.</p>`,
+              confirmLabel: "Delete permanently",
+              danger: true,
+            }))
+          ) {
             return;
           }
         } else {
           const subject = selectedCount > 1 ? `${selectedCount} files` : fileName;
-          if (!window.confirm(`Move ${subject} to the Recycle Bin?`)) {
+          if (
+            !(await openConfirmDialog({
+              title: "Move to Recycle Bin",
+              body: `<p>Move <strong>${escapeHtml(subject)}</strong> to the Recycle Bin?</p>`,
+              confirmLabel: "Move to Recycle Bin",
+            }))
+          ) {
             return;
           }
         }
@@ -3830,6 +3856,50 @@
       }
     });
 
+  // Shared text-input dialog (Promise<string|null>) replacing window.prompt, so
+  // file naming flows can use the app dialog instead of a native browser prompt.
+  const openInputDialog = ({ title = "Enter a value", label = "", value = "", confirmLabel = "OK" }) =>
+    new Promise((resolve) => {
+      const dialog = ensureVmActionDialog();
+      let decided = false;
+      dialog.innerHTML = `
+        <form class="vm-action-dialog-form" method="dialog">
+          <div class="vm-action-dialog-heading">
+            <h2>${escapeHtml(title)}</h2>
+            <button type="button" data-input-dismiss aria-label="Close">×</button>
+          </div>
+          <label class="form-field">
+            ${label ? `<span>${escapeHtml(label)}</span>` : ""}
+            <input type="text" data-input-value autocomplete="off" value="${escapeHtml(value)}">
+          </label>
+          <div class="form-actions">
+            <button class="primary-action" type="submit">${escapeHtml(confirmLabel)}</button>
+            <button class="secondary-action" type="button" data-input-cancel>Cancel</button>
+          </div>
+        </form>
+      `;
+      const field = dialog.querySelector("[data-input-value]");
+      const finish = (result) => {
+        if (decided) {
+          return;
+        }
+        decided = true;
+        resolve(result);
+        dialog.close();
+      };
+      dialog.querySelector("form")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        finish((field?.value ?? "").trim() || null);
+      });
+      dialog.querySelector("[data-input-cancel]")?.addEventListener("click", () => finish(null));
+      dialog.querySelector("[data-input-dismiss]")?.addEventListener("click", () => finish(null));
+      dialog.addEventListener("close", () => finish(null), { once: true });
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      }
+      field?.focus();
+    });
+
   // Issue an ungraceful hard stop for one guest straight from the taskbar (used
   // by the force-stop follow-up on a timed-out graceful shutdown). POSTs the same
   // bulk "stop" action the overview uses, with an optimistic pending task.
@@ -5227,7 +5297,13 @@
         const cancelUrl = taskbar?.dataset.taskCancelUrl || "";
         const taskId = activeTaskRow.dataset.taskId || activeTaskRow.dataset.taskRowKey || "";
         if (action === "cancel-task" && cancelUrl && taskId) {
-          if (!window.confirm("Cancel this task?")) {
+          if (
+            !(await openConfirmDialog({
+              title: "Cancel task",
+              body: "<p>Cancel this task?</p>",
+              confirmLabel: "Cancel task",
+            }))
+          ) {
             menu.hidden = true;
             activeTaskRow = null;
             return;
@@ -5357,9 +5433,12 @@
         }
         if (
           action === "delete-snapshots" &&
-          !window.confirm(
-            `Delete all snapshots for ${targetRows.length} selected guest${targetRows.length === 1 ? "" : "s"}? This cannot be undone.`
-          )
+          !(await openConfirmDialog({
+            title: "Delete all snapshots",
+            body: `<p>Delete all snapshots for <strong>${targetRows.length}</strong> selected guest${targetRows.length === 1 ? "" : "s"}?</p><p>This cannot be undone.</p>`,
+            confirmLabel: "Delete all",
+            danger: true,
+          }))
         ) {
           menu.hidden = true;
           clearVmContextHighlights();
@@ -5367,9 +5446,12 @@
         }
         if (
           ["stop", "reset"].includes(action) &&
-          !window.confirm(
-            `${action === "reset" ? "Reset" : "Power off"} ${targetRows.length} selected guest${targetRows.length === 1 ? "" : "s"}?`
-          )
+          !(await openConfirmDialog({
+            title: action === "reset" ? "Reset guests" : "Power off guests",
+            body: `<p>${action === "reset" ? "Reset" : "Power off"} <strong>${targetRows.length}</strong> selected guest${targetRows.length === 1 ? "" : "s"}?</p>`,
+            confirmLabel: action === "reset" ? "Reset" : "Power off",
+            danger: true,
+          }))
         ) {
           menu.hidden = true;
           clearVmContextHighlights();
@@ -5377,7 +5459,11 @@
         }
         if (
           action === "template" &&
-          !window.confirm(`Convert ${targetRows.length} selected VM${targetRows.length === 1 ? "" : "s"} to template?`)
+          !(await openConfirmDialog({
+            title: "Convert to template",
+            body: `<p>Convert <strong>${targetRows.length}</strong> selected VM${targetRows.length === 1 ? "" : "s"} to template?</p>`,
+            confirmLabel: "Convert",
+          }))
         ) {
           menu.hidden = true;
           clearVmContextHighlights();
@@ -5385,9 +5471,11 @@
         }
         if (
           action === "hibernate" &&
-          !window.confirm(
-            `Hibernate ${targetRows.length} selected VM${targetRows.length === 1 ? "" : "s"}? State is saved to disk and the VM stops; Power On resumes it.`
-          )
+          !(await openConfirmDialog({
+            title: "Hibernate guests",
+            body: `<p>Hibernate <strong>${targetRows.length}</strong> selected VM${targetRows.length === 1 ? "" : "s"}?</p><p>State is saved to disk and the VM stops; Power On resumes it.</p>`,
+            confirmLabel: "Hibernate",
+          }))
         ) {
           menu.hidden = true;
           clearVmContextHighlights();
