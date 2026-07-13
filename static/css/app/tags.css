@@ -111,6 +111,19 @@ html[data-derived-tags="hidden"] [data-derived-tag] {
   color: var(--red);
 }
 
+.tag-assignment-error {
+  margin: 10px 12px 0;
+}
+
+.tag-assignment-action {
+  width: 52px;
+  text-align: right;
+}
+
+.tag-assignment-action form {
+  display: inline-flex;
+}
+
 .tag-chip {
   display: inline-flex;
   align-items: center;

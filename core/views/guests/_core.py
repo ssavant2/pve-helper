@@ -415,6 +415,13 @@ def _decorate_guest_tag_chips(rows) -> list[str]:
         registered = {}
     derived_colors = derived_color_map()
     user_tags = {name for name in registered if not name.startswith(DERIVED_PREFIX)}
+    latest_scan = _latest_proxmox_inventory_scan()
+    if latest_scan:
+        for config in ProxmoxInventory.objects.filter(
+            scan_run=latest_scan,
+            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+        ).values_list("config", flat=True):
+            user_tags.update(name for name in parse_guest_tags(config) if not name.startswith(DERIVED_PREFIX))
     for row in rows:
         row.derived_tag_chip = tag_chip(row.derived_type, registered, derived_colors)
         row.tag_chips = [tag_chip(name, registered, derived_colors) for name in row.tags]

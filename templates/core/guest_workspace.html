@@ -8,6 +8,7 @@
     data-vm-status-url="{% url 'core:vms_status' %}"
     data-vm-migrate-nics-url="{% url 'core:guest_bulk_nics' %}"
   >
+    {{ available_user_tags|json_script:"vm-overview-tag-options" }}
     <form method="post" action="{% url 'core:vms_bulk_action' %}" data-vm-bulk-form hidden>
       {% csrf_token %}
       <input type="hidden" name="bulk_action" data-vm-bulk-action>
@@ -58,12 +59,14 @@
              data-guest-lock="{{ g.lock }}"
              data-guest-label="{{ g.guest_identity.full_label_with_type }}"
              data-guest-name="{{ g.name }}"
+             data-guest-tags="{{ g.tags|join:';' }}"
              data-detail-url="{{ guest_sticky_url }}"
              data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
              data-backup-options-url="{% url 'core:guest_backup_options' g.object_type g.vmid %}"
              data-backup-url="{% url 'core:guest_backup' g.object_type g.vmid %}"
              data-clone-options-url="{% url 'core:guest_clone_options' g.object_type g.vmid %}"
              data-pool-options-url="{% url 'core:guest_pool_options' g.object_type g.vmid %}"
+             data-tag-options-url="{% url 'core:guest_tag_options' g.object_type g.vmid %}?node={{ g.node|urlencode }}"
              data-migrate-options-url="{% url 'core:guest_migrate_options' g.object_type g.vmid %}"
              data-edit-tags-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=tags"
              data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.object_type g.vmid %}"

@@ -362,7 +362,7 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         "force_stop_target": force_stop_target,
         "name": GUEST_TASK_NAMES.get(event.action, event.action),
         "target": event.object_id if event.action in TAG_TASK_ACTIONS else identity.full_label_with_type,
-        "target_guest": identity.as_dict(),
+        "target_guest": None if event.action in TAG_TASK_ACTIONS else identity.as_dict(),
         "status": status,
         "status_class": status_class,
         "details": extra or "-",

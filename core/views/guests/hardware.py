@@ -1058,3 +1058,19 @@ def _available_user_tags() -> list[str]:
     return sorted(name for name in names if not name.startswith(DERIVED_PREFIX))
 
 
+@app_login_required
+def guest_tag_options(request, object_type: str, vmid: int):
+    if object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    detail = _resolve_guest_detail(object_type, vmid, node=request.GET.get("node", "").strip())
+    if not detail.found:
+        raise Http404("Guest not found")
+    return JsonResponse(
+        {
+            "available_tags": _available_user_tags(),
+            "assigned_tags": [
+                name for name in parse_guest_tags(detail.config) if not name.startswith(DERIVED_PREFIX)
+            ],
+        }
+    )
+

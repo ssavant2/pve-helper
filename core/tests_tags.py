@@ -27,6 +27,7 @@ from core.services.tags import (
     serialize_tag_style,
     validate_tag,
 )
+from core.views.guests._core import _decorate_guest_tag_chips
 
 
 class TagServiceTests(TestCase):
@@ -70,6 +71,21 @@ class TagServiceTests(TestCase):
         self.assertEqual(rows["unused"].guest_count, 0)
         self.assertTrue(rows["pvehelper-vmtype-vm"].derived)
 
+    @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
+    def test_guest_tag_choices_include_tags_from_the_full_latest_scan(self, _registered):
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        ProxmoxInventory.objects.create(
+            scan_run=scan, node="pve1", object_type="vm", vmid=100, name="selected",
+            config={"tags": "prod"}, derived_type="pvehelper-vmtype-vm",
+        )
+        ProxmoxInventory.objects.create(
+            scan_run=scan, node="pve2", object_type="vm", vmid=200, name="other",
+            config={"tags": "qa"}, derived_type="pvehelper-vmtype-vm",
+        )
+        selected_row = SimpleNamespace(tags=["prod"], derived_type="pvehelper-vmtype-vm")
+
+        self.assertEqual(_decorate_guest_tag_chips([selected_row]), ["prod", "qa"])
+
     def test_reserved_real_tag_is_reported_separately_from_derived_membership(self):
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
@@ -107,6 +123,19 @@ class TagViewTests(TestCase):
         self.assertRedirects(response, reverse("core:tags_overview"), fetch_redirect_response=False)
         self.assertTrue(self.user.pve_helper_audit_events.filter(action="tag.registered").exists())
 
+    @patch("core.views.guests.hardware._available_user_tags", return_value=["prod", "qa"])
+    def test_guest_tag_options_uses_current_guest_config(self, _available):
+        detail = SimpleNamespace(found=True, config={"tags": "prod"})
+        with patch("core.views.guests.hardware._resolve_guest_detail", return_value=detail) as resolve:
+            response = self.client.get(
+                reverse("core:guest_tag_options", args=["vm", 100]),
+                {"node": "pve1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"available_tags": ["prod", "qa"], "assigned_tags": ["prod"]})
+        resolve.assert_called_once_with("vm", 100, node="pve1")
+
     @patch("core.views.tags.register_tag", return_value=({}, ""))
     def test_create_fetch_has_no_message_and_appears_in_recent_tasks(self, _register):
         response = self.client.post(
@@ -121,6 +150,7 @@ class TagViewTests(TestCase):
         task = next(item for item in recent_task_page(limit=20).tasks if item["action"] == "tag.registered")
         self.assertEqual(task["name"], "Create tag")
         self.assertEqual(task["target"], "quiet-tag")
+        self.assertIsNone(task["target_guest"])
         audit = self.client.get(reverse("core:audit_log"))
         self.assertContains(audit, "Create tag")
         self.assertNotContains(audit, "tag.registered")
@@ -134,6 +164,14 @@ class TagViewTests(TestCase):
         response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
         self.assertContains(response, "Assign objects")
         self.assertContains(response, other.name)
+
+    @patch("core.views.tags.registered_tags", return_value=({}, ""))
+    def test_detail_offers_per_guest_tag_removal_for_user_tags(self, _registered):
+        response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
+
+        self.assertContains(response, 'data-tag-unassign-form')
+        self.assertContains(response, 'name="tags_mode" value="remove"')
+        self.assertContains(response, 'name="guest" value="vm:100@pve1"')
 
     def test_derived_tag_color_is_stored_app_side(self):
         response = self.client.post(

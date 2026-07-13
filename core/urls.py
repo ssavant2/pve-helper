@@ -31,6 +31,7 @@ urlpatterns = [
     path("vms/<str:object_type>/<int:vmid>/clone-to-template/", clone_guest_to_template, name="guest_clone_to_template"),
     path("vms/<str:object_type>/<int:vmid>/backup-options/", views.guest_backup_options, name="guest_backup_options"),
     path("vms/<str:object_type>/<int:vmid>/pool-options/", views.guest_pool_options, name="guest_pool_options"),
+    path("vms/<str:object_type>/<int:vmid>/tag-options/", views.guest_tag_options, name="guest_tag_options"),
     path("vms/<str:object_type>/<int:vmid>/migrate-options/", views.guest_migrate_options, name="guest_migrate_options"),
     path("vms/<str:object_type>/<int:vmid>/edit/", views.guest_edit, name="guest_edit"),
     path("vms/<str:object_type>/<int:vmid>/hardware/edit/", views.guest_hardware_edit, name="guest_hardware_edit"),

@@ -1,4 +1,5 @@
-import { loadSoftNavigation } from "./guest-actions.js";
+import { loadSoftNavigation, openConfirmDialog } from "./guest-actions.js";
+import { escapeHtml } from "./shell.js";
 
 const initTags = (root = document) => {
   root.querySelectorAll("[data-derived-tags-toggle]").forEach((toggle) => {
@@ -108,6 +109,48 @@ const initTags = (root = document) => {
       newTag.value = newTag.value.toLowerCase().replaceAll(" ", "-");
     });
     render();
+  });
+
+  root.querySelectorAll("[data-tag-unassign-form]").forEach((unassignForm) => {
+    if (unassignForm.dataset.initialized === "true") return;
+    unassignForm.dataset.initialized = "true";
+    unassignForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const tag = unassignForm.dataset.tag || "tag";
+      const guest = unassignForm.dataset.guestLabel || "object";
+      const confirmed = await openConfirmDialog({
+        title: "Remove tag",
+        body: `<p>Remove <strong>${escapeHtml(tag)}</strong> from <strong>${escapeHtml(guest)}</strong>?</p>`,
+        confirmLabel: "Remove tag",
+        danger: true,
+      });
+      if (!confirmed) return;
+
+      const submit = unassignForm.querySelector('button[type="submit"]');
+      const error = root.querySelector("[data-tag-unassign-error]");
+      submit.disabled = true;
+      if (error) error.hidden = true;
+      try {
+        const response = await fetch(unassignForm.action, {
+          method: "POST",
+          body: new FormData(unassignForm),
+          headers: { Accept: "application/json", "X-Requested-With": "fetch" },
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error((payload.errors || [`HTTP ${response.status}`]).join("; "));
+        }
+        window.pveHelperRefreshRecentTasks?.();
+        await loadSoftNavigation(new URL(window.location.href), { push: false });
+      } catch (requestError) {
+        if (error) {
+          error.textContent = requestError.message || "Could not remove the tag from this object.";
+          error.hidden = false;
+        }
+      } finally {
+        submit.disabled = false;
+      }
+    });
   });
 
   const dialog = root.querySelector("[data-tag-assign-dialog]");

@@ -402,6 +402,7 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
         action === "untemplate" ||
         action === "pool" ||
         action === "tags" ||
+        action === "destroy" ||
         bulkMigrate
       ) {
         const finishedAt = new Date();
@@ -425,6 +426,10 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
         window.pveHelperRefreshRecentTasks?.();
         if (action === "tags") {
           await loadSoftNavigation(new URL(window.location.href), { push: false });
+        }
+        if (action === "destroy") {
+          const destination = window.location.pathname.startsWith("/vms/overview/") ? "/vms/overview/" : "/vms/";
+          await loadSoftNavigation(new URL(destination, window.location.origin));
         }
         if (bulkMigrate) {
           overview.burstVmStatusRefresh?.();
@@ -868,12 +873,45 @@ const tagChoicesForRows = (overview, rows, mode) => {
   if (mode === "remove") {
     return [...new Set(rows.flatMap(guestRowTags))].sort((left, right) => left.localeCompare(right));
   }
-  return availableGuestTags(overview);
+  return availableGuestTags(overview).filter((tag) => !rows.every((row) => guestRowTags(row).includes(tag)));
 };
 
-const openTagsDialog = (overview, rows, mode) => {
+const liveTagChoicesForRows = async (overview, rows, mode) => {
+  let loaded = false;
+  const available = new Set();
+  await Promise.all(
+    rows.map(async (row) => {
+      const url = row.dataset.tagOptionsUrl || "";
+      if (!url) return;
+      try {
+        const response = await fetch(new URL(url, window.location.origin), {
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) return;
+        const payload = await response.json();
+        const assigned = Array.isArray(payload.assigned_tags) ? payload.assigned_tags : [];
+        row.dataset.guestTags = assigned.join(";");
+        (Array.isArray(payload.available_tags) ? payload.available_tags : []).forEach((tag) => {
+          available.add(tag);
+        });
+        loaded = true;
+      } catch (_error) {
+        // Fall back to the rendered scan data if the live request fails.
+      }
+    })
+  );
+  if (!loaded) return tagChoicesForRows(overview, rows, mode);
+  if (mode === "remove") {
+    return [...new Set(rows.flatMap(guestRowTags))].sort((left, right) => left.localeCompare(right));
+  }
+  return [...available]
+    .filter((tag) => !rows.every((row) => guestRowTags(row).includes(tag)))
+    .sort((left, right) => left.localeCompare(right));
+};
+
+const openTagsDialog = async (overview, rows, mode) => {
   const adding = mode === "add";
-  const choices = tagChoicesForRows(overview, rows, mode);
+  const choices = await liveTagChoicesForRows(overview, rows, mode);
   const options = choices.map((tag) => `<option value="${escapeHtml(tag)}">${escapeHtml(tag)}</option>`).join("");
   openVmFormDialog({
     title: adding ? "Add Tags" : "Remove Tags",
@@ -881,9 +919,9 @@ const openTagsDialog = (overview, rows, mode) => {
     submitLabel: adding ? "Add" : "Remove",
     bodyHtml: `
         <label class="form-field">
-          <span>${adding ? "Existing tag" : "Assigned tag"}</span>
+          <span>${adding ? "Available tag" : "Assigned tag"}</span>
           <select name="tags_value" ${choices.length ? "" : "disabled"}>
-            ${options || `<option value="">${adding ? "No user tags are registered" : "No user tags are assigned"}</option>`}
+            ${options || `<option value="">${adding ? "No tags are available to add" : "No user tags are assigned"}</option>`}
           </select>
         </label>
       `,
@@ -1856,7 +1894,6 @@ const openVmContextMenu = (menu, row, event) => {
   const noLinkedClones = contextRows.every((item) => item.dataset.guestLinkedClone !== "true");
   const allAgentEnabled = contextRows.every((item) => item.dataset.guestAgentEnabled === "true");
   const allAgentDisabled = contextRows.every((item) => item.dataset.guestAgentEnabled !== "true");
-  const hasAssignedTags = contextRows.some((item) => guestRowTags(item).length > 0);
   const singleSelected = contextRows.length === 1;
   const writable = true;
 
@@ -1923,7 +1960,7 @@ const openVmContextMenu = (menu, row, event) => {
         <button type="button" class="context-menu-parent">Tags <span>›</span></button>
         <div class="context-menu-submenu-panel">
           <button type="button" data-vm-action="add-tags" ${writable ? "" : "disabled"}>Add Tags...</button>
-          <button type="button" data-vm-action="remove-tags" ${writable && hasAssignedTags ? "" : "disabled"}>Remove Tags...</button>
+          <button type="button" data-vm-action="remove-tags" ${writable ? "" : "disabled"}>Remove Tags...</button>
         </div>
       </div>
       <button type="button" data-vm-action="pool" ${writable ? "" : "disabled"}>Move to Pool...</button>
