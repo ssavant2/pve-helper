@@ -25,7 +25,7 @@ from .common import app_login_required, navigation_context, record_audit_event
 
 
 def _latest_scan():
-    return ScanRun.objects.filter(status=ScanRun.Status.COMPLETED).order_by("-created_at").first()
+    return common._latest_proxmox_inventory_scan()
 
 
 def _tag_context(*, selected: str = "") -> dict:

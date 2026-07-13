@@ -117,6 +117,16 @@ class TagViewTests(TestCase):
         response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
         self.assertContains(response, "vm-one")
 
+    @patch("core.views.tags.registered_tags", return_value=({}, ""))
+    def test_overview_ignores_newer_completed_scans_without_guest_inventory(self, _registered):
+        ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+
+        response = self.client.get(reverse("core:tags_overview"))
+
+        self.assertContains(response, "prod")
+        prod = next(row for row in response.context["tag_rows"] if row.name == "prod")
+        self.assertEqual(prod.guest_count, 1)
+
     @patch("core.views.tags.register_tag", return_value=({}, ""))
     def test_create_audits(self, _register):
         response = self.client.post(reverse("core:tag_create"), {"tag": "new-tag", "color": "#112233"})

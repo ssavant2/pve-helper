@@ -1048,7 +1048,7 @@ def _available_user_tags() -> list[str]:
         names.update(registered)
     except Exception:
         pass
-    scan = ScanRun.objects.filter(status=ScanRun.Status.COMPLETED).order_by("-created_at").first()
+    scan = common._latest_proxmox_inventory_scan()
     if scan:
         for config in ProxmoxInventory.objects.filter(
             scan_run=scan,
@@ -1073,4 +1073,3 @@ def guest_tag_options(request, object_type: str, vmid: int):
             ],
         }
     )
-
