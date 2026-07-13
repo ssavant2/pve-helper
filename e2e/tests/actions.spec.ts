@@ -116,6 +116,15 @@ test("successful destroy navigates away from the deleted guest summary", async (
 
 test("tag detail can remove the tag from one assigned object", async ({ page }) => {
   let submitted = "";
+  let detailLoads = 0;
+  let refreshWasCacheBusted = false;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/tags/detail/") {
+      detailLoads += 1;
+      refreshWasCacheBusted ||= url.searchParams.has("_tag_refresh");
+    }
+  });
   await page.route("**/vms/bulk-action/", async (route) => {
     if (route.request().method() === "POST") {
       submitted = route.request().postData() || "";
@@ -135,6 +144,8 @@ test("tag detail can remove the tag from one assigned object", async ({ page }) 
   expect(submitted).toMatch(/name="tags_mode"[\s\S]*remove/);
   expect(submitted).toMatch(/name="tags_value"[\s\S]*prod/);
   expect(submitted).toMatch(/name="guest"[\s\S]*vm:100@pve1/);
+  await expect.poll(() => detailLoads).toBeGreaterThanOrEqual(2);
+  expect(refreshWasCacheBusted).toBe(true);
 });
 
 test("Power Off on a running guest opens the shared confirm dialog", async ({ page }) => {

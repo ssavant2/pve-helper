@@ -9,15 +9,14 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from core.models import AuditEvent, DerivedTagStyle, ProxmoxInventory, ScanRun
+from core.models import AuditEvent, ProxmoxInventory, ScanRun
 from core.services.tag_actions import execute_tag_operation, prepare_tag_operation
 from core.services.integration_tokens import issue_token
+from core.services.proxmox import VerifiedGuestInventory, fetch_verified_guest_inventory
 from core.services.recent_tasks import recent_task_page
 from core.tasks import reap_stale_guest_tasks
 from core.services.tags import (
-    TagValidationError,
     RegisteredTag,
-    derived_tag_for,
     inventory_rows,
     join_tags,
     parse_color_map,
@@ -26,19 +25,15 @@ from core.services.tags import (
     parse_tags,
     serialize_color_map,
     serialize_tag_style,
-    validate_tag,
 )
 from core.views.guests._core import _decorate_guest_tag_chips, _guest_tab_context
+from core.views.tags import _tag_type_label
 
 
 class TagServiceTests(TestCase):
     def test_parse_join_lowercase_and_dedupe(self):
         self.assertEqual(parse_tags("Prod; web,PROD  db"), ["prod", "web", "db"])
         self.assertEqual(join_tags(["prod", "web", "prod"]), "prod;web")
-
-    def test_reserved_namespace_is_rejected(self):
-        with self.assertRaises(TagValidationError):
-            validate_tag("pvehelper-vmtype-vm")
 
     def test_registry_and_color_round_trip_preserves_style_options(self):
         options = {"registered-tags": ["prod", "web"], "tag-style": "shape=full,color-map=prod:112233:ffffff;web:aabbcc"}
@@ -55,50 +50,60 @@ class TagServiceTests(TestCase):
         )
         self.assertEqual(parsed["prod"].foreground, "ffffff")
 
-    def test_derived_precedence(self):
-        self.assertEqual(derived_tag_for(object_type="vm", is_template=True, is_linked_clone=True), "pvehelper-vmtype-template")
-        self.assertEqual(derived_tag_for(object_type="vm", is_linked_clone=True), "pvehelper-vmtype-linked-clone")
-        self.assertEqual(derived_tag_for(object_type="ct"), "pvehelper-vmtype-ct")
-
-    def test_inventory_includes_registered_unused_real_and_derived(self):
+    def test_inventory_includes_registered_unused_and_assigned_tags(self):
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
             scan_run=scan, node="pve1", object_type="vm", vmid=100, name="one",
-            config={"tags": "prod"}, derived_type="pvehelper-vmtype-vm",
+            config={"tags": "prod"},
         )
         registered = parse_registered_tags({"registered-tags": "prod;unused"})
         rows = {row.name: row for row in inventory_rows(scan, registered)}
         self.assertEqual(rows["prod"].guest_count, 1)
         self.assertEqual(rows["unused"].guest_count, 0)
-        self.assertTrue(rows["pvehelper-vmtype-vm"].derived)
 
     @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
     def test_guest_tag_choices_include_tags_from_the_full_latest_scan(self, _registered):
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
             scan_run=scan, node="pve1", object_type="vm", vmid=100, name="selected",
-            config={"tags": "prod"}, derived_type="pvehelper-vmtype-vm",
+            config={"tags": "prod"},
         )
         ProxmoxInventory.objects.create(
             scan_run=scan, node="pve2", object_type="vm", vmid=200, name="other",
-            config={"tags": "qa"}, derived_type="pvehelper-vmtype-vm",
+            config={"tags": "qa"},
         )
-        selected_row = SimpleNamespace(tags=["prod"], derived_type="pvehelper-vmtype-vm")
+        selected_row = SimpleNamespace(tags=["prod"])
 
         self.assertEqual(_decorate_guest_tag_chips([selected_row]), ["prod", "qa"])
 
-    def test_reserved_real_tag_is_reported_separately_from_derived_membership(self):
-        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-        ProxmoxInventory.objects.create(
-            scan_run=scan, node="pve1", object_type="vm", vmid=100,
-            config={"tags": "pvehelper-vmtype-ct"}, derived_type="pvehelper-vmtype-vm",
+    @patch("core.services.proxmox.configured_clients")
+    def test_verified_inventory_reports_partial_coverage_without_discarding_guests(self, clients):
+        class FakeClient:
+            def __init__(self, endpoint, response=None, error=None):
+                self.endpoint = endpoint
+                self.response = response
+                self.error = error
+
+            def get(self, path):
+                self.test_path = path
+                if self.error:
+                    raise self.error
+                return self.response
+
+        available = FakeClient(
+            "https://pve1:8006",
+            [{"node": "pve1", "type": "qemu", "vmid": 100, "name": "one", "tags": "prod"}],
         )
-        rows = {row.name: row for row in inventory_rows(scan, {})}
-        conflict = rows["pvehelper-vmtype-ct"]
-        self.assertTrue(conflict.namespace_conflict)
-        self.assertEqual(conflict.guest_count, 0)
-        self.assertEqual(len(conflict.conflicting_guests), 1)
-        self.assertTrue(conflict.derived)
+        unavailable = FakeClient("https://pve2:8006", error=RuntimeError("unavailable"))
+        clients.return_value = [available, unavailable]
+
+        result = fetch_verified_guest_inventory()
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.guests[0].tags, ("prod",))
+        self.assertEqual(result.successful_endpoints, ("https://pve1:8006",))
+        self.assertIn("https://pve2:8006", result.errors[0])
+        self.assertEqual(available.test_path, "cluster/resources?type=vm")
 
 
 class TagViewTests(TestCase):
@@ -108,13 +113,24 @@ class TagViewTests(TestCase):
         self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
             scan_run=self.scan, node="pve1", object_type="vm", vmid=100, name="vm-one",
-            config={"tags": "prod"}, derived_type="pvehelper-vmtype-vm",
+            config={"tags": "prod"},
         )
+
+    def test_tag_detail_type_labels_are_plain_object_types(self):
+        vm = SimpleNamespace(object_type="vm", vmid=100, config={})
+        template = SimpleNamespace(object_type="vm", vmid=101, config={"template": "1"})
+        clone = SimpleNamespace(object_type="vm", vmid=102, config={})
+        ct = SimpleNamespace(object_type="ct", vmid=103, config={})
+
+        self.assertEqual(_tag_type_label(vm, {102}), "vm")
+        self.assertEqual(_tag_type_label(template, {102}), "template")
+        self.assertEqual(_tag_type_label(clone, {102}), "linked clone")
+        self.assertEqual(_tag_type_label(ct, {102}), "ct")
 
     @patch("core.views.tags.registered_tags", return_value=({}, ""))
     def test_overview_and_detail_render(self, _registered):
         response = self.client.get(reverse("core:tags_overview"))
-        self.assertContains(response, "pvehelper-vmtype-vm")
+        self.assertContains(response, "prod")
         response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
         self.assertContains(response, "vm-one")
 
@@ -185,7 +201,7 @@ class TagViewTests(TestCase):
     def test_detail_offers_assignment_for_an_unassigned_guest(self, _registered):
         other = ProxmoxInventory.objects.create(
             scan_run=self.scan, node="pve1", object_type="ct", vmid=101, name="ct-two",
-            config={}, derived_type="pvehelper-vmtype-ct",
+            config={},
         )
         response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
         self.assertContains(response, "Assign objects")
@@ -199,38 +215,60 @@ class TagViewTests(TestCase):
         self.assertContains(response, 'name="tags_mode" value="remove"')
         self.assertContains(response, 'name="guest" value="vm:100@pve1"')
 
-    def test_derived_tag_color_is_stored_app_side(self):
-        response = self.client.post(
-            reverse("core:tag_recolor"),
-            {"tag": "pvehelper-vmtype-vm", "color": "#123456"},
-        )
-        self.assertEqual(response.status_code, 302)
-        style = DerivedTagStyle.objects.get(tag="pvehelper-vmtype-vm")
-        self.assertEqual(style.background, "123456")
-        self.assertTrue(self.user.pve_helper_audit_events.filter(action="tag.recolored").exists())
-
-
 class TagFanoutTests(TestCase):
     def setUp(self):
         self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         self.row = ProxmoxInventory.objects.create(
             scan_run=self.scan, node="old-node", object_type="vm", vmid=100, name="vm-one",
-            config={"tags": "old;keep"}, derived_type="pvehelper-vmtype-vm",
+            config={"tags": "old;keep"},
         )
         self.event = AuditEvent.objects.create(
             username="admin", action="tag.bulk_operation", object_type="tag", object_id="old", outcome="queued"
         )
 
-    @patch("core.services.tag_actions.fetch_live_guest_inventory", return_value=[])
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
     @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
-    def test_prepare_persists_complete_target_payload(self, _registered, _live):
+    def test_prepare_persists_snapshot_targets_when_live_coverage_is_incomplete(self, _registered, live):
+        live.return_value = self.inventory(complete=False, errors=("pve2 unavailable",))
         self.assertEqual(prepare_tag_operation(self.event, operation="delete", source_tag="old"), "")
         self.event.refresh_from_db()
         self.assertEqual(self.event.details["targets"][0]["vmid"], 100)
         self.assertEqual(self.event.details["succeeded"], [])
+        self.assertFalse(self.event.details["membership_complete"])
+
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
+    @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
+    def test_prepare_unions_snapshot_and_partial_live_targets(self, _registered, live):
+        live.return_value = self.inventory(
+            SimpleNamespace(node="pve2", object_type="ct", vmid=200, name="ct-two", tags=("old",)),
+            complete=False,
+            errors=("pve3 unavailable",),
+        )
+
+        self.assertEqual(prepare_tag_operation(self.event, operation="delete", source_tag="old"), "")
+
+        self.event.refresh_from_db()
+        self.assertEqual(
+            {(target["object_type"], target["vmid"]) for target in self.event.details["targets"]},
+            {("vm", 100), ("ct", 200)},
+        )
+
+    @patch("core.services.tag_actions.unregister_tag")
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
+    @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
+    def test_prepare_does_not_unregister_when_empty_membership_is_incomplete(
+        self, _registered, live, unregister
+    ):
+        self.row.delete()
+        live.return_value = self.inventory(complete=False, errors=("pve2 unavailable",))
+
+        error = prepare_tag_operation(self.event, operation="delete", source_tag="old")
+
+        self.assertIn("Could not verify", error)
+        unregister.assert_not_called()
 
     @patch("core.services.tag_actions.unregister_tag", return_value=({}, ""))
-    @patch("core.services.tag_actions.fetch_live_guest_inventory")
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
     @patch("core.services.tag_actions.configured_clients")
     def test_execute_rediscovery_digest_and_cache_update(self, clients, live, _unregister):
         class FakeClient:
@@ -242,7 +280,16 @@ class TagFanoutTests(TestCase):
 
         client = FakeClient()
         clients.return_value = [client]
-        live.return_value = [SimpleNamespace(object_type="vm", vmid=100, node="new-node", name="vm-one")]
+        live.side_effect = [
+            self.inventory(
+                SimpleNamespace(
+                    object_type="vm", vmid=100, node="new-node", name="vm-one", tags=("old", "keep")
+                )
+            ),
+            self.inventory(
+                SimpleNamespace(object_type="vm", vmid=100, node="new-node", name="vm-one", tags=("keep",))
+            ),
+        ]
         self.event.details = {
             "operation": "delete", "source_tag": "old", "new_tag": "",
             "targets": [{"node": "old-node", "object_type": "vm", "vmid": 100, "name": "vm-one"}],
@@ -257,6 +304,60 @@ class TagFanoutTests(TestCase):
         self.assertEqual(self.row.node, "new-node")
         self.assertEqual(self.row.config["tags"], "keep")
         self.assertTrue(AuditEvent.objects.filter(action="tag.deleted", object_id="old").exists())
+
+    @patch("core.services.tag_actions.unregister_tag")
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
+    @patch("core.services.tag_actions.configured_clients", return_value=[])
+    def test_execute_keeps_source_registered_when_final_verification_is_incomplete(
+        self, _clients, live, unregister
+    ):
+        guest = SimpleNamespace(object_type="vm", vmid=100, node="old-node", name="vm-one", tags=("old",))
+        live.side_effect = [
+            self.inventory(guest),
+            self.inventory(complete=False, errors=("pve2 unavailable",)),
+        ]
+        self.event.details = {
+            "operation": "delete", "source_tag": "old", "new_tag": "",
+            "targets": [], "succeeded": [], "skipped": [], "failed": [], "username": "admin",
+        }
+        self.event.save(update_fields=["details"])
+
+        execute_tag_operation(self.event.id)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.outcome, "failed")
+        self.assertFalse(self.event.details["postcondition_complete"])
+        unregister.assert_not_called()
+
+    @patch("core.services.tag_actions.unregister_tag")
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
+    @patch("core.services.tag_actions.configured_clients", return_value=[])
+    def test_execute_keeps_source_registered_when_a_guest_still_has_it(self, _clients, live, unregister):
+        guest = SimpleNamespace(object_type="vm", vmid=100, node="old-node", name="vm-one", tags=("old",))
+        live.side_effect = [self.inventory(guest), self.inventory(guest)]
+        self.event.details = {
+            "operation": "delete", "source_tag": "old", "new_tag": "",
+            "targets": [], "succeeded": [], "skipped": [], "failed": [], "username": "admin",
+        }
+        self.event.save(update_fields=["details"])
+
+        execute_tag_operation(self.event.id)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.outcome, "failed")
+        self.assertEqual(self.event.details["remaining_targets"][0]["vmid"], 100)
+        unregister.assert_not_called()
+
+    @staticmethod
+    def inventory(*guests, complete=True, errors=()):
+        attempted = ("https://pve1:8006", "https://pve2:8006")
+        successful = attempted if complete else attempted[:1]
+        return VerifiedGuestInventory(
+            guests=tuple(guests),
+            attempted_endpoints=attempted,
+            successful_endpoints=successful,
+            errors=tuple(errors),
+        )
 
     def test_stale_running_operation_is_marked_retryable(self):
         self.event.outcome = "running"
@@ -279,7 +380,7 @@ class TagApiTests(TestCase):
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
             scan_run=scan, node="pve1", object_type="vm", vmid=100, name="template-one",
-            status="stopped", config={"tags": "backup-gold"}, derived_type="pvehelper-vmtype-template",
+            status="stopped", config={"tags": "backup-gold", "template": "1"},
         )
 
     def auth(self):
@@ -292,13 +393,14 @@ class TagApiTests(TestCase):
         self.assertEqual(response.json()["groups"]["backup-gold"][0]["type"], "template")
 
     @patch("core.views.tags_api.registered_tags", return_value=({}, ""))
-    def test_virtual_tag_endpoint_and_real_tag_array(self, _registered):
+    def test_real_tag_endpoint_and_real_tag_array(self, _registered):
         response = self.client.get(
-            reverse("core:api_tag_guests", args=["pvehelper-vmtype-template"]), secure=True, **self.auth()
+            reverse("core:api_tag_guests", args=["backup-gold"]), secure=True, **self.auth()
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["kind"], "derived")
+        self.assertNotIn("kind", response.json())
         self.assertEqual(response.json()["guests"][0]["tags"], ["backup-gold"])
+        self.assertEqual(response.json()["guests"][0]["type"], "template")
 
     def test_missing_token_is_rejected(self):
         self.assertEqual(self.client.get(reverse("core:api_tags"), secure=True).status_code, 401)

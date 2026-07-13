@@ -274,11 +274,9 @@ in the main navigation. Create lowercase tags with an optional color before
 assigning them, open any tag to see its VMs/CTs/templates, and use the existing
 guest or overview controls to assign tags.
 
-Rename and **Delete everywhere** run through the bulk worker because they may
-touch many guests. The confirmation shows the affected count; Recent Tasks and
-Audit show partial failures and allow a safe retry. Derived
-`pvehelper-vmtype-*` chips classify VMs, CTs, templates and linked clones inside
-pve-helper but are never written into Proxmox.
+Rename and **Delete tag** run through the bulk worker because they may touch
+many guests. The confirmation shows the affected count; Recent Tasks and Audit
+show partial failures and allow a safe retry.
 
 An optional read-only `/api/v1` integration can expose tag membership to a
 backup reconciliation script. It is disabled by default and requires a

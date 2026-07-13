@@ -2,26 +2,11 @@ import { loadSoftNavigation, openConfirmDialog } from "./guest-actions.js";
 import { escapeHtml } from "./shell.js";
 
 const initTags = (root = document) => {
-  root.querySelectorAll("[data-derived-tags-toggle]").forEach((toggle) => {
-    const syncToggle = () => {
-      const shown = document.documentElement.dataset.derivedTags !== "hidden";
-      toggle.setAttribute("aria-pressed", shown ? "true" : "false");
-      toggle.textContent = shown ? "Hide derived tags" : "Show derived tags";
-    };
-    syncToggle();
-    if (toggle.dataset.initialized === "true") return;
-    toggle.dataset.initialized = "true";
-    toggle.addEventListener("click", () => {
-      const value = document.documentElement.dataset.derivedTags === "hidden" ? "shown" : "hidden";
-      document.documentElement.dataset.derivedTags = value;
-      syncToggle();
-      try {
-        localStorage.setItem("pve-helper-view-derived-tags", value);
-      } catch (_error) {
-        // The current page still updates when browser storage is unavailable.
-      }
-    });
-  });
+  const refreshCurrentTagView = async () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("_tag_refresh", Date.now().toString());
+    await loadSoftNavigation(url, { push: false });
+  };
 
   root
     .querySelectorAll('form[action*="/tags/"] input[name="tag"], form[action*="/tags/"] input[name="new_tag"]')
@@ -141,7 +126,7 @@ const initTags = (root = document) => {
           throw new Error((payload.errors || [`HTTP ${response.status}`]).join("; "));
         }
         window.pveHelperRefreshRecentTasks?.();
-        await loadSoftNavigation(new URL(window.location.href), { push: false });
+        await refreshCurrentTagView();
       } catch (requestError) {
         if (error) {
           error.textContent = requestError.message || "Could not remove the tag from this object.";

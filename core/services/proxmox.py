@@ -101,6 +101,27 @@ class ProxmoxGuestSummary:
 
 
 @dataclass(frozen=True)
+class VerifiedGuestInventory:
+    """Uncached inventory with explicit endpoint coverage.
+
+    Display callers intentionally tolerate partial Proxmox responses. Callers
+    that use absence as a destructive postcondition must instead require
+    ``complete`` before acting on that absence.
+    """
+
+    guests: tuple[ProxmoxGuestSummary, ...]
+    attempted_endpoints: tuple[str, ...]
+    successful_endpoints: tuple[str, ...]
+    errors: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.attempted_endpoints) and len(self.successful_endpoints) == len(
+            self.attempted_endpoints
+        )
+
+
+@dataclass(frozen=True)
 class InventoryResult:
     node: str
     ok: bool
@@ -532,6 +553,44 @@ def fetch_live_guest_inventory(*, use_cache: bool = True) -> list[ProxmoxGuestSu
     if use_cache:
         cache.set(LIVE_GUEST_INVENTORY_CACHE_KEY, result, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
     return result
+
+
+def fetch_verified_guest_inventory() -> VerifiedGuestInventory:
+    """Read cluster guest membership from every configured endpoint.
+
+    Unlike :func:`fetch_live_guest_inventory`, this has no display deadline,
+    cache or per-node fallback. A list response (including an empty list) is a
+    successful authoritative response; any failed or malformed response makes
+    the result incomplete so destructive callers can fail closed.
+    """
+    clients = configured_clients()
+    attempted = tuple(client.endpoint for client in clients)
+    successful: list[str] = []
+    errors: list[str] = []
+    guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
+    for client in clients:
+        try:
+            resources = client.get("cluster/resources?type=vm")
+        except Exception as exc:
+            errors.append(f"{client.endpoint}: {exc}")
+            continue
+        if not isinstance(resources, list):
+            errors.append(f"{client.endpoint}: cluster guest inventory returned an invalid response.")
+            continue
+        successful.append(client.endpoint)
+        for resource in resources:
+            _add_guest_summary(guests_by_key, resource)
+    guests = tuple(
+        sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
+    )
+    if not clients:
+        errors.append("No Proxmox endpoints are configured.")
+    return VerifiedGuestInventory(
+        guests=guests,
+        attempted_endpoints=attempted,
+        successful_endpoints=tuple(successful),
+        errors=tuple(errors),
+    )
 
 
 def fetch_live_guest_locks() -> dict[tuple[str, str, int], str]:

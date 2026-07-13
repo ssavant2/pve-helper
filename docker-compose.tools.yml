@@ -44,8 +44,8 @@ services:
       python manage.py shell -c \"from core.models import StorageMount, ScanRun, ProxmoxInventory;
       StorageMount.objects.get_or_create(storage_id='e2e-store', defaults={'display_name':'E2E Store','path':'/tmp/e2e-store'});
       s=ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message='e2e seed');
-      ProxmoxInventory.objects.create(scan_run=s, node='pve1', object_type='vm', vmid=100, name='e2e-vm-running', status='running', config={'tags':'prod'}, derived_type='pvehelper-vmtype-vm');
-      ProxmoxInventory.objects.create(scan_run=s, node='pve1', object_type='vm', vmid=101, name='e2e-vm-stopped', status='stopped', derived_type='pvehelper-vmtype-vm')\" &&
+      ProxmoxInventory.objects.create(scan_run=s, node='pve1', object_type='vm', vmid=100, name='e2e-vm-running', status='running', config={'tags':'prod'});
+      ProxmoxInventory.objects.create(scan_run=s, node='pve1', object_type='vm', vmid=101, name='e2e-vm-stopped', status='stopped')\" &&
       python manage.py runserver 0.0.0.0:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/vms/overview/')"]

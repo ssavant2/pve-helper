@@ -6,16 +6,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from core.models import DerivedTagStyle, ProxmoxInventory, ScanRun
+from core.models import ProxmoxInventory, ScanRun
 
 
-DERIVED_PREFIX = "pvehelper-vmtype-"
-DERIVED_TAGS = (
-    f"{DERIVED_PREFIX}vm",
-    f"{DERIVED_PREFIX}ct",
-    f"{DERIVED_PREFIX}template",
-    f"{DERIVED_PREFIX}linked-clone",
-)
 TAG_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]*$")
 HEX_RE = re.compile(r"^[0-9a-f]{6}$")
 
@@ -42,25 +35,16 @@ class TagChip:
 class TagSummary:
     name: str
     guests: list[ProxmoxInventory] = field(default_factory=list)
-    conflicting_guests: list[ProxmoxInventory] = field(default_factory=list)
     registered: bool = False
-    derived: bool = False
     background: str = ""
     foreground: str = ""
-    namespace_conflict: bool = False
 
     @property
     def guest_count(self) -> int:
         return len(self.guests)
 
     @property
-    def kind(self) -> str:
-        return "derived" if self.derived else "user"
-
-    @property
     def state(self) -> str:
-        if self.derived:
-            return "Derived"
         if self.registered and self.guests:
             return "Registered"
         if self.registered:
@@ -84,12 +68,10 @@ def parse_tags(value_or_config) -> list[str]:
     return result
 
 
-def validate_tag(tag: str, *, allow_derived: bool = False) -> str:
+def validate_tag(tag: str) -> str:
     tag = str(tag or "").strip().lower()
     if not tag or not TAG_RE.fullmatch(tag):
         raise TagValidationError("Use lowercase letters, numbers, _, +, . or -; start with a letter, number or _.")
-    if tag.startswith(DERIVED_PREFIX) and not allow_derived:
-        raise TagValidationError(f"Tags beginning with {DERIVED_PREFIX} are reserved by pve-helper.")
     return tag
 
 
@@ -120,34 +102,9 @@ def fallback_color(tag: str) -> tuple[str, str]:
     return background, readable_foreground(background)
 
 
-def derived_color_map() -> dict[str, tuple[str, str]]:
-    return {
-        style.tag: (style.background, style.foreground)
-        for style in DerivedTagStyle.objects.filter(tag__in=DERIVED_TAGS)
-    }
-
-
-def set_derived_tag_color(tag: str, color: str) -> TagChip:
-    tag = validate_tag(tag, allow_derived=True)
-    if tag not in DERIVED_TAGS:
-        raise TagValidationError("Only known derived system tags can use an app-side color.")
-    background = validate_color(color)
-    if not background:
-        raise TagValidationError("Choose a color.")
-    foreground = readable_foreground(background)
-    DerivedTagStyle.objects.update_or_create(
-        tag=tag,
-        defaults={"background": background, "foreground": foreground},
-    )
-    return TagChip(tag, background, foreground)
-
-
-def tag_chip(name: str, registered: dict[str, RegisteredTag], derived_colors=None) -> TagChip:
-    if name in DERIVED_TAGS:
-        colors = (derived_colors if derived_colors is not None else derived_color_map()).get(name)
-    else:
-        item = registered.get(name)
-        colors = (item.background, item.foreground) if item and item.background else None
+def tag_chip(name: str, registered: dict[str, RegisteredTag]) -> TagChip:
+    item = registered.get(name)
+    colors = (item.background, item.foreground) if item and item.background else None
     background, foreground = colors or fallback_color(name)
     if not foreground:
         foreground = readable_foreground(background)
@@ -206,24 +163,8 @@ def parse_registered_tags(cluster_options: dict) -> dict[str, RegisteredTag]:
     }
 
 
-def derived_tag_for(*, object_type: str, is_template: bool = False, is_linked_clone: bool = False) -> str:
-    if is_template:
-        return f"{DERIVED_PREFIX}template"
-    if is_linked_clone:
-        return f"{DERIVED_PREFIX}linked-clone"
-    if object_type == ProxmoxInventory.ObjectType.CT:
-        return f"{DERIVED_PREFIX}ct"
-    if object_type == ProxmoxInventory.ObjectType.VM:
-        return f"{DERIVED_PREFIX}vm"
-    return ""
-
-
 def inventory_rows(scan: ScanRun | None, registered: dict[str, RegisteredTag]) -> list[TagSummary]:
-    derived_colors = derived_color_map()
-    summaries: dict[str, TagSummary] = {
-        name: TagSummary(name=name, derived=True)
-        for name in DERIVED_TAGS
-    }
+    summaries: dict[str, TagSummary] = {}
     for name, item in registered.items():
         summaries[name] = TagSummary(name=name, registered=True, background=item.background, foreground=item.foreground)
     guests = [] if scan is None else list(
@@ -235,16 +176,8 @@ def inventory_rows(scan: ScanRun | None, registered: dict[str, RegisteredTag]) -
     for guest in guests:
         for name in parse_tags(guest.config):
             summary = summaries.setdefault(name, TagSummary(name=name))
-            if name.startswith(DERIVED_PREFIX):
-                summary.namespace_conflict = True
-                summary.conflicting_guests.append(guest)
-            else:
-                summary.guests.append(guest)
-        if guest.derived_type:
-            summary = summaries.setdefault(guest.derived_type, TagSummary(name=guest.derived_type, derived=True))
-            summary.derived = True
             summary.guests.append(guest)
     for summary in summaries.values():
-        chip = tag_chip(summary.name, registered, derived_colors)
+        chip = tag_chip(summary.name, registered)
         summary.background, summary.foreground = chip.background, chip.foreground
-    return sorted(summaries.values(), key=lambda item: (not item.derived, item.name))
+    return sorted(summaries.values(), key=lambda item: item.name)

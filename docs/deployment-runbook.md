@@ -360,8 +360,8 @@ docker compose exec web python manage.py issue_integration_token veeam-productio
 
 The read-only endpoints are:
 
-- `/api/v1/tags.json` — real and derived tags with membership counts.
-- `/api/v1/tags/<tag>/guests.json` — objects assigned to one real or derived tag.
+- `/api/v1/tags.json` — registered and in-use Proxmox tags with membership counts.
+- `/api/v1/tags/<tag>/guests.json` — objects assigned to one Proxmox tag.
 - `/api/v1/backup-groups.json` — objects grouped by `BACKUP_POLICY_TAG_PREFIX`,
   plus explicit `unassigned` and `conflicts` arrays.
 

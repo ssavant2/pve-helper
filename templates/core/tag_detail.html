@@ -5,45 +5,30 @@
     <div><a href="{% url 'core:tags_overview' %}">Tags</a><h1><span class="tag-chip" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}">{{ tag.name }}</span></h1><p>{{ tag.state }} · {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}</p></div>
   </div>
 
-  {% if tag.namespace_conflict %}<div class="panel tag-warning">A real Proxmox tag conflicts with this reserved derived name. Rename or remove the real tag outside the derived namespace.</div>{% endif %}
-
   <section class="panel tag-actions-panel">
-    {% if tag.derived or tag.registered %}
+    {% if tag.registered %}
       <form method="post" action="{% url 'core:tag_recolor' %}" data-tag-async-form>{% csrf_token %}<input type="hidden" name="tag" value="{{ tag.name }}"><label>Color <input type="color" name="color" value="#{{ tag.background }}"></label><button class="secondary-action" type="submit">Update color</button><p class="form-error tag-form-error" data-tag-form-error hidden></p></form>
     {% endif %}
-    {% if not tag.derived %}
-      <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="Rename {{ tag.name }} on {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}?">
-        {% csrf_token %}<input type="hidden" name="operation" value="rename"><input type="hidden" name="tag" value="{{ tag.name }}"><label>New name <input name="new_tag" pattern="[a-z0-9_][a-z0-9_+.-]*" required></label><button class="secondary-action" type="submit">Rename tag</button>
-      </form>
-      <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="This tag is used by {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}. Removing it will update all of them and unregister the tag. Are you sure?">
-        {% csrf_token %}<input type="hidden" name="operation" value="delete"><input type="hidden" name="tag" value="{{ tag.name }}"><button class="secondary-action danger" type="submit">Delete tag</button>
-      </form>
-      {% if assignable_guests %}<button class="primary-action" type="button" data-tag-assign-open>Assign objects</button>{% endif %}
-    {% endif %}
+    <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="Rename {{ tag.name }} on {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}?">
+      {% csrf_token %}<input type="hidden" name="operation" value="rename"><input type="hidden" name="tag" value="{{ tag.name }}"><label>New name <input name="new_tag" pattern="[a-z0-9_][a-z0-9_+.-]*" required></label><button class="secondary-action" type="submit">Rename tag</button>
+    </form>
+    <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="This tag is used by {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}. Removing it will update all of them and unregister the tag. Are you sure?">
+      {% csrf_token %}<input type="hidden" name="operation" value="delete"><input type="hidden" name="tag" value="{{ tag.name }}"><button class="secondary-action danger" type="submit">Delete tag</button>
+    </form>
+    {% if assignable_guests %}<button class="primary-action" type="button" data-tag-assign-open>Assign objects</button>{% endif %}
   </section>
 
   <section class="panel panel-spaced">
     <div class="panel-heading"><h2>Assigned objects</h2></div>
     <p class="form-error tag-assignment-error" data-tag-unassign-error hidden></p>
-    <table class="data-table"><thead><tr><th>Type</th><th>VMID</th><th>Name</th><th>Status</th><th>Node</th>{% if not tag.derived %}<th><span class="sr-only">Actions</span></th>{% endif %}</tr></thead><tbody>
+    <table class="data-table"><thead><tr><th>Type</th><th>VMID</th><th>Name</th><th>Status</th><th>Node</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
       {% for guest in tag.guests %}
-        <tr><td>{{ guest.derived_type|default:guest.object_type }}</td><td>{{ guest.vmid }}</td><td><a href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">{{ guest.name|default:"-" }}</a></td><td>{{ guest.status|default:"-" }}</td><td>{{ guest.node }}</td>{% if not tag.derived %}<td class="tag-assignment-action"><form method="post" action="{% url 'core:vms_bulk_action' %}" data-tag-unassign-form data-tag="{{ tag.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}">{% csrf_token %}<input type="hidden" name="bulk_action" value="tags"><input type="hidden" name="tags_mode" value="remove"><input type="hidden" name="tags_value" value="{{ tag.name }}"><input type="hidden" name="guest" value="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}"><button class="icon-button danger" type="submit" aria-label="Remove {{ tag.name }} from {{ guest.name|default:guest.vmid }}" title="Remove tag from object"><i data-lucide="trash-2" aria-hidden="true"></i></button></form></td>{% endif %}</tr>
-      {% empty %}<tr><td colspan="{% if tag.derived %}5{% else %}6{% endif %}" class="empty-state">This tag is not assigned to any object.</td></tr>{% endfor %}
+        <tr><td>{{ guest.tag_type_label }}</td><td>{{ guest.vmid }}</td><td><a href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">{{ guest.name|default:"-" }}</a></td><td>{{ guest.status|default:"-" }}</td><td>{{ guest.node }}</td><td class="tag-assignment-action"><form method="post" action="{% url 'core:vms_bulk_action' %}" data-tag-unassign-form data-tag="{{ tag.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}">{% csrf_token %}<input type="hidden" name="bulk_action" value="tags"><input type="hidden" name="tags_mode" value="remove"><input type="hidden" name="tags_value" value="{{ tag.name }}"><input type="hidden" name="guest" value="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}"><button class="icon-button danger" type="submit" aria-label="Remove {{ tag.name }} from {{ guest.name|default:guest.vmid }}" title="Remove tag from object"><i data-lucide="trash-2" aria-hidden="true"></i></button></form></td></tr>
+      {% empty %}<tr><td colspan="6" class="empty-state">This tag is not assigned to any object.</td></tr>{% endfor %}
     </tbody></table>
   </section>
 
-  {% if tag.conflicting_guests %}
-    <section class="panel panel-spaced">
-      <div class="panel-heading"><h2>Objects carrying the conflicting real tag</h2></div>
-      <table class="data-table"><thead><tr><th>Type</th><th>VMID</th><th>Name</th><th>Status</th><th>Node</th></tr></thead><tbody>
-        {% for guest in tag.conflicting_guests %}
-          <tr><td>{{ guest.object_type }}</td><td>{{ guest.vmid }}</td><td><a href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">{{ guest.name|default:"-" }}</a></td><td>{{ guest.status|default:"-" }}</td><td>{{ guest.node }}</td></tr>
-        {% endfor %}
-      </tbody></table>
-    </section>
-  {% endif %}
-
-  {% if not tag.derived and assignable_guests %}
+  {% if assignable_guests %}
     <dialog class="vm-action-dialog tag-assign-dialog" data-tag-assign-dialog>
       <form class="vm-action-dialog-form" method="post" action="{% url 'core:vms_bulk_action' %}" data-tag-assign-form>
         {% csrf_token %}

@@ -1,11 +1,3 @@
-.derived-tags-toggle {
-  white-space: nowrap;
-}
-
-html[data-derived-tags="hidden"] [data-derived-tag] {
-  display: none !important;
-}
-
 .tag-actions-panel {
   margin-bottom: 18px;
   padding: 18px;
@@ -84,12 +76,17 @@ html[data-derived-tags="hidden"] [data-derived-tag] {
   padding-bottom: 3px;
 }
 
+.tag-inventory-scroll .data-table th:not(:last-child),
+.tag-inventory-scroll .data-table td:not(:last-child) {
+  border-right: 1px solid rgba(174, 194, 204, 0.38);
+}
+
 .tag-inventory-scroll .data-table th:first-child {
-  width: 42%;
+  width: 50%;
 }
 
 .tag-inventory-scroll .data-table th:nth-child(2) {
-  width: 16%;
+  width: 30%;
   text-align: center;
 }
 
@@ -98,11 +95,7 @@ html[data-derived-tags="hidden"] [data-derived-tag] {
 }
 
 .tag-inventory-scroll .data-table th:nth-child(3) {
-  width: 28%;
-}
-
-.tag-inventory-scroll .data-table th:last-child {
-  width: 14%;
+  width: 20%;
 }
 
 .tag-form-error {

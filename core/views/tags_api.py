@@ -6,9 +6,10 @@ from django.conf import settings
 from django.http import Http404, HttpResponseNotAllowed, JsonResponse
 
 from core.models import ProxmoxInventory, ScanRun
+from core.services.guests import is_template
 from core.services.integration_tokens import authenticate_token
 from core.services.tag_actions import registered_tags
-from core.services.tags import DERIVED_PREFIX, inventory_rows, parse_tags
+from core.services.tags import inventory_rows, parse_tags
 
 
 def integration_api(view):
@@ -36,8 +37,7 @@ def _inventory():
 
 
 def _guest_json(guest):
-    derived = guest.derived_type or ""
-    type_name = derived.removeprefix(DERIVED_PREFIX) if derived.startswith(DERIVED_PREFIX) else guest.object_type
+    type_name = "template" if guest.object_type == ProxmoxInventory.ObjectType.VM and is_template(guest.config) else guest.object_type
     return {
         "vmid": guest.vmid,
         "name": guest.name,
@@ -54,11 +54,8 @@ def api_tags(request):
     return JsonResponse({"tags": [
         {
             "name": row.name,
-            "kind": row.kind,
             "registered": row.registered,
             "guest_count": row.guest_count,
-            "namespace_conflict": row.namespace_conflict,
-            "conflicting_guest_count": len(row.conflicting_guests),
         }
         for row in rows
     ]})
@@ -73,10 +70,7 @@ def api_tag_guests(request, tag: str):
         raise Http404
     return JsonResponse({
         "tag": tag,
-        "kind": summary.kind,
-        "namespace_conflict": summary.namespace_conflict,
         "guests": [_guest_json(guest) for guest in summary.guests],
-        "conflicting_guests": [_guest_json(guest) for guest in summary.conflicting_guests],
     })
 
 

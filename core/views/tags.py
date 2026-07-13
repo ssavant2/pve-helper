@@ -9,16 +9,10 @@ from django.urls import reverse
 from django.views.decorators.http import require_POST
 
 from core.models import ProxmoxInventory, ScanRun
+from core.services.guests import is_template
 from core.services.proxmox import ProxmoxAPIError
 from core.services.tag_actions import prepare_tag_operation, recolor_tag, register_tag, registered_tags
-from core.services.tags import (
-    DERIVED_TAGS,
-    TagValidationError,
-    derived_tag_for,
-    inventory_rows,
-    parse_tags,
-    set_derived_tag_color,
-)
+from core.services.tags import inventory_rows, parse_tags
 
 from . import common
 from .common import app_login_required, navigation_context, record_audit_event
@@ -70,7 +64,13 @@ def tag_detail(request):
     if summary is None:
         raise Http404("Tag not found")
     context["tag"] = summary
-    if not summary.derived and context["scan"] is not None:
+    if context["scan"] is not None:
+        try:
+            linked_clones = set(common.fetch_live_guest_lineage())
+        except Exception:
+            # Type is presentation metadata; a lineage outage must not make tag
+            # membership administration unavailable.
+            linked_clones = set()
         assigned = {(guest.object_type, guest.vmid) for guest in summary.guests}
         assignable = list(
             ProxmoxInventory.objects.filter(
@@ -81,6 +81,9 @@ def tag_detail(request):
         )
         for guest in assignable:
             guest.tag_target = f"{guest.object_type}:{guest.vmid}@{guest.node}"
+            guest.tag_type_label = _tag_type_label(guest, linked_clones)
+        for guest in summary.guests:
+            guest.tag_type_label = _tag_type_label(guest, linked_clones)
         context["assignable_guests"] = [
             guest for guest in assignable
             if (guest.object_type, guest.vmid) not in assigned and summary.name not in parse_tags(guest.config)
@@ -104,14 +107,7 @@ def tag_create(request):
 @app_login_required
 def tag_recolor(request):
     name = request.POST.get("tag", "").strip().lower()
-    if name in DERIVED_TAGS:
-        try:
-            set_derived_tag_color(name, request.POST.get("color", ""))
-            error = ""
-        except TagValidationError as exc:
-            error = str(exc)
-    else:
-        _tags, error = recolor_tag(name, request.POST.get("color", ""))
+    _tags, error = recolor_tag(name, request.POST.get("color", ""))
     if error:
         return _tag_form_response(request, ok=False, error=error)
     else:
@@ -159,7 +155,6 @@ def tags_refresh(request):
         return redirect("core:tags_overview")
     try:
         live = common.fetch_live_guest_inventory(use_cache=False)
-        lineage = common.fetch_live_guest_lineage()
     except ProxmoxAPIError as exc:
         messages.error(request, str(exc))
         return redirect("core:tags_overview")
@@ -176,10 +171,15 @@ def tags_refresh(request):
             config.pop("tags", None)
         row.config = config
         row.status = guest.status
-        row.derived_type = derived_tag_for(
-            object_type=guest.object_type,
-            is_template=guest.is_template,
-            is_linked_clone=guest.vmid in lineage,
-        )
-        row.save(update_fields=["config", "status", "derived_type", "updated_at"])
+        row.save(update_fields=["config", "status", "updated_at"])
     return redirect("core:tags_overview")
+
+
+def _tag_type_label(guest, linked_clones: set[int]) -> str:
+    if guest.object_type == ProxmoxInventory.ObjectType.CT:
+        return "ct"
+    if guest.object_type == ProxmoxInventory.ObjectType.VM and is_template(guest.config):
+        return "template"
+    if guest.object_type == ProxmoxInventory.ObjectType.VM and guest.vmid in linked_clones:
+        return "linked clone"
+    return "vm"

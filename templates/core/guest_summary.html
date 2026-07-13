@@ -211,7 +211,6 @@
     <div class="panel summary-card" data-card-key="tags" data-card-size="auto">
       <div class="panel-heading"><h2>Tags</h2><div class="card-heading-actions"><a class="card-edit" href="{% url 'core:guest_edit' guest.object_type guest.vmid %}?section=tags">Edit</a><button class="card-size-toggle" type="button" data-card-size-toggle aria-label="Expand Tags" title="Expand"><i data-lucide="chevron-down" aria-hidden="true"></i></button><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
       <div class="tag-list">
-        <a class="tag-chip" data-derived-tag style="--tag-bg:#{{ guest_derived_tag_chip.background }};--tag-fg:#{{ guest_derived_tag_chip.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ guest_derived_tag_chip.name|urlencode }}">{{ guest_derived_tag_chip.name }}</a>
         {% for tag in guest_tag_chips %}
           <a class="tag-chip" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>
         {% endfor %}

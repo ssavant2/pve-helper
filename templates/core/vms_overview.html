@@ -171,7 +171,7 @@
                 <td data-column="ip" data-agent-ip-cell data-ip-raw="{{ g.ip_label }}" data-sort-value="{{ g.ip_label }}">{{ g.ip_label }}</td>
                 <td data-column="mac" data-sort-value="{{ g.mac_label }}">{{ g.mac_label }}</td>
                 <td data-column="storage" data-sort-value="{{ g.storage_label }}">{{ g.storage_label }}</td>
-                <td data-column="tags" data-sort-value="{{ g.derived_type }} {{ g.tags_label }}"><a class="tag-chip" data-derived-tag style="--tag-bg:#{{ g.derived_tag_chip.background }};--tag-fg:#{{ g.derived_tag_chip.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ g.derived_tag_chip.name|urlencode }}">{{ g.derived_tag_chip.name }}</a>{% for tag in g.tag_chips %} <a class="tag-chip" data-user-tag="{{ tag.name }}" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>{% endfor %}</td>
+                <td data-column="tags" data-sort-value="{{ g.tags_label }}">{% for tag in g.tag_chips %}<a class="tag-chip" data-user-tag="{{ tag.name }}" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>{% if not forloop.last %} {% endif %}{% endfor %}</td>
               </tr>
             {% empty %}
               <tr><td colspan="24" class="empty-state">No guests found.</td></tr>

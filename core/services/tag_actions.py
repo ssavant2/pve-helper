@@ -4,7 +4,12 @@ from django.utils import timezone
 from django.core.cache import cache
 
 from core.models import AuditEvent, ProxmoxInventory, ScanRun
-from core.services.proxmox import ProxmoxAPIError, configured_clients, fetch_live_guest_inventory
+from core.services.proxmox import (
+    ProxmoxAPIError,
+    VerifiedGuestInventory,
+    configured_clients,
+    fetch_verified_guest_inventory,
+)
 from core.services.tags import (
     RegisteredTag,
     TagValidationError,
@@ -128,28 +133,43 @@ def unregister_tag(tag: str) -> tuple[dict[str, RegisteredTag], str]:
     return _write_registry(mutate)
 
 
-def latest_tag_targets(tag: str) -> list[dict]:
-    try:
-        live = fetch_live_guest_inventory(use_cache=False)
-    except Exception:
-        live = []
-    if live:
-        return [
-            {"node": row.node, "object_type": row.object_type, "vmid": row.vmid, "name": row.name}
-            for row in live
-            if tag in parse_tags(row.tags)
-        ]
-    scan = ScanRun.objects.filter(status=ScanRun.Status.COMPLETED).order_by("-created_at").first()
-    if scan is None:
-        return []
-    return [
-        {"node": row.node, "object_type": row.object_type, "vmid": row.vmid, "name": row.name}
+def _target_from_guest(row) -> dict:
+    return {"node": row.node, "object_type": row.object_type, "vmid": row.vmid, "name": row.name}
+
+
+def _latest_guest_snapshot() -> ScanRun | None:
+    return (
+        ScanRun.objects.filter(
+            proxmox_objects__object_type__in=[
+                ProxmoxInventory.ObjectType.VM,
+                ProxmoxInventory.ObjectType.CT,
+            ],
+            proxmox_objects__vmid__isnull=False,
+        )
+        .order_by("-created_at")
+        .distinct()
+        .first()
+    )
+
+
+def latest_tag_targets(tag: str) -> tuple[list[dict], VerifiedGuestInventory]:
+    """Union retained membership with an explicitly covered live inventory."""
+    targets: dict[tuple[str, str, int], dict] = {}
+    scan = _latest_guest_snapshot()
+    if scan is not None:
         for row in ProxmoxInventory.objects.filter(
             scan_run=scan,
             object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-        )
-        if tag in parse_tags(row.config)
-    ]
+        ):
+            if tag in parse_tags(row.config):
+                target = _target_from_guest(row)
+                targets[(target["node"], target["object_type"], target["vmid"])] = target
+    live = fetch_verified_guest_inventory()
+    for row in live.guests:
+        if tag in parse_tags(row.tags):
+            target = _target_from_guest(row)
+            targets[(target["node"], target["object_type"], target["vmid"])] = target
+    return sorted(targets.values(), key=lambda item: (item["object_type"], item["vmid"], item["node"])), live
 
 
 def prepare_tag_operation(event: AuditEvent, *, operation: str, source_tag: str, new_tag: str = "") -> str:
@@ -161,6 +181,9 @@ def prepare_tag_operation(event: AuditEvent, *, operation: str, source_tag: str,
     registered, error = registered_tags()
     if error:
         return error
+    targets, membership = latest_tag_targets(source_tag)
+    if not targets and not membership.complete:
+        return "Could not verify tag membership on every Proxmox endpoint; no changes were made."
     if operation == "rename":
         if new_tag in registered:
             return "The destination tag is already registered."
@@ -168,7 +191,6 @@ def prepare_tag_operation(event: AuditEvent, *, operation: str, source_tag: str,
         _updated, error = register_tag(new_tag, old.background if old else "")
         if error:
             return error
-    targets = latest_tag_targets(source_tag)
     username = event.username or str((event.details or {}).get("username") or "")
     event.details = {
         "operation": operation,
@@ -178,14 +200,30 @@ def prepare_tag_operation(event: AuditEvent, *, operation: str, source_tag: str,
         "succeeded": [],
         "skipped": [],
         "failed": [],
+        "membership_complete": membership.complete,
+        "membership_errors": list(membership.errors),
         "stage": "queued",
         "username": username,
     }
     event.outcome = "queued"
     event.save(update_fields=["details", "outcome"])
     if not targets:
-        if operation == "delete":
-            _updated, error = unregister_tag(source_tag)
+        verification = fetch_verified_guest_inventory()
+        remaining = [
+            _target_from_guest(item)
+            for item in verification.guests
+            if source_tag in parse_tags(item.tags)
+        ]
+        event.details = {
+            **event.details,
+            "postcondition_complete": verification.complete,
+            "postcondition_errors": list(verification.errors),
+            "remaining_targets": remaining,
+        }
+        if not verification.complete:
+            error = "Could not verify tag membership on every Proxmox endpoint."
+        elif remaining:
+            error = f"The source tag is still assigned to {len(remaining)} guest(s)."
         else:
             _updated, error = unregister_tag(source_tag)
         if error:
@@ -218,16 +256,47 @@ def execute_tag_operation(event_id: int) -> None:
         for item in details.get(bucket, [])
     }
     details["failed"] = []
-    live = {(item.object_type, item.vmid): item for item in fetch_live_guest_inventory(use_cache=False)}
+    inventory = fetch_verified_guest_inventory()
+    live_by_identity = {
+        (item.node, item.object_type, item.vmid): item
+        for item in inventory.guests
+    }
+    live_by_guest: dict[tuple[str, int], list] = {}
+    for item in inventory.guests:
+        live_by_guest.setdefault((item.object_type, item.vmid), []).append(item)
     for target in details.get("targets", []):
         if _target_key(target) in terminal:
             continue
-        outcome, message = _update_target(details, target, live.get((target["object_type"], target["vmid"])))
+        live_guest = live_by_identity.get((target["node"], target["object_type"], target["vmid"]))
+        if live_guest is None:
+            candidates = live_by_guest.get((target["object_type"], target["vmid"]), [])
+            live_guest = candidates[0] if len(candidates) == 1 else None
+        outcome, message = _update_target(details, target, live_guest)
         item = {**target, "reason": message} if message else dict(target)
         details.setdefault(outcome, []).append(item)
         details["heartbeat_at"] = timezone.now().isoformat()
         event.details = details
         event.save(update_fields=["details"])
+    verification = fetch_verified_guest_inventory()
+    details["postcondition_complete"] = verification.complete
+    details["postcondition_errors"] = list(verification.errors)
+    remaining = [
+        _target_from_guest(item)
+        for item in verification.guests
+        if details["source_tag"] in parse_tags(item.tags)
+    ]
+    details["remaining_targets"] = remaining
+    if not verification.complete:
+        details.setdefault("failed", []).append(
+            {"registry": True, "reason": "Could not verify tag membership on every Proxmox endpoint."}
+        )
+    elif remaining:
+        details.setdefault("failed", []).append(
+            {
+                "registry": True,
+                "reason": f"The source tag is still assigned to {len(remaining)} guest(s).",
+            }
+        )
     if details.get("failed"):
         event.outcome = "failed"
         details["stage"] = "partial failure"

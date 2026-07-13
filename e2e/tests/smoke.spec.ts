@@ -38,38 +38,11 @@ test("tag links use soft navigation", async ({ page }) => {
   await page.evaluate(() => {
     (window as Window & { tagSoftNavigationMarker?: string }).tagSoftNavigationMarker = "preserved";
   });
-  await page.getByRole("link", { name: "pvehelper-vmtype-vm", exact: true }).first().click();
-  await expect(page).toHaveURL(/\/tags\/detail\/\?tag=pvehelper-vmtype-vm/);
+  await page.getByRole("link", { name: "prod", exact: true }).first().click();
+  await expect(page).toHaveURL(/\/tags\/detail\/\?tag=prod/);
   await expect
     .poll(() => page.evaluate(() => (window as Window & { tagSoftNavigationMarker?: string }).tagSoftNavigationMarker))
     .toBe("preserved");
-});
-
-test("derived tag visibility is shared by tag inventory and VM views", async ({ page }) => {
-  await page.goto("/tags/");
-  const toggle = page.locator("[data-derived-tags-toggle]");
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  await expect(toggle).toHaveText("Hide derived tags");
-  await expect(toggle).toHaveClass(/secondary-action/);
-  const refresh = page.getByRole("button", { name: "Refresh" });
-  expect(await toggle.evaluate((element) => element.getBoundingClientRect().height)).toBe(
-    await refresh.evaluate((element) => element.getBoundingClientRect().height)
-  );
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-pressed", "false");
-  await expect(toggle).toHaveText("Show derived tags");
-  await expect(page.locator('#tags-table tr[data-filter-text="pvehelper-vmtype-vm derived Derived"]')).toBeHidden();
-
-  await page.goto("/vms/overview/");
-  await expect(page.locator('[data-guest-vmid="100"] [data-derived-tag]')).toHaveCSS("display", "none");
-  await expect(page.locator('[data-guest-vmid="100"] [data-user-tag="prod"]')).toHaveCSS("display", "inline-flex");
-
-  await page.goto("/vms/vm/100/");
-  await expect(page.locator('[data-card-key="tags"] [data-derived-tag]')).toBeHidden();
-
-  await page.goto("/tags/");
-  await expect(page.locator("[data-derived-tags-toggle]")).toHaveAttribute("aria-pressed", "false");
-  await expect(page.locator("[data-derived-tags-toggle]")).toHaveText("Show derived tags");
 });
 
 test("tag administration uses aligned controls and the guest editor separates new tags", async ({ page }) => {
@@ -78,15 +51,17 @@ test("tag administration uses aligned controls and the guest editor separates ne
   const filterWidth = await page.locator('input[placeholder="Filter tags"]').evaluate((element) => element.getBoundingClientRect().width);
   expect(Math.abs(createWidth - filterWidth)).toBeLessThan(1);
   const filter = page.locator('input[placeholder="Filter tags"]');
-  await filter.fill("pvehelper-vmtype-ct");
-  await expect(page.locator('#tags-table tbody tr[data-filter-text="pvehelper-vmtype-ct derived Derived"]')).toBeVisible();
-  await expect(page.locator('#tags-table tbody tr[data-filter-text="pvehelper-vmtype-vm derived Derived"]')).toBeHidden();
+  await filter.fill("prod");
+  await expect(page.locator('#tags-table tbody tr[data-filter-text="prod Ad-hoc"]')).toBeVisible();
+  await filter.fill("missing-tag");
+  await expect(page.locator('#tags-table tbody tr[data-filter-text="prod Ad-hoc"]')).toBeHidden();
   const overflowY = await page.locator(".tag-inventory-scroll").evaluate((element) => getComputedStyle(element).overflowY);
   expect(overflowY).toBe("auto");
   const firstRow = page.locator("#tags-table tbody tr").first();
   expect(await firstRow.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(34);
-  await expect(page.locator("#tags-table th").nth(1)).toHaveCSS("text-align", "center");
-  await expect(firstRow.locator("td").nth(1)).toHaveCSS("text-align", "center");
+  await expect(firstRow.locator("td").nth(0)).toHaveCSS("border-right-width", "1px");
+  await expect(firstRow.locator("td").nth(1)).toHaveCSS("border-right-width", "1px");
+  await expect(firstRow.locator("td").nth(2)).toHaveCSS("border-right-width", "0px");
   await filter.fill("");
   await page.locator('#tags-table th[data-column="objects"]').click();
   const objectCounts = await page.locator("#tags-table tbody tr td:last-child").allTextContents();

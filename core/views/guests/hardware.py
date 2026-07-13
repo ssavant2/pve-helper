@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (_audit_guest,_config_enabled,_cpu_count,_ct_features,_ct_mount_rows,_ct_network_rows,_ct_options,_format_kv_config,_is_disk_device_key,_linked_clone_disk_edit_block,_next_device_index,_parse_net_value,_parse_startup_options,_resolve_guest_detail,_set_param_bool,_set_param_text,_split_kv_config)
-from core.services.tags import DERIVED_PREFIX, TagValidationError, join_tags, parse_tags, validate_tag
+from core.services.tags import TagValidationError, join_tags, parse_tags, validate_tag
 
 
 def _advanced_device_label(key: str) -> str:
@@ -1055,7 +1055,7 @@ def _available_user_tags() -> list[str]:
             object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
         ).values_list("config", flat=True):
             names.update(parse_tags(config))
-    return sorted(name for name in names if not name.startswith(DERIVED_PREFIX))
+    return sorted(names)
 
 
 @app_login_required
@@ -1068,8 +1068,6 @@ def guest_tag_options(request, object_type: str, vmid: int):
     return JsonResponse(
         {
             "available_tags": _available_user_tags(),
-            "assigned_tags": [
-                name for name in parse_guest_tags(detail.config) if not name.startswith(DERIVED_PREFIX)
-            ],
+            "assigned_tags": parse_guest_tags(detail.config),
         }
     )
