@@ -2356,6 +2356,7 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
     target = f"{detail.object_type}:{detail.vmid}"
     active_target = _guest_target_value(detail.object_type, detail.vmid, detail.node)
     rows, live_available, scan_at = _guest_rows()
+    available_user_tags = _decorate_guest_tag_chips(rows)
     # The sidebar list on every detail/Summary page is the same workspace tree,
     # so it must render the lineage indentation too (not a flat list).
     guest_list = _apply_workspace_lineage(rows)
@@ -2391,6 +2392,7 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         "active_object_type": detail.object_type,
         "active_vmid": detail.vmid,
         "active_guest_target_id": active_target,
+        "available_user_tags": available_user_tags,
         "schedule_action_url": f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}",
         "scheduled_actions_url": f"{reverse('core:scheduled_tasks')}?{urlencode({'target': target})}",
     }

@@ -16,6 +16,7 @@ from core.services.recent_tasks import recent_task_page
 from core.tasks import reap_stale_guest_tasks
 from core.services.tags import (
     TagValidationError,
+    RegisteredTag,
     derived_tag_for,
     inventory_rows,
     join_tags,
@@ -27,7 +28,7 @@ from core.services.tags import (
     serialize_tag_style,
     validate_tag,
 )
-from core.views.guests._core import _decorate_guest_tag_chips
+from core.views.guests._core import _decorate_guest_tag_chips, _guest_tab_context
 
 
 class TagServiceTests(TestCase):
@@ -126,6 +127,21 @@ class TagViewTests(TestCase):
         self.assertContains(response, "prod")
         prod = next(row for row in response.context["tag_rows"] if row.name == "prod")
         self.assertEqual(prod.guest_count, 1)
+
+    @patch("core.views.guests._core._apply_workspace_lineage", return_value=[])
+    @patch("core.views.guests._core._guest_rows", return_value=([], False, None))
+    @patch(
+        "core.services.tag_actions.registered_tags",
+        return_value=({"unused": RegisteredTag("unused")}, ""),
+    )
+    def test_guest_tab_context_includes_registered_unused_tags(self, _registered, _guest_rows, _lineage):
+        detail = SimpleNamespace(
+            object_type="vm", vmid=100, node="pve1", name="vm-one", status="stopped", config={"tags": "prod"}
+        )
+
+        context = _guest_tab_context(detail, "summary")
+
+        self.assertEqual(context["available_user_tags"], ["prod", "unused"])
 
     @patch("core.views.tags.register_tag", return_value=({}, ""))
     def test_create_audits(self, _register):
