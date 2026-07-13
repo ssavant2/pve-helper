@@ -87,7 +87,10 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 ```
 
-Restart the pve-helper `nginx` service after changing the setting. Its nginx
+Recreate the pve-helper `nginx` service after changing `NGINX_TRUSTED_PROXY`
+(`docker compose up -d nginx`) — a plain `restart` reuses the existing container
+and will not pick up the new value. Setting `NGINX_TRUSTED_PROXY` is the required
+step; the header block above is usually already NPM's default. The nginx
 sidecar trusts `X-Forwarded-For` only when the immediate peer matches
 `NGINX_TRUSTED_PROXY`, then passes the validated client IP as `X-Real-IP` to the
 app. Do not expose the sidecar port publicly when NPM is intended to be the only
