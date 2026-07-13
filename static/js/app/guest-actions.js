@@ -20,6 +20,11 @@ let activeVmOverview = null;
 let activeVmContextRows = [];
 let activeTaskRow = null;
 let navigationController = null;
+let pageInitializer = () => {};
+
+const setPageInitializer = (initializer) => {
+  pageInitializer = typeof initializer === "function" ? initializer : () => {};
+};
 
 const updateVmRowsAgentState = (rows, enabled) => {
   const label = enabled ? "Enabled" : "Disabled";
@@ -396,6 +401,7 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
         action === "agent_disable" ||
         action === "untemplate" ||
         action === "pool" ||
+        action === "tags" ||
         bulkMigrate
       ) {
         const finishedAt = new Date();
@@ -417,6 +423,9 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
           updateVmRowsPoolState(rows, fields.pool_id || "");
         }
         window.pveHelperRefreshRecentTasks?.();
+        if (action === "tags") {
+          await loadSoftNavigation(new URL(window.location.href), { push: false });
+        }
         if (bulkMigrate) {
           overview.burstVmStatusRefresh?.();
         }
@@ -831,35 +840,59 @@ const openBackupDialog = (overview, rows) => {
     });
 };
 
-const openTagsDialog = (overview, rows) => {
+const guestRowTags = (row) => {
+  const metadataTags = String(row?.dataset.guestTags || "")
+    .split(";")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  const renderedTags = Array.from(
+    row?.querySelectorAll("[data-user-tag]") || [],
+    (chip) => chip.dataset.userTag
+  ).filter(Boolean);
+  return [...new Set([...metadataTags, ...renderedTags])];
+};
+
+const availableGuestTags = (overview) => {
+  const options = overview.querySelector("#vm-overview-tag-options");
+  let registered = [];
+  try {
+    registered = JSON.parse(options?.textContent || "[]");
+  } catch (_error) {
+    // Tags rendered on the rows remain usable if registry metadata is stale.
+  }
+  const rendered = Array.from(overview.querySelectorAll("[data-vm-overview-row]")).flatMap(guestRowTags);
+  return [...new Set([...registered, ...rendered])].sort((left, right) => left.localeCompare(right));
+};
+
+const tagChoicesForRows = (overview, rows, mode) => {
+  if (mode === "remove") {
+    return [...new Set(rows.flatMap(guestRowTags))].sort((left, right) => left.localeCompare(right));
+  }
+  return availableGuestTags(overview);
+};
+
+const openTagsDialog = (overview, rows, mode) => {
+  const adding = mode === "add";
+  const choices = tagChoicesForRows(overview, rows, mode);
+  const options = choices.map((tag) => `<option value="${escapeHtml(tag)}">${escapeHtml(tag)}</option>`).join("");
   openVmFormDialog({
-    title: "Edit Tags",
+    title: adding ? "Add Tags" : "Remove Tags",
     summary: selectedGuestSummary(rows),
-    submitLabel: "Apply Tags",
+    submitLabel: adding ? "Add" : "Remove",
     bodyHtml: `
         <label class="form-field">
-          <span>Operation</span>
-          <select name="tags_mode">
-            <option value="add">Add tags</option>
-            <option value="remove">Remove tags</option>
-            <option value="replace">Replace all tags</option>
+          <span>${adding ? "Existing tag" : "Assigned tag"}</span>
+          <select name="tags_value" ${choices.length ? "" : "disabled"}>
+            ${options || `<option value="">${adding ? "No user tags are registered" : "No user tags are assigned"}</option>`}
           </select>
-        </label>
-        <label class="form-field">
-          <span>Tags</span>
-          <input type="text" name="tags_value" autocomplete="off" placeholder="backup-standard veeam-standard">
         </label>
       `,
     onSubmit: (formData) => {
-      const mode = String(formData.get("tags_mode") || "").trim();
-      const tags = String(formData.get("tags_value") || "").trim();
-      if (!["add", "remove", "replace"].includes(mode)) {
-        return "Choose a tag operation.";
+      const tag = String(formData.get("tags_value") || "").trim();
+      if (!tag) {
+        return adding ? "Choose a tag to add." : "Choose a tag to remove.";
       }
-      if (mode !== "replace" && !tags) {
-        return "Enter at least one tag.";
-      }
-      submitVmBulkAction(overview, "tags", { tags_mode: mode, tags_value: tags }, rows);
+      submitVmBulkAction(overview, "tags", { tags_mode: mode, tags_value: tag }, rows);
       return "";
     },
   });
@@ -1823,6 +1856,7 @@ const openVmContextMenu = (menu, row, event) => {
   const noLinkedClones = contextRows.every((item) => item.dataset.guestLinkedClone !== "true");
   const allAgentEnabled = contextRows.every((item) => item.dataset.guestAgentEnabled === "true");
   const allAgentDisabled = contextRows.every((item) => item.dataset.guestAgentEnabled !== "true");
+  const hasAssignedTags = contextRows.some((item) => guestRowTags(item).length > 0);
   const singleSelected = contextRows.length === 1;
   const writable = true;
 
@@ -1888,8 +1922,8 @@ const openVmContextMenu = (menu, row, event) => {
       <div class="context-menu-submenu">
         <button type="button" class="context-menu-parent">Tags <span>›</span></button>
         <div class="context-menu-submenu-panel">
-          <button type="button" data-vm-action="edit-tags" ${writable ? "" : "disabled"}>Edit Tags...</button>
-          <button type="button" disabled>Remove Tags...</button>
+          <button type="button" data-vm-action="add-tags" ${writable ? "" : "disabled"}>Add Tags...</button>
+          <button type="button" data-vm-action="remove-tags" ${writable && hasAssignedTags ? "" : "disabled"}>Remove Tags...</button>
         </div>
       </div>
       <button type="button" data-vm-action="pool" ${writable ? "" : "disabled"}>Move to Pool...</button>
@@ -2081,8 +2115,8 @@ const initContextMenu = () => {
         loadSoftNavigation(restoreUrl);
         return;
       }
-      if (action === "edit-tags") {
-        openTagsDialog(activeVmOverview, targetRows);
+      if (action === "add-tags" || action === "remove-tags") {
+        openTagsDialog(activeVmOverview, targetRows, action === "add-tags" ? "add" : "remove");
         menu.hidden = true;
         clearVmContextHighlights();
         return;
@@ -2268,7 +2302,7 @@ const replacePageFromDocument = (nextDocument) => {
 
   initTreeModules(document);
   refreshSidebarWidth();
-  initPage(currentContent);
+  pageInitializer(currentContent);
   createIcons();
   return true;
 };
@@ -2387,6 +2421,7 @@ export {
   positionContextMenu,
   replacePageFromDocument,
   selectedGuestSummary,
+  setPageInitializer,
   setSoftNavigationLoading,
   setTaskRowCancelled,
   shouldUseSoftNavigation,

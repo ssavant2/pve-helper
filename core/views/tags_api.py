@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from functools import wraps
+
+from django.conf import settings
+from django.http import Http404, HttpResponseNotAllowed, JsonResponse
+
+from core.models import ProxmoxInventory, ScanRun
+from core.services.integration_tokens import authenticate_token
+from core.services.tag_actions import registered_tags
+from core.services.tags import DERIVED_PREFIX, inventory_rows, parse_tags
+
+
+def integration_api(view):
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        if not settings.BACKUP_INTEGRATION_API_ENABLED:
+            raise Http404
+        if request.method != "GET":
+            return HttpResponseNotAllowed(["GET"])
+        if not request.is_secure():
+            return JsonResponse({}, status=404)
+        header = request.headers.get("Authorization", "")
+        scheme, separator, raw = header.partition(" ")
+        if not separator or scheme.lower() != "bearer" or authenticate_token(raw) is None:
+            return JsonResponse({}, status=401)
+        return view(request, *args, **kwargs)
+
+    return wrapped
+
+
+def _inventory():
+    scan = ScanRun.objects.filter(status=ScanRun.Status.COMPLETED).order_by("-created_at").first()
+    registered, _error = registered_tags()
+    return scan, inventory_rows(scan, registered)
+
+
+def _guest_json(guest):
+    derived = guest.derived_type or ""
+    type_name = derived.removeprefix(DERIVED_PREFIX) if derived.startswith(DERIVED_PREFIX) else guest.object_type
+    return {
+        "vmid": guest.vmid,
+        "name": guest.name,
+        "node": guest.node,
+        "type": type_name,
+        "status": guest.status,
+        "tags": parse_tags(guest.config),
+    }
+
+
+@integration_api
+def api_tags(request):
+    _scan, rows = _inventory()
+    return JsonResponse({"tags": [
+        {
+            "name": row.name,
+            "kind": row.kind,
+            "registered": row.registered,
+            "guest_count": row.guest_count,
+            "namespace_conflict": row.namespace_conflict,
+            "conflicting_guest_count": len(row.conflicting_guests),
+        }
+        for row in rows
+    ]})
+
+
+@integration_api
+def api_tag_guests(request, tag: str):
+    tag = tag.strip().lower()
+    _scan, rows = _inventory()
+    summary = next((row for row in rows if row.name == tag), None)
+    if summary is None:
+        raise Http404
+    return JsonResponse({
+        "tag": tag,
+        "kind": summary.kind,
+        "namespace_conflict": summary.namespace_conflict,
+        "guests": [_guest_json(guest) for guest in summary.guests],
+        "conflicting_guests": [_guest_json(guest) for guest in summary.conflicting_guests],
+    })
+
+
+@integration_api
+def api_backup_groups(request):
+    scan, _rows = _inventory()
+    prefix = settings.BACKUP_POLICY_TAG_PREFIX
+    groups: dict[str, list] = {}
+    unassigned, conflicts = [], []
+    guests = [] if scan is None else ProxmoxInventory.objects.filter(
+        scan_run=scan,
+        object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+    ).order_by("node", "vmid")
+    for guest in guests:
+        policies = [tag for tag in parse_tags(guest.config) if tag.startswith(prefix)]
+        payload = _guest_json(guest)
+        if not policies:
+            unassigned.append(payload)
+        elif len(policies) > 1:
+            conflicts.append({**payload, "policy_tags": policies})
+        else:
+            groups.setdefault(policies[0], []).append(payload)
+    return JsonResponse({"policy_prefix": prefix, "groups": groups, "unassigned": unassigned, "conflicts": conflicts})

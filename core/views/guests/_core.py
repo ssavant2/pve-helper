@@ -12,6 +12,7 @@ from .. import common
 from core.models import ProxmoxEndpoint, StorageMount
 from core.services.classification import DISK_CONFIG_KEYS, extract_disk_references
 from core.services.console_sessions import create_guest_console_session
+from core.services.tags import DERIVED_PREFIX, derived_color_map, derived_tag_for, tag_chip
 
 
 SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
@@ -376,6 +377,7 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
 
 def _vms_workspace_context(active_nav: str) -> dict:
     rows, live_available, scan_at = _guest_rows()
+    available_user_tags = _decorate_guest_tag_chips(rows)
     # The workspace Inventory list renders the full lineage tree; the overview
     # stays flat but still flags linked clones so the toolbar can gate 'Convert
     # to Template'. Both share the same cached lineage fetch.
@@ -396,7 +398,28 @@ def _vms_workspace_context(active_nav: str) -> dict:
         "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS,
         "active_object_type": "",
         "active_vmid": None,
+        "available_user_tags": available_user_tags,
     }
+
+
+def _decorate_guest_tag_chips(rows) -> list[str]:
+    # Import lazily: tag_actions owns the Proxmox registry read and imports the
+    # tag semantics module used above.
+    from core.services.tag_actions import registered_tags
+
+    try:
+        registered, _error = registered_tags()
+    except Exception:
+        # Tag colors are presentation metadata; an unavailable registry must not
+        # take down VM pages. Deterministic fallback colors remain available.
+        registered = {}
+    derived_colors = derived_color_map()
+    user_tags = {name for name in registered if not name.startswith(DERIVED_PREFIX)}
+    for row in rows:
+        row.derived_tag_chip = tag_chip(row.derived_type, registered, derived_colors)
+        row.tag_chips = [tag_chip(name, registered, derived_colors) for name in row.tags]
+        user_tags.update(name for name in row.tags if not name.startswith(DERIVED_PREFIX))
+    return sorted(user_tags, key=str.casefold)
 
 
 def _guest_rows():
@@ -523,6 +546,11 @@ def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_gu
         type_sort=type_sort,
         target_id=_guest_target_value(object_type, vmid, node),
         tags=parse_guest_tags(config),
+        derived_type=getattr(scan_obj, "derived_type", "") or (
+            "pvehelper-vmtype-template" if template else (
+                "pvehelper-vmtype-ct" if object_type == ProxmoxInventory.ObjectType.CT else "pvehelper-vmtype-vm"
+            )
+        ),
         in_scan=scan_obj is not None,
         detail_url=reverse("core:guest_summary", args=[object_type, vmid]) if vmid is not None else "",
         provisioned_bytes=provisioned_disk,
@@ -1903,7 +1931,16 @@ def _update_latest_guest_scan_config(detail: SimpleNamespace, updates: dict[str,
     for key in delete:
         config.pop(key, None)
     obj.config = config
-    obj.save(update_fields=["config"])
+    if "template" in updates or "template" in delete:
+        is_template = str(config.get("template") or "").strip().lower() in {"1", "true", "yes", "on"}
+        obj.derived_type = derived_tag_for(
+            object_type=obj.object_type,
+            is_template=is_template,
+            is_linked_clone=obj.derived_type == f"{DERIVED_PREFIX}linked-clone",
+        )
+        obj.save(update_fields=["config", "derived_type"])
+    else:
+        obj.save(update_fields=["config"])
 
 
 def _delete_latest_guest_scan_object(detail: SimpleNamespace) -> None:
@@ -2315,6 +2352,20 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
     # The sidebar list on every detail/Summary page is the same workspace tree,
     # so it must render the lineage indentation too (not a flat list).
     guest_list = _apply_workspace_lineage(rows)
+    derived_type = (
+        ProxmoxInventory.objects.filter(
+            object_type=detail.object_type,
+            vmid=detail.vmid,
+            node=detail.node,
+            derived_type__gt="",
+        )
+        .order_by("-scan_run__created_at")
+        .values_list("derived_type", flat=True)
+        .first()
+        or ("pvehelper-vmtype-template" if is_tmpl else ("pvehelper-vmtype-ct" if detail.object_type == ProxmoxInventory.ObjectType.CT else "pvehelper-vmtype-vm"))
+    )
+    tag_row = SimpleNamespace(derived_type=derived_type, tags=parse_guest_tags(detail.config))
+    _decorate_guest_tag_chips([tag_row])
     return {
         **navigation_context("vms"),
         "guest": detail,
@@ -2322,6 +2373,9 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         "guest_is_template": is_tmpl,
         "guest_type_label": type_label,
         "guest_tags": parse_guest_tags(detail.config),
+        "guest_derived_type": derived_type,
+        "guest_tag_chips": tag_row.tag_chips,
+        "guest_derived_tag_chip": tag_row.derived_tag_chip,
         "guest_tabs": _guest_tabs(detail, active_tab),
         "active_guest_tab": active_tab,
         "guest_list": guest_list,

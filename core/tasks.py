@@ -9,6 +9,7 @@ from django.db import transaction
 from django.db.models import Count, F, Q
 from django.conf import settings
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django_q.tasks import async_task
 
 from .models import (
@@ -33,6 +34,7 @@ from .services.proxmox import (
     ProxmoxTaskTimeout,
     clear_live_guest_caches,
     configured_clients,
+    fetch_live_guest_lineage,
     fetch_live_guest_status,
 )
 from .services.scan_schedule import scan_schedule_state
@@ -195,11 +197,33 @@ def reap_stale_guest_tasks() -> dict[str, int]:
     if changed:
         clear_live_guest_caches()
     resolved_force_stop_questions = _resolve_force_stop_questions(now=timezone.now())
+    interrupted_tag_operations = _reap_stale_tag_operations(now=timezone.now())
     return {
         "resolved_from_proxmox": resolved,
         "reaped_dead": reaped,
         "resolved_force_stop_questions": resolved_force_stop_questions,
+        "interrupted_tag_operations": interrupted_tag_operations,
     }
+
+
+def _reap_stale_tag_operations(*, now) -> int:
+    """Make crashed tag fan-outs visible and retryable without replaying successes."""
+    threshold = now - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
+    interrupted = 0
+    for event in AuditEvent.objects.filter(action="tag.bulk_operation", outcome="running"):
+        details = dict(event.details) if isinstance(event.details, dict) else {}
+        heartbeat = parse_datetime(str(details.get("heartbeat_at") or "")) or event.timestamp
+        if heartbeat > threshold:
+            continue
+        details["stage"] = "interrupted"
+        details["error"] = "Worker stopped before the operation completed; retry is safe."
+        details["retryable"] = True
+        details["interrupted_at"] = now.isoformat()
+        event.outcome = "failed"
+        event.details = details
+        event.save(update_fields=["outcome", "details"])
+        interrupted += 1
+    return interrupted
 
 
 def _resolve_force_stop_questions(*, now) -> int:
@@ -995,6 +1019,34 @@ def _run_scan(scan: ScanRun) -> None:
                     config=obj.config,
                     disk_references=obj.disk_references,
                 )
+            )
+
+    try:
+        lineage = fetch_live_guest_lineage()
+    except Exception:  # best-effort derived metadata must never fail a scan
+        lineage = {}
+    from core.services.tags import derived_tag_for
+
+    for obj in proxmox_objects:
+        previous = (
+            ProxmoxInventory.objects.filter(
+                object_type=obj.object_type,
+                vmid=obj.vmid,
+                node=obj.node,
+                derived_type__gt="",
+            )
+            .order_by("-scan_run__created_at")
+            .values_list("derived_type", flat=True)
+            .first()
+        )
+        linked = obj.object_type == ProxmoxInventory.ObjectType.VM and obj.vmid in lineage
+        if obj.object_type == ProxmoxInventory.ObjectType.VM and not lineage and previous == "pvehelper-vmtype-linked-clone":
+            obj.derived_type = previous
+        else:
+            obj.derived_type = derived_tag_for(
+                object_type=obj.object_type,
+                is_template=obj.object_type == ProxmoxInventory.ObjectType.VM and _is_template(obj.config),
+                is_linked_clone=linked,
             )
 
     ProxmoxInventory.objects.bulk_create(proxmox_objects, batch_size=500)

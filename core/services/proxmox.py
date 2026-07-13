@@ -97,6 +97,7 @@ class ProxmoxGuestSummary:
     uptime: int = 0
     lock: str = ""
     is_template: bool = False
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -399,6 +400,20 @@ class ProxmoxClient:
         if not data:
             return None
         return self.put(f"nodes/{quote(node, safe='')}/{guest_kind}/{vmid}/config", data=data)
+
+    def cluster_options(self) -> dict[str, Any]:
+        result = self.get("cluster/options")
+        if not isinstance(result, dict):
+            raise ProxmoxAPIError("Proxmox returned an invalid cluster options response.")
+        return result
+
+    def set_cluster_options(self, updates: dict[str, Any], *, delete: list[str] | None = None) -> Any:
+        data = dict(updates)
+        if delete:
+            data["delete"] = ",".join(delete)
+        if not data:
+            return None
+        return self.put("cluster/options", data=data)
 
     def set_storage_content(self, storage_id: str, content: list[str]) -> Any:
         if not settings.STORAGE_WRITE_ENABLED:
@@ -860,6 +875,7 @@ def _add_guest_summary(
             maxdisk=_int_or_zero(data.get("maxdisk")),
             uptime=_int_or_zero(data.get("uptime")),
             is_template=_int_or_zero(data.get("template")) == 1,
+            tags=tuple(part for part in re.split(r"[;,\s]+", str(data.get("tags") or "").strip()) if part),
         ),
     )
 

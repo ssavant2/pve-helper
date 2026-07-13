@@ -45,9 +45,32 @@
           <textarea id="guest-description" name="description" rows="6">{{ form_values.description }}</textarea>
         </div>
       {% elif section == "tags" %}
-        <div class="form-field">
-          <label for="guest-tags">Tags <span class="muted">(space- or comma-separated)</span></label>
-          <input type="text" id="guest-tags" name="tags" value="{{ form_values.tags }}" autocomplete="off">
+        <div class="guest-tag-editor" data-guest-tag-editor>
+          <div class="form-field">
+            <label for="guest-existing-tag">Existing tags</label>
+            <div class="guest-tag-existing-row">
+              <select id="guest-existing-tag" data-existing-tag-select>
+                <option value="">Choose an existing tag…</option>
+                {% for tag in available_tags %}<option value="{{ tag }}">{{ tag }}</option>{% endfor %}
+              </select>
+              <button class="secondary-action" type="button" data-existing-tag-add>Add</button>
+            </div>
+          </div>
+          <input type="hidden" id="guest-tags" name="tags" value="{{ form_values.tags }}">
+          <div class="form-field">
+            <label>Assigned tags</label>
+            <div class="guest-tag-selections" data-selected-tags></div>
+          </div>
+          <section class="guest-tag-new" aria-labelledby="guest-tag-new-heading">
+            <div class="guest-tag-new-heading">
+              <h3 id="guest-tag-new-heading">Create new tag</h3>
+              <p class="muted">The new cluster tag will be assigned to this object.</p>
+            </div>
+            <div class="guest-tag-new-fields">
+              <label class="form-field"><span>New tag name</span><input type="text" name="new_tag" value="{{ form_values.new_tag }}" pattern="[a-z0-9_][a-z0-9_+.-]*" placeholder="new-tag" autocomplete="off"></label>
+              <label class="form-field guest-tag-color"><span>Color</span><input type="color" name="new_tag_color" value="{{ form_values.new_tag_color }}"></label>
+            </div>
+          </section>
         </div>
       {% else %}
         <div class="form-field">
@@ -62,6 +85,7 @@
         </div>
       {% endif %}
 
+      {% if form_error %}<p class="form-error guest-edit-error">{{ form_error }}</p>{% endif %}
       <div class="form-actions">
         <button class="primary-action" type="submit">Save changes</button>
         <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>

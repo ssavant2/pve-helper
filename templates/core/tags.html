@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header">
+    <div><h1>Tags</h1><p>Central Proxmox tag registry and guest membership.</p></div>
+    <div class="page-header-actions">
+      <button class="secondary-action derived-tags-toggle" type="button" data-derived-tags-toggle aria-pressed="true">Hide derived tags</button>
+      <form method="post" action="{% url 'core:tags_refresh' %}">{% csrf_token %}<button class="secondary-action" type="submit">Refresh</button></form>
+    </div>
+  </div>
+
+  {% if registry_error %}<div class="panel tag-warning"><strong>Registry unavailable:</strong> {{ registry_error }}</div>{% endif %}
+
+  <section class="panel tag-create-panel">
+    <div class="panel-heading"><h2>Create tag</h2></div>
+    <form class="tag-create-form" method="post" action="{% url 'core:tag_create' %}" data-tag-async-form>
+      {% csrf_token %}
+      <label class="tag-name-field"><span>Name</span><input name="tag" pattern="[a-z0-9_][a-z0-9_+.-]*" placeholder="backup-standard" required></label>
+      <label><span>Color</span><input type="color" name="color" value="#3b82f6"></label>
+      <button class="primary-action" type="submit">Create tag</button>
+      <p class="form-error tag-form-error" data-tag-form-error hidden></p>
+    </form>
+  </section>
+
+  <section class="panel panel-spaced tag-inventory-panel">
+    <div class="panel-heading tag-inventory-heading"><h2>Tag inventory</h2><span class="muted">{% if scan %}As of {{ scan.proxmox_inventory_at|default:scan.created_at }}{% endif %}</span></div>
+    <div class="tag-inventory-tools"><label class="table-filter tag-name-field"><span class="sr-only">Filter tags</span><input type="search" placeholder="Filter tags" data-table-filter="#tags-table"></label></div>
+    <div class="tag-inventory-scroll">
+      <table class="data-table compact" id="tags-table" data-filterable-table data-sortable-table data-column-table="tag-inventory">
+        <thead><tr><th data-column="tag" data-sort="text">Tag</th><th data-column="kind" data-sort="text">Kind</th><th data-column="state" data-sort="text">State</th><th data-column="objects" data-sort="number">Objects</th></tr></thead>
+        <tbody>
+          {% for tag in tag_rows %}
+            <tr data-filter-text="{{ tag.name }} {{ tag.kind }} {{ tag.state }}"{% if tag.derived %} data-derived-tag{% endif %}>
+              <td data-sort-value="{{ tag.name }}"><a class="tag-chip" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{{ tag.detail_url }}">{{ tag.name }}</a>{% if tag.namespace_conflict %} <span class="badge failed">Namespace conflict</span>{% endif %}</td>
+              <td data-sort-value="{{ tag.kind }}">{% if tag.derived %}<span class="badge">Derived</span>{% else %}User{% endif %}</td>
+              <td data-sort-value="{{ tag.state }}">{{ tag.state }}</td>
+              <td data-sort-value="{{ tag.guest_count }}">{{ tag.guest_count }}</td>
+            </tr>
+          {% empty %}<tr><td colspan="4" class="empty-state">No tags found.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

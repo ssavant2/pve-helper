@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,9 +95,6 @@ def is_template(config: Any) -> bool:
 def parse_guest_tags(config: Any) -> list[str]:
     """Split the Proxmox `tags` field (``;``-separated, also tolerating space
     and comma) into a normalized list. Read-only view; Module 4 owns writes."""
-    if not isinstance(config, dict):
-        return []
-    raw = config.get("tags")
-    if not raw:
-        return []
-    return [part for part in re.split(r"[;,\s]+", str(raw).strip()) if part]
+    from core.services.tags import parse_tags
+
+    return parse_tags(config)

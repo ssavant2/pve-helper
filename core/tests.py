@@ -366,9 +366,9 @@ class LinkedCloneTemplateGuardTests(TestCase):
             object_type=ProxmoxInventory.ObjectType.VM, vmid=101, name="clone", node="pve3", config={}
         )
         self.client.force_login(get_user_model().objects.create_user("tester", password="x"))
-        with patch("core.views.guests._core._require_guest", return_value=detail), patch(
+        with patch("core.views.guests.actions._require_guest", return_value=detail), patch(
             "core.views.common.fetch_live_guest_lineage", return_value={101: 100}
-        ), patch("core.views.guests._core._guest_post_with_client") as post:
+        ), patch("core.views.guests.actions._guest_post_with_client") as post:
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
                 {"bulk_action": "template", "guest": "vm:101@pve3"},

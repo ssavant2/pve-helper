@@ -10,6 +10,7 @@
     data-vm-status-url="{% url 'core:vms_status' %}"
     data-vm-migrate-nics-url="{% url 'core:guest_bulk_nics' %}"
   >
+    {{ available_user_tags|json_script:"vm-overview-tag-options" }}
     <div class="panel">
       <div class="panel-heading vm-overview-heading">
         <div>
@@ -123,6 +124,7 @@
                 data-guest-lock="{{ g.lock }}"
                 data-guest-label="{{ g.guest_identity.full_label_with_type }}"
                 data-guest-name="{{ g.name }}"
+                data-guest-tags="{{ g.tags|join:';' }}"
                 data-detail-url="{{ g.detail_url }}"
                 data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
                 data-backup-options-url="{% url 'core:guest_backup_options' g.object_type g.vmid %}"
@@ -168,7 +170,7 @@
                 <td data-column="ip" data-agent-ip-cell data-ip-raw="{{ g.ip_label }}" data-sort-value="{{ g.ip_label }}">{{ g.ip_label }}</td>
                 <td data-column="mac" data-sort-value="{{ g.mac_label }}">{{ g.mac_label }}</td>
                 <td data-column="storage" data-sort-value="{{ g.storage_label }}">{{ g.storage_label }}</td>
-                <td data-column="tags" data-sort-value="{{ g.tags_label }}">{{ g.tags_label }}</td>
+                <td data-column="tags" data-sort-value="{{ g.derived_type }} {{ g.tags_label }}"><a class="tag-chip" data-derived-tag style="--tag-bg:#{{ g.derived_tag_chip.background }};--tag-fg:#{{ g.derived_tag_chip.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ g.derived_tag_chip.name|urlencode }}">{{ g.derived_tag_chip.name }}</a>{% for tag in g.tag_chips %} <a class="tag-chip" data-user-tag="{{ tag.name }}" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>{% endfor %}</td>
               </tr>
             {% empty %}
               <tr><td colspan="24" class="empty-state">No guests found.</td></tr>

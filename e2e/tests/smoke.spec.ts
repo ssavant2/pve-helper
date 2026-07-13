@@ -10,6 +10,7 @@ const PAGES = [
   { name: "Dashboard", path: "/" },
   { name: "VMs Overview", path: "/vms/overview/" },
   { name: "VMs Inventory", path: "/vms/" },
+  { name: "Tags", path: "/tags/" },
   { name: "Audit log", path: "/audit/" },
 ];
 
@@ -31,6 +32,71 @@ for (const p of PAGES) {
     expect(jsErrors, `uncaught JS errors on ${p.path}`).toEqual([]);
   });
 }
+
+test("tag links use soft navigation", async ({ page }) => {
+  await page.goto("/tags/");
+  await page.evaluate(() => {
+    (window as Window & { tagSoftNavigationMarker?: string }).tagSoftNavigationMarker = "preserved";
+  });
+  await page.getByRole("link", { name: "pvehelper-vmtype-vm", exact: true }).first().click();
+  await expect(page).toHaveURL(/\/tags\/detail\/\?tag=pvehelper-vmtype-vm/);
+  await expect
+    .poll(() => page.evaluate(() => (window as Window & { tagSoftNavigationMarker?: string }).tagSoftNavigationMarker))
+    .toBe("preserved");
+});
+
+test("derived tag visibility is shared by tag inventory and VM views", async ({ page }) => {
+  await page.goto("/tags/");
+  const toggle = page.locator("[data-derived-tags-toggle]");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle).toHaveText("Hide derived tags");
+  await expect(toggle).toHaveClass(/secondary-action/);
+  const refresh = page.getByRole("button", { name: "Refresh" });
+  expect(await toggle.evaluate((element) => element.getBoundingClientRect().height)).toBe(
+    await refresh.evaluate((element) => element.getBoundingClientRect().height)
+  );
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(toggle).toHaveText("Show derived tags");
+  await expect(page.locator('#tags-table tr[data-filter-text="pvehelper-vmtype-vm derived Derived"]')).toBeHidden();
+
+  await page.goto("/vms/overview/");
+  await expect(page.locator('[data-guest-vmid="100"] [data-derived-tag]')).toHaveCSS("display", "none");
+  await expect(page.locator('[data-guest-vmid="100"] [data-user-tag="prod"]')).toHaveCSS("display", "inline-flex");
+
+  await page.goto("/vms/vm/100/");
+  await expect(page.locator('[data-card-key="tags"] [data-derived-tag]')).toBeHidden();
+
+  await page.goto("/tags/");
+  await expect(page.locator("[data-derived-tags-toggle]")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("[data-derived-tags-toggle]")).toHaveText("Show derived tags");
+});
+
+test("tag administration uses aligned controls and the guest editor separates new tags", async ({ page }) => {
+  await page.goto("/tags/");
+  const createWidth = await page.locator('.tag-create-form input[name="tag"]').evaluate((element) => element.getBoundingClientRect().width);
+  const filterWidth = await page.locator('input[placeholder="Filter tags"]').evaluate((element) => element.getBoundingClientRect().width);
+  expect(Math.abs(createWidth - filterWidth)).toBeLessThan(1);
+  const filter = page.locator('input[placeholder="Filter tags"]');
+  await filter.fill("pvehelper-vmtype-ct");
+  await expect(page.locator('#tags-table tbody tr[data-filter-text="pvehelper-vmtype-ct derived Derived"]')).toBeVisible();
+  await expect(page.locator('#tags-table tbody tr[data-filter-text="pvehelper-vmtype-vm derived Derived"]')).toBeHidden();
+  const overflowY = await page.locator(".tag-inventory-scroll").evaluate((element) => getComputedStyle(element).overflowY);
+  expect(overflowY).toBe("auto");
+  const firstRow = page.locator("#tags-table tbody tr").first();
+  expect(await firstRow.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(34);
+  await expect(page.locator("#tags-table th").nth(1)).toHaveCSS("text-align", "center");
+  await expect(firstRow.locator("td").nth(1)).toHaveCSS("text-align", "center");
+  await filter.fill("");
+  await page.locator('#tags-table th[data-column="objects"]').click();
+  const objectCounts = await page.locator("#tags-table tbody tr td:last-child").allTextContents();
+  expect(objectCounts.map(Number)).toEqual([...objectCounts.map(Number)].sort((left, right) => left - right));
+
+  await page.goto("/vms/vm/100/edit/?section=tags");
+  await expect(page.getByLabel("Existing tags")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Create new tag" })).toBeVisible();
+  await expect(page.getByText("The new cluster tag will be assigned to this object.")).toBeVisible();
+});
 
 test("theme toggle button is wired (app.js event handlers attached)", async ({ page }) => {
   await page.goto("/vms/overview/", { waitUntil: "load" });
@@ -69,6 +135,7 @@ test("CSS layers load in the intended cascade order", async ({ page }) => {
     "/static/css/app/guest-tabs.css",
     "/static/css/app/vm-overview.css",
     "/static/css/app/hardware-forms.css",
+    "/static/css/app/tags.css",
     "/static/css/app.css",
   ]);
 

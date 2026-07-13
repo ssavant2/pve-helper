@@ -22,6 +22,15 @@
     <script>
       (function () {
         try {
+          document.documentElement.dataset.derivedTags = localStorage.getItem("pve-helper-view-derived-tags") === "hidden" ? "hidden" : "shown";
+        } catch (error) {
+          document.documentElement.dataset.derivedTags = "shown";
+        }
+      })();
+    </script>
+    <script>
+      (function () {
+        try {
           var guestNameStyle = localStorage.getItem("pve-helper-guest-name-style");
           document.documentElement.dataset.guestNameStyle = guestNameStyle === "name-only" ? "name-only" : "id-name";
         } catch (error) {
@@ -52,17 +61,18 @@
     <link rel="stylesheet" href="{% static 'css/app/context-menu.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/action-dialog.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/shared.css' %}?v=20260712-61">
-    <link rel="stylesheet" href="{% static 'css/app/guest-workspace.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/guest-workspace.css' %}?v=20260713-67">
     <link rel="stylesheet" href="{% static 'css/app/hardware-editor.css' %}?v=20260712-61">
     <link rel="stylesheet" href="{% static 'css/app/register-import.css' %}?v=20260712-61">
     <link rel="stylesheet" href="{% static 'css/app/hardware-devices.css' %}?v=20260712-61">
     <link rel="stylesheet" href="{% static 'css/app/guest-tabs.css' %}?v=20260712-61">
     <link rel="stylesheet" href="{% static 'css/app/vm-overview.css' %}?v=20260712-61">
     <link rel="stylesheet" href="{% static 'css/app/hardware-forms.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/tags.css' %}?v=20260713-68">
     <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260712-60">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script type="module" src="{% static 'js/app.js' %}?v=20260712-61"></script>
+    <script type="module" src="{% static 'js/app.js' %}?v=20260713-68"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -213,6 +223,12 @@
               <span class="tree-label">Network</span>
             </div>
           </section>
+
+          <a class="tree-node module-node {% if active_nav == 'tags' %}active{% endif %}" href="{% url 'core:tags_overview' %}">
+            <span class="tree-caret"></span>
+            <span class="tree-icon"><i data-lucide="tags" aria-hidden="true"></i></span>
+            <span class="tree-label">Tags</span>
+          </a>
 
           <a class="tree-node module-node {% if active_nav == 'scheduled_tasks' %}active{% endif %}" href="{% url 'core:scheduled_tasks' %}">
             <span class="tree-caret"></span>

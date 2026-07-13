@@ -600,6 +600,109 @@
   margin-top: 10px;
 }
 
+.guest-tag-editor {
+  max-width: 560px;
+}
+
+.guest-tag-existing-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.guest-tag-selections {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+.guest-tag-selections:empty::before {
+  content: "No user tags assigned";
+  color: var(--muted);
+}
+
+.guest-tag-selection {
+  display: inline-flex;
+  min-height: 25px;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 5px 2px 9px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  color: var(--badge-text);
+  font-size: 12px;
+}
+
+.guest-tag-selection button {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.guest-tag-selection button:hover {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.guest-tag-new {
+  margin: 20px 0 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-alt) 58%, transparent);
+}
+
+.guest-tag-new-heading {
+  margin-bottom: 14px;
+}
+
+.guest-tag-new-heading h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.guest-tag-new-heading p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.guest-tag-new-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.guest-tag-new-fields .form-field {
+  margin: 0;
+}
+
+.guest-tag-color input {
+  width: 64px;
+  min-width: 64px;
+  height: 38px;
+  min-height: 38px;
+  padding: 3px;
+}
+
+.guest-edit-error {
+  max-width: 560px;
+  margin: 0 0 12px;
+  color: var(--red);
+}
+
 /* --- polish v4: equal cards, padding, actions, drag hint --- */
 /* vSphere shows the type icon plus a small green "running" triangle overlay in
    the lower-left corner, rather than replacing the icon. */
@@ -1155,5 +1258,3 @@ body.cards-dragging {
 .guest-edit-panel .form-actions {
   margin-top: 6px;
 }
-
-

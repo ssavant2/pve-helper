@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header">
+    <div><a href="{% url 'core:tags_overview' %}">Tags</a><h1><span class="tag-chip" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}">{{ tag.name }}</span></h1><p>{{ tag.state }} · {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}</p></div>
+  </div>
+
+  {% if tag.namespace_conflict %}<div class="panel tag-warning">A real Proxmox tag conflicts with this reserved derived name. Rename or remove the real tag outside the derived namespace.</div>{% endif %}
+
+  <section class="panel tag-actions-panel">
+    {% if tag.derived or tag.registered %}
+      <form method="post" action="{% url 'core:tag_recolor' %}" data-tag-async-form>{% csrf_token %}<input type="hidden" name="tag" value="{{ tag.name }}"><label>Color <input type="color" name="color" value="#{{ tag.background }}"></label><button class="secondary-action" type="submit">Update color</button><p class="form-error tag-form-error" data-tag-form-error hidden></p></form>
+    {% endif %}
+    {% if not tag.derived %}
+      <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="Rename {{ tag.name }} on {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}?">
+        {% csrf_token %}<input type="hidden" name="operation" value="rename"><input type="hidden" name="tag" value="{{ tag.name }}"><label>New name <input name="new_tag" pattern="[a-z0-9_][a-z0-9_+.-]*" required></label><button class="secondary-action" type="submit">Rename everywhere</button>
+      </form>
+      <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="This tag is used by {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}. Removing it will update all of them and unregister the tag. Are you sure?">
+        {% csrf_token %}<input type="hidden" name="operation" value="delete"><input type="hidden" name="tag" value="{{ tag.name }}"><button class="secondary-action danger" type="submit">Delete everywhere</button>
+      </form>
+      {% if assignable_guests %}<button class="primary-action" type="button" data-tag-assign-open>Assign objects</button>{% endif %}
+    {% endif %}
+  </section>
+
+  <section class="panel panel-spaced">
+    <div class="panel-heading"><h2>Assigned objects</h2></div>
+    <table class="data-table"><thead><tr><th>Type</th><th>VMID</th><th>Name</th><th>Status</th><th>Node</th></tr></thead><tbody>
+      {% for guest in tag.guests %}
+        <tr><td>{{ guest.derived_type|default:guest.object_type }}</td><td>{{ guest.vmid }}</td><td><a href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">{{ guest.name|default:"-" }}</a></td><td>{{ guest.status|default:"-" }}</td><td>{{ guest.node }}</td></tr>
+      {% empty %}<tr><td colspan="5" class="empty-state">This tag is not assigned to any object.</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+
+  {% if tag.conflicting_guests %}
+    <section class="panel panel-spaced">
+      <div class="panel-heading"><h2>Objects carrying the conflicting real tag</h2></div>
+      <table class="data-table"><thead><tr><th>Type</th><th>VMID</th><th>Name</th><th>Status</th><th>Node</th></tr></thead><tbody>
+        {% for guest in tag.conflicting_guests %}
+          <tr><td>{{ guest.object_type }}</td><td>{{ guest.vmid }}</td><td><a href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">{{ guest.name|default:"-" }}</a></td><td>{{ guest.status|default:"-" }}</td><td>{{ guest.node }}</td></tr>
+        {% endfor %}
+      </tbody></table>
+    </section>
+  {% endif %}
+
+  {% if not tag.derived and assignable_guests %}
+    <dialog class="vm-action-dialog tag-assign-dialog" data-tag-assign-dialog>
+      <form class="vm-action-dialog-form" method="post" action="{% url 'core:vms_bulk_action' %}" data-tag-assign-form>
+        {% csrf_token %}
+        <input type="hidden" name="bulk_action" value="tags">
+        <input type="hidden" name="tags_mode" value="add">
+        <input type="hidden" name="tags_value" value="{{ tag.name }}">
+        <div class="vm-action-dialog-heading"><h2>Assign {{ tag.name }}</h2><button type="button" data-tag-assign-close aria-label="Close">&times;</button></div>
+        <p class="panel-meta">Choose one or more VMs, containers, or templates.</p>
+        <div class="tag-assign-toolbar">
+          <label class="table-filter"><span class="sr-only">Filter objects</span><input type="search" placeholder="Filter objects" data-tag-assign-filter></label>
+          <label><input type="checkbox" data-tag-assign-all> Select all visible</label>
+        </div>
+        <div class="tag-assign-list" data-tag-assign-list>
+          {% for guest in assignable_guests %}
+            <label class="tag-assign-row" data-tag-assign-row data-filter-text="{{ guest.vmid }} {{ guest.name|lower }} {{ guest.node|lower }} {{ guest.object_type }}">
+              <input type="checkbox" name="guest" value="{{ guest.tag_target }}">
+              <span class="tag-assign-name">{{ guest.name|default:guest.vmid }}</span>
+              <span class="muted">{{ guest.object_type|upper }} {{ guest.vmid }} · {{ guest.node }}</span>
+            </label>
+          {% endfor %}
+        </div>
+        <p class="form-error" data-tag-assign-error hidden></p>
+        <div class="form-actions"><button class="primary-action" type="submit">Assign selected</button><button class="secondary-action" type="button" data-tag-assign-cancel>Cancel</button></div>
+      </form>
+    </dialog>
+  {% endif %}
+{% endblock %}

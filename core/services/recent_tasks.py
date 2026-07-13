@@ -51,7 +51,14 @@ GUEST_TASK_NAMES = {
     "guest.console.opened": "Open console",
     "guest.console.closed": "Close console",
     "guest.console.failed": "Console failed",
+    "tag.bulk_operation": "Tag operation",
+    "tag.registered": "Create tag",
+    "tag.recolored": "Change tag color",
+    "tag.renamed": "Rename tag",
+    "tag.deleted": "Delete tag",
 }
+
+TAG_TASK_ACTIONS = {"tag.bulk_operation", "tag.registered", "tag.recolored", "tag.renamed", "tag.deleted"}
 
 
 DEFAULT_TASK_LIMIT = 5
@@ -266,7 +273,7 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
 def _visible_guest_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
     return list(
-        AuditEvent.objects.filter(action__startswith="guest.", timestamp__gte=cutoff)
+        AuditEvent.objects.filter(Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS), timestamp__gte=cutoff)
         .select_related("user")
         .order_by("-timestamp")
     )
@@ -285,6 +292,11 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         mode = str(details.get("mode") or "update").strip()
         tags = details.get("tags") if isinstance(details.get("tags"), list) else []
         extra = f"{mode}: {', '.join(tags)}" if tags else mode
+    elif event.action == "tag.bulk_operation":
+        extra = f"{details.get('operation', 'update')}: {details.get('source_tag', event.object_id)}"
+    elif event.action in TAG_TASK_ACTIONS:
+        new_tag = str(details.get("new_tag") or "")
+        extra = f"→ {new_tag}" if new_tag else str(details.get("tag") or details.get("source_tag") or event.object_id)
     elif event.action == "guest.migrate":
         kind = str(details.get("kind") or "").strip()
         target_node = str(details.get("target_node") or "").strip()
@@ -349,7 +361,7 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         "offer_force_stop": offer_force_stop,
         "force_stop_target": force_stop_target,
         "name": GUEST_TASK_NAMES.get(event.action, event.action),
-        "target": identity.full_label_with_type,
+        "target": event.object_id if event.action in TAG_TASK_ACTIONS else identity.full_label_with_type,
         "target_guest": identity.as_dict(),
         "status": status,
         "status_class": status_class,

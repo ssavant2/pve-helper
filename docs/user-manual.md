@@ -267,6 +267,24 @@ bulk backup/import/scan work is running. Run history is retained independently
 of the definition. Deleting a definition is a soft delete and is refused while
 one of its runs is in flight.
 
+## Tags
+
+**Tags** is the central registry and membership view. It appears below Network
+in the main navigation. Create lowercase tags with an optional color before
+assigning them, open any tag to see its VMs/CTs/templates, and use the existing
+guest or overview controls to assign tags.
+
+Rename and **Delete everywhere** run through the bulk worker because they may
+touch many guests. The confirmation shows the affected count; Recent Tasks and
+Audit show partial failures and allow a safe retry. Derived
+`pvehelper-vmtype-*` chips classify VMs, CTs, templates and linked clones inside
+pve-helper but are never written into Proxmox.
+
+An optional read-only `/api/v1` integration can expose tag membership to a
+backup reconciliation script. It is disabled by default and requires a
+dedicated bearer token issued with `issue_integration_token`; see the deployment
+runbook before enabling it.
+
 ## Operational guardrails
 
 - Confirmations, audits, preflight checks, and Recent Tasks are guardrails; they

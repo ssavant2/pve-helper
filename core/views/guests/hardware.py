@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (_audit_guest,_config_enabled,_cpu_count,_ct_features,_ct_mount_rows,_ct_network_rows,_ct_options,_format_kv_config,_is_disk_device_key,_linked_clone_disk_edit_block,_next_device_index,_parse_net_value,_parse_startup_options,_resolve_guest_detail,_set_param_bool,_set_param_text,_split_kv_config)
+from core.services.tags import DERIVED_PREFIX, TagValidationError, join_tags, parse_tags, validate_tag
 
 
 def _advanced_device_label(key: str) -> str:
@@ -860,7 +861,7 @@ def guest_edit(request, object_type: str, vmid: int):
         result = _apply_guest_edit(request, detail, name_key)
         if result is True:
             return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
-        messages.error(request, result)
+        form_error = result
         form_values = {
             "name": request.POST.get("name", ""),
             "description": request.POST.get("description", ""),
@@ -870,8 +871,11 @@ def guest_edit(request, object_type: str, vmid: int):
             "sockets": request.POST.get("sockets", ""),
             "memory": request.POST.get("memory", ""),
             "swap": request.POST.get("swap", ""),
+            "new_tag": request.POST.get("new_tag", ""),
+            "new_tag_color": request.POST.get("new_tag_color", "#3b82f6"),
         }
     else:
+        form_error = ""
         form_values = {
             "name": str(config.get(name_key, "") or ""),
             "description": str(config.get("description", "") or ""),
@@ -881,7 +885,12 @@ def guest_edit(request, object_type: str, vmid: int):
             "sockets": str(config.get("sockets", "") or ""),
             "memory": str(config.get("memory", "") or ""),
             "swap": str(config.get("swap", "") or ""),
+            "new_tag": "",
+            "new_tag_color": "#3b82f6",
         }
+
+    current_tags = parse_tags(form_values["tags"])
+    available_tags = _available_user_tags() if section == "tags" else []
 
     context = {
         **navigation_context("vms"),
@@ -891,6 +900,9 @@ def guest_edit(request, object_type: str, vmid: int):
         "section": section,
         "is_vm": object_type == ProxmoxInventory.ObjectType.VM,
         "form_values": form_values,
+        "form_error": form_error,
+        "current_tags": current_tags,
+        "available_tags": available_tags,
     }
     return render(request, "core/guest_edit.html", context)
 
@@ -922,6 +934,7 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
     updates: dict[str, str] = {}
     delete: list[str] = []
     changed: list[str] = []
+    registered_new_tag = False
 
     if section == "hardware":
         if detail.object_type == ProxmoxInventory.ObjectType.VM:
@@ -948,8 +961,30 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
             changed.append("description")
 
     if section == "tags":
-        new_tags = ";".join(t for t in re.split(r"[;,\s]+", request.POST.get("tags", "").strip()) if t)
-        cur_tags = ";".join(t for t in re.split(r"[;,\s]+", str(fresh.get("tags", "") or "").strip()) if t)
+        try:
+            requested_tags = [validate_tag(tag) for tag in parse_tags(request.POST.get("tags", ""))]
+            new_tag = request.POST.get("new_tag", "").strip()
+            if new_tag:
+                new_tag = validate_tag(new_tag)
+                from core.services.tag_actions import register_tag
+
+                _registered, registry_error = register_tag(new_tag, request.POST.get("new_tag_color", ""))
+                if registry_error:
+                    return f"Could not create the new tag: {registry_error}"
+                if new_tag not in requested_tags:
+                    requested_tags.append(new_tag)
+                registered_new_tag = True
+                record_audit_event(
+                    request,
+                    action="tag.registered",
+                    object_type="cluster",
+                    object_id=new_tag,
+                    details={"tag": new_tag, "source": "guest-tag-editor"},
+                )
+            new_tags = join_tags(requested_tags)
+        except TagValidationError as exc:
+            return str(exc)
+        cur_tags = join_tags(parse_tags(fresh))
         if new_tags != cur_tags:
             if new_tags:
                 updates["tags"] = new_tags
@@ -973,8 +1008,11 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
             updates["onboot"] = new_onboot
             changed.append("onboot")
 
-    if not changed:
+    if not changed and not registered_new_tag:
         return "No changes to save."
+
+    if not changed:
+        return True
 
     try:
         client.set_guest_config(
@@ -1001,5 +1039,22 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
     return True
 
 
+def _available_user_tags() -> list[str]:
+    names: set[str] = set()
+    try:
+        from core.services.tag_actions import registered_tags
+
+        registered, _error = registered_tags()
+        names.update(registered)
+    except Exception:
+        pass
+    scan = ScanRun.objects.filter(status=ScanRun.Status.COMPLETED).order_by("-created_at").first()
+    if scan:
+        for config in ProxmoxInventory.objects.filter(
+            scan_run=scan,
+            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
+        ).values_list("config", flat=True):
+            names.update(parse_tags(config))
+    return sorted(name for name in names if not name.startswith(DERIVED_PREFIX))
 
 

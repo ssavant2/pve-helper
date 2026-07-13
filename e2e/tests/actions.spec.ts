@@ -25,6 +25,37 @@ test("right-click opens the context menu", async ({ page }) => {
   await expect(menu).toBeVisible();
 });
 
+test("Tags menu offers existing tags for add and assigned tags for remove", async ({ page }) => {
+  const taggedRow = page.locator('[data-vm-overview-row][data-guest-vmid="100"]');
+  // The rendered chips are authoritative if scan/registry metadata is stale.
+  await taggedRow.evaluate((row) => {
+    delete (row as HTMLElement).dataset.guestTags;
+  });
+  await page.locator("#vm-overview-tag-options").evaluate((script) => {
+    script.textContent = "[]";
+  });
+  await taggedRow.click({ button: "right" });
+  await page.locator("#context-menu .context-menu-parent", { hasText: "Tags" }).hover();
+  await expect(page.locator('#context-menu [data-vm-action="remove-tags"]')).toBeEnabled();
+  await expect(page.locator('#context-menu [data-vm-action="add-tags"]')).toBeEnabled();
+  await expect(page.locator('#context-menu [data-vm-action="edit-tags"]')).toHaveCount(0);
+
+  await page.locator('#context-menu [data-vm-action="remove-tags"]').click();
+  const dialog = page.locator("[data-vm-action-dialog]");
+  await expect(dialog.getByRole("heading", { name: "Remove Tags" })).toBeVisible();
+  await expect(dialog.locator('select[name="tags_value"]')).toHaveValue("prod");
+  await expect(dialog.getByText(/Replace all/i)).toHaveCount(0);
+  await dialog.locator("[data-vm-dialog-close]").click();
+
+  const untaggedRow = page.locator('[data-vm-overview-row][data-guest-vmid="101"]');
+  await untaggedRow.click({ button: "right" });
+  await page.locator("#context-menu .context-menu-parent", { hasText: "Tags" }).hover();
+  await expect(page.locator('#context-menu [data-vm-action="remove-tags"]')).toBeDisabled();
+  await page.locator('#context-menu [data-vm-action="add-tags"]').click();
+  await expect(dialog.getByRole("heading", { name: "Add Tags" })).toBeVisible();
+  await expect(dialog.locator('select[name="tags_value"]')).toHaveValue("prod");
+});
+
 test("Power Off on a running guest opens the shared confirm dialog", async ({ page }) => {
   // Power Off (stop) lives under the "Power" hover submenu; reveal it first.
   const runningRow = page.locator('[data-vm-overview-row][data-guest-status="running"]').first();

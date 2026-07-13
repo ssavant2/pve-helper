@@ -2,10 +2,14 @@ from django.urls import path
 
 from . import views
 from .template_clone_views import clone_guest_to_template
+from .views import tags_api
 
 app_name = "core"
 
 urlpatterns = [
+    path("api/v1/tags.json", tags_api.api_tags, name="api_tags"),
+    path("api/v1/tags/<str:tag>/guests.json", tags_api.api_tag_guests, name="api_tag_guests"),
+    path("api/v1/backup-groups.json", tags_api.api_backup_groups, name="api_backup_groups"),
     path("", views.dashboard, name="dashboard"),
     path("datastores/", views.datastores, name="datastores"),
     path("search/", views.global_search, name="global_search"),
@@ -87,6 +91,12 @@ urlpatterns = [
     path("trash/<int:trash_item_id>/purge/", views.purge_trash_item, name="purge_trash_item"),
     path("orphans/", views.orphan_finder, name="orphan_finder"),
     path("files/classified/", views.classified_files, name="classified_files"),
+    path("tags/", views.tags_overview, name="tags_overview"),
+    path("tags/detail/", views.tag_detail, name="tag_detail"),
+    path("tags/create/", views.tag_create, name="tag_create"),
+    path("tags/recolor/", views.tag_recolor, name="tag_recolor"),
+    path("tags/operation/", views.tag_operation, name="tag_operation"),
+    path("tags/refresh/", views.tags_refresh, name="tags_refresh"),
     path("scheduled-tasks/", views.scheduled_tasks, name="scheduled_tasks"),
     path("scheduled-tasks/runs/", views.scheduled_task_runs, name="scheduled_task_runs"),
     path("scheduled-tasks/new/", views.scheduled_task_create, name="scheduled_task_create"),

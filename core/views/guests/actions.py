@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (MIGRATE_KINDS, SNAPSHOT_NAME_HELP, SNAPSHOT_NAME_RE, _MIGRATE_ACTIVE_STATES, _MIGRATE_ASYNC, _apply_migrate_net_remap, _audit_guest, _backup_error, _config_enabled, _config_storage_ids, _delete_all_guest_snapshots, _delete_latest_guest_scan_object, _finish_guest_running_audit, _guest_agent_config_enabled, _guest_destroy_with_client, _guest_movable_disks, _guest_pool_memberships, _guest_post_with_client, _linked_clone_children, _parse_guest_target_value, _require_guest, _snapshot_error, _split_tag_text, _submit_guest_backup, _template_linked_clone_children, _template_storage_paths, _unique_tags, _update_latest_guest_scan_config)
+from core.services.tags import TagValidationError, validate_tag
 
 
 @require_POST
@@ -605,6 +606,10 @@ def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
 def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict]:
     mode = request.POST.get("tags_mode", "").strip()
     requested_tags = _split_tag_text(request.POST.get("tags_value", ""))
+    try:
+        requested_tags = [validate_tag(tag) for tag in requested_tags]
+    except TagValidationError as exc:
+        return str(exc), {"mode": mode, "tags": requested_tags}
     if mode not in {"add", "remove", "replace"}:
         return "Unknown tag operation.", {}
     if mode in {"add", "remove"} and not requested_tags:
@@ -716,7 +721,6 @@ def _set_guest_agent_from_bulk_request(
 
     _update_latest_guest_scan_config(detail, updates, [])
     return "", audit_details, None, client
-
 
 
 

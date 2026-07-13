@@ -276,6 +276,7 @@ class ProxmoxInventory(TimestampedModel):
     status = models.CharField(max_length=80, blank=True)
     config = models.JSONField(default=dict, blank=True)
     disk_references = models.JSONField(default=list, blank=True)
+    derived_type = models.CharField(max_length=40, blank=True, db_index=True)
 
     class Meta:
         ordering = ["node", "object_type", "vmid"]
@@ -287,6 +288,37 @@ class ProxmoxInventory(TimestampedModel):
     def __str__(self) -> str:
         label = self.name or self.vmid or self.object_type
         return f"{self.node}: {label}"
+
+
+class IntegrationToken(TimestampedModel):
+    """Hashed bearer credential for the optional read-only integration API."""
+
+    token_id = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=120)
+    secret_hash = models.CharField(max_length=255)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["name", "token_id"]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.token_id})"
+
+
+class DerivedTagStyle(TimestampedModel):
+    """App-side color override for a virtual pvehelper-vmtype-* tag."""
+
+    tag = models.CharField(max_length=40, unique=True)
+    background = models.CharField(max_length=6)
+    foreground = models.CharField(max_length=6)
+
+    class Meta:
+        ordering = ["tag"]
+
+    def __str__(self) -> str:
+        return self.tag
 
 
 class ProxmoxStorageConsumer(TimestampedModel):

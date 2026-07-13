@@ -1,5 +1,11 @@
 import { initConsolePages } from "./console.js";
-import { initBackupRestoreForms, initContextMenu, initGuestActionForms, initSoftNavigation } from "./guest-actions.js";
+import {
+  initBackupRestoreForms,
+  initContextMenu,
+  initGuestActionForms,
+  initSoftNavigation,
+  setPageInitializer,
+} from "./guest-actions.js";
 import { initHardwareEditor } from "./hardware.js";
 import { initRecentTasks } from "./recent-tasks.js";
 import { initVmRegister } from "./register.js";
@@ -45,6 +51,7 @@ import {
   initSummaryCards,
   initTableFilters,
 } from "./tables.js";
+import { initTags } from "./tags.js";
 import {
   initGuestAgentSummaries,
   initVmOverviewAgentInfo,
@@ -54,6 +61,7 @@ import {
 } from "./vm-overview.js";
 
 const initPage = (root = document) => {
+  initTags(root);
   initHardwareEditor(root);
   initVmRegister(root);
   initGuestActionForms(root);
@@ -86,6 +94,8 @@ const initPage = (root = document) => {
   applyIpVersionStyle(document.documentElement.dataset.ipVersionStyle || "all");
   createIcons();
 };
+
+setPageInitializer(initPage);
 
 export const initShell = () => {
   applyTheme(preferredTheme());
