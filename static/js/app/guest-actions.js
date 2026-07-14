@@ -1,3 +1,5 @@
+import { ensureVmActionDialog, openConfirmDialog, openInputDialog } from "./dialogs.js";
+import { clearLocalError, showLocalError } from "./feedback.js";
 import { selectedVmOverviewRows } from "./scheduling.js";
 import {
   addPendingRecentTask,
@@ -152,6 +154,7 @@ const initGuestActionForms = (root = document) => {
       ) {
         return;
       }
+      clearLocalError(form);
       const pending = createPendingGuestFormTask(form);
       addPendingRecentTask(pending);
       let settled = false;
@@ -170,7 +173,7 @@ const initGuestActionForms = (root = document) => {
           finished_at: taskDateLabel(new Date()),
           finished_at_ms: Date.now(),
         });
-        window.alert(message);
+        showLocalError(form, message);
       };
       try {
         const response = await fetch(form.action, {
@@ -178,9 +181,9 @@ const initGuestActionForms = (root = document) => {
           body: new FormData(form),
           headers: { Accept: "application/json", "X-Requested-With": "fetch" },
         });
-        const payload = response.ok ? await response.json() : { ok: false, errors: [`HTTP ${response.status}`] };
+        const payload = await response.json().catch(() => ({}));
         if (!payload.ok) {
-          fail((payload.errors || ["Action failed."]).join("; "));
+          fail((payload.errors || [`Action failed: HTTP ${response.status}.`]).join("; "));
           return;
         }
         settled = true;
@@ -303,6 +306,7 @@ const initBackupRestoreForms = (root = document) => {
 };
 
 const submitVmBulkAction = async (overview, action, fields = {}, targetRows = null, submitUrl = "") => {
+  clearLocalError(overview);
   const form = overview.querySelector("[data-vm-bulk-form]");
   const actionInput = overview.querySelector("[data-vm-bulk-action]");
   const snapshotInput = overview.querySelector("[data-vm-bulk-snapshot-name]");
@@ -365,20 +369,21 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
         "X-Requested-With": "fetch",
       },
     });
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       requestSettled = true;
+      const message = (payload.errors || [`VM/CT action failed: HTTP ${response.status}.`]).join("; ");
       updatePendingRecentTask({
         id: pendingTask.id,
         status: "Failed",
         status_class: "failed",
-        details: `HTTP ${response.status}`,
+        details: message,
         finished_at: taskDateLabel(new Date()),
         finished_at_ms: Date.now(),
       });
-      window.alert(`VM/CT action failed: ${response.status}`);
+      showLocalError(overview, message);
       return;
     }
-    const payload = await response.json();
     if (!payload.ok) {
       requestSettled = true;
       updatePendingRecentTask({
@@ -389,7 +394,7 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
         finished_at: taskDateLabel(new Date()),
         finished_at_ms: Date.now(),
       });
-      window.alert((payload.errors || ["VM/CT action failed."]).join("\n"));
+      showLocalError(overview, (payload.errors || ["VM/CT action failed."]).join("; "));
     } else {
       requestSettled = true;
       // Bulk migrate can't reconcile one summary row against N per-guest server
@@ -461,7 +466,7 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
       finished_at: taskDateLabel(new Date()),
       finished_at_ms: Date.now(),
     });
-    window.alert("VM/CT action failed: network error.");
+    showLocalError(overview, "VM/CT action failed: network error.");
   }
 };
 
@@ -476,17 +481,6 @@ const defaultSnapshotName = () => {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, "0");
   return `manual_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-};
-
-const ensureVmActionDialog = () => {
-  let dialog = document.querySelector("[data-vm-action-dialog]");
-  if (!dialog) {
-    dialog = document.createElement("dialog");
-    dialog.className = "vm-action-dialog";
-    dialog.dataset.vmActionDialog = "true";
-    document.body.appendChild(dialog);
-  }
-  return dialog;
 };
 
 const selectedGuestSummary = (rows) => `${rows.length} selected guest${rows.length === 1 ? "" : "s"}`;
@@ -542,87 +536,6 @@ const openVmFormDialog = ({ title, summary, bodyHtml, submitLabel, submitClass =
   }
   return dialog;
 };
-
-// Shared confirm/consequence dialog. Returns a Promise<boolean> so it drops in
-// for window.confirm inside async handlers: `if (!(await openConfirmDialog(...)))
-// return;`. `body` is trusted HTML — escape any user/DB text before passing it.
-const openConfirmDialog = ({ title = "Please confirm", body = "", confirmLabel = "Confirm", danger = false }) =>
-  new Promise((resolve) => {
-    const dialog = ensureVmActionDialog();
-    let decided = false;
-    dialog.innerHTML = `
-        <div class="vm-action-dialog-form">
-          <div class="vm-action-dialog-heading">
-            <h2>${escapeHtml(title)}</h2>
-            <button type="button" data-confirm-dismiss aria-label="Close">×</button>
-          </div>
-          <div class="vm-action-dialog-body">${body}</div>
-          <div class="form-actions">
-            <button class="primary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>
-            <button class="secondary-action" type="button" data-confirm-no>Cancel</button>
-          </div>
-        </div>
-      `;
-    const finish = (result) => {
-      if (decided) {
-        return;
-      }
-      decided = true;
-      resolve(result);
-      dialog.close();
-    };
-    dialog.querySelector("[data-confirm-yes]")?.addEventListener("click", () => finish(true));
-    dialog.querySelector("[data-confirm-no]")?.addEventListener("click", () => finish(false));
-    dialog.querySelector("[data-confirm-dismiss]")?.addEventListener("click", () => finish(false));
-    dialog.addEventListener("close", () => finish(false), { once: true });
-    if (typeof dialog.showModal === "function") {
-      dialog.showModal();
-    }
-  });
-
-// Shared text-input dialog (Promise<string|null>) replacing window.prompt, so
-// file naming flows can use the app dialog instead of a native browser prompt.
-const openInputDialog = ({ title = "Enter a value", label = "", value = "", confirmLabel = "OK" }) =>
-  new Promise((resolve) => {
-    const dialog = ensureVmActionDialog();
-    let decided = false;
-    dialog.innerHTML = `
-        <form class="vm-action-dialog-form" method="dialog">
-          <div class="vm-action-dialog-heading">
-            <h2>${escapeHtml(title)}</h2>
-            <button type="button" data-input-dismiss aria-label="Close">×</button>
-          </div>
-          <label class="form-field">
-            ${label ? `<span>${escapeHtml(label)}</span>` : ""}
-            <input type="text" data-input-value autocomplete="off" value="${escapeHtml(value)}">
-          </label>
-          <div class="form-actions">
-            <button class="primary-action" type="submit">${escapeHtml(confirmLabel)}</button>
-            <button class="secondary-action" type="button" data-input-cancel>Cancel</button>
-          </div>
-        </form>
-      `;
-    const field = dialog.querySelector("[data-input-value]");
-    const finish = (result) => {
-      if (decided) {
-        return;
-      }
-      decided = true;
-      resolve(result);
-      dialog.close();
-    };
-    dialog.querySelector("form")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      finish((field?.value ?? "").trim() || null);
-    });
-    dialog.querySelector("[data-input-cancel]")?.addEventListener("click", () => finish(null));
-    dialog.querySelector("[data-input-dismiss]")?.addEventListener("click", () => finish(null));
-    dialog.addEventListener("close", () => finish(null), { once: true });
-    if (typeof dialog.showModal === "function") {
-      dialog.showModal();
-    }
-    field?.focus();
-  });
 
 // Issue an ungraceful hard stop for one guest straight from the taskbar (used
 // by the force-stop follow-up on a timed-out graceful shutdown). POSTs the same
@@ -2003,6 +1916,7 @@ const openTaskContextMenu = (menu, row, event) => {
   }
   const taskName = row.querySelector('[data-column="task-name"]')?.textContent?.trim() || "Task";
   const cancelable = row.dataset.taskCancelable === "true";
+  const retryable = row.dataset.taskRetryable === "true";
   activeTaskRow = row;
   activeVmOverview = null;
   activeVmContextRows = [];
@@ -2011,6 +1925,7 @@ const openTaskContextMenu = (menu, row, event) => {
   menu.innerHTML = `
       <div class="context-menu-title">${escapeHtml(taskName)}</div>
       <button type="button" data-task-action="cancel-task" ${cancelable ? "" : "disabled"}>Cancel Task</button>
+      <button type="button" data-task-action="retry-task" ${retryable ? "" : "disabled"}>Retry Task...</button>
     `;
   positionContextMenu(menu, event);
   return true;
@@ -2070,6 +1985,7 @@ const initContextMenu = () => {
       const action = taskButton.dataset.taskAction || "";
       const taskbar = activeTaskRow.closest("[data-recent-tasks]");
       const cancelUrl = taskbar?.dataset.taskCancelUrl || "";
+      const retryUrl = taskbar?.dataset.taskRetryUrl || "";
       const taskId = activeTaskRow.dataset.taskId || activeTaskRow.dataset.taskRowKey || "";
       if (action === "cancel-task" && cancelUrl && taskId) {
         if (
@@ -2085,6 +2001,7 @@ const initContextMenu = () => {
         }
         const body = new URLSearchParams();
         body.set("task_id", taskId);
+        clearLocalError(taskbar);
         try {
           const response = await fetch(new URL(cancelUrl, window.location.origin), {
             method: "POST",
@@ -2102,7 +2019,41 @@ const initContextMenu = () => {
           setTaskRowCancelled(activeTaskRow);
           window.pveHelperRefreshRecentTasks?.();
         } catch (error) {
-          window.alert(error.message || "Task could not be cancelled.");
+          showLocalError(taskbar, error.message || "Task could not be cancelled.");
+        }
+      } else if (action === "retry-task" && retryUrl && taskId) {
+        if (
+          !(await openConfirmDialog({
+            title: "Retry tag operation",
+            body: "<p>Retry the failed parts of this tag operation?</p>",
+            confirmLabel: "Retry",
+          }))
+        ) {
+          menu.hidden = true;
+          activeTaskRow = null;
+          return;
+        }
+        const body = new URLSearchParams();
+        body.set("task_id", taskId);
+        clearLocalError(taskbar);
+        try {
+          const response = await fetch(new URL(retryUrl, window.location.origin), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "X-CSRFToken": taskbar?.dataset.csrfToken || "",
+              "X-Requested-With": "fetch",
+            },
+            body,
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.error || "Tag operation could not be retried.");
+          }
+          activeTaskRow.dataset.taskRetryable = "false";
+          window.pveHelperRefreshRecentTasks?.();
+        } catch (error) {
+          showLocalError(taskbar, error.message || "Tag operation could not be retried.");
         }
       }
       menu.hidden = true;

@@ -1,3 +1,4 @@
+import { openConfirmDialog } from "./dialogs.js";
 import { loadSoftNavigation } from "./guest-actions.js";
 import { escapeHtml, recentTasksRefreshEvent, registerPageCleanup, renderGuestLabel } from "./shell.js";
 
@@ -437,8 +438,21 @@ const initConfirmForms = (root) => {
   root.querySelectorAll("form[data-confirm]:not([data-guest-action-form])").forEach((form) => {
     if (form.dataset.confirmBound) return;
     form.dataset.confirmBound = "1";
-    form.addEventListener("submit", (e) => {
-      if (!confirm(form.dataset.confirm)) e.preventDefault();
+    form.addEventListener("submit", async (event) => {
+      if (form.dataset.confirmed === "true") {
+        delete form.dataset.confirmed;
+        return;
+      }
+      event.preventDefault();
+      const confirmed = await openConfirmDialog({
+        title: form.dataset.confirmTitle || "Confirm action",
+        body: `<p>${escapeHtml(form.dataset.confirm || "Continue?")}</p>`,
+        confirmLabel: form.dataset.confirmLabel || "Confirm",
+        danger: form.dataset.confirmDanger === "true",
+      });
+      if (!confirmed) return;
+      form.dataset.confirmed = "true";
+      form.requestSubmit(event.submitter || undefined);
     });
   });
 };

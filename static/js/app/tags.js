@@ -8,6 +8,37 @@ const initTags = (root = document) => {
     await loadSoftNavigation(url, { push: false });
   };
 
+  root.querySelectorAll("[data-tag-refresh-form]").forEach((form) => {
+    if (form.dataset.initialized === "true") return;
+    form.dataset.initialized = "true";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submit = form.querySelector('button[type="submit"]');
+      const error = form.querySelector("[data-tag-refresh-error]");
+      submit.disabled = true;
+      if (error) error.hidden = true;
+      try {
+        const response = await fetch(form.action, {
+          method: "POST",
+          body: new FormData(form),
+          headers: { Accept: "application/json", "X-Requested-With": "fetch" },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+        submit.textContent = "Refresh queued";
+        window.pveHelperRefreshRecentTasks?.();
+      } catch (requestError) {
+        submit.disabled = false;
+        if (error) {
+          error.textContent = requestError.message || "The tag inventory refresh could not be queued.";
+          error.hidden = false;
+        }
+      }
+    });
+  });
+
   root
     .querySelectorAll('form[action*="/tags/"] input[name="tag"], form[action*="/tags/"] input[name="new_tag"]')
     .forEach((input) => {

@@ -4,6 +4,7 @@ from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (_audit_guest,_config_enabled,_cpu_count,_ct_features,_ct_mount_rows,_ct_network_rows,_ct_options,_format_kv_config,_is_disk_device_key,_linked_clone_disk_edit_block,_next_device_index,_parse_net_value,_parse_startup_options,_resolve_guest_detail,_set_param_bool,_set_param_text,_split_kv_config)
 from core.services.tags import TagValidationError, join_tags, parse_tags, validate_tag
+from core.services.tag_catalog import load_tag_catalog
 
 
 def _advanced_device_label(key: str) -> str:
@@ -1040,22 +1041,7 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
 
 
 def _available_user_tags() -> list[str]:
-    names: set[str] = set()
-    try:
-        from core.services.tag_actions import registered_tags
-
-        registered, _error = registered_tags()
-        names.update(registered)
-    except Exception:
-        pass
-    scan = common._latest_proxmox_inventory_scan()
-    if scan:
-        for config in ProxmoxInventory.objects.filter(
-            scan_run=scan,
-            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-        ).values_list("config", flat=True):
-            names.update(parse_tags(config))
-    return sorted(names)
+    return list(load_tag_catalog().available)
 
 
 @app_login_required

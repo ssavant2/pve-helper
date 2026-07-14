@@ -81,7 +81,7 @@
             <td>{{ action.display_creator }}</td>
             <td class="row-actions">
               {% if scheduled_actions_enabled %}
-                <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_run_now' action.id %}" onsubmit="return confirm('Run {{ action.name|escapejs }} now?');">
+                <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_run_now' action.id %}" data-confirm="Run {{ action.name }} now?" data-confirm-title="Run scheduled task" data-confirm-label="Run now">
                   {% csrf_token %}
                   <button class="icon-button" type="submit" title="Run Now" aria-label="Run {{ action.name }} now">
                     <i data-lucide="play" aria-hidden="true"></i>
@@ -102,7 +102,7 @@
                   <i data-lucide="{% if action.enabled %}pause{% else %}power{% endif %}" aria-hidden="true"></i>
                 </button>
               </form>
-              <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_delete' action.id %}" onsubmit="return confirm('Remove {{ action.name|escapejs }}? Future runs stop; completed run history is retained.');">
+              <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_delete' action.id %}" data-confirm="Remove {{ action.name }}? Future runs stop; completed run history is retained." data-confirm-title="Delete scheduled task" data-confirm-label="Delete" data-confirm-danger="true">
                 {% csrf_token %}
                 <button class="icon-button danger" type="submit" title="Delete" aria-label="Delete {{ action.name }}">
                   <i data-lucide="trash-2" aria-hidden="true"></i>

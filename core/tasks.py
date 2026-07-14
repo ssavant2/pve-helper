@@ -10,6 +10,7 @@ from django.db.models import Count, F, Q
 from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django_q.models import Task
 from django_q.tasks import async_task
 
 from .models import (
@@ -23,8 +24,14 @@ from .models import (
     TrashItem,
 )
 from .services.classification import classify_entry, extract_disk_references
+from .services.audit_events import record_audit_event
 from .services.console_session_cleanup import prune_console_sessions
 from .services.config import sync_runtime_configuration
+from .services.current_guest_inventory import (
+    ScanGuestObservation,
+    reconcile_scan_guest_inventory,
+    upsert_current_guest,
+)
 from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
@@ -47,7 +54,7 @@ from .services.storage_actions import (
     purge_trash_item,
 )
 from .services.storage_visibility import ignored_relative_paths_for_storage
-from .services.task_queues import BULK_QUEUE_NAME
+from .services.task_queues import BULK_QUEUE_NAME, queued_task_ids
 
 
 SPACE_SNAPSHOT_RETENTION_DAYS = 8
@@ -197,33 +204,105 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         clear_live_guest_caches()
     resolved_force_stop_questions = _resolve_force_stop_questions(now=timezone.now())
     interrupted_tag_operations = _reap_stale_tag_operations(now=timezone.now())
+    interrupted_tag_inventory_refreshes = _reap_stale_tag_inventory_refreshes(now=timezone.now())
     return {
         "resolved_from_proxmox": resolved,
         "reaped_dead": reaped,
         "resolved_force_stop_questions": resolved_force_stop_questions,
         "interrupted_tag_operations": interrupted_tag_operations,
+        "interrupted_tag_inventory_refreshes": interrupted_tag_inventory_refreshes,
     }
 
 
 def _reap_stale_tag_operations(*, now) -> int:
-    """Make crashed tag fan-outs visible and retryable without replaying successes."""
+    """Resolve stale fan-outs only after checking their durable queue state."""
     threshold = now - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
+    candidates = list(
+        AuditEvent.objects.filter(
+            action="tag.bulk_operation",
+            outcome__in=["queued", "running"],
+        )
+    )
     interrupted = 0
-    for event in AuditEvent.objects.filter(action="tag.bulk_operation", outcome="running"):
-        details = dict(event.details) if isinstance(event.details, dict) else {}
-        heartbeat = parse_datetime(str(details.get("heartbeat_at") or "")) or event.timestamp
-        if heartbeat > threshold:
+    for candidate in candidates:
+        details = dict(candidate.details) if isinstance(candidate.details, dict) else {}
+        activity_at = parse_datetime(
+            str(details.get("heartbeat_at") or details.get("queued_at") or "")
+        ) or candidate.timestamp
+        if activity_at > threshold:
             continue
-        details["stage"] = "interrupted"
-        details["error"] = "Worker stopped before the operation completed; retry is safe."
-        details["retryable"] = True
-        details["interrupted_at"] = now.isoformat()
-        event.outcome = "failed"
-        event.details = details
-        event.save(update_fields=["outcome", "details"])
-        interrupted += 1
+        with transaction.atomic():
+            event = AuditEvent.objects.select_for_update().get(pk=candidate.pk)
+            if event.outcome not in {"queued", "running"}:
+                continue
+            details = dict(event.details) if isinstance(event.details, dict) else {}
+            activity_at = parse_datetime(
+                str(details.get("heartbeat_at") or details.get("queued_at") or "")
+            ) or event.timestamp
+            if activity_at > threshold:
+                continue
+            task_id = str(details.get("worker_task_id") or "")
+            task = Task.objects.filter(id=task_id).only("id", "success").first() if task_id else None
+            if task_id and task is None and task_id in queued_task_ids({task_id}):
+                continue
+            details["stage"] = "interrupted"
+            if task is not None and not task.success:
+                details["error"] = "The background worker reported that the operation failed; retry is safe."
+            elif task is not None:
+                details["error"] = "The background task finished without finalizing the operation; retry is safe."
+            elif task_id:
+                details["error"] = "The queued background task is no longer present; retry is safe."
+            else:
+                details["error"] = "The operation was not attached to a background task; retry is safe."
+            details["retryable"] = True
+            details["interrupted_at"] = now.isoformat()
+            details["finished_at"] = now.isoformat()
+            event.outcome = "failed"
+            event.details = details
+            event.save(update_fields=["outcome", "details"])
+            interrupted += 1
     return interrupted
 
+
+def _reap_stale_tag_inventory_refreshes(*, now) -> int:
+    threshold = now - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
+    candidates = list(
+        AuditEvent.objects.filter(
+            action="tag.inventory.refresh",
+            outcome__in=["queued", "running"],
+        )
+    )
+    interrupted = 0
+    for candidate in candidates:
+        details = dict(candidate.details) if isinstance(candidate.details, dict) else {}
+        activity_at = parse_datetime(
+            str(details.get("heartbeat_at") or details.get("queued_at") or "")
+        ) or candidate.timestamp
+        if activity_at > threshold:
+            continue
+        with transaction.atomic():
+            event = AuditEvent.objects.select_for_update().get(pk=candidate.pk)
+            if event.outcome not in {"queued", "running"}:
+                continue
+            details = dict(event.details) if isinstance(event.details, dict) else {}
+            activity_at = parse_datetime(
+                str(details.get("heartbeat_at") or details.get("queued_at") or "")
+            ) or event.timestamp
+            if activity_at > threshold:
+                continue
+            task_id = str(details.get("worker_task_id") or "")
+            task = Task.objects.filter(id=task_id).only("id", "success").first() if task_id else None
+            if task_id and task is None and task_id in queued_task_ids({task_id}):
+                continue
+            details["stage"] = "interrupted"
+            details["error"] = "The tag inventory refresh worker stopped reporting progress; start a new refresh."
+            details["interrupted_at"] = now.isoformat()
+            details["finished_at"] = now.isoformat()
+            event.outcome = "failed"
+            event.details = details
+            event.save(update_fields=["outcome", "details"])
+            interrupted += 1
+    return interrupted
 
 def _resolve_force_stop_questions(*, now) -> int:
     """Resolve timed-out shutdown questions outside the request/HTML path."""
@@ -327,15 +406,12 @@ def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
         ).exists()
         if has_terminal_event:
             continue
-        AuditEvent.objects.create(
+        record_audit_event(
             username="system",
             action="file.inflate_failed",
             object_type="file",
             object_id=queued.object_id,
             outcome="failed",
-            storage_id=storage_id,
-            path=path,
-            target_preallocation=str(details.get("target_preallocation") or ""),
             details={
                 "storage_id": storage_id,
                 "path": path,
@@ -654,24 +730,14 @@ def _refresh_import_target_inventory(
             except Exception:  # noqa: BLE001 - retain the existing best-effort refresh
                 continue
 
-            ProxmoxInventory.objects.filter(
-                scan_run=scan,
-                node=node,
-                object_type=ProxmoxInventory.ObjectType.VM,
-                vmid=numeric_vmid,
-            ).delete()
-            ProxmoxInventory.objects.create(
-                scan_run=scan,
+            upsert_current_guest(
                 node=node,
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=numeric_vmid,
                 name=str(config.get("name") or ""),
                 status=str(current.get("status") or ""),
                 config=config,
-                disk_references=extract_disk_references(config),
             )
-            scan.proxmox_inventory_at = timezone.now()
-            scan.save(update_fields=["proxmox_inventory_at", "updated_at"])
             break
 
     directories = ["images"] + ([f"images/{vmid}"] if vmid else [])
@@ -691,7 +757,7 @@ def enqueue_scheduled_scan() -> int | None:
         ]
     ).order_by("-created_at").first()
     if active_scan:
-        AuditEvent.objects.create(
+        record_audit_event(
             username="system",
             action="scan.schedule.skipped",
             object_type="scan_run",
@@ -706,7 +772,7 @@ def enqueue_scheduled_scan() -> int | None:
     scan.queued_task_id = task_id
     scan.save(update_fields=["queued_task_id", "updated_at"])
 
-    AuditEvent.objects.create(
+    record_audit_event(
         username="system",
         action="scan.queued",
         object_type="scan_run",
@@ -738,7 +804,7 @@ def purge_expired_trash(max_age_days: int = 30) -> None:
             continue
         purged += 1
 
-    AuditEvent.objects.create(
+    record_audit_event(
         username="system",
         action="trash.purge",
         object_type="trash",
@@ -755,7 +821,7 @@ def purge_expired_audit_events(retention_days: int = 90) -> None:
     cutoff = timezone.now() - timedelta(days=retention_days)
     deleted_count, _deleted_by_model = AuditEvent.objects.filter(timestamp__lt=cutoff).delete()
 
-    AuditEvent.objects.create(
+    record_audit_event(
         username="system",
         action="audit.retention.purge",
         object_type="audit_retention",
@@ -854,7 +920,7 @@ def normalize_uploaded_proxmox_image_paths_task(
     try:
         result = normalize_uploaded_proxmox_image_paths(storage=storage, paths=paths)
         normalized = result["normalized"]
-        AuditEvent.objects.create(
+        record_audit_event(
             username=username,
             action="file.upload_normalized",
             object_type="file",
@@ -869,7 +935,7 @@ def normalize_uploaded_proxmox_image_paths_task(
             },
         )
     except Exception as exc:
-        AuditEvent.objects.create(
+        record_audit_event(
             username=username,
             action="file.upload_normalize_failed",
             object_type="file",
@@ -923,7 +989,7 @@ def inflate_storage_file_task(
                 scan=refresh_scan,
                 directory_path=str(result["directory_path"]),
             )
-        AuditEvent.objects.create(
+        record_audit_event(
             username=username,
             action="file.inflated",
             object_type="file",
@@ -940,7 +1006,7 @@ def inflate_storage_file_task(
             },
         )
     except Exception as exc:
-        AuditEvent.objects.create(
+        record_audit_event(
             username=username,
             action="file.inflate_failed",
             object_type="file",
@@ -983,6 +1049,8 @@ def _run_scan(scan: ScanRun) -> None:
     endpoint_successes: list[str] = []
     endpoint_errors: dict[str, Any] = {}
     proxmox_objects: list[ProxmoxInventory] = []
+    guest_observations: list[ScanGuestObservation] = []
+    successful_endpoint_objects: list[ProxmoxEndpoint] = []
     referenced_volids: set[str] = set()
     template_vmids: set[int] = set()
 
@@ -994,6 +1062,7 @@ def _run_scan(scan: ScanRun) -> None:
 
         if result.ok:
             endpoint_successes.append(node_name)
+            successful_endpoint_objects.append(endpoint)
             endpoint.last_health_status = "ok"
             endpoint.last_successful_scan = timezone.now()
             endpoint.details = {"node": node_name}
@@ -1019,10 +1088,20 @@ def _run_scan(scan: ScanRun) -> None:
                     disk_references=obj.disk_references,
                 )
             )
+            if obj.object_type in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT}:
+                guest_observations.append(ScanGuestObservation(endpoint=endpoint, guest=obj))
 
     ProxmoxInventory.objects.bulk_create(proxmox_objects, batch_size=500)
 
     inventory_at = timezone.now()
+    reconcile_scan_guest_inventory(
+        scan=scan,
+        observations=guest_observations,
+        attempted_endpoints=endpoints,
+        successful_endpoints=successful_endpoint_objects,
+        errors=endpoint_errors,
+        observed_at=inventory_at,
+    )
     gate_status = _storage_gate_status(storages, endpoint_successes, inventory_at)
 
     scan.endpoints_attempted = endpoint_attempts
@@ -1154,7 +1233,7 @@ def _audit_scan_terminal(
         payload["summary_counts"] = scan.summary_counts
     if details:
         payload.update(details)
-    AuditEvent.objects.create(
+    record_audit_event(
         username="system",
         action=action,
         object_type="scan_run",
@@ -1169,7 +1248,7 @@ def _prune_scan_history_after_success() -> None:
         result = prune_scan_history()
     except Exception as exc:
         logger.exception("Failed to prune old scan history")
-        AuditEvent.objects.create(
+        record_audit_event(
             username="system",
             action="scan.retention.purge_failed",
             object_type="scan_retention",
@@ -1185,7 +1264,7 @@ def _prune_scan_history_after_success() -> None:
     if not result.deleted_anything:
         return
 
-    AuditEvent.objects.create(
+    record_audit_event(
         username="system",
         action="scan.retention.purge",
         object_type="scan_retention",

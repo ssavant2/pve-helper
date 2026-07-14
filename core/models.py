@@ -26,10 +26,6 @@ class OidcIdentity(TimestampedModel):
         constraints = [
             models.UniqueConstraint(fields=["issuer", "subject"], name="unique_oidc_identity_subject"),
         ]
-        indexes = [
-            models.Index(fields=["user"], name="core_oidcid_user_id_idx"),
-            models.Index(fields=["issuer", "subject"], name="core_oidcid_issuer_subject_idx"),
-        ]
 
     def __str__(self) -> str:
         return f"{self.issuer}:{self.subject}"
@@ -287,6 +283,79 @@ class ProxmoxInventory(TimestampedModel):
     def __str__(self) -> str:
         label = self.name or self.vmid or self.object_type
         return f"{self.node}: {label}"
+
+
+class CurrentGuestInventory(TimestampedModel):
+    """Mutable current-state projection for VM/CT reads.
+
+    Historical ``ProxmoxInventory`` rows remain scan evidence. All interactive
+    guest/tag consumers use this projection instead.
+    """
+
+    class ObjectType(models.TextChoices):
+        VM = ProxmoxInventory.ObjectType.VM, "VM"
+        CT = ProxmoxInventory.ObjectType.CT, "Container"
+
+    source_endpoint = models.ForeignKey(
+        ProxmoxEndpoint,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="current_guests",
+    )
+    source_scan = models.ForeignKey(
+        ScanRun,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="current_guests",
+    )
+    node = models.CharField(max_length=120, db_index=True)
+    object_type = models.CharField(max_length=30, choices=ObjectType.choices)
+    vmid = models.PositiveIntegerField()
+    name = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=80, blank=True)
+    config = models.JSONField(default=dict, blank=True)
+    config_complete = models.BooleanField(default=True)
+    disk_references = models.JSONField(default=list, blank=True)
+    observed_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ["node", "object_type", "vmid"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["object_type", "vmid"],
+                name="unique_current_guest_identity",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["source_endpoint", "object_type"], name="core_curg_endpoint_type_idx"),
+            models.Index(fields=["object_type", "vmid"], name="core_curguest_type_vmid_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.node}: {self.name or self.vmid}"
+
+
+class CurrentGuestInventoryState(TimestampedModel):
+    """Singleton (pk=1) describing current projection coverage/freshness."""
+
+    refreshed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_complete_at = models.DateTimeField(null=True, blank=True)
+    source_scan = models.ForeignKey(
+        ScanRun,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="current_inventory_states",
+    )
+    complete = models.BooleanField(default=False)
+    endpoints_attempted = models.JSONField(default=list, blank=True)
+    endpoints_succeeded = models.JSONField(default=list, blank=True)
+    errors = models.JSONField(default=dict, blank=True)
+
+    def __str__(self) -> str:
+        return f"Current guest inventory ({'complete' if self.complete else 'partial'})"
 
 
 class IntegrationToken(TimestampedModel):

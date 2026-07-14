@@ -73,6 +73,69 @@ test("tag administration uses aligned controls and the guest editor separates ne
   await expect(page.getByText("The new cluster tag will be assigned to this object.")).toBeVisible();
 });
 
+test("tag inventory refresh queues work and soft-refreshes after completion", async ({ page }) => {
+  let queued = false;
+  await page.route("**/tags/refresh/", async (route) => {
+    queued = true;
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, task_id: "guest:999", queued_task_id: "worker-999" }),
+    });
+  });
+  await page.route("**/tasks/recent/**", async (route) => {
+    const tasks = queued
+      ? [
+          {
+            id: "guest:999",
+            kind: "guest",
+            action: "tag.inventory.refresh",
+            name: "Refresh tag inventory",
+            target: "cluster",
+            target_guest: null,
+            status: "Completed",
+            status_class: "completed",
+            details: "Registry and membership; 1/1 endpoints",
+            initiator: "e2e",
+            queued_for: "-",
+            started_at: "2026-07-14 12:00:00",
+            started_at_ms: Date.now(),
+            finished_at: "2026-07-14 12:00:01",
+            finished_at_ms: Date.now() + 60_000,
+            server: "pve1",
+            cancelable: false,
+            retryable: false,
+            offer_force_stop: false,
+          },
+        ]
+      : [];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        tasks,
+        page: 0,
+        limit: 5,
+        total: tasks.length,
+        has_previous: false,
+        has_next: false,
+        start_index: tasks.length ? 1 : 0,
+        end_index: tasks.length,
+      }),
+    });
+  });
+  await page.goto("/tags/", { waitUntil: "load" });
+  await page.evaluate(() => {
+    (window as Window & { tagRefreshMarker?: string }).tagRefreshMarker = "preserved";
+  });
+
+  await page.getByRole("button", { name: "Refresh tag inventory" }).click();
+
+  await expect.poll(() => page.evaluate(() => (window as Window & { tagRefreshMarker?: string }).tagRefreshMarker)).toBe("preserved");
+  await expect(page.getByRole("button", { name: "Refresh tag inventory" })).toBeEnabled();
+  await expect(page.locator('[data-task-row-key="guest:999"]')).toContainText("Completed");
+});
+
 test("theme toggle button is wired (app.js event handlers attached)", async ({ page }) => {
   await page.goto("/vms/overview/", { waitUntil: "load" });
   const toggle = page.locator("[data-theme-toggle]");

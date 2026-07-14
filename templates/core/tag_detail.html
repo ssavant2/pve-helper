@@ -9,10 +9,10 @@
     {% if tag.registered %}
       <form method="post" action="{% url 'core:tag_recolor' %}" data-tag-async-form>{% csrf_token %}<input type="hidden" name="tag" value="{{ tag.name }}"><label>Color <input type="color" name="color" value="#{{ tag.background }}"></label><button class="secondary-action" type="submit">Update color</button><p class="form-error tag-form-error" data-tag-form-error hidden></p></form>
     {% endif %}
-    <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="Rename {{ tag.name }} on {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}?">
+    <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="Rename {{ tag.name }} on {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}?" data-confirm-title="Rename tag" data-confirm-label="Rename">
       {% csrf_token %}<input type="hidden" name="operation" value="rename"><input type="hidden" name="tag" value="{{ tag.name }}"><label>New name <input name="new_tag" pattern="[a-z0-9_][a-z0-9_+.-]*" required></label><button class="secondary-action" type="submit">Rename tag</button>
     </form>
-    <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="This tag is used by {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}. Removing it will update all of them and unregister the tag. Are you sure?">
+    <form method="post" action="{% url 'core:tag_operation' %}" data-confirm="This tag is used by {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}. Removing it will update all of them and unregister the tag. Are you sure?" data-confirm-title="Delete tag" data-confirm-label="Delete" data-confirm-danger="true">
       {% csrf_token %}<input type="hidden" name="operation" value="delete"><input type="hidden" name="tag" value="{{ tag.name }}"><button class="secondary-action danger" type="submit">Delete tag</button>
     </form>
     {% if assignable_guests %}<button class="primary-action" type="button" data-tag-assign-open>Assign objects</button>{% endif %}

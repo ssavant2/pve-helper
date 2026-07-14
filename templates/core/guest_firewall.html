@@ -55,7 +55,7 @@
                     {% csrf_token %}<input type="hidden" name="enable" value="{% if rule.enable %}0{% else %}1{% endif %}">
                     <button class="icon-button" type="submit" title="{% if rule.enable %}Disable{% else %}Enable{% endif %}"><i data-lucide="{% if rule.enable %}pause{% else %}play{% endif %}" aria-hidden="true"></i></button>
                   </form>
-                  <form class="inline-action-form" method="post" action="{% url 'core:guest_firewall_rule_delete' guest.object_type guest.vmid rule.pos %}" onsubmit="return confirm('Delete rule #{{ rule.pos }}?');">
+                  <form class="inline-action-form" method="post" action="{% url 'core:guest_firewall_rule_delete' guest.object_type guest.vmid rule.pos %}" data-confirm="Delete firewall rule #{{ rule.pos }}?" data-confirm-title="Delete firewall rule" data-confirm-label="Delete" data-confirm-danger="true">
                     {% csrf_token %}
                     <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
                   </form>

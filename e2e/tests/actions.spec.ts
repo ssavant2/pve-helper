@@ -163,6 +163,54 @@ test("Power Off on a running guest opens the shared confirm dialog", async ({ pa
   await expect(dialog.locator("[data-confirm-yes]")).toBeHidden();
 });
 
+test("generic confirm forms use the shared dialog without native popups", async ({ page }) => {
+  const nativeDialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    nativeDialogs.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.goto("/tags/detail/?tag=prod", { waitUntil: "load" });
+
+  await page.getByRole("button", { name: "Delete tag", exact: true }).click();
+
+  const dialog = page.locator("[data-vm-action-dialog]");
+  await expect(dialog.getByRole("heading", { name: "Delete tag" })).toBeVisible();
+  await dialog.locator("[data-confirm-no]").click();
+  expect(nativeDialogs).toEqual([]);
+});
+
+test("request failures render locally and never open native alerts", async ({ page }) => {
+  const nativeDialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    nativeDialogs.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.route("**/vms/vm/101/tag-options/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ available_tags: ["prod"], assigned_tags: [] }),
+    });
+  });
+  await page.route("**/vms/bulk-action/", async (route) => {
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, errors: ["Tag update was rejected."] }),
+    });
+  });
+
+  const row = page.locator('[data-vm-overview-row][data-guest-vmid="101"]');
+  await row.click({ button: "right" });
+  await page.locator("#context-menu .context-menu-parent", { hasText: "Tags" }).hover();
+  await page.locator('#context-menu [data-vm-action="add-tags"]').click();
+  const dialog = page.locator("[data-vm-action-dialog]");
+  await dialog.getByRole("button", { name: "Add", exact: true }).click();
+
+  await expect(page.locator("[data-local-action-error]")).toHaveText("Tag update was rejected.");
+  expect(nativeDialogs).toEqual([]);
+});
+
 test("Clone... opens the clone form dialog", async ({ page }) => {
   await page.locator("[data-vm-overview-row]").first().click({ button: "right" });
   await page.locator("#context-menu .context-menu-parent", { hasText: "Template" }).hover();

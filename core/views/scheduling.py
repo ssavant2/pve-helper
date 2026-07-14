@@ -6,6 +6,7 @@ from .common import *  # noqa: F401,F403
 from . import common
 from ..services.proxmox import ProxmoxClient, configured_clients
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
+from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
 
 
 @app_login_required
@@ -191,6 +192,24 @@ def cancel_recent_task(request):
         return JsonResponse({"ok": False, "error": str(exc)}, status=409)
 
     return JsonResponse({"ok": True})
+
+
+@require_POST
+@app_login_required
+def retry_recent_task(request):
+    task_id = request.POST.get("task_id", "").strip()
+    if not task_id.startswith("guest:"):
+        return JsonResponse({"ok": False, "error": "This task type cannot be retried."}, status=409)
+    try:
+        event_id = int(task_id.split(":", 1)[1])
+        queued_task_id = retry_tag_operation(event_id)
+    except ValueError:
+        return JsonResponse({"ok": False, "error": "Invalid task id."}, status=400)
+    except TagOperationRetryError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=409)
+    except TagOperationQueueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=503)
+    return JsonResponse({"ok": True, "queued_task_id": queued_task_id}, status=202)
 
 
 @require_POST
@@ -502,28 +521,18 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
             }
         )
 
-    latest_scan = _latest_proxmox_inventory_scan()
-    if latest_scan:
-        objects = (
-            ProxmoxInventory.objects.filter(
-                scan_run=latest_scan,
-                object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-                vmid__isnull=False,
-            )
-            .order_by("object_type", "vmid", "node")
+    for obj in CurrentGuestInventory.objects.order_by("object_type", "vmid", "node"):
+        key = (obj.object_type, obj.vmid)
+        if key in seen:
+            continue
+        seen.add(key)
+        choices.append(
+            {
+                "value": f"{obj.object_type}:{obj.vmid}",
+                "label": _inventory_target_label(obj),
+                "node": obj.node,
+            }
         )
-        for obj in objects:
-            key = (obj.object_type, obj.vmid)
-            if key in seen:
-                continue
-            seen.add(key)
-            choices.append(
-                {
-                    "value": f"{obj.object_type}:{obj.vmid}",
-                    "label": _inventory_target_label(obj),
-                    "node": obj.node,
-                }
-            )
 
     if action and action.target_type and action.target_vmid:
         value = f"{action.target_type}:{action.target_vmid}"
@@ -538,7 +547,7 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
     return choices
 
 
-def _inventory_target_label(obj: ProxmoxInventory) -> str:
+def _inventory_target_label(obj) -> str:
     return guest_identity_from_inventory(obj).full_label_with_type
 
 
@@ -550,9 +559,7 @@ def _scheduled_target_label(target_type: str | None, target_vmid: int | None) ->
     if target_type is None or target_vmid is None:
         return ""
     obj = (
-        ProxmoxInventory.objects.filter(object_type=target_type, vmid=target_vmid)
-        .order_by("-scan_run__created_at", "node")
-        .first()
+        CurrentGuestInventory.objects.filter(object_type=target_type, vmid=target_vmid).first()
     )
     if obj:
         return _inventory_target_label(obj)
@@ -681,27 +688,10 @@ def _apply_target_snapshot(action: ScheduledAction) -> None:
         action.target_name_snapshot = live_guest.name
         return
 
-    latest_scan = _latest_result_scan()
-    obj = None
-    if latest_scan:
-        obj = (
-            ProxmoxInventory.objects.filter(
-                scan_run=latest_scan,
-                object_type=action.target_type,
-                vmid=action.target_vmid,
-            )
-            .order_by("node")
-            .first()
-        )
-    if obj is None:
-        obj = (
-            ProxmoxInventory.objects.filter(
-                object_type=action.target_type,
-                vmid=action.target_vmid,
-            )
-            .order_by("-scan_run__created_at", "node")
-            .first()
-        )
+    obj = CurrentGuestInventory.objects.filter(
+        object_type=action.target_type,
+        vmid=action.target_vmid,
+    ).first()
     if obj:
         action.target_node = obj.node
         action.target_name_snapshot = obj.name

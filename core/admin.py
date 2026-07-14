@@ -2,6 +2,8 @@ from django.contrib import admin
 
 from .models import (
     AuditEvent,
+    CurrentGuestInventory,
+    CurrentGuestInventoryState,
     FileInventory,
     OidcIdentity,
     ProxmoxEndpoint,
@@ -70,6 +72,20 @@ class ProxmoxInventoryAdmin(admin.ModelAdmin):
     @admin.display(description="Disk refs")
     def disk_reference_count(self, obj):
         return len(obj.disk_references or [])
+
+
+@admin.register(CurrentGuestInventory)
+class CurrentGuestInventoryAdmin(admin.ModelAdmin):
+    list_display = ("object_type", "vmid", "name", "node", "status", "source_endpoint", "observed_at")
+    list_filter = ("object_type", "node", "status", "source_endpoint")
+    search_fields = ("vmid", "name", "node")
+    readonly_fields = ("created_at", "updated_at", "observed_at")
+
+
+@admin.register(CurrentGuestInventoryState)
+class CurrentGuestInventoryStateAdmin(admin.ModelAdmin):
+    list_display = ("refreshed_at", "last_complete_at", "complete", "source_scan")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(ProxmoxStorageConsumer)

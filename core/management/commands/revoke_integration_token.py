@@ -1,7 +1,8 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from core.models import AuditEvent, IntegrationToken
+from core.models import IntegrationToken
+from core.services.audit_events import record_audit_event
 
 
 class Command(BaseCommand):
@@ -16,7 +17,7 @@ class Command(BaseCommand):
             raise CommandError("Token not found")
         token.revoked_at = timezone.now()
         token.save(update_fields=["revoked_at", "updated_at"])
-        AuditEvent.objects.create(
+        record_audit_event(
             username="management-command",
             action="tag.integration.token",
             object_type="integration_token",

@@ -36,6 +36,25 @@ use of the administration client, see the [user manual](user-manual.md).
 
 7. Open `http://dockerhost:21080` directly or configure NPM for `https://pve-helper.example.com`.
 
+Set `APP_BASE_URL` to the browser-facing URL. A direct deployment needs no
+certificate:
+
+```env
+APP_BASE_URL=http://dockerhost:21080
+```
+
+If a separate reverse proxy provides TLS, use its external URL instead:
+
+```env
+APP_BASE_URL=https://pve-helper.example.com
+```
+
+The scheme controls session and CSRF Secure cookies. pve-helper itself always
+serves HTTP and neither provisions nor requires a certificate. HTTPS is strongly
+recommended whenever the administration network is not already trusted. The
+optional backup integration API is the exception: it deliberately remains
+unavailable unless Django sees a validated external HTTPS request.
+
 The `nginx` service owns the public app port and proxies normal requests to the
 internal Django/Gunicorn `web` service. Authorized datastore downloads are served
 directly by nginx from read-only storage mounts after Django has performed auth,
@@ -66,7 +85,7 @@ SHA hashing during a scan). A 2-core host is comfortable for the whole set
 Always keep `Q_BULK_RETRY` **greater than** `Q_BULK_TIMEOUT`; otherwise Django-Q
 retries — and thus double-runs — a job that is still legitimately running.
 
-### Preserve source IP through Nginx Proxy Manager
+### Optional external reverse proxy
 
 By default, audit events record the direct peer of pve-helper's nginx sidecar.
 That is safe: client-supplied `X-Forwarded-For` values are ignored. If Nginx
@@ -91,11 +110,13 @@ Recreate the pve-helper `nginx` service after changing `NGINX_TRUSTED_PROXY`
 (`docker compose up -d nginx`) — a plain `restart` reuses the existing container
 and will not pick up the new value. Setting `NGINX_TRUSTED_PROXY` is the required
 step; the header block above is usually already NPM's default. The nginx
-sidecar trusts `X-Forwarded-For` only when the immediate peer matches
-`NGINX_TRUSTED_PROXY`, then passes the validated client IP as `X-Real-IP` to the
-app. Do not expose the sidecar port publicly when NPM is intended to be the only
-entry point; direct callers still cannot forge audit IPs, but bypassing NPM
-defeats its own access and TLS policies.
+sidecar trusts `X-Forwarded-For` and `X-Forwarded-Proto` only when the original
+TCP peer matches `NGINX_TRUSTED_PROXY`, then passes the validated client IP and
+external scheme to the app. Direct HTTP access remains supported, but a direct
+caller cannot turn that request into HTTPS by forging proxy headers. If the
+external proxy supplies additional access-control policy, use a host firewall
+or network ACL to prevent clients from deliberately bypassing it; that
+restriction is deployment-specific rather than an application requirement.
 
 ## NFS mounts
 

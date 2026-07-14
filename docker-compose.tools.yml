@@ -33,6 +33,7 @@ services:
     environment:
       DEBUG: "true"
       APP_REQUIRE_LOGIN: "false"
+      APP_BASE_URL: http://e2e-web:8000
       PVE_TEST_NETWORK_DISABLED: "true"
       PVE_ENDPOINTS: ""
       DB_ENGINE: sqlite
@@ -41,11 +42,12 @@ services:
       ALLOWED_HOSTS: "e2e-web,localhost,127.0.0.1"
     command: >
       sh -lc "mkdir -p /tmp/e2e && python manage.py migrate --noinput &&
-      python manage.py shell -c \"from core.models import StorageMount, ScanRun, ProxmoxInventory;
+      python manage.py shell -c \"from django.utils import timezone; from core.models import StorageMount, ScanRun, CurrentGuestInventory, AuditEvent;
       StorageMount.objects.get_or_create(storage_id='e2e-store', defaults={'display_name':'E2E Store','path':'/tmp/e2e-store'});
       s=ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message='e2e seed');
-      ProxmoxInventory.objects.create(scan_run=s, node='pve1', object_type='vm', vmid=100, name='e2e-vm-running', status='running', config={'tags':'prod'});
-      ProxmoxInventory.objects.create(scan_run=s, node='pve1', object_type='vm', vmid=101, name='e2e-vm-stopped', status='stopped')\" &&
+      CurrentGuestInventory.objects.create(source_scan=s, node='pve1', object_type='vm', vmid=100, name='e2e-vm-running', status='running', config={'tags':'prod'}, observed_at=timezone.now());
+      CurrentGuestInventory.objects.create(source_scan=s, node='pve1', object_type='vm', vmid=101, name='e2e-vm-stopped', status='stopped', observed_at=timezone.now());
+      AuditEvent.objects.create(username='e2e', action='tag.bulk_operation', object_type='tag', object_id='old-tag', outcome='failed', details={'operation':'delete','source_tag':'old-tag','targets':[{'node':'pve1','object_type':'vm','vmid':100}],'failed':[{'vmid':100,'reason':'locked'}],'retryable':True})\" &&
       python manage.py runserver 0.0.0.0:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/vms/overview/')"]

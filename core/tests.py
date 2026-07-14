@@ -29,6 +29,7 @@ from core.checks import production_startup_errors
 from core.models import (
     AuditEvent,
     ConsoleSession,
+    CurrentGuestInventory,
     FileInventory,
     OidcIdentity,
     ProxmoxEndpoint,
@@ -92,6 +93,7 @@ from core.tasks import (
     record_storage_space_snapshots,
     run_scan,
 )
+from pve_helper.settings import external_url_uses_https
 
 
 class HermeticProxmoxMixin:
@@ -2078,7 +2080,6 @@ class StartupCheckTests(SimpleTestCase):
             {
                 "pve_helper.E001",
                 "pve_helper.E003",
-                "pve_helper.E004",
                 "pve_helper.E005",
                 "pve_helper.E006",
                 "pve_helper.E007",
@@ -2097,9 +2098,42 @@ class StartupCheckTests(SimpleTestCase):
         ):
             self.assertEqual(production_startup_errors(), [])
 
+    def test_production_startup_checks_accept_direct_http_deploy(self):
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="not-the-dev-secret",
+            ALLOWED_HOSTS=["pve-helper.internal"],
+            APP_BASE_URL="http://pve-helper.internal:21080",
+            APP_REQUIRE_LOGIN=False,
+        ):
+            self.assertEqual(production_startup_errors(), [])
+
+    def test_production_startup_checks_reject_unsupported_external_scheme(self):
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="not-the-dev-secret",
+            ALLOWED_HOSTS=["pve-helper.internal"],
+            APP_BASE_URL="ftp://pve-helper.internal",
+            APP_REQUIRE_LOGIN=False,
+        ):
+            self.assertEqual(
+                {error.id for error in production_startup_errors()},
+                {"pve_helper.E004"},
+            )
+
+    def test_external_url_scheme_controls_secure_cookie_policy(self):
+        self.assertFalse(external_url_uses_https("http://pve-helper.internal:21080"))
+        self.assertTrue(external_url_uses_https("https://pve-helper.example.net"))
+
 
 @override_settings(APP_REQUIRE_LOGIN=False)
 class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        registry_patch = patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
+        registry_patch.start()
+        self.addCleanup(registry_patch.stop)
+
     def _live_guest(self, *, object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped"):
         guest = Mock()
         guest.object_type = object_type
@@ -2136,6 +2170,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             name="App01",
             status="running",
             config={"agent": 1, "ostype": "l26", "tags": "prod"},
+        )
+        CurrentGuestInventory.objects.create(
+            source_scan=scan,
+            node="pve1",
+            object_type=CurrentGuestInventory.ObjectType.VM,
+            vmid=500,
+            name="App01",
+            status="running",
+            config={"agent": 1, "ostype": "l26", "tags": "prod"},
+            observed_at=timezone.now(),
         )
         ProxmoxInventory.objects.create(
             scan_run=scan,
@@ -2582,6 +2626,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             name="Test VM",
             status="stopped",
             disk_references=["nfs-vm:images/100/vm-100-disk-0.qcow2"],
+        )
+        CurrentGuestInventory.objects.create(
+            source_scan=scan,
+            node="pve-node-1",
+            object_type=CurrentGuestInventory.ObjectType.VM,
+            vmid=100,
+            name="Test VM",
+            status="stopped",
+            disk_references=["nfs-vm:images/100/vm-100-disk-0.qcow2"],
+            observed_at=timezone.now(),
         )
         ScheduledAction.objects.create(
             name="Night shutdown",
@@ -5848,6 +5902,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             status="running",
             config={"agent": "1", "ostype": "l26"},
         )
+        CurrentGuestInventory.objects.create(
+            source_scan=scan,
+            node="pve1",
+            object_type=CurrentGuestInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+            status="running",
+            config={"agent": "1", "ostype": "l26"},
+            observed_at=timezone.now(),
+        )
 
         class FakeClient:
             def get(self, path, *, timeout=None):
@@ -7043,6 +7107,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             object_type=ProxmoxInventory.ObjectType.VM,
             vmid=500,
             name="Lab VM",
+        )
+        CurrentGuestInventory.objects.create(
+            source_scan=scan,
+            node="pve1",
+            object_type=CurrentGuestInventory.ObjectType.VM,
+            vmid=500,
+            name="Lab VM",
+            observed_at=timezone.now(),
         )
         action = ScheduledAction.objects.create(
             name="Night shutdown",

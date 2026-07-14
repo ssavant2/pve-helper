@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,6 +31,10 @@ def env_int(name: str, default: int) -> int:
 def env_list(name: str, default: str = "") -> list[str]:
     raw = os.getenv(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def external_url_uses_https(value: str) -> bool:
+    return urlparse(value).scheme.lower() == "https"
 
 
 SECRET_KEY = env("APP_SECRET_KEY", "dev-insecure-change-me")
@@ -168,9 +173,9 @@ OIDC_STORE_ID_TOKEN = True
 OIDC_OP_LOGOUT_URL_METHOD = "core.auth.provider_logout"
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SECURE = external_url_uses_https(APP_BASE_URL)
 SESSION_COOKIE_SAMESITE = "Lax"
-CSRF_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = external_url_uses_https(APP_BASE_URL)
 CSRF_COOKIE_SAMESITE = "Lax"
 
 USE_X_FORWARDED_HOST = env_bool("USE_X_FORWARDED_HOST", True)

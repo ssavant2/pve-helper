@@ -1,6 +1,16 @@
-map $http_x_forwarded_proto $pve_helper_forwarded_proto {
-    default $http_x_forwarded_proto;
-    "" $scheme;
+# Preserve the original TCP peer even after the real-IP module replaces
+# $remote_addr with a validated client address. Only that configured peer may
+# describe the browser-facing scheme; direct HTTP callers cannot promote their
+# request to HTTPS with a forged header.
+geo $realip_remote_addr $pve_helper_is_trusted_proxy_peer {
+    default 0;
+    ${NGINX_TRUSTED_PROXY} 1;
+}
+
+map "$pve_helper_is_trusted_proxy_peer:$http_x_forwarded_proto" $pve_helper_forwarded_proto {
+    default $scheme;
+    "1:http" http;
+    "1:https" https;
 }
 
 # Only the configured upstream proxy may supply a client address. The loopback

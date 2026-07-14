@@ -20,10 +20,12 @@ additional modules over time.
 
 ## Deployment Model
 
-Run the app behind a reverse proxy that terminates TLS, then enable real
-authentication before using it against live Proxmox storage.
+The app serves HTTP through its nginx front container. It can be used directly
+on a trusted internal network or placed behind any external reverse proxy that
+terminates TLS. pve-helper does not manage certificates and TLS is not required
+for the services to start.
 
-The reference deployment is:
+The optional HTTPS reference deployment is:
 
 1. Reverse proxy / TLS endpoint, for example Nginx Proxy Manager.
 2. `pve-helper` nginx front container.
@@ -31,7 +33,8 @@ The reference deployment is:
 4. Authentik OIDC login flow, initiated and enforced by the app with a required
    group claim.
 
-In other words, normal HTTP traffic goes through the reverse proxy to the app;
+Without an external proxy, the browser connects directly to the pve-helper nginx
+port over HTTP. With one, HTTP traffic from that proxy reaches the same port and
 the app redirects the browser to Authentik when login is required.
 The nginx front container also serves authorized datastore downloads from
 read-only storage mounts after Django has approved the request, so very large
@@ -67,7 +70,7 @@ Start with `docs/deployment-runbook.md`. For day-to-day administration, see
 `docs/proxmox-api-token.md`. For database role separation, see
 `docs/postgres-hardening.md`.
 
-The compose defaults are for local skeleton verification. Before real internal use, create `.env`, set real secrets, configure Authentik OIDC, and keep `APP_REQUIRE_LOGIN=true`. `APP_BASE_URL` should be the canonical URL that Authentik redirects back to; the URL shown in the app header is taken from the current request.
+The compose defaults are for local skeleton verification. Before real internal use, create `.env`, set real secrets, configure Authentik OIDC, and keep `APP_REQUIRE_LOGIN=true`. `APP_BASE_URL` should be the canonical URL that Authentik redirects back to, using `http://` for direct HTTP or `https://` when an external proxy supplies TLS. Its scheme also controls Secure session/CSRF cookies. The URL shown in the app header is taken from the current request.
 
 ## Documentation
 

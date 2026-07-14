@@ -52,6 +52,19 @@ test("taskbar collapse toggle flips aria-expanded", async ({ page }) => {
   await expect.poll(() => toggle.getAttribute("aria-expanded")).not.toBe(before);
 });
 
+test("retryable tag failure exposes an in-place retry action", async ({ page }) => {
+  const row = page.locator('[data-task-retryable="true"]');
+  await expect(row).toBeVisible();
+  await expect(row.locator('[data-column="status"]')).toContainText("Failed — right-click for options");
+  await row.click({ button: "right" });
+  const retry = page.locator('#context-menu [data-task-action="retry-task"]');
+  await expect(retry).toBeEnabled();
+  await retry.click();
+  const dialog = page.locator("[data-vm-action-dialog]");
+  await expect(dialog.getByRole("heading", { name: "Retry tag operation" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+});
+
 test("global search shows a clear button after typing and clears it", async ({ page }) => {
   const input = page.locator("[data-global-search-input]");
   await input.click();

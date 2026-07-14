@@ -1,14 +1,19 @@
 {% extends "base.html" %}
 
 {% block content %}
-  <div class="page-header">
+  <div class="page-header" data-tag-inventory-view data-rendered-at-ms="{{ tag_view_rendered_at_ms }}">
     <div><h1>Tags</h1><p>Central Proxmox tag registry and guest membership.</p></div>
     <div class="page-header-actions">
-      <form method="post" action="{% url 'core:tags_refresh' %}">{% csrf_token %}<button class="secondary-action" type="submit">Refresh</button></form>
+      <form method="post" action="{% url 'core:tags_refresh' %}" data-tag-refresh-form>
+        {% csrf_token %}
+        <button class="secondary-action" type="submit">Refresh tag inventory</button>
+        <p class="form-error tag-form-error" data-tag-refresh-error hidden></p>
+      </form>
     </div>
   </div>
 
   {% if registry_error %}<div class="panel tag-warning"><strong>Registry unavailable:</strong> {{ registry_error }}</div>{% endif %}
+  {% if inventory_errors %}<div class="panel tag-warning"><strong>Membership inventory is partial:</strong> {{ inventory_errors|join:"; " }}</div>{% endif %}
 
   <section class="panel tag-create-panel">
     <div class="panel-heading"><h2>Create tag</h2></div>
@@ -22,7 +27,7 @@
   </section>
 
   <section class="panel panel-spaced tag-inventory-panel">
-    <div class="panel-heading tag-inventory-heading"><h2>Tag inventory</h2><span class="muted">{% if scan %}As of {{ scan.proxmox_inventory_at|default:scan.created_at }}{% endif %}</span></div>
+    <div class="panel-heading tag-inventory-heading"><h2>Tag inventory</h2><span class="muted">{% if inventory_refreshed_at %}As of {{ inventory_refreshed_at }}{% endif %}</span></div>
     <div class="tag-inventory-tools"><label class="table-filter tag-name-field"><span class="sr-only">Filter tags</span><input type="search" placeholder="Filter tags" data-table-filter="#tags-table"></label></div>
     <div class="tag-inventory-scroll">
       <table class="data-table compact" id="tags-table" data-filterable-table data-sortable-table data-column-table="tag-inventory">

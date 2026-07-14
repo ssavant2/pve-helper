@@ -6,33 +6,43 @@ from django.contrib import messages
 from django.http import Http404, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from core.models import ProxmoxInventory, ScanRun
+from core.models import CurrentGuestInventory, ProxmoxInventory
 from core.services.guests import is_template
-from core.services.proxmox import ProxmoxAPIError
-from core.services.tag_actions import prepare_tag_operation, recolor_tag, register_tag, registered_tags
-from core.services.tags import inventory_rows, parse_tags
+from core.services.tag_inventory_refresh import (
+    TagInventoryRefreshAlreadyActive,
+    TagInventoryRefreshQueueError,
+    queue_tag_inventory_refresh,
+)
+from core.services.tag_actions import (
+    TagOperationQueueError,
+    enqueue_tag_operation,
+    prepare_tag_operation,
+    recolor_tag,
+    register_tag,
+)
+from core.services.tag_catalog import load_tag_catalog
+from core.services.tags import parse_tags
 
 from . import common
 from .common import app_login_required, navigation_context, record_audit_event
 
 
-def _latest_scan():
-    return common._latest_proxmox_inventory_scan()
-
-
 def _tag_context(*, selected: str = "") -> dict:
-    registered, registry_error = registered_tags()
-    scan = _latest_scan()
-    rows = inventory_rows(scan, registered)
+    catalog = load_tag_catalog()
+    rows = list(catalog.summaries)
     for row in rows:
         row.detail_url = f"{reverse('core:tag_detail')}?{urlencode({'tag': row.name})}"
     return {
         **navigation_context("tags"),
         "tag_rows": rows,
-        "registry_error": registry_error,
-        "scan": scan,
+        "registry_error": catalog.registry_error,
+        "inventory_state": catalog,
+        "inventory_errors": catalog.inventory_errors,
+        "inventory_refreshed_at": catalog.inventory_refreshed_at,
+        "tag_view_rendered_at_ms": int(timezone.now().timestamp() * 1000),
         "selected_tag": selected,
     }
 
@@ -64,7 +74,7 @@ def tag_detail(request):
     if summary is None:
         raise Http404("Tag not found")
     context["tag"] = summary
-    if context["scan"] is not None:
+    if CurrentGuestInventory.objects.exists():
         try:
             linked_clones = set(common.fetch_live_guest_lineage())
         except Exception:
@@ -73,11 +83,7 @@ def tag_detail(request):
             linked_clones = set()
         assigned = {(guest.object_type, guest.vmid) for guest in summary.guests}
         assignable = list(
-            ProxmoxInventory.objects.filter(
-                scan_run=context["scan"],
-                object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-                vmid__isnull=False,
-            ).order_by("name", "vmid", "node")
+            CurrentGuestInventory.objects.all().order_by("name", "vmid", "node")
         )
         for guest in assignable:
             guest.tag_target = f"{guest.object_type}:{guest.vmid}@{guest.node}"
@@ -140,38 +146,32 @@ def tag_operation(request):
         event.save(update_fields=["outcome", "details"])
         messages.error(request, error)
     elif event.outcome == "queued":
-        task_id = common.enqueue_bulk_task("core.services.tag_actions.execute_tag_operation", event.id)
-        event.details = {**event.details, "worker_task_id": task_id}
-        event.save(update_fields=["details"])
+        try:
+            enqueue_tag_operation(event)
+        except TagOperationQueueError as exc:
+            messages.error(request, str(exc))
     return redirect("core:tags_overview")
 
 
 @require_POST
 @app_login_required
 def tags_refresh(request):
-    scan = _latest_scan()
-    if scan is None:
-        messages.error(request, "Run an inventory scan before refreshing tags.")
-        return redirect("core:tags_overview")
     try:
-        live = common.fetch_live_guest_inventory(use_cache=False)
-    except ProxmoxAPIError as exc:
+        event, task_id = queue_tag_inventory_refresh(request=request)
+    except TagInventoryRefreshAlreadyActive as exc:
+        if _wants_json(request):
+            return JsonResponse({"ok": False, "error": str(exc)}, status=409)
         messages.error(request, str(exc))
-        return redirect("core:tags_overview")
-    for guest in live:
-        row = ProxmoxInventory.objects.filter(
-            scan_run=scan, node=guest.node, object_type=guest.object_type, vmid=guest.vmid
-        ).first()
-        if row is None:
-            continue
-        config = dict(row.config or {})
-        if guest.tags:
-            config["tags"] = ";".join(guest.tags)
-        else:
-            config.pop("tags", None)
-        row.config = config
-        row.status = guest.status
-        row.save(update_fields=["config", "status", "updated_at"])
+    except TagInventoryRefreshQueueError as exc:
+        if _wants_json(request):
+            return JsonResponse({"ok": False, "error": str(exc)}, status=503)
+        messages.error(request, str(exc))
+    else:
+        if _wants_json(request):
+            return JsonResponse(
+                {"ok": True, "task_id": f"guest:{event.id}", "queued_task_id": task_id},
+                status=202,
+            )
     return redirect("core:tags_overview")
 
 

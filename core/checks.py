@@ -54,11 +54,11 @@ def production_startup_errors():
 
     base_url = getattr(settings, "APP_BASE_URL", "")
     parsed_base = urlparse(base_url)
-    if parsed_base.scheme != "https":
+    if parsed_base.scheme not in {"http", "https"}:
         errors.append(
             Error(
-                "APP_BASE_URL must use https when DEBUG=false.",
-                hint="Set APP_BASE_URL to the external HTTPS URL registered in your OIDC provider.",
+                "APP_BASE_URL must use http or https when DEBUG=false.",
+                hint="Set APP_BASE_URL to the external URL registered in your OIDC provider.",
                 id="pve_helper.E004",
             )
         )

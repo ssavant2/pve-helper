@@ -1,4 +1,6 @@
-import { loadSoftNavigation, openConfirmDialog, openInputDialog } from "./guest-actions.js";
+import { openConfirmDialog, openInputDialog } from "./dialogs.js";
+import { clearLocalError, showLocalError } from "./feedback.js";
+import { loadSoftNavigation } from "./guest-actions.js";
 import { FILE_ACTION_META } from "./scheduling.js";
 import {
   activeUploads,
@@ -47,6 +49,7 @@ const createPendingFileTask = (form) => {
 // Same general flow as guest actions: instant Recent Tasks row, run via fetch
 // (no navigation), update the row, then soft-refresh the file browser.
 const runFileActionForm = async (form) => {
+  clearLocalError(form);
   const pending = createPendingFileTask(form);
   addPendingRecentTask(pending);
   let settled = false;
@@ -65,7 +68,7 @@ const runFileActionForm = async (form) => {
       finished_at: taskDateLabel(new Date()),
       finished_at_ms: Date.now(),
     });
-    window.alert(message);
+    showLocalError(form, message);
   };
   try {
     const response = await fetch(form.action, {
@@ -73,9 +76,9 @@ const runFileActionForm = async (form) => {
       body: new FormData(form),
       headers: { Accept: "application/json", "X-Requested-With": "fetch" },
     });
-    const payload = response.ok ? await response.json() : { ok: false, errors: [`HTTP ${response.status}`] };
+    const payload = await response.json().catch(() => ({}));
     if (!payload.ok) {
-      fail((payload.errors || ["File action failed."]).join("; "));
+      fail((payload.errors || [`File action failed: HTTP ${response.status}.`]).join("; "));
       return;
     }
     settled = true;
@@ -238,6 +241,7 @@ const openDestPicker = (form, mode, options) => {
   const selection = dialog.querySelector("[data-dest-picker-selection]");
   const isCopy = mode === "copy";
   const sourceName = (form.querySelector("[data-selected-path-input]")?.value || "").split("/").pop() || "";
+  clearLocalError(dialog);
 
   if (title) title.textContent = isCopy ? "Copy To" : "Move To";
   if (storageSelect && manager?.dataset.storageId) storageSelect.value = manager.dataset.storageId;
@@ -293,7 +297,8 @@ const openDestPicker = (form, mode, options) => {
   submit.onclick = () => {
     const name = (nameField?.value || sourceName).trim();
     if (isCopy && !name) {
-      window.alert("Enter a file name for the copy.");
+      showLocalError(dialog, "Enter a file name for the copy.");
+      nameField?.focus();
       return;
     }
     if (storageInput) storageInput.value = storageSelect?.value || "";
@@ -346,12 +351,10 @@ const initConfirmedFileActions = (root = document) => {
           title: "New folder",
           label: "Folder name",
           confirmLabel: "Create",
+          validate: (value) =>
+            value.includes("/") || value.includes("\\") ? "The folder name must not contain path separators." : "",
         });
         if (!folderName) {
-          return;
-        }
-        if (folderName.includes("/") || folderName.includes("\\")) {
-          window.alert("The folder name must not contain path separators.");
           return;
         }
         folderInput.value = folderName;
@@ -362,12 +365,10 @@ const initConfirmedFileActions = (root = document) => {
           label: `New name for ${fileName}`,
           value: fileName,
           confirmLabel: "Rename",
+          validate: (value) =>
+            value.includes("/") || value.includes("\\") ? "The new name must not contain path separators." : "",
         });
         if (!nextName || nextName === fileName) {
-          return;
-        }
-        if (nextName.includes("/") || nextName.includes("\\")) {
-          window.alert("The new name must not contain path separators.");
           return;
         }
         renameInput.value = nextName;
@@ -375,7 +376,7 @@ const initConfirmedFileActions = (root = document) => {
         if (openDestPicker(form, actionKind, confirmationOptions)) {
           return;
         }
-        window.alert("No destination picker is available on this page.");
+        showLocalError(form, "No destination picker is available on this page.");
         return;
       } else if (actionKind === "inflate") {
         const inflateMode = form.dataset.inflateMode || "full";
@@ -668,6 +669,7 @@ const initStorageFileManagers = (root = document) => {
       if (!loadRow || link.dataset.loading === "true") {
         return;
       }
+      clearLocalError(manager);
       const originalText = link.textContent;
       link.dataset.loading = "true";
       link.textContent = "Loading...";
@@ -691,7 +693,7 @@ const initStorageFileManagers = (root = document) => {
       } catch (_error) {
         link.dataset.loading = "false";
         link.textContent = originalText;
-        window.alert("Could not load more files.");
+        showLocalError(manager, "Could not load more files.");
       }
     };
 
@@ -773,6 +775,7 @@ const initStorageFileManagers = (root = document) => {
         if (!input.files.length) {
           return;
         }
+        clearLocalError(form);
         form.querySelectorAll("[data-folder-upload-relative-path]").forEach((item) => {
           item.remove();
         });
@@ -850,7 +853,7 @@ const initStorageFileManagers = (root = document) => {
             details: payload.error || "Upload failed",
             cancel_upload_id: "",
           });
-          window.alert(payload.error || "Upload failed.");
+          showLocalError(form, payload.error || "Upload failed.");
         });
         xhr.addEventListener("abort", () => {
           activeUploads.delete(uploadId);

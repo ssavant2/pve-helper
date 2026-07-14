@@ -5,11 +5,11 @@ from functools import wraps
 from django.conf import settings
 from django.http import Http404, HttpResponseNotAllowed, JsonResponse
 
-from core.models import ProxmoxInventory, ScanRun
+from core.models import ProxmoxInventory
 from core.services.guests import is_template
 from core.services.integration_tokens import authenticate_token
-from core.services.tag_actions import registered_tags
-from core.services.tags import inventory_rows, parse_tags
+from core.services.tag_catalog import load_tag_catalog
+from core.services.tags import parse_tags
 
 
 def integration_api(view):
@@ -31,9 +31,8 @@ def integration_api(view):
 
 
 def _inventory():
-    scan = ScanRun.objects.filter(status=ScanRun.Status.COMPLETED).order_by("-created_at").first()
-    registered, _error = registered_tags()
-    return scan, inventory_rows(scan, registered)
+    catalog = load_tag_catalog()
+    return catalog, catalog.guests, catalog.summaries
 
 
 def _guest_json(guest):
@@ -50,8 +49,8 @@ def _guest_json(guest):
 
 @integration_api
 def api_tags(request):
-    _scan, rows = _inventory()
-    return JsonResponse({"tags": [
+    catalog, _guests, rows = _inventory()
+    return JsonResponse({"meta": catalog.metadata(), "tags": [
         {
             "name": row.name,
             "registered": row.registered,
@@ -64,26 +63,23 @@ def api_tags(request):
 @integration_api
 def api_tag_guests(request, tag: str):
     tag = tag.strip().lower()
-    _scan, rows = _inventory()
+    catalog, _guests, rows = _inventory()
     summary = next((row for row in rows if row.name == tag), None)
     if summary is None:
         raise Http404
     return JsonResponse({
         "tag": tag,
+        "meta": catalog.metadata(),
         "guests": [_guest_json(guest) for guest in summary.guests],
     })
 
 
 @integration_api
 def api_backup_groups(request):
-    scan, _rows = _inventory()
+    catalog, guests, _rows = _inventory()
     prefix = settings.BACKUP_POLICY_TAG_PREFIX
     groups: dict[str, list] = {}
     unassigned, conflicts = [], []
-    guests = [] if scan is None else ProxmoxInventory.objects.filter(
-        scan_run=scan,
-        object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-    ).order_by("node", "vmid")
     for guest in guests:
         policies = [tag for tag in parse_tags(guest.config) if tag.startswith(prefix)]
         payload = _guest_json(guest)
@@ -93,4 +89,10 @@ def api_backup_groups(request):
             conflicts.append({**payload, "policy_tags": policies})
         else:
             groups.setdefault(policies[0], []).append(payload)
-    return JsonResponse({"policy_prefix": prefix, "groups": groups, "unassigned": unassigned, "conflicts": conflicts})
+    return JsonResponse({
+        "meta": catalog.metadata(),
+        "policy_prefix": prefix,
+        "groups": groups,
+        "unassigned": unassigned,
+        "conflicts": conflicts,
+    })

@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 from django.utils import timezone
-from django.core.cache import cache
+from django.db import transaction
+from django_q.tasks import async_task
 
-from core.models import AuditEvent, ProxmoxInventory, ScanRun
+from core.models import AuditEvent, CurrentGuestInventory
+from core.services.audit_events import record_audit_event
+from core.services.current_guest_inventory import update_current_guest_config
 from core.services.proxmox import (
     ProxmoxAPIError,
     VerifiedGuestInventory,
     configured_clients,
     fetch_verified_guest_inventory,
+)
+from core.services.tag_registry import (
+    TAG_REGISTRY_CACHE_KEY,
+    TAG_REGISTRY_CACHE_SECONDS,
+    cache_registered_tags,
+    cluster_options,
+    refresh_registered_tags,
+    registered_tags,
 )
 from core.services.tags import (
     RegisteredTag,
@@ -24,31 +35,85 @@ from core.services.tags import (
     validate_color,
     validate_tag,
 )
+from core.services.task_queues import BULK_QUEUE_NAME, queued_task_ids
 
 
-TAG_REGISTRY_CACHE_KEY = "pve-helper:tag-registry:v1"
-TAG_REGISTRY_CACHE_SECONDS = 60
+class TagOperationQueueError(RuntimeError):
+    pass
 
 
-def cluster_options() -> tuple[object | None, dict, str]:
-    error = "No Proxmox endpoint could read cluster tag options."
-    for client in configured_clients():
-        try:
-            return client, client.cluster_options(), ""
-        except ProxmoxAPIError as exc:
-            error = str(exc)
-    return None, {}, error
+class TagOperationRetryError(RuntimeError):
+    pass
 
 
-def registered_tags() -> tuple[dict[str, RegisteredTag], str]:
-    cached = cache.get(TAG_REGISTRY_CACHE_KEY)
-    if isinstance(cached, tuple) and len(cached) == 2:
-        return cached
-    _client, options, error = cluster_options()
-    result = (parse_registered_tags(options), error)
-    if not error:
-        cache.set(TAG_REGISTRY_CACHE_KEY, result, TAG_REGISTRY_CACHE_SECONDS)
-    return result
+def enqueue_tag_operation(event: AuditEvent) -> str:
+    """Queue a prepared fan-out and make enqueue failure terminal immediately."""
+    details = dict(event.details or {})
+    details["stage"] = "queued"
+    details["queued_at"] = timezone.now().isoformat()
+    details.pop("finished_at", None)
+    details.pop("interrupted_at", None)
+    details.pop("heartbeat_at", None)
+    details.pop("error", None)
+    details.pop("retryable", None)
+    event.details = details
+    event.outcome = "queued"
+    event.save(update_fields=["details", "outcome"])
+    try:
+        task_id = async_task(
+            "core.services.tag_actions.execute_tag_operation",
+            event.id,
+            int(details.get("retry_attempt") or 0),
+            q_options={"cluster": BULK_QUEUE_NAME},
+        )
+    except Exception as exc:
+        details = {
+            **details,
+            "stage": "enqueue failed",
+            "error": "The background task could not be queued; retry is safe.",
+            "queue_error": str(exc),
+            "retryable": True,
+            "finished_at": timezone.now().isoformat(),
+        }
+        event.details = details
+        event.outcome = "failed"
+        event.save(update_fields=["details", "outcome"])
+        raise TagOperationQueueError(details["error"]) from exc
+    event.details = {**details, "worker_task_id": task_id}
+    event.save(update_fields=["details"])
+    return task_id
+
+
+def retry_tag_operation(event_id: int) -> str:
+    """Atomically claim and safely requeue one failed idempotent fan-out."""
+    with transaction.atomic():
+        event = AuditEvent.objects.select_for_update().filter(pk=event_id, action="tag.bulk_operation").first()
+        if event is None:
+            raise TagOperationRetryError("Tag operation not found.")
+        details = dict(event.details or {})
+        if event.outcome != "failed" or not details.get("retryable"):
+            raise TagOperationRetryError("This tag operation is not available for retry.")
+        if not details.get("targets"):
+            raise TagOperationRetryError("Tag operation has no durable target payload.")
+        worker_task_id = str(details.get("worker_task_id") or "")
+        if worker_task_id and worker_task_id in queued_task_ids({worker_task_id}):
+            raise TagOperationRetryError("The original background task is still queued.")
+
+        details["retry_attempt"] = int(details.get("retry_attempt") or 0) + 1
+        details["stage"] = "retry requested"
+        details["failed"] = []
+        details.pop("finished_at", None)
+        details.pop("interrupted_at", None)
+        details.pop("heartbeat_at", None)
+        details.pop("error", None)
+        details.pop("queue_error", None)
+        details.pop("retryable", None)
+        details.pop("worker_task_id", None)
+        event.details = details
+        event.outcome = "queued"
+        event.save(update_fields=["details", "outcome"])
+
+    return enqueue_tag_operation(event)
 
 
 def _write_registry(mutator) -> tuple[dict[str, RegisteredTag], str]:
@@ -81,7 +146,7 @@ def _write_registry(mutator) -> tuple[dict[str, RegisteredTag], str]:
         for key in delete:
             refreshed.pop(key, None)
         result = parse_registered_tags(refreshed)
-        cache.set(TAG_REGISTRY_CACHE_KEY, (result, ""), TAG_REGISTRY_CACHE_SECONDS)
+        cache_registered_tags(result)
         return result, ""
     except ProxmoxAPIError as exc:
         return {}, str(exc)
@@ -137,33 +202,13 @@ def _target_from_guest(row) -> dict:
     return {"node": row.node, "object_type": row.object_type, "vmid": row.vmid, "name": row.name}
 
 
-def _latest_guest_snapshot() -> ScanRun | None:
-    return (
-        ScanRun.objects.filter(
-            proxmox_objects__object_type__in=[
-                ProxmoxInventory.ObjectType.VM,
-                ProxmoxInventory.ObjectType.CT,
-            ],
-            proxmox_objects__vmid__isnull=False,
-        )
-        .order_by("-created_at")
-        .distinct()
-        .first()
-    )
-
-
 def latest_tag_targets(tag: str) -> tuple[list[dict], VerifiedGuestInventory]:
     """Union retained membership with an explicitly covered live inventory."""
     targets: dict[tuple[str, str, int], dict] = {}
-    scan = _latest_guest_snapshot()
-    if scan is not None:
-        for row in ProxmoxInventory.objects.filter(
-            scan_run=scan,
-            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-        ):
-            if tag in parse_tags(row.config):
-                target = _target_from_guest(row)
-                targets[(target["node"], target["object_type"], target["vmid"])] = target
+    for row in CurrentGuestInventory.objects.all():
+        if tag in parse_tags(row.config):
+            target = _target_from_guest(row)
+            targets[(target["node"], target["object_type"], target["vmid"])] = target
     live = fetch_verified_guest_inventory()
     for row in live.guests:
         if tag in parse_tags(row.tags):
@@ -242,9 +287,13 @@ def _target_key(target: dict) -> str:
     return f"{target.get('object_type')}:{target.get('vmid')}@{target.get('node')}"
 
 
-def execute_tag_operation(event_id: int) -> None:
+def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> None:
     event = AuditEvent.objects.get(pk=event_id)
     details = dict(event.details or {})
+    expected_attempt = int(details.get("retry_attempt") or 0)
+    received_attempt = 0 if retry_attempt is None else int(retry_attempt)
+    if received_attempt != expected_attempt or event.outcome != "queued":
+        return
     details["stage"] = "updating guests"
     details["heartbeat_at"] = timezone.now().isoformat()
     event.outcome = "running"
@@ -300,11 +349,13 @@ def execute_tag_operation(event_id: int) -> None:
     if details.get("failed"):
         event.outcome = "failed"
         details["stage"] = "partial failure"
+        details["retryable"] = True
     else:
         _updated, error = unregister_tag(details["source_tag"])
         if error:
             event.outcome = "failed"
             details.setdefault("failed", []).append({"reason": error, "registry": True})
+            details["retryable"] = True
         else:
             event.outcome = "success"
             details["stage"] = "completed"
@@ -351,22 +402,16 @@ def _update_target(details: dict, target: dict, live_guest) -> tuple[str, str]:
         )
     except ProxmoxAPIError as exc:
         return "failed", str(exc)
-    scan = ScanRun.objects.filter(status=ScanRun.Status.COMPLETED).order_by("-created_at").first()
-    if scan:
-        row = ProxmoxInventory.objects.filter(
-            scan_run=scan,
-            object_type=target["object_type"],
-            vmid=target["vmid"],
-        ).first()
-        if row:
-            row.config = {**(row.config or {}), "tags": join_tags(next_tags)}
-            row.node = node
-            if not next_tags:
-                row.config.pop("tags", None)
-            row.save(update_fields=["config", "node", "updated_at"])
-    AuditEvent.objects.create(
+    update_current_guest_config(
+        object_type=target["object_type"],
+        vmid=target["vmid"],
+        node=node,
+        updates={"tags": join_tags(next_tags)} if next_tags else {},
+        delete=[] if next_tags else ["tags"],
+    )
+    record_audit_event(
         username=event_username(details),
-        action="tag.renamed" if details["operation"] == "rename" else "tag.removed",
+        action="tag.membership.renamed" if details["operation"] == "rename" else "tag.membership.removed",
         object_type="guest",
         object_id=_target_key(target),
         details={"source_tag": source, "new_tag": details.get("new_tag", ""), **target},
@@ -383,7 +428,7 @@ def _record_summary_audit(operation_event: AuditEvent) -> None:
     if details.get("summary_audit_id"):
         return
     operation = details.get("operation")
-    summary = AuditEvent.objects.create(
+    summary = record_audit_event(
         username=event_username(details),
         action="tag.renamed" if operation == "rename" else "tag.deleted",
         object_type="tag",

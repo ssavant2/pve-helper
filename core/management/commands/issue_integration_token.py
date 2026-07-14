@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.utils.dateparse import parse_datetime
 
-from core.models import AuditEvent
+from core.services.audit_events import record_audit_event
 from core.services.integration_tokens import issue_token
 
 
@@ -17,7 +17,7 @@ class Command(BaseCommand):
         if options.get("expires_at") and expires_at is None:
             raise CommandError("--expires-at must be an ISO-8601 datetime")
         token, raw = issue_token(options["name"], expires_at=expires_at)
-        AuditEvent.objects.create(
+        record_audit_event(
             username="management-command",
             action="tag.integration.token",
             object_type="integration_token",

@@ -104,6 +104,20 @@
   font-size: 13px;
 }
 
+.action-feedback {
+  margin: 10px 16px;
+  padding: 9px 11px;
+  border: 1px solid rgb(239 68 68 / 0.5);
+  border-radius: 6px;
+  background: rgb(127 29 29 / 0.2);
+  color: #fecaca;
+  font-size: 13px;
+}
+
+.vm-action-dialog .action-feedback {
+  margin: 0;
+}
+
 .danger-confirmation {
   display: flex;
   gap: 12px;

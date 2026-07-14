@@ -16,8 +16,6 @@ const initRecentTasks = () => {
   }
 
   recentTasks.dataset.initialized = "true";
-  // A timed-out graceful shutdown shows a "question" status; clicking it opens
-  // the force-stop follow-up dialog.
   recentTasks.addEventListener("click", (event) => {
     const question = event.target.closest("[data-force-stop-target]");
     if (!question || !recentTasks.contains(question)) {
@@ -283,6 +281,29 @@ const initRecentTasks = () => {
     return true;
   };
 
+  const maybeRefreshTagInventory = (tasks) => {
+    const tagView = document.querySelector("[data-tag-inventory-view]");
+    if (!tagView) {
+      return false;
+    }
+    const renderedAtMs = Number(tagView.dataset.renderedAtMs || 0);
+    const refreshTask = tasks.find((task) => {
+      if (task.action !== "tag.inventory.refresh") {
+        return false;
+      }
+      if (!["completed", "warning", "failed"].includes(task.status_class)) {
+        return false;
+      }
+      return Number(task.finished_at_ms || 0) > renderedAtMs && !taskWasReloaded(task);
+    });
+    if (!refreshTask) {
+      return false;
+    }
+    rememberTaskReload(refreshTask);
+    loadSoftNavigation(new URL(window.location.href), { push: false });
+    return true;
+  };
+
   // On a guest detail/tab page, refresh the whole page as soon as a migration
   // for that guest completes — its node, hardware/datastore storage refs and
   // related-object links all change, and the poll shouldn't lag behind.
@@ -347,6 +368,8 @@ const initRecentTasks = () => {
         task.server,
         task.cancel_upload_id,
         task.cancelable ? "1" : "0",
+        task.retryable ? "1" : "0",
+        task.retry_label,
       ])
     );
 
@@ -373,6 +396,8 @@ const initRecentTasks = () => {
       task.cancel_upload_id,
       task.cancelable ? "1" : "0",
       task.offer_force_stop ? "1" : "0",
+      task.retryable ? "1" : "0",
+      task.retry_label,
     ]);
 
   const pendingTaskMatchesLoadedTask = (pendingTask, task) => {
@@ -403,6 +428,7 @@ const initRecentTasks = () => {
         data-task-row-key="${escapeHtml(taskRowKey(task, index))}"
         data-task-id="${escapeHtml(task.id || "")}"
         data-task-cancelable="${task.cancelable ? "true" : "false"}"
+        data-task-retryable="${task.retryable ? "true" : "false"}"
         data-task-row-signature="${escapeHtml(taskRowSignature(task))}"
       >
         <td data-column="task-name" data-sort-value="${escapeHtml(task.name)}">${escapeHtml(task.name)}</td>
@@ -410,7 +436,7 @@ const initRecentTasks = () => {
         <td data-column="status" data-sort-value="${escapeHtml(task.status)}">${
           task.offer_force_stop
             ? `<button type="button" class="task-question-badge" data-force-stop-target="${escapeHtml(task.force_stop_target)}" data-force-stop-label="${escapeHtml(task.target)}" data-force-stop-task-id="${escapeHtml(task.id || "")}">A question — click to answer</button>`
-            : `<span class="badge ${escapeHtml(task.status_class)}">${escapeHtml(task.status)}</span>`
+            : `<span class="badge ${escapeHtml(task.status_class)}"${task.retryable ? ` title="${escapeHtml(task.retry_label)}; right-click for actions"` : ""}>${escapeHtml(task.status)}</span>`
         }</td>
         <td data-column="details" data-sort-value="${escapeHtml(task.details)}">${taskDetailsHtml(task)}</td>
         <td data-column="initiator" data-sort-value="${escapeHtml(task.initiator)}">${escapeHtml(task.initiator)}</td>
@@ -448,6 +474,7 @@ const initRecentTasks = () => {
     const nextRow = template.content.firstElementChild;
     row.dataset.taskId = nextRow.dataset.taskId || "";
     row.dataset.taskCancelable = nextRow.dataset.taskCancelable || "false";
+    row.dataset.taskRetryable = nextRow.dataset.taskRetryable || "false";
     row.dataset.taskRowSignature = nextRow.dataset.taskRowSignature || "";
     row.replaceChildren(...Array.from(nextRow.children));
     applyTaskColumnOrderToRow(row);
@@ -623,6 +650,7 @@ const initRecentTasks = () => {
       }
       if (
         maybeRefreshCurrentStorageBrowser(loadedTasks) ||
+        maybeRefreshTagInventory(loadedTasks) ||
         maybeRefreshCurrentGuestInventory(loadedTasks) ||
         maybeRefreshCurrentGuestDetail(loadedTasks)
       ) {

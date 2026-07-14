@@ -11,6 +11,7 @@ from django_q.models import Schedule
 from django_q.tasks import async_task
 
 from core.models import AuditEvent, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
+from core.services.audit_events import record_audit_event
 from core.services.proxmox import clear_live_guest_caches, ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 
@@ -254,7 +255,7 @@ def prune_scheduled_action_runs(*, retention_days: int | None = None, now=None) 
     )
 
     if deleted_count:
-        AuditEvent.objects.create(
+        record_audit_event(
             username="system",
             action="scheduled_action.run_retention.purge",
             object_type="scheduled_action_run",
@@ -608,7 +609,7 @@ def _audit_run(
 ) -> None:
     scheduled_action = run.scheduled_action
     user = run.triggered_by if run.triggered_by_id else None
-    AuditEvent.objects.create(
+    record_audit_event(
         user=user,
         username=user.get_username() if user else "system",
         action=action,

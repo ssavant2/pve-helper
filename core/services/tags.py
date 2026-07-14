@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from core.models import ProxmoxInventory, ScanRun
+from core.models import CurrentGuestInventory
 
 
 TAG_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]*$")
@@ -34,7 +34,7 @@ class TagChip:
 @dataclass
 class TagSummary:
     name: str
-    guests: list[ProxmoxInventory] = field(default_factory=list)
+    guests: list[CurrentGuestInventory] = field(default_factory=list)
     registered: bool = False
     background: str = ""
     foreground: str = ""
@@ -163,16 +163,10 @@ def parse_registered_tags(cluster_options: dict) -> dict[str, RegisteredTag]:
     }
 
 
-def inventory_rows(scan: ScanRun | None, registered: dict[str, RegisteredTag]) -> list[TagSummary]:
+def inventory_rows(guests: Iterable[CurrentGuestInventory], registered: dict[str, RegisteredTag]) -> list[TagSummary]:
     summaries: dict[str, TagSummary] = {}
     for name, item in registered.items():
         summaries[name] = TagSummary(name=name, registered=True, background=item.background, foreground=item.foreground)
-    guests = [] if scan is None else list(
-        ProxmoxInventory.objects.filter(
-            scan_run=scan,
-            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-        ).order_by("node", "vmid")
-    )
     for guest in guests:
         for name in parse_tags(guest.config):
             summary = summaries.setdefault(name, TagSummary(name=name))

@@ -43,8 +43,11 @@ runs, audit events, task history, and a small number of enriched read models.
 This distinction explains several UI behaviours:
 
 - **Live** status is queried from Proxmox and can be temporarily unavailable.
-- **Inventory** and file classifications come from the latest completed scan;
-  check its timestamp before acting on a result.
+- **Guest and tag inventory** use a current-state projection refreshed from
+  Proxmox. Partial endpoint failures preserve previously known objects and are
+  treated as degraded coverage rather than proof that an object disappeared.
+- **Storage inventory** and file classifications come from retained completed
+  scans; check the displayed scan timestamp before acting on a file result.
 - A long-running write is submitted to a background worker. Its progress and
   final state appear in **Recent Tasks** rather than being held open in the
   browser request.
@@ -53,17 +56,18 @@ This distinction explains several UI behaviours:
 
 ## Start here
 
-The sidebar is the primary navigation. It currently exposes four working areas:
+The sidebar is the primary navigation. Its five working areas are:
 
 | Area | Use it for |
 | --- | --- |
 | **VMs/CTs** | Guest inventory, power, console, configuration, migration, backup/restore, and related operations. |
 | **Storage** | Mounted shared datastores, API-only local/block storage, scans, file operations, and orphan review. |
+| **Tags** | Create and color tags, inspect membership, assign or remove tags, and rename or delete them across guests. |
 | **Scheduled Tasks** | One-time and recurring guest power schedules, their runs, and history. |
 | **Audit** | Authentication and administration history, filters, search, and export. |
 
-**Clusters** and **Network** are reserved for later modules. They are not active
-surfaces in the current release.
+**Clusters** and **Network** remain reserved for later modules. They are not
+active administration surfaces in the current release.
 
 The top bar provides global search, theme selection, VM/CT ID visibility, and
 IPv4/IPv6 display preferences. Preferences are browser-local. The task bar at
@@ -276,7 +280,15 @@ guest or overview controls to assign tags.
 
 Rename and **Delete tag** run through the bulk worker because they may touch
 many guests. The confirmation shows the affected count; Recent Tasks and Audit
-show partial failures and allow a safe retry.
+show partial failures. A safely retryable row says **Failed — right-click for
+options**; inspect its details, then right-click it and choose **Retry Task...**.
+Already completed objects are not changed again.
+
+**Refresh tag inventory** queues a read-only background reconciliation of both
+the Proxmox tag registry/colors and guest membership. Follow it in Recent Tasks;
+**Completed with warnings** means usable data was refreshed while one component
+or endpoint was unavailable. Data from unavailable endpoints is preserved, and
+the membership **As of** time advances only when membership was actually read.
 
 An optional read-only `/api/v1` integration can expose tag membership to a
 backup reconciliation script. It is disabled by default and requires a
@@ -288,8 +300,9 @@ runbook before enabling it.
 - Confirmations, audits, preflight checks, and Recent Tasks are guardrails; they
   do not replace change control or backup policy.
 - Treat live Proxmox data as authoritative over an older scan/read model.
-- Preserve source-IP integrity by entering through the configured reverse proxy;
-  see the deployment runbook before changing Nginx Proxy Manager headers.
+- When an external reverse proxy is used, configure its trusted peer address to
+  preserve source-IP and HTTPS integrity; direct HTTP deployment remains
+  supported. See the deployment runbook before changing proxy headers.
 - Use the native Proxmox UI for rare platform settings or features not exposed
   here. pve-helper intentionally targets daily administration, not full Proxmox
   feature parity.

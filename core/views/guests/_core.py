@@ -12,7 +12,12 @@ from .. import common
 from core.models import ProxmoxEndpoint, StorageMount
 from core.services.classification import DISK_CONFIG_KEYS, extract_disk_references
 from core.services.console_sessions import create_guest_console_session
-from core.services.tags import tag_chip
+from core.services.current_guest_inventory import (
+    current_inventory_state,
+    delete_current_guest,
+    update_current_guest_config,
+)
+from core.services.tag_catalog import load_tag_catalog
 
 
 SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
@@ -376,8 +381,9 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
 
 
 def _vms_workspace_context(active_nav: str) -> dict:
-    rows, live_available, scan_at = _guest_rows()
-    available_user_tags = _decorate_guest_tag_chips(rows)
+    tag_catalog = load_tag_catalog()
+    rows, live_available, scan_at = _guest_rows(current_guests=tag_catalog.guests)
+    available_user_tags = _decorate_guest_tag_chips(rows, catalog=tag_catalog)
     # The workspace Inventory list renders the full lineage tree; the overview
     # stays flat but still flags linked clones so the toolbar can gate 'Convert
     # to Template'. Both share the same cached lineage fetch.
@@ -402,48 +408,25 @@ def _vms_workspace_context(active_nav: str) -> dict:
     }
 
 
-def _decorate_guest_tag_chips(rows) -> list[str]:
-    # Import lazily: tag_actions owns the Proxmox registry read and imports the
-    # tag semantics module used above.
-    from core.services.tag_actions import registered_tags
-
-    try:
-        registered, _error = registered_tags()
-    except Exception:
-        # Tag colors are presentation metadata; an unavailable registry must not
-        # take down VM pages. Deterministic fallback colors remain available.
-        registered = {}
-    user_tags = set(registered)
-    latest_scan = _latest_proxmox_inventory_scan()
-    if latest_scan:
-        for config in ProxmoxInventory.objects.filter(
-            scan_run=latest_scan,
-            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-        ).values_list("config", flat=True):
-            user_tags.update(parse_guest_tags(config))
+def _decorate_guest_tag_chips(rows, *, catalog=None) -> list[str]:
+    catalog = catalog or load_tag_catalog()
     for row in rows:
-        row.tag_chips = [tag_chip(name, registered) for name in row.tags]
-        user_tags.update(row.tags)
-    return sorted(user_tags, key=str.casefold)
+        row.tag_chips = catalog.chips(row.tags)
+    return list(catalog.available)
 
 
-def _guest_rows():
+def _guest_rows(*, current_guests=None):
     """Cluster-wide guest rows: live membership/status/name joined with the
-    latest scan for template flag and tags. Falls back to scan if the API is
+    current guest projection for template flag and tags. Falls back to that
+    projection if the API is
     unreachable. Returns (rows, live_available, scan_timestamp)."""
     live_guests = common.fetch_live_guest_inventory()
-    latest_scan = _latest_proxmox_inventory_scan()
 
-    scan_by_key: dict[tuple[str, str, int], ProxmoxInventory] = {}
-    scan_by_legacy_key: dict[tuple[str, int], list[ProxmoxInventory]] = {}
-    if latest_scan:
-        for obj in ProxmoxInventory.objects.filter(
-            scan_run=latest_scan,
-            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-            vmid__isnull=False,
-        ):
-            scan_by_key[(obj.node or "", obj.object_type, obj.vmid)] = obj
-            scan_by_legacy_key.setdefault((obj.object_type, obj.vmid), []).append(obj)
+    current_by_key: dict[tuple[str, str, int], CurrentGuestInventory] = {}
+    current_by_identity: dict[tuple[str, int], list[CurrentGuestInventory]] = {}
+    for obj in current_guests if current_guests is not None else CurrentGuestInventory.objects.all():
+        current_by_key[(obj.node or "", obj.object_type, obj.vmid)] = obj
+        current_by_identity.setdefault((obj.object_type, obj.vmid), []).append(obj)
 
     live_available = bool(live_guests)
     rows: list[SimpleNamespace] = []
@@ -456,9 +439,9 @@ def _guest_rows():
                     name=guest.name,
                     status=guest.status,
                     node=guest.node,
-                    scan_obj=_scan_obj_for_live_guest(
-                        scan_by_key,
-                        scan_by_legacy_key,
+                    current_obj=_current_obj_for_live_guest(
+                        current_by_key,
+                        current_by_identity,
                         guest.node,
                         guest.object_type,
                         guest.vmid,
@@ -467,35 +450,36 @@ def _guest_rows():
                 )
             )
     else:
-        for (_node, object_type, vmid), scan_obj in scan_by_key.items():
+        for (_node, object_type, vmid), current_obj in current_by_key.items():
             rows.append(
                 _build_guest_row(
                     object_type=object_type,
                     vmid=vmid,
-                    name=scan_obj.name,
-                    status=scan_obj.status,
-                    node=scan_obj.node,
-                    scan_obj=scan_obj,
+                    name=current_obj.name,
+                    status=current_obj.status,
+                    node=current_obj.node,
+                    current_obj=current_obj,
                     live_guest=None,
                 )
             )
 
     rows.sort(key=lambda row: ((row.name or "").casefold(), row.type_sort, row.vmid or 0, row.node))
     _decorate_guests_with_scheduled_actions(rows)
-    return rows, live_available, _scan_timestamp(latest_scan)
+    state = current_inventory_state()
+    return rows, live_available, state.refreshed_at if state else None
 
 
-def _scan_obj_for_live_guest(
-    scan_by_key: dict[tuple[str, str, int], ProxmoxInventory],
-    scan_by_legacy_key: dict[tuple[str, int], list[ProxmoxInventory]],
+def _current_obj_for_live_guest(
+    current_by_key: dict[tuple[str, str, int], CurrentGuestInventory],
+    current_by_identity: dict[tuple[str, int], list[CurrentGuestInventory]],
     node: str,
     object_type: str,
     vmid: int,
-) -> ProxmoxInventory | None:
-    exact = scan_by_key.get((node or "", object_type, vmid))
+) -> CurrentGuestInventory | None:
+    exact = current_by_key.get((node or "", object_type, vmid))
     if exact is not None:
         return exact
-    legacy_matches = scan_by_legacy_key.get((object_type, vmid), [])
+    legacy_matches = current_by_identity.get((object_type, vmid), [])
     if len(legacy_matches) == 1:
         return legacy_matches[0]
     return None
@@ -513,8 +497,8 @@ def _display_lock(value: object) -> str:
     return "" if lock == "suspended" else lock
 
 
-def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_guest=None) -> SimpleNamespace:
-    config = scan_obj.config if scan_obj is not None and isinstance(scan_obj.config, dict) else {}
+def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live_guest=None) -> SimpleNamespace:
+    config = current_obj.config if current_obj is not None and isinstance(current_obj.config, dict) else {}
     template = object_type == ProxmoxInventory.ObjectType.VM and (
         bool(getattr(live_guest, "is_template", False)) or is_template(config)
     )
@@ -551,7 +535,7 @@ def _build_guest_row(*, object_type, vmid, name, status, node, scan_obj, live_gu
         type_sort=type_sort,
         target_id=_guest_target_value(object_type, vmid, node),
         tags=parse_guest_tags(config),
-        in_scan=scan_obj is not None,
+        in_current_inventory=current_obj is not None,
         detail_url=reverse("core:guest_summary", args=[object_type, vmid]) if vmid is not None else "",
         provisioned_bytes=provisioned_disk,
         provisioned_label=provisioned_disk and _fmt_bytes(provisioned_disk) or "-",
@@ -1915,34 +1899,21 @@ def _unique_tags(tags) -> list[str]:
     return result
 
 
-def _update_latest_guest_scan_config(detail: SimpleNamespace, updates: dict[str, str], delete: list[str]) -> None:
-    latest_scan = _latest_proxmox_inventory_scan()
-    if not latest_scan:
-        return
-    obj = ProxmoxInventory.objects.filter(
-        scan_run=latest_scan,
+def _update_current_guest_config(detail: SimpleNamespace, updates: dict[str, str], delete: list[str]) -> None:
+    update_current_guest_config(
         object_type=detail.object_type,
         vmid=detail.vmid,
-    ).first()
-    if not obj or not isinstance(obj.config, dict):
-        return
-    config = dict(obj.config)
-    config.update(updates)
-    for key in delete:
-        config.pop(key, None)
-    obj.config = config
-    obj.save(update_fields=["config"])
+        node=detail.node,
+        updates=updates,
+        delete=delete,
+    )
 
 
-def _delete_latest_guest_scan_object(detail: SimpleNamespace) -> None:
-    latest_scan = _latest_proxmox_inventory_scan()
-    if not latest_scan:
-        return
-    ProxmoxInventory.objects.filter(
-        scan_run=latest_scan,
+def _delete_current_guest_object(detail: SimpleNamespace) -> None:
+    delete_current_guest(
         object_type=detail.object_type,
         vmid=detail.vmid,
-    ).delete()
+    )
 
 
 def _snapshot_error(err: str) -> str:
@@ -2302,17 +2273,15 @@ def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> Sim
         )
 
     if not config:
-        scan = _latest_proxmox_inventory_scan()
-        if scan:
-            scan_query = ProxmoxInventory.objects.filter(scan_run=scan, object_type=object_type, vmid=vmid)
-            if node:
-                scan_query = scan_query.filter(node=node)
-            obj = scan_query.first()
-            if obj:
-                config = obj.config if isinstance(obj.config, dict) else {}
-                node = node or obj.node
-                name = name or obj.name
-                status = status or obj.status
+        current_query = CurrentGuestInventory.objects.filter(object_type=object_type, vmid=vmid)
+        if node:
+            current_query = current_query.filter(node=node)
+        obj = current_query.first()
+        if obj:
+            config = obj.config if isinstance(obj.config, dict) else {}
+            node = node or obj.node
+            name = name or obj.name
+            status = status or obj.status
 
     return SimpleNamespace(
         object_type=object_type,
@@ -2339,13 +2308,14 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         type_label = "VM"
     target = f"{detail.object_type}:{detail.vmid}"
     active_target = _guest_target_value(detail.object_type, detail.vmid, detail.node)
-    rows, live_available, scan_at = _guest_rows()
-    available_user_tags = _decorate_guest_tag_chips(rows)
+    tag_catalog = load_tag_catalog()
+    rows, live_available, scan_at = _guest_rows(current_guests=tag_catalog.guests)
+    available_user_tags = _decorate_guest_tag_chips(rows, catalog=tag_catalog)
     # The sidebar list on every detail/Summary page is the same workspace tree,
     # so it must render the lineage indentation too (not a flat list).
     guest_list = _apply_workspace_lineage(rows)
     tag_row = SimpleNamespace(tags=parse_guest_tags(detail.config))
-    _decorate_guest_tag_chips([tag_row])
+    _decorate_guest_tag_chips([tag_row], catalog=tag_catalog)
     return {
         **navigation_context("vms"),
         "guest": detail,

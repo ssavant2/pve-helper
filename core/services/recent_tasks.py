@@ -52,13 +52,12 @@ GUEST_TASK_NAMES = {
     "guest.console.closed": "Close console",
     "guest.console.failed": "Console failed",
     "tag.bulk_operation": "Tag operation",
+    "tag.inventory.refresh": "Refresh tag inventory",
     "tag.registered": "Create tag",
     "tag.recolored": "Change tag color",
-    "tag.renamed": "Rename tag",
-    "tag.deleted": "Delete tag",
 }
 
-TAG_TASK_ACTIONS = {"tag.bulk_operation", "tag.registered", "tag.recolored", "tag.renamed", "tag.deleted"}
+TAG_TASK_ACTIONS = {"tag.bulk_operation", "tag.inventory.refresh", "tag.registered", "tag.recolored"}
 
 
 DEFAULT_TASK_LIMIT = 5
@@ -239,6 +238,8 @@ def serialize_task(task: dict[str, object]) -> dict[str, object]:
         "path": str(task.get("path", "")),
         "path_parent": str(task.get("path_parent", "")),
         "cancelable": bool(task.get("cancelable")),
+        "retryable": bool(task.get("retryable")),
+        "retry_label": str(task.get("retry_label", "")),
         "offer_force_stop": bool(task.get("offer_force_stop")),
         "force_stop_target": str(task.get("force_stop_target", "")),
     }
@@ -294,6 +295,23 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         extra = f"{mode}: {', '.join(tags)}" if tags else mode
     elif event.action == "tag.bulk_operation":
         extra = f"{details.get('operation', 'update')}: {details.get('source_tag', event.object_id)}"
+        failure = str(details.get("error") or "").strip()
+        failed_targets = details.get("failed") if isinstance(details.get("failed"), list) else []
+        if failure:
+            extra += f" — {failure}"
+        elif event.outcome == "failed" and failed_targets:
+            extra += f" — {len(failed_targets)} target(s) failed"
+    elif event.action == "tag.inventory.refresh":
+        attempted = details.get("endpoints_attempted") if isinstance(details.get("endpoints_attempted"), list) else []
+        succeeded = details.get("endpoints_succeeded") if isinstance(details.get("endpoints_succeeded"), list) else []
+        registry_error = str(details.get("registry_error") or "").strip()
+        membership_errors = details.get("membership_errors") if isinstance(details.get("membership_errors"), list) else []
+        if attempted:
+            extra = f"Registry and membership; {len(succeeded)}/{len(attempted)} endpoints"
+        else:
+            extra = str(details.get("stage") or "Registry and membership")
+        if registry_error or membership_errors:
+            extra += " — warnings in Audit"
     elif event.action in TAG_TASK_ACTIONS:
         new_tag = str(details.get("new_tag") or "")
         extra = f"→ {new_tag}" if new_tag else str(details.get("tag") or details.get("source_tag") or event.object_id)
@@ -354,6 +372,9 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
             status, status_class = "Completed", "completed"
         else:
             force_stop_target = f"{ttype}:{vmid}" + (f"@{node}" if node else "")
+    retryable = event.action == "tag.bulk_operation" and event.outcome == "failed" and details.get("retryable") is True
+    if retryable:
+        status = "Failed — right-click for options"
     return {
         "id": f"guest:{event.id}",
         "kind": "guest",
@@ -370,10 +391,14 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         "queued_for": "-",
         "started_at": event.timestamp,
         "finished_at": finished_at,
-        "server": str(details.get("proxmox_task_node") or details.get("node") or "-"),
+        "server": ", ".join(details.get("endpoints_succeeded", []))
+        if event.action == "tag.inventory.refresh" and isinstance(details.get("endpoints_succeeded"), list)
+        else str(details.get("proxmox_task_node") or details.get("node") or "-"),
         "sort_at": finished_at or event.timestamp,
         "cancelable": status_class in {"queued", "running"}
         and bool(details.get("proxmox_task_upid") and details.get("proxmox_task_node")),
+        "retryable": retryable,
+        "retry_label": "Failed — right-click for options" if retryable else "",
     }
 
 
@@ -384,6 +409,8 @@ def _guest_task_status(event: AuditEvent) -> tuple[str, str]:
         return "Queued", "queued"
     if event.outcome == "failed":
         return "Failed", "failed"
+    if event.outcome == "warning":
+        return "Completed with warnings", "warning"
     if event.outcome == "cancelled":
         return "Cancelled", "cancelled"
     return "Completed", "completed"

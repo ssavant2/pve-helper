@@ -48,7 +48,7 @@
     <link rel="stylesheet" href="{% static 'css/app/scheduling.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/audit.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/console.css' %}?v=20260712-60">
-    <link rel="stylesheet" href="{% static 'css/app/taskbar.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/taskbar.css' %}?v=20260714-75">
     <link rel="stylesheet" href="{% static 'css/app/context-menu.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/action-dialog.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/shared.css' %}?v=20260712-61">
@@ -63,7 +63,7 @@
     <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260712-60">
     <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
     <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
-    <script type="module" src="{% static 'js/app.js' %}?v=20260713-73"></script>
+    <script type="module" src="{% static 'js/app.js' %}?v=20260714-75"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -252,6 +252,7 @@
         data-recent-tasks
         data-tasks-url="{% url 'core:recent_tasks' %}"
         data-task-cancel-url="{% url 'core:cancel_recent_task' %}"
+        data-task-retry-url="{% url 'core:retry_recent_task' %}"
         data-vms-bulk-action-url="{% url 'core:vms_bulk_action' %}"
         data-dismiss-question-url="{% url 'core:dismiss_task_question' %}"
         data-task-page="0"
@@ -296,10 +297,12 @@
             </thead>
             <tbody data-task-rows>
               {% for task in app_recent_tasks %}
-                <tr data-task-row-key="{{ task.id }}" data-task-cancelable="{{ task.cancelable|yesno:'true,false' }}">
+                <tr data-task-row-key="{{ task.id }}" data-task-id="{{ task.id }}" data-task-cancelable="{{ task.cancelable|yesno:'true,false' }}" data-task-retryable="{{ task.retryable|yesno:'true,false' }}">
                   <td data-column="task-name" data-sort-value="{{ task.name }}">{{ task.name }}</td>
                   <td data-column="target" data-sort-value="{% if task.target_guest %}{{ task.target_guest.name|default:task.target_guest.vmid }}{% else %}{{ task.target }}{% endif %}">{% if task.target_guest %}{% guest_label task.target_guest %}{% else %}{{ task.target }}{% endif %}</td>
-                  <td data-column="status" data-sort-value="{{ task.status }}"><span class="badge {{ task.status_class }}">{{ task.status }}</span></td>
+                  <td data-column="status" data-sort-value="{{ task.status }}">
+                    <span class="badge {{ task.status_class }}"{% if task.retryable %} title="{{ task.retry_label }}; right-click for actions"{% endif %}>{{ task.status }}</span>
+                  </td>
                   <td data-column="details" data-sort-value="{{ task.details }}">{{ task.details }}</td>
                   <td data-column="initiator" data-sort-value="{{ task.initiator }}">{{ task.initiator }}</td>
                   <td data-column="queued" data-sort-value="{{ task.queued_for }}">{{ task.queued_for }}</td>

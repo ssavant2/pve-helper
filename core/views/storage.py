@@ -230,20 +230,14 @@ def api_storage_volumes(request, node: str, storage: str):
 
 @app_login_required
 def api_storage_vms(request, node: str, storage: str):
-    scan = _latest_result_scan()
     guests = []
-    if scan:
-        prefix = f"{storage}:"
-        lineage = common.fetch_live_guest_lineage()
-        for obj in ProxmoxInventory.objects.filter(
-            scan_run=scan,
-            node=node,
-            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-        ).order_by("object_type", "vmid"):
-            matching = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
-            if matching:
-                obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
-                guests.append(obj)
+    prefix = f"{storage}:"
+    lineage = common.fetch_live_guest_lineage()
+    for obj in CurrentGuestInventory.objects.filter(node=node).order_by("object_type", "vmid"):
+        matching = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
+        if matching:
+            obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
+            guests.append(obj)
     if guests:
         live_status = common.fetch_live_guest_status()
         for guest in guests:
@@ -497,22 +491,12 @@ def storage_browser(request, storage_id: str):
     file_total = len(entries)
     entries = entries[file_offset:file_offset + FILE_BROWSER_BATCH_SIZE]
 
-    # Link each referenced disk image to the VM/CT that owns it.
-    from django.db.models import Max
-
+    # Link each referenced disk image to the current VM/CT that owns it.
     from core.services.classification import extract_vmid_from_image_path
 
-    guest_scan_id = ProxmoxInventory.objects.filter(
-        object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT]
-    ).aggregate(latest=Max("scan_run_id"))["latest"]
-    guest_map: dict[int, ProxmoxInventory] = {}
-    if guest_scan_id:
-        for obj in ProxmoxInventory.objects.filter(
-            scan_run_id=guest_scan_id,
-            object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-            vmid__isnull=False,
-        ):
-            guest_map.setdefault(obj.vmid, obj)
+    guest_map: dict[int, CurrentGuestInventory] = {
+        obj.vmid: obj for obj in CurrentGuestInventory.objects.all()
+    }
 
     # Linked-clone lineage: which template each clone descends from, and how many
     # clones each template's base volume backs. Cached live fetch; empty if the
@@ -1217,10 +1201,7 @@ def _storage_content_usage(storage: StorageMount, latest_scan: ScanRun | None) -
         for path in entries:
             _add_storage_content_usage(usage, key, path, path)
 
-    inventory = ProxmoxInventory.objects.filter(
-        scan_run=latest_scan,
-        object_type__in=[ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT],
-    ).order_by("node", "object_type", "vmid")
+    inventory = CurrentGuestInventory.objects.all().order_by("node", "object_type", "vmid")
     for obj in inventory:
         if not isinstance(obj.config, dict):
             continue
@@ -1367,20 +1348,13 @@ def storage_vms(request, storage_id: str):
     latest_scan = _latest_storage_result_scan(storage)
 
     guests = []
-    if latest_scan:
-        prefix = f"{storage.storage_id}:"
-        lineage = common.fetch_live_guest_lineage()
-        for obj in ProxmoxInventory.objects.filter(
-            scan_run=latest_scan,
-            object_type__in=[
-                ProxmoxInventory.ObjectType.VM,
-                ProxmoxInventory.ObjectType.CT,
-            ],
-        ).order_by("object_type", "vmid"):
-            matching_refs = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
-            if matching_refs:
-                obj.matching_disk_references = _display_disk_references(obj.vmid, matching_refs, lineage)
-                guests.append(obj)
+    prefix = f"{storage.storage_id}:"
+    lineage = common.fetch_live_guest_lineage()
+    for obj in CurrentGuestInventory.objects.all().order_by("object_type", "vmid"):
+        matching_refs = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
+        if matching_refs:
+            obj.matching_disk_references = _display_disk_references(obj.vmid, matching_refs, lineage)
+            guests.append(obj)
 
     if guests:
         live_status = common.fetch_live_guest_status()

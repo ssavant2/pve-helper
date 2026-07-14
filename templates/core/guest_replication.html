@@ -18,7 +18,7 @@
               <td>{{ job.comment|default:"-" }}</td>
 
                 <td class="row-actions">
-                  <form class="inline-action-form" method="post" action="{% url 'core:guest_replication_delete' guest.object_type guest.vmid %}" onsubmit="return confirm('Delete replication job {{ job.id|escapejs }}?');">
+                  <form class="inline-action-form" method="post" action="{% url 'core:guest_replication_delete' guest.object_type guest.vmid %}" data-confirm="Delete replication job {{ job.id }}?" data-confirm-title="Delete replication job" data-confirm-label="Delete" data-confirm-danger="true">
                     {% csrf_token %}<input type="hidden" name="job_id" value="{{ job.id }}">
                     <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
                   </form>

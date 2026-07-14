@@ -31,6 +31,7 @@ from django_q.tasks import async_task
 
 from ..models import (
     AuditEvent,
+    CurrentGuestInventory,
     FileInventory,
     ProxmoxInventory,
     ScanRun,
@@ -43,6 +44,7 @@ from ..models import (
 from ..services.classification import extract_disk_references, parse_config_value_volid
 from ..services.file_actions import FileActionRisk, file_action_risk
 from ..services.audit_retention_schedule import audit_retention_schedule_state, update_audit_retention_schedule
+from ..services.audit_events import audit_module_key, record_audit_event
 from ..services.filesystem import storage_space_info
 from ..services.guests import (
     guest_identity,
@@ -358,31 +360,11 @@ def _audit_guest_identity(event: AuditEvent):
 
 
 def _audit_module_key(event: AuditEvent) -> str:
-    return _audit_module_key_for(event.action, event.object_type, event.details)
+    return event.module or _audit_module_key_for(event.action, event.object_type, event.details)
 
 
 def _audit_module_key_for(action: str, object_type: str, details) -> str:
-    details = details if isinstance(details, dict) else {}
-    action = action or ""
-    object_type = object_type or ""
-
-    if action.startswith("auth."):
-        return "auth"
-    if action.startswith("network.") or object_type.startswith("network"):
-        return "network"
-    if action.startswith("vm.") or action.startswith("scheduled_action.") or object_type in {"vm", "ct", "guest", "scheduled_action", "scheduled_action_run"}:
-        return "vms"
-    if action.startswith("cluster.") or object_type.startswith("cluster"):
-        return "clusters"
-    if (
-        action.startswith("scan.")
-        or action.startswith("file.")
-        or action.startswith("trash.")
-        or object_type in {"scan_run", "scan_schedule", "storage", "file"}
-        or details.get("target_storage")
-    ):
-        return "storage"
-    return "system"
+    return audit_module_key(action, object_type, details)
 
 
 def _audit_module_label(module_key: str) -> str:
@@ -475,9 +457,12 @@ def _audit_action_label(event: AuditEvent) -> str:
     tag_action_labels = {
         "tag.registered": "Create tag",
         "tag.recolored": "Change tag color",
+        "tag.inventory.refresh": "Refresh tag inventory",
         "tag.renamed": "Rename tag",
         "tag.deleted": "Delete tag",
         "tag.removed": "Remove tag from guest",
+        "tag.membership.renamed": "Rename tag on guest",
+        "tag.membership.removed": "Remove tag from guest",
         "tag.bulk_operation": "Update tag assignments",
         "tag.integration.token": "Manage tag integration token",
     }
@@ -634,7 +619,7 @@ def _safe_next_url(request) -> str:
     return reverse("core:dashboard")
 
 
-def _decorate_guests_with_scheduled_actions(guests: list[ProxmoxInventory]) -> None:
+def _decorate_guests_with_scheduled_actions(guests: list) -> None:
     vmids = [guest.vmid for guest in guests if guest.object_type == ProxmoxInventory.ObjectType.VM and guest.vmid]
     ctids = [guest.vmid for guest in guests if guest.object_type == ProxmoxInventory.ObjectType.CT and guest.vmid]
     action_filter = Q()
@@ -751,45 +736,6 @@ def _scheduled_action_status_class(status: str) -> str:
 def proxmox_permission_hint(privilege: str) -> str:
     """Consistent 403 hint text; ``privilege`` names the missing Proxmox right."""
     return f"Proxmox denied the operation (403) - the token needs {privilege}."
-
-
-def _audit_actor(request):
-    """Resolve (user, username) for an audit record from the request."""
-    user = getattr(request, "user", None)
-    if user is not None and getattr(user, "is_authenticated", False):
-        return user, user.get_username()
-    return None, ""
-
-
-def record_audit_event(
-    request,
-    *,
-    action: str,
-    object_type: str = "",
-    object_id: str = "",
-    outcome: str = "success",
-    details: dict | None = None,
-    system_username: str = "",
-) -> AuditEvent:
-    """Single entry point for writing an AuditEvent from a request-handling view.
-
-    Derives user/username/source_ip once so every domain records them the same
-    way (previously ~10 inline blocks re-derived these and only file actions set
-    source_ip). ``system_username`` is used when the request is unauthenticated.
-    """
-    user, username = _audit_actor(request)
-    details = details or {}
-    return AuditEvent.objects.create(
-        user=user,
-        username=username if user is not None else system_username,
-        source_ip=client_ip(request),
-        action=action,
-        object_type=object_type,
-        object_id=object_id,
-        outcome=outcome,
-        module=_audit_module_key_for(action, object_type, details),
-        details=details,
-    )
 
 
 def enqueue_bulk_task(func, *args, **kwargs):
