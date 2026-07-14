@@ -989,6 +989,7 @@ def _add_guest_summary(
             disk=_int_or_zero(data.get("disk")),
             maxdisk=_int_or_zero(data.get("maxdisk")),
             uptime=_int_or_zero(data.get("uptime")),
+            lock=str(data.get("lock") or ""),
             is_template=_int_or_zero(data.get("template")) == 1,
             tags=tuple(part for part in re.split(r"[;,\s]+", str(data.get("tags") or "").strip()) if part),
         ),

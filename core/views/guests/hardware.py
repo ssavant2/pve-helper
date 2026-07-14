@@ -5,6 +5,7 @@ from .. import common
 from ._core import (_audit_guest,_config_enabled,_cpu_count,_ct_features,_ct_mount_rows,_ct_network_rows,_ct_options,_format_kv_config,_is_disk_device_key,_linked_clone_disk_edit_block,_next_device_index,_parse_net_value,_parse_startup_options,_resolve_guest_detail,_set_param_bool,_set_param_text,_split_kv_config)
 from core.services.tags import TagValidationError, join_tags, parse_tags, validate_tag
 from core.services.tag_catalog import load_tag_catalog
+from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
 
 
 def _advanced_device_label(key: str) -> str:
@@ -578,6 +579,19 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
             return proxmox_permission_hint("a VM.Config.* privilege")
         return f"Proxmox rejected the change: {exc}"
 
+    update_current_guest_config(
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+        node=node,
+        updates=updates,
+        delete=delete,
+    )
+    refresh_current_guest_from_client(
+        client,
+        node=node,
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+    )
     _audit_guest(
         request,
         detail,
@@ -832,6 +846,19 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
             return proxmox_permission_hint("a VM.Config.* privilege")
         return f"Proxmox rejected the change: {exc}"
 
+    update_current_guest_config(
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+        node=node,
+        updates=updates,
+        delete=delete,
+    )
+    refresh_current_guest_from_client(
+        client,
+        node=node,
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+    )
     _audit_guest(
         request,
         detail,
@@ -1029,6 +1056,19 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
             return proxmox_permission_hint("a VM.Config.* privilege")
         return f"Proxmox rejected the change: {exc}"
 
+    update_current_guest_config(
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+        node=node,
+        updates=updates,
+        delete=delete,
+    )
+    refresh_current_guest_from_client(
+        client,
+        node=node,
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+    )
     record_audit_event(
         request,
         action="guest.config.updated",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import posixpath
 import re
 from pathlib import Path, PurePosixPath
@@ -15,9 +16,12 @@ from core.services.console_sessions import create_guest_console_session
 from core.services.current_guest_inventory import (
     current_inventory_state,
     delete_current_guest,
+    refresh_current_guest_from_client,
     update_current_guest_config,
 )
 from core.services.tag_catalog import load_tag_catalog
+
+logger = logging.getLogger(__name__)
 
 
 SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
@@ -399,6 +403,7 @@ def _vms_workspace_context(active_nav: str) -> dict:
         "guest_count": len(rows),
         "running_count": sum(1 for row in rows if row.status == "running"),
         "live_available": live_available,
+        "runtime_inventory_stale": _runtime_inventory_is_stale(scan_at, rows=rows),
         "inventory_scan_at": scan_at,
         "live_inventory_cache_seconds": LIVE_GUEST_INVENTORY_CACHE_SECONDS,
         "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS,
@@ -416,57 +421,40 @@ def _decorate_guest_tag_chips(rows, *, catalog=None) -> list[str]:
 
 
 def _guest_rows(*, current_guests=None):
-    """Cluster-wide guest rows: live membership/status/name joined with the
-    current guest projection for template flag and tags. Falls back to that
-    projection if the API is
-    unreachable. Returns (rows, live_available, scan_timestamp)."""
-    live_guests = common.fetch_live_guest_inventory()
-
-    current_by_key: dict[tuple[str, str, int], CurrentGuestInventory] = {}
-    current_by_identity: dict[tuple[str, int], list[CurrentGuestInventory]] = {}
-    for obj in current_guests if current_guests is not None else CurrentGuestInventory.objects.all():
-        current_by_key[(obj.node or "", obj.object_type, obj.vmid)] = obj
-        current_by_identity.setdefault((obj.object_type, obj.vmid), []).append(obj)
-
-    live_available = bool(live_guests)
-    rows: list[SimpleNamespace] = []
-    if live_available:
-        for guest in live_guests:
-            rows.append(
-                _build_guest_row(
-                    object_type=guest.object_type,
-                    vmid=guest.vmid,
-                    name=guest.name,
-                    status=guest.status,
-                    node=guest.node,
-                    current_obj=_current_obj_for_live_guest(
-                        current_by_key,
-                        current_by_identity,
-                        guest.node,
-                        guest.object_type,
-                        guest.vmid,
-                    ),
-                    live_guest=guest,
-                )
-            )
-    else:
-        for (_node, object_type, vmid), current_obj in current_by_key.items():
-            rows.append(
-                _build_guest_row(
-                    object_type=object_type,
-                    vmid=vmid,
-                    name=current_obj.name,
-                    status=current_obj.status,
-                    node=current_obj.node,
-                    current_obj=current_obj,
-                    live_guest=None,
-                )
-            )
+    """Build every guest row from the non-blocking current-state projection."""
+    current = list(current_guests if current_guests is not None else CurrentGuestInventory.objects.all())
+    rows = [
+        _build_guest_row(
+            object_type=guest.object_type,
+            vmid=guest.vmid,
+            name=guest.name,
+            status=guest.status,
+            node=guest.node,
+            current_obj=guest,
+        )
+        for guest in current
+    ]
 
     rows.sort(key=lambda row: ((row.name or "").casefold(), row.type_sort, row.vmid or 0, row.node))
     _decorate_guests_with_scheduled_actions(rows)
     state = current_inventory_state()
-    return rows, live_available, state.refreshed_at if state else None
+    latest_runtime_at = max(
+        (guest.runtime_observed_at for guest in current if guest.runtime_observed_at),
+        default=None,
+    )
+    return rows, latest_runtime_at is not None, latest_runtime_at
+
+
+def _runtime_inventory_is_stale(refreshed_at, *, rows=None) -> bool:
+    if refreshed_at is None:
+        return True
+    if rows is not None and any(getattr(row, "runtime_observed_at", None) is None for row in rows):
+        return True
+    max_age = timedelta(
+        minutes=max(1, settings.CURRENT_GUEST_REFRESH_INTERVAL_MINUTES) * 2,
+        seconds=30,
+    )
+    return refreshed_at < tz.now() - max_age
 
 
 def _current_obj_for_live_guest(
@@ -508,12 +496,13 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
         type_label, type_filter, type_sort = "CT", "ct", 2
     else:
         type_label, type_filter, type_sort = "VM", "vm", 1
-    cpu = _float_or_zero(getattr(live_guest, "cpu", 0.0))
-    mem = _int_or_zero(getattr(live_guest, "mem", 0))
-    maxmem = _int_or_zero(getattr(live_guest, "maxmem", 0)) or _config_mem_bytes(config)
-    used_disk = _int_or_zero(getattr(live_guest, "disk", 0))
-    provisioned_disk = _int_or_zero(getattr(live_guest, "maxdisk", 0)) or _config_disk_bytes(config)
-    uptime = _int_or_zero(getattr(live_guest, "uptime", 0))
+    runtime = live_guest or current_obj
+    cpu = _float_or_zero(getattr(runtime, "cpu", getattr(runtime, "cpu_usage", 0.0)))
+    mem = _int_or_zero(getattr(runtime, "mem", getattr(runtime, "memory_used_bytes", 0)))
+    maxmem = _int_or_zero(getattr(runtime, "maxmem", getattr(runtime, "memory_max_bytes", 0))) or _config_mem_bytes(config)
+    used_disk = _int_or_zero(getattr(runtime, "disk", getattr(runtime, "disk_used_bytes", 0)))
+    provisioned_disk = _int_or_zero(getattr(runtime, "maxdisk", getattr(runtime, "disk_max_bytes", 0))) or _config_disk_bytes(config)
+    uptime = _int_or_zero(getattr(runtime, "uptime", getattr(runtime, "uptime_seconds", 0)))
     cpus = _int_or_zero(config.get("vcpus")) or _cpu_count(config, object_type)
     macs = _config_mac_addresses(config)
     ips = _config_ip_addresses(config)
@@ -528,7 +517,7 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
         status=status or "",
         state_label=_guest_state_label(status),
         node=node or "",
-        lock=_display_lock(getattr(live_guest, "lock", "") or config.get("lock")),
+        lock=_display_lock(getattr(runtime, "lock", getattr(runtime, "runtime_lock", "")) or config.get("lock")),
         is_template=template,
         type_label=type_label,
         type_filter=type_filter,
@@ -553,6 +542,7 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
         agent_enabled=_guest_agent_config_enabled(config, object_type),
         agent_label=_guest_agent_config_label(config, object_type),
         uptime_seconds=uptime,
+        runtime_observed_at=getattr(current_obj, "runtime_observed_at", None),
         uptime_label=_format_uptime(uptime) if uptime else "-",
         cpus=cpus,
         cpu_count_label=str(cpus) if cpus else "-",
@@ -762,7 +752,7 @@ def _guest_lineage(detail: SimpleNamespace) -> dict:
         return empty
     names = {
         guest.vmid: guest.name
-        for guest in common.fetch_live_guest_inventory()
+        for guest in CurrentGuestInventory.objects.filter(object_type=ProxmoxInventory.ObjectType.VM)
         if guest.object_type == ProxmoxInventory.ObjectType.VM
     }
     parent = None
@@ -1580,6 +1570,22 @@ def _finish_guest_running_audit(
     details["finished_at"] = tz.now().isoformat()
     event.details = details
     event.save(update_fields=["outcome", "details"])
+    if client is not None:
+        try:
+            refresh = refresh_current_guest_from_client(
+                client,
+                node=detail.node,
+                object_type=detail.object_type,
+                vmid=detail.vmid,
+            )
+            if refresh.error:
+                details["projection_refresh_error"] = refresh.error
+        except Exception as exc:
+            logger.exception("Guest operation succeeded but targeted projection refresh failed")
+            details["projection_refresh_error"] = f"{exc.__class__.__name__}: {exc}"
+        if details.get("projection_refresh_error"):
+            event.details = details
+            event.save(update_fields=["details"])
     return event
 
 
@@ -2226,75 +2232,50 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
 
 
 def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> SimpleNamespace:
-    """Resolve a guest to its current node + live status/config.
-
-    Membership/node come from the live cluster inventory; if the API is
-    unreachable, fall back to the latest scan. Never silently pick one guest
-    when the same type+VMID is ambiguous across multiple nodes.
-    """
-    requested_node = node
-    matches = [
-        g
-        for g in common.fetch_live_guest_inventory()
-        if g.object_type == object_type and g.vmid == vmid and (not requested_node or g.node == requested_node)
-    ]
-    nodes = {g.node for g in matches if g.node}
-    ambiguous = not requested_node and len(nodes) > 1
-    node = next(iter(matches)).node if matches else requested_node
-    name = matches[0].name if matches else ""
-    status = matches[0].status if matches else ""
-
-    config: dict = {}
-    current: dict = {}
-    live_ok = False
-    if node and not ambiguous:
-        for client in common.configured_clients():
-            try:
-                current = client.guest_current(node=node, object_type=object_type, vmid=vmid)
-                config = client.guest_config(node=node, object_type=object_type, vmid=vmid)
-                live_ok = True
-                break
-            except ProxmoxAPIError:
-                continue
-
-    if ambiguous:
+    """Resolve read-only guest context without provider I/O in the request."""
+    current_query = CurrentGuestInventory.objects.filter(object_type=object_type, vmid=vmid)
+    if node:
+        current_query = current_query.filter(node=node)
+    obj = current_query.first()
+    if obj is None:
         return SimpleNamespace(
             object_type=object_type,
             vmid=vmid,
-            name=name or "",
-            node="",
-            status=status or "",
+            name="",
+            node=node,
+            status="",
             config={},
             current={},
             live_ok=False,
-            ambiguous=True,
-            ambiguous_nodes=sorted(nodes),
+            ambiguous=False,
+            ambiguous_nodes=[],
             found=False,
         )
 
-    if not config:
-        current_query = CurrentGuestInventory.objects.filter(object_type=object_type, vmid=vmid)
-        if node:
-            current_query = current_query.filter(node=node)
-        obj = current_query.first()
-        if obj:
-            config = obj.config if isinstance(obj.config, dict) else {}
-            node = node or obj.node
-            name = name or obj.name
-            status = status or obj.status
+    config = obj.config if isinstance(obj.config, dict) else {}
+    current = {
+        "status": obj.status,
+        "lock": obj.runtime_lock,
+        "cpu": obj.cpu_usage,
+        "mem": obj.memory_used_bytes,
+        "maxmem": obj.memory_max_bytes,
+        "disk": obj.disk_used_bytes,
+        "maxdisk": obj.disk_max_bytes,
+        "uptime": obj.uptime_seconds,
+    }
 
     return SimpleNamespace(
         object_type=object_type,
         vmid=vmid,
-        name=name or "",
-        node=node or "",
-        status=str(current.get("status") or status or ""),
+        name=obj.name or "",
+        node=obj.node or "",
+        status=obj.status or "",
         config=config,
         current=current,
-        live_ok=live_ok,
-        ambiguous=ambiguous,
-        ambiguous_nodes=sorted(nodes) if ambiguous else [],
-        found=bool(node or config),
+        live_ok=bool(obj.runtime_observed_at),
+        ambiguous=False,
+        ambiguous_nodes=[],
+        found=True,
     )
 
 
@@ -2328,6 +2309,7 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         "active_guest_tab": active_tab,
         "guest_list": guest_list,
         "live_available": live_available,
+        "runtime_inventory_stale": _runtime_inventory_is_stale(scan_at, rows=rows),
         "inventory_scan_at": scan_at,
         "active_object_type": detail.object_type,
         "active_vmid": detail.vmid,

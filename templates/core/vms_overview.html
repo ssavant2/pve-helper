@@ -19,6 +19,7 @@
             {{ running_count }} running.
             {% if live_available %}
               Power state updates right after an action and otherwise refreshes periodically.
+              Last refreshed {{ inventory_scan_at|date:"Y-m-d H:i:s" }}.
             {% elif inventory_scan_at %}
               Showing last scan from {{ inventory_scan_at|date:"Y-m-d H:i:s" }}.
             {% else %}
@@ -55,10 +56,12 @@
         </details>
       </div>
 
-      {% if not live_available %}
+      {% if not live_available or runtime_inventory_stale %}
         <p class="panel-meta">
-          <span class="badge failed">Proxmox API unreachable</span>
-          Some live columns may be blank.
+          <span class="badge {% if live_available %}warning{% else %}failed{% endif %}">
+            {% if live_available %}Runtime inventory is stale{% else %}No runtime inventory{% endif %}
+          </span>
+          Power state and usage may be out of date.
         </p>
       {% endif %}
 

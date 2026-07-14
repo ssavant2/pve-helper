@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
+from django.db import connection
 from django.db import transaction
 from django.db.models import Count, F, Q
 from django.conf import settings
@@ -29,7 +30,9 @@ from .services.console_session_cleanup import prune_console_sessions
 from .services.config import sync_runtime_configuration
 from .services.current_guest_inventory import (
     ScanGuestObservation,
+    reconcile_live_guest_inventory,
     reconcile_scan_guest_inventory,
+    refresh_current_guest_from_client,
     upsert_current_guest,
 )
 from .services.filesystem import storage_space_info
@@ -42,6 +45,7 @@ from .services.proxmox import (
     clear_live_guest_caches,
     configured_clients,
     fetch_live_guest_status,
+    fetch_verified_guest_inventory,
 )
 from .services.scan_schedule import scan_schedule_state
 from .services.scan_retention import prune_scan_history
@@ -60,6 +64,32 @@ from .services.task_queues import BULK_QUEUE_NAME, queued_task_ids
 SPACE_SNAPSHOT_RETENTION_DAYS = 8
 
 logger = logging.getLogger(__name__)
+
+CURRENT_GUEST_REFRESH_LOCK_ID = 0x50564547554501
+
+
+def refresh_current_guest_inventory() -> dict[str, object]:
+    """Refresh the non-blocking guest read model outside HTTP requests."""
+    acquired = connection.vendor != "postgresql"
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", [CURRENT_GUEST_REFRESH_LOCK_ID])
+            acquired = bool(cursor.fetchone()[0])
+    if not acquired:
+        return {"skipped": True, "reason": "refresh already running"}
+    try:
+        inventory = fetch_verified_guest_inventory()
+        state = reconcile_live_guest_inventory(inventory)
+        return {
+            "skipped": False,
+            "complete": state.complete,
+            "guests": len(inventory.guests),
+            "errors": list(inventory.errors),
+        }
+    finally:
+        if connection.vendor == "postgresql":
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [CURRENT_GUEST_REFRESH_LOCK_ID])
 
 
 def dispatch_scheduled_actions() -> dict[str, int | bool]:
@@ -89,8 +119,9 @@ def poll_guest_audit_task(
 
     details = event.details if isinstance(event.details, dict) else {}
     details = dict(details)
+    client = ProxmoxClient(endpoint_url)
     try:
-        result = ProxmoxClient(endpoint_url).wait_for_task(
+        result = client.wait_for_task(
             node=node,
             upid=upid,
             timeout_seconds=timeout_seconds,
@@ -115,6 +146,36 @@ def poll_guest_audit_task(
     details["finished_at"] = timezone.now().isoformat()
     event.details = details
     event.save(update_fields=["outcome", "details"])
+
+    if event.outcome == "success":
+        try:
+            target_type = str(details.get("target_type") or "")
+            target_vmid = int(details.get("vmid"))
+            target_node = str(details.get("node") or node)
+            allow_relocation = event.action in {"guest.migrate", "guest.destroy"}
+            if event.action == "guest.clone.create" and details.get("new_vmid"):
+                target_vmid = int(details["new_vmid"])
+                allow_relocation = True
+            refresh = refresh_current_guest_from_client(
+                client,
+                node=target_node,
+                object_type=target_type,
+                vmid=target_vmid,
+                allow_relocation=allow_relocation,
+                delete_if_authoritatively_absent=event.action == "guest.destroy",
+            )
+            if refresh.error:
+                details["projection_refresh_error"] = refresh.error
+            else:
+                details["projection_refreshed_at"] = timezone.now().isoformat()
+        except (TypeError, ValueError) as exc:
+            details["projection_refresh_error"] = f"Invalid operation target: {exc}"
+        except Exception as exc:
+            logger.exception("Guest operation succeeded but targeted projection refresh failed")
+            details["projection_refresh_error"] = f"{exc.__class__.__name__}: {exc}"
+        event.details = details
+        event.save(update_fields=["details"])
+
     clear_live_guest_caches()
     if event.outcome == "success":
         enqueue_storage_rescan(details.get("rescan_storage_ids") or [])

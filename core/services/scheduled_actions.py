@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable
@@ -12,6 +13,7 @@ from django_q.tasks import async_task
 
 from core.models import AuditEvent, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
 from core.services.audit_events import record_audit_event
+from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.proxmox import clear_live_guest_caches, ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 
@@ -22,6 +24,8 @@ SCHEDULED_ACTION_EXECUTION_FUNC = "core.tasks.run_scheduled_action"
 SCHEDULED_ACTION_DISPATCH_INTERVAL_MINUTES = 1
 DISPATCH_GRACE = timedelta(seconds=120)
 STALE_RUN_GRACE = timedelta(minutes=5)
+
+logger = logging.getLogger(__name__)
 
 IN_FLIGHT_RUN_STATUSES = {
     ScheduledActionRun.Status.QUEUED,
@@ -364,12 +368,25 @@ def execute_scheduled_action_run(
         if _run_was_cancelled(run):
             clear_live_guest_caches()
             return
+        result_details = {"proxmox_task": result.raw}
+        try:
+            projection = refresh_current_guest_from_client(
+                target.client,
+                node=target.node,
+                object_type=action.target_type,
+                vmid=action.target_vmid,
+            )
+            if projection.error:
+                result_details["projection_refresh_error"] = projection.error
+        except Exception as exc:
+            logger.exception("Scheduled action succeeded but targeted projection refresh failed")
+            result_details["projection_refresh_error"] = f"{exc.__class__.__name__}: {exc}"
         _finish_run(
             run,
             status=ScheduledActionRun.Status.COMPLETED,
             outcome=ScheduledActionRun.Outcome.SUCCESS,
             action_status=ScheduledAction.LastStatus.COMPLETED,
-            result={"proxmox_task": result.raw},
+            result=result_details,
         )
         clear_live_guest_caches()
     else:

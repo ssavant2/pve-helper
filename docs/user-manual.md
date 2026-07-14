@@ -42,10 +42,15 @@ runs, audit events, task history, and a small number of enriched read models.
 
 This distinction explains several UI behaviours:
 
-- **Live** status is queried from Proxmox and can be temporarily unavailable.
-- **Guest and tag inventory** use a current-state projection refreshed from
-  Proxmox. Partial endpoint failures preserve previously known objects and are
-  treated as degraded coverage rather than proof that an object disappeared.
+- **Guest runtime and tag inventory** use a current-state projection refreshed
+  from Proxmox by the worker. Passive pages do not wait for a broad Proxmox
+  status request. Partial endpoint failures preserve previously known objects
+  and are treated as degraded coverage rather than proof that an object
+  disappeared.
+- A successful power, configuration, hardware, or tag operation refreshes its
+  affected guest immediately when the provider operation completes. It does not
+  wait for the next periodic cluster refresh. The UI labels missing or stale
+  runtime inventory rather than presenting it as fresh.
 - **Storage inventory** and file classifications come from retained completed
   scans; check the displayed scan timestamp before acting on a file result.
 - A long-running write is submitted to a background worker. Its progress and
@@ -107,7 +112,7 @@ Use either VMs/CTs surface:
 
 Guest identity is node-qualified. When names or VMIDs are ambiguous, verify the
 node shown in the guest label before taking an action. Linked-clone ancestry,
-locks, and live status are also shown where available.
+locks, and the latest projected runtime status are also shown where available.
 
 ### Use the guest workspace
 
@@ -234,7 +239,9 @@ mounted objects are on **Files**; API-only volumes are on **Volumes**.
 The remaining datastore tabs answer different operational questions:
 
 - **Summary**: capacity, access, scan state, and high-level inventory.
-- **Monitor**: historical space snapshots and recent scan/file activity.
+- **Monitor**: historical space snapshots plus recent file activity and scans
+  explicitly started for this datastore. Full-cluster scans are shown once in
+  Recent Tasks and Audit instead of being duplicated under every datastore.
 - **Configuration**: the storage definition visible to pve-helper.
 - **Permissions**: filesystem ACL/permission information for mounted storage.
 - **Nodes** and **VMs/CTs**: expected consumers and current guest references.

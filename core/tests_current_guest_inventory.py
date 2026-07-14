@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from unittest.mock import Mock, patch
+
 from django.test import TestCase
 from django.utils import timezone
 
@@ -8,9 +10,11 @@ from core.services.current_guest_inventory import (
     ScanGuestObservation,
     reconcile_live_guest_inventory,
     reconcile_scan_guest_inventory,
+    refresh_current_guest_from_client,
     update_current_guest_config,
 )
-from core.services.proxmox import ProxmoxGuestSummary, VerifiedGuestInventory
+from core.services.proxmox import ProxmoxAPIError, ProxmoxGuestSummary, VerifiedGuestInventory
+from core.tasks import refresh_current_guest_inventory
 
 
 class CurrentGuestInventoryTests(TestCase):
@@ -103,6 +107,11 @@ class CurrentGuestInventoryTests(TestCase):
                     vmid=100,
                     name="new-live",
                     status="running",
+                    cpu=0.25,
+                    mem=1024,
+                    maxmem=2048,
+                    uptime=90,
+                    lock="backup",
                     tags=("prod",),
                 ),
             ),
@@ -118,6 +127,11 @@ class CurrentGuestInventoryTests(TestCase):
         new_guest = CurrentGuestInventory.objects.get(vmid=100)
         self.assertEqual(new_guest.config["tags"], "prod")
         self.assertFalse(new_guest.config_complete)
+        self.assertEqual(new_guest.cpu_usage, 0.25)
+        self.assertEqual(new_guest.memory_used_bytes, 1024)
+        self.assertEqual(new_guest.uptime_seconds, 90)
+        self.assertEqual(new_guest.runtime_lock, "backup")
+        self.assertIsNotNone(new_guest.runtime_observed_at)
 
     def test_complete_live_refresh_removes_guests_absent_from_authoritative_membership(self):
         self.current_guest(endpoint=self.pve2, object_type="vm", vmid=202, name="deleted")
@@ -170,3 +184,98 @@ class CurrentGuestInventoryTests(TestCase):
         self.assertEqual(current.node, "pve1")
         self.assertEqual(current.config, {"tags": "new"})
         self.assertFalse(current.config_complete)
+
+    def test_targeted_refresh_updates_power_state_and_authoritative_config_immediately(self):
+        current = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=100, name="old")
+        client = Mock(endpoint=self.pve1.url)
+        client.guest_current.return_value = {
+            "status": "running",
+            "cpu": 0.5,
+            "mem": 1024,
+            "maxmem": 4096,
+            "uptime": 12,
+        }
+        client.guest_config.return_value = {"name": "renamed", "tags": "prod"}
+
+        result = refresh_current_guest_from_client(
+            client,
+            node="pve1",
+            object_type="vm",
+            vmid=100,
+        )
+
+        self.assertTrue(result.found)
+        current.refresh_from_db()
+        self.assertEqual(current.status, "running")
+        self.assertEqual(current.name, "renamed")
+        self.assertEqual(current.cpu_usage, 0.5)
+        self.assertEqual(current.config["tags"], "prod")
+        self.assertIsNotNone(current.runtime_observed_at)
+        self.assertIsNotNone(current.config_observed_at)
+
+    def test_targeted_refresh_discovers_migrated_node(self):
+        current = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=100, name="vm")
+        client = Mock(endpoint=self.pve1.url)
+        client.guest_current.side_effect = [
+            ProxmoxAPIError("not on old node"),
+            {"status": "running"},
+        ]
+        client.get.return_value = [{"type": "qemu", "vmid": 100, "node": "pve2"}]
+        client.guest_config.return_value = {"name": "vm"}
+
+        result = refresh_current_guest_from_client(
+            client,
+            node="pve1",
+            object_type="vm",
+            vmid=100,
+            allow_relocation=True,
+        )
+
+        self.assertTrue(result.found)
+        self.assertEqual(result.node, "pve2")
+        current.refresh_from_db()
+        self.assertEqual(current.node, "pve2")
+
+    def test_targeted_refresh_deletes_only_after_authoritative_absence(self):
+        self.current_guest(endpoint=self.pve1, object_type="vm", vmid=100, name="deleted")
+        client = Mock(endpoint=self.pve1.url)
+        client.guest_current.side_effect = ProxmoxAPIError("not found")
+        client.get.return_value = []
+
+        result = refresh_current_guest_from_client(
+            client,
+            node="pve1",
+            object_type="vm",
+            vmid=100,
+            allow_relocation=True,
+            delete_if_authoritatively_absent=True,
+        )
+
+        self.assertTrue(result.absent)
+        self.assertFalse(CurrentGuestInventory.objects.filter(vmid=100).exists())
+
+    @patch("core.tasks.fetch_verified_guest_inventory")
+    def test_periodic_refresh_updates_projection_outside_the_request(self, fetch_inventory):
+        fetch_inventory.return_value = VerifiedGuestInventory(
+            guests=(
+                ProxmoxGuestSummary(
+                    node="pve1",
+                    object_type="vm",
+                    vmid=100,
+                    name="periodic",
+                    status="running",
+                    cpu=0.75,
+                ),
+            ),
+            attempted_endpoints=(self.pve1.url,),
+            successful_endpoints=(self.pve1.url,),
+            errors=(),
+        )
+
+        result = refresh_current_guest_inventory()
+
+        self.assertFalse(result["skipped"])
+        self.assertTrue(result["complete"])
+        guest = CurrentGuestInventory.objects.get(vmid=100)
+        self.assertEqual(guest.status, "running")
+        self.assertEqual(guest.cpu_usage, 0.75)

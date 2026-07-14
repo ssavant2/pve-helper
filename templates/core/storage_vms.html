@@ -8,7 +8,7 @@
         <span>VMs/CTs on {{ storage.display_name }}</span>
       </div>
       <p class="panel-meta">
-        Power state is live data cached for up to {{ live_status_cache_seconds }} second{{ live_status_cache_seconds|pluralize }}.
+        Power state updates immediately after operations and otherwise through the periodic current-inventory refresh.
         Disk references are from inventory scanned
         {% if inventory_scan_at %}{{ inventory_scan_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}.
       </p>

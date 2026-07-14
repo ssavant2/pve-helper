@@ -8,6 +8,7 @@ from .services.audit_events import record_audit_event
 from .services.bulk_task_reaper_schedule import ensure_bulk_task_reaper_schedule
 from .services.console_session_cleanup_schedule import ensure_console_session_cleanup_schedule
 from .services.guest_task_reaper_schedule import ensure_guest_task_reaper_schedule
+from .services.guest_inventory_refresh_schedule import ensure_guest_inventory_refresh_schedule
 from .services.scheduled_actions import ensure_scheduled_action_dispatch_schedule
 from .services.space_snapshot_schedule import ensure_space_snapshot_schedule
 
@@ -19,6 +20,7 @@ def ensure_always_on_schedules(sender, app_config, **kwargs):
     ensure_space_snapshot_schedule()
     ensure_scheduled_action_dispatch_schedule()
     ensure_guest_task_reaper_schedule()
+    ensure_guest_inventory_refresh_schedule()
     ensure_console_session_cleanup_schedule()
     ensure_bulk_task_reaper_schedule()
 

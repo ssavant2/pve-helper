@@ -9,10 +9,12 @@
       <p class="muted">
         {{ running_count }} running. Select a VM or container from the list to view its details.
       </p>
-      {% if not live_available %}
+      {% if not live_available or runtime_inventory_stale %}
         <p>
-          <span class="badge failed">Proxmox API unreachable</span>
-          Showing the last scan{% if inventory_scan_at %} ({{ inventory_scan_at|date:"Y-m-d H:i:s" }}){% endif %}.
+          <span class="badge {% if live_available %}warning{% else %}failed{% endif %}">
+            {% if live_available %}Runtime inventory is stale{% else %}No runtime inventory{% endif %}
+          </span>
+          Power state and usage may be out of date.
         </p>
       {% endif %}
     </div>

@@ -80,22 +80,26 @@ def vms_overview_snapshot_info(request):
 
 @app_login_required
 def vms_status(request):
-    statuses = common.fetch_live_guest_status()
-    locks = common.fetch_live_guest_locks()
+    current = list(CurrentGuestInventory.objects.all())
+    refreshed_at = max(
+        (guest.runtime_observed_at for guest in current if guest.runtime_observed_at),
+        default=None,
+    )
     guests = [
         {
-            "target": _guest_target_value(object_type, vmid, node),
-            "status": status,
-            "state_label": _guest_state_label(status),
-            "lock": _display_lock(locks.get((node, object_type, vmid), "")),
+            "target": _guest_target_value(guest.object_type, guest.vmid, guest.node),
+            "status": guest.status,
+            "state_label": _guest_state_label(guest.status),
+            "lock": _display_lock(guest.runtime_lock),
         }
-        for (node, object_type, vmid), status in sorted(statuses.items(), key=lambda item: (item[0][1], item[0][2], item[0][0]))
+        for guest in sorted(current, key=lambda item: (item.object_type, item.vmid, item.node))
     ]
     return JsonResponse(
         {
             "guests": guests,
-            "live_available": bool(statuses),
-            "cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS,
+            "live_available": any(guest.runtime_observed_at for guest in current),
+            "refreshed_at": refreshed_at.isoformat() if refreshed_at else None,
+            "cache_seconds": 0,
         }
     )
 
@@ -164,7 +168,4 @@ def guest_summary(request, object_type: str, vmid: int):
         }
     )
     return render(request, "core/guest_summary.html", context)
-
-
-
 

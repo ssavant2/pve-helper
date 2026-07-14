@@ -73,6 +73,7 @@ from core.services.scheduled_actions import (
 )
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
+from core.services.guest_inventory_refresh_schedule import GUEST_INVENTORY_REFRESH_SCHEDULE_NAME
 from core.services.storage import StorageScanner
 from core.services.storage_actions import (
     StorageActionError,
@@ -1698,6 +1699,13 @@ class ScheduledActionExecutionTests(TestCase):
 
         def wait_for_task(self, *, node, upid, timeout_seconds=None):
             exitstatus = "OK" if self.task_success else "interrupted"
+            if self.task_success and self.power_calls:
+                self.status = {
+                    "start": "running",
+                    "reboot": "running",
+                    "shutdown": "stopped",
+                    "stop": "stopped",
+                }.get(self.power_calls[-1]["action"], self.status)
             return ProxmoxTaskResult(
                 node=node,
                 upid=upid,
@@ -1739,6 +1747,7 @@ class ScheduledActionExecutionTests(TestCase):
         self.assertEqual(run.preflight_snapshot["status"], "stopped")
         self.assertEqual(action.last_status, ScheduledAction.LastStatus.COMPLETED)
         self.assertEqual(fake_client.power_calls[0]["action"], "start")
+        self.assertEqual(CurrentGuestInventory.objects.get(object_type="vm", vmid=500).status, "running")
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.run_completed").exists())
 
     @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
@@ -2035,7 +2044,10 @@ class AuditEventTests(TestCase):
             },
         )
 
-        with patch("core.tasks.ProxmoxClient") as client_cls:
+        with (
+            patch("core.tasks.ProxmoxClient") as client_cls,
+            patch("core.tasks.refresh_current_guest_from_client") as refresh_projection,
+        ):
             client_cls.return_value.wait_for_task.return_value = ProxmoxTaskResult(
                 node="pve1",
                 upid="UPID:pve1:start:500:root@pam:",
@@ -2043,6 +2055,7 @@ class AuditEventTests(TestCase):
                 exitstatus="OK",
                 raw={"status": "stopped", "exitstatus": "OK"},
             )
+            refresh_projection.return_value.error = ""
 
             poll_guest_audit_task(
                 event.id,
@@ -2056,6 +2069,14 @@ class AuditEventTests(TestCase):
         self.assertEqual(event.outcome, "success")
         self.assertEqual(event.details["proxmox_task"]["exitstatus"], "OK")
         self.assertIn("finished_at", event.details)
+        refresh_projection.assert_called_once_with(
+            client_cls.return_value,
+            node="pve1",
+            object_type="vm",
+            vmid=500,
+            allow_relocation=False,
+            delete_if_authoritatively_absent=False,
+        )
 
 
 class StartupCheckTests(SimpleTestCase):
@@ -2135,6 +2156,17 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.addCleanup(registry_patch.stop)
 
     def _live_guest(self, *, object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped"):
+        CurrentGuestInventory.objects.update_or_create(
+            object_type=object_type,
+            vmid=vmid,
+            defaults={
+                "node": node,
+                "name": name,
+                "status": status,
+                "observed_at": timezone.now(),
+                "runtime_observed_at": timezone.now(),
+            },
+        )
         guest = Mock()
         guest.object_type = object_type
         guest.vmid = vmid
@@ -2542,6 +2574,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 progress_message="Recent scan",
                 target_storage=storage,
             )
+            global_scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                started_at=now,
+                finished_at=now,
+                progress_message="Global scan shown in Recent Tasks",
+            )
             old_scan = ScanRun.objects.create(
                 status=ScanRun.Status.COMPLETED,
                 started_at=now - timedelta(days=9),
@@ -2551,6 +2589,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
             ScanRun.objects.filter(pk=old_scan.pk).update(created_at=now - timedelta(days=9))
             ScanRun.objects.filter(pk=recent_scan.pk).update(created_at=now - timedelta(days=1))
+            ScanRun.objects.filter(pk=global_scan.pk).update(created_at=now - timedelta(days=1))
 
             recent_event = AuditEvent.objects.create(
                 username="viewer",
@@ -2588,6 +2627,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Normalize uploaded disk metadata")
         self.assertNotContains(response, "file.upload_normalized")
         self.assertContains(response, "Recent scan")
+        self.assertNotIn(global_scan, response.context["recent_scans"])
+        self.assertContains(response, "Global scan shown in Recent Tasks")
         self.assertNotContains(response, "Old scan")
         self.assertNotContains(response, "old.iso")
         self.assertEqual(invalid_page_response.status_code, 200)
@@ -2607,8 +2648,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(dispatcher.func, SCHEDULED_ACTION_DISPATCH_FUNC)
         self.assertEqual(dispatcher.schedule_type, Schedule.MINUTES)
         self.assertEqual(dispatcher.minutes, SCHEDULED_ACTION_DISPATCH_INTERVAL_MINUTES)
+        guest_refresh = Schedule.objects.get(name=GUEST_INVENTORY_REFRESH_SCHEDULE_NAME)
+        self.assertEqual(guest_refresh.func, "core.tasks.refresh_current_guest_inventory")
+        self.assertEqual(guest_refresh.minutes, settings.CURRENT_GUEST_REFRESH_INTERVAL_MINUTES)
 
-    def test_storage_vms_uses_short_live_status_cache(self):
+    def test_storage_vms_uses_non_blocking_current_status_projection(self):
         cache.clear()
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -2634,6 +2678,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             vmid=100,
             name="Test VM",
             status="stopped",
+            runtime_observed_at=timezone.now(),
             disk_references=["nfs-vm:images/100/vm-100-disk-0.qcow2"],
             observed_at=timezone.now(),
         )
@@ -2647,27 +2692,23 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             last_status=ScheduledAction.LastStatus.NEVER_RUN,
         )
 
-        from core.services.proxmox import fetch_live_guest_status
-
-        with (
-            patch("core.views.common.fetch_live_guest_status", side_effect=fetch_live_guest_status),
-            patch("core.services.proxmox._fetch_live_guest_status_uncached", return_value={("pve-node-1", "vm", 100): "running"}) as fetch,
+        with patch(
+            "core.views.common.fetch_live_guest_status",
+            side_effect=AssertionError("storage views must not perform provider status reads"),
         ):
             response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
             second_response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
-        self.assertEqual(LIVE_GUEST_STATUS_CACHE_SECONDS, 2)
-        self.assertEqual(fetch.call_count, 1)
-        self.assertContains(response, "Power state is live data cached for up to 2 seconds.")
+        self.assertContains(response, "Power state updates immediately after operations")
         self.assertContains(response, "Disk references are from inventory scanned")
-        self.assertContains(response, "running")
+        self.assertContains(response, "stopped")
         self.assertContains(response, "Scheduled Tasks")
         self.assertContains(response, "Night shutdown")
         self.assertContains(response, "Never run")
         self.assertContains(response, "target=vm%3A100")
-        self.assertContains(second_response, "running")
+        self.assertContains(second_response, "stopped")
         cache.clear()
 
     def test_live_guest_status_fetch_uses_short_cluster_resources_call(self):
@@ -5767,9 +5808,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
 
+        self._live_guest(status="running")
         with (
-            patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
-            patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
+            patch(
+                "core.views.common.fetch_live_guest_inventory",
+                side_effect=AssertionError("passive overview must not read provider guest inventory"),
+            ),
+            patch(
+                "core.views.common.fetch_live_guest_status",
+                side_effect=AssertionError("passive overview must not read provider guest status"),
+            ),
         ):
             response = self.client.get(reverse("core:vms_overview"))
 
@@ -5962,6 +6010,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 }
 
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="stopped")
+        CurrentGuestInventory.objects.filter(object_type="ct", vmid=601).update(
+            config={
+                "hostname": "ct-lab",
+                "cores": "2",
+                "memory": "1024",
+                "rootfs": "nfs-ct:subvol-601-disk-0,size=8G",
+            },
+            config_complete=True,
+            config_observed_at=timezone.now(),
+        )
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.fetch_live_guest_status", return_value={("ct", 601): "stopped"}),
@@ -6088,6 +6146,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         fake_client = FakeClient()
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        CurrentGuestInventory.objects.filter(object_type="vm", vmid=500).update(
+            config=fake_client.guest_config(node="pve1", object_type="vm", vmid=500),
+            config_complete=True,
+            config_observed_at=timezone.now(),
+        )
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.configured_clients", return_value=[fake_client]),
@@ -7895,6 +7958,17 @@ class GuestBackupRestoreTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("backup-operator", password="unused")
         self.client.force_login(self.user)
+        CurrentGuestInventory.objects.create(
+            object_type="vm",
+            vmid=500,
+            node="pve1",
+            name="Lab VM",
+            status="stopped",
+            config={},
+            config_complete=False,
+            observed_at=timezone.now(),
+            runtime_observed_at=timezone.now(),
+        )
 
     @staticmethod
     def _guest(*, vmid=500, object_type="vm", node="pve1", name="Lab VM", status="stopped"):

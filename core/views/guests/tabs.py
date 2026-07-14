@@ -2,6 +2,7 @@
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (_fmt_bytes,_guest_api_get,_guest_tab_context,_require_guest,_rrd_chart,_write_result)
+from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
 
 
 @app_login_required
@@ -164,8 +165,21 @@ def guest_cloudinit_edit(request, object_type, vmid):
         client.set_guest_config(node=node, object_type=object_type, vmid=vmid, updates=updates, delete=delete, digest=fresh.get("digest"))
     except (ProxmoxAPIError, IndexError) as exc:
         err = str(exc)
+    if not err:
+        update_current_guest_config(
+            object_type=object_type,
+            vmid=vmid,
+            node=node,
+            updates={key: value for key, value in updates.items() if key != "cipassword"},
+            delete=delete,
+        )
+        refresh_current_guest_from_client(
+            client,
+            node=node,
+            object_type=object_type,
+            vmid=vmid,
+        )
     return _write_result(request, detail, "core:guest_cloudinit", err, "guest.cloudinit.update")
-
 
 
 

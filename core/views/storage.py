@@ -239,9 +239,6 @@ def api_storage_vms(request, node: str, storage: str):
             obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
             guests.append(obj)
     if guests:
-        live_status = common.fetch_live_guest_status()
-        for guest in guests:
-            guest.status = _live_status_for(live_status, guest.node or "", guest.object_type, guest.vmid, guest.status)
         _decorate_guests_with_scheduled_actions(guests)
     context = _api_storage_context(node, storage, "vms")
     context.update({"guests": guests, "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS})
@@ -836,7 +833,7 @@ def storage_monitor(request, storage_id: str):
 
     activity_cutoff = tz.now() - timedelta(days=ACTIVITY_RETENTION_DAYS)
     all_scans = ScanRun.objects.filter(
-        Q(target_storage=storage) | Q(target_storage__isnull=True),
+        target_storage=storage,
         created_at__gte=activity_cutoff,
     ).order_by("-created_at")
     scan_total = all_scans.count()
@@ -1357,9 +1354,6 @@ def storage_vms(request, storage_id: str):
             guests.append(obj)
 
     if guests:
-        live_status = common.fetch_live_guest_status()
-        for guest in guests:
-            guest.status = _live_status_for(live_status, guest.node or "", guest.object_type, guest.vmid, guest.status)
         _decorate_guests_with_scheduled_actions(guests)
 
     context = {

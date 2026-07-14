@@ -315,10 +315,19 @@ class CurrentGuestInventory(TimestampedModel):
     vmid = models.PositiveIntegerField()
     name = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=80, blank=True)
+    cpu_usage = models.FloatField(default=0)
+    memory_used_bytes = models.BigIntegerField(default=0)
+    memory_max_bytes = models.BigIntegerField(default=0)
+    disk_used_bytes = models.BigIntegerField(default=0)
+    disk_max_bytes = models.BigIntegerField(default=0)
+    uptime_seconds = models.BigIntegerField(default=0)
+    runtime_lock = models.CharField(max_length=80, blank=True)
     config = models.JSONField(default=dict, blank=True)
     config_complete = models.BooleanField(default=True)
     disk_references = models.JSONField(default=list, blank=True)
     observed_at = models.DateTimeField(db_index=True)
+    runtime_observed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    config_observed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["node", "object_type", "vmid"]
