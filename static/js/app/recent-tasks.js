@@ -1,4 +1,5 @@
-import { initGuestActionForms, loadSoftNavigation, openForceStopDialog } from "./guest-actions.js";
+import { initGuestActionForms, openForceStopDialog } from "./guest-actions.js";
+import { loadSoftNavigation } from "./navigation.js";
 import {
   activeUploads,
   applyGuestStatusHintsFromTasks,

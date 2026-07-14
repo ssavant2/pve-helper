@@ -2,7 +2,8 @@
 from ..common import *  # noqa: F401,F403
 from .. import common
 from core.services.console_sessions import create_guest_console_session
-from ._core import (_audit_guest, _guest_tab_context, _resolve_guest_detail)
+from .operation_lifecycle import _audit_guest
+from .read_model_support import _guest_tab_context, _resolve_guest_detail
 
 
 @app_login_required
@@ -63,5 +64,3 @@ def guest_console_session(request, object_type: str, vmid: int):
             "expires_at": result.session.expires_at.isoformat(),
         }
     )
-
-

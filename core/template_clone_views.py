@@ -8,7 +8,9 @@ from django.views.decorators.http import require_POST
 
 from core.views import common
 from core.models import ProxmoxInventory
-from core.views.guests import _audit_guest, _require_guest, _guest_post_with_client, is_template
+from core.services.guests import is_template
+from core.views.guests.operation_lifecycle import _audit_guest, _guest_post_with_client
+from core.views.guests.read_model_support import _require_guest
 
 
 def _json_result(ok: bool, error: str = "") -> JsonResponse:

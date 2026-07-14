@@ -1,17 +1,19 @@
 """Guest firewall: tab render + rule add/delete/toggle (extracted from _core)."""
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (
+from .read_model_support import (
+    _guest_api_get,
+    _guest_tab_context,
     _require_guest,
     _resolve_guest_detail,
-    _guest_tab_context,
-        _write_result,
-    _guest_put,
-    _guest_post,
-    _guest_delete,
-    _guest_api_get,
-    _wants_task_json,
+)
+from .operation_lifecycle import (
     _guest_action_response,
+    _guest_delete,
+    _guest_post,
+    _guest_put,
+    _wants_task_json,
+    _write_result,
 )
 
 

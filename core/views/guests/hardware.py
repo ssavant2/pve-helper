@@ -2,7 +2,9 @@
 from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_audit_guest,_config_enabled,_cpu_count,_ct_features,_ct_mount_rows,_ct_network_rows,_ct_options,_format_kv_config,_is_disk_device_key,_linked_clone_disk_edit_block,_next_device_index,_parse_net_value,_parse_startup_options,_resolve_guest_detail,_set_param_bool,_set_param_text,_split_kv_config)
+from .operation_lifecycle import _audit_guest
+from .presenters import (_config_enabled,_ct_features,_ct_mount_rows,_ct_network_rows,_ct_options,_format_kv_config,_next_device_index,_parse_net_value,_parse_startup_options,_set_param_bool,_set_param_text,_split_kv_config)
+from .read_model_support import (_cpu_count,_is_disk_device_key,_linked_clone_disk_edit_block,_resolve_guest_detail)
 from core.services.tags import TagValidationError, join_tags, parse_tags, validate_tag
 from core.services.tag_catalog import load_tag_catalog
 from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config

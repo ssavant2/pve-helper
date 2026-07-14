@@ -1,4 +1,4 @@
-import { loadSoftNavigation } from "./guest-actions.js";
+import { loadSoftNavigation } from "./navigation.js";
 import { groupRowsBySubtree, registerPageCleanup } from "./shell.js";
 import { syncVmOverviewSelection } from "./vm-overview.js";
 

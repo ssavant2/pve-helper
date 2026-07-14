@@ -1,6 +1,6 @@
 import { openConfirmDialog, openInputDialog } from "./dialogs.js";
 import { clearLocalError, showLocalError } from "./feedback.js";
-import { loadSoftNavigation } from "./guest-actions.js";
+import { loadSoftNavigation } from "./navigation.js";
 import { FILE_ACTION_META } from "./scheduling.js";
 import {
   activeUploads,

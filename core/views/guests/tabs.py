@@ -1,7 +1,9 @@
 """Guest read-only tabs: monitor, permissions, cloud-init (+edit) — extracted from _core."""
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_fmt_bytes,_guest_api_get,_guest_tab_context,_require_guest,_rrd_chart,_write_result)
+from .operation_lifecycle import _write_result
+from .presenters import _fmt_bytes, _rrd_chart
+from .read_model_support import (_guest_api_get,_guest_tab_context,_require_guest)
 from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
 
 
@@ -180,6 +182,3 @@ def guest_cloudinit_edit(request, object_type, vmid):
             vmid=vmid,
         )
     return _write_result(request, detail, "core:guest_cloudinit", err, "guest.cloudinit.update")
-
-
-

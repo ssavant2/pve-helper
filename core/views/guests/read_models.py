@@ -2,7 +2,7 @@
 from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_display_lock,_guest_agent_summary,_guest_cpu_label,_guest_cpu_topology,_guest_ha_summary,_guest_health,_guest_lineage,_guest_os_label,_guest_pool_label,_guest_rows,_guest_state_label,_guest_tab_context,_guest_target_value,_guest_usage,_guest_vm_details,_live_guest_has_snapshot,_resolve_guest_detail,_vms_workspace_context)
+from .read_model_support import (_display_lock,_guest_agent_summary,_guest_cpu_label,_guest_cpu_topology,_guest_ha_summary,_guest_health,_guest_lineage,_guest_os_label,_guest_pool_label,_guest_rows,_guest_state_label,_guest_tab_context,_guest_target_value,_guest_usage,_guest_vm_details,_live_guest_has_snapshot,_resolve_guest_detail,_vms_workspace_context)
 
 
 @app_login_required
@@ -168,4 +168,3 @@ def guest_summary(request, object_type: str, vmid: int):
         }
     )
     return render(request, "core/guest_summary.html", context)
-

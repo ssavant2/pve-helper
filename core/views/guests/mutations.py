@@ -2,7 +2,9 @@
 from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_audit_guest,_backup_error,_delete_all_guest_snapshots,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_nic_bridges,_guest_post_with_client,_parse_guest_target_value,_queue_guest_backup_restore,_require_guest,_restore_archive_from_key,_restore_options,_snapshot_error,_submit_guest_backup,_wants_task_json)
+from ._core import (_backup_error,_delete_all_guest_snapshots,_guest_nic_bridges,_queue_guest_backup_restore,_restore_archive_from_key,_restore_options,_snapshot_error,_submit_guest_backup)
+from .operation_lifecycle import (_audit_guest,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_post_with_client,_parse_guest_target_value,_wants_task_json)
+from .read_model_support import _require_guest
 
 
 @require_POST
@@ -272,7 +274,5 @@ def guest_bulk_nics(request):
             }
         )
     return JsonResponse({"guests": guests})
-
-
 
 

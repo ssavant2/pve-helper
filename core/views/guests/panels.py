@@ -1,7 +1,8 @@
 """Guest read-only tabs: datastores, networks, agent — extracted from _core."""
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_config_ip_addresses,_guest_agent_summary,_guest_api_get,_guest_tab_context,_require_guest,_with_network_ip_addresses)
+from .presenters import _config_ip_addresses, _with_network_ip_addresses
+from .read_model_support import (_guest_agent_summary,_guest_api_get,_guest_tab_context,_require_guest)
 
 
 @app_login_required
@@ -111,7 +112,5 @@ def guest_agent_view(request, object_type: str, vmid: int):
         }
     )
     return render(request, "core/guest_agent.html", context)
-
-
 
 

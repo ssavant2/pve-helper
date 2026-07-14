@@ -2,7 +2,10 @@
 from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (MIGRATE_KINDS, SNAPSHOT_NAME_HELP, SNAPSHOT_NAME_RE, _MIGRATE_ACTIVE_STATES, _MIGRATE_ASYNC, _apply_migrate_net_remap, _audit_guest, _backup_error, _config_enabled, _config_storage_ids, _delete_all_guest_snapshots, _finish_guest_running_audit, _guest_agent_config_enabled, _guest_destroy_with_client, _guest_movable_disks, _guest_pool_memberships, _guest_post_with_client, _linked_clone_children, _parse_guest_target_value, _require_guest, _snapshot_error, _split_tag_text, _submit_guest_backup, _template_linked_clone_children, _template_storage_paths, _unique_tags, _update_current_guest_config)
+from ._core import (MIGRATE_KINDS, SNAPSHOT_NAME_HELP, SNAPSHOT_NAME_RE, _MIGRATE_ACTIVE_STATES, _apply_migrate_net_remap, _backup_error, _delete_all_guest_snapshots, _guest_movable_disks, _snapshot_error, _split_tag_text, _submit_guest_backup, _template_linked_clone_children, _template_storage_paths, _unique_tags, _update_current_guest_config)
+from .operation_lifecycle import (_MIGRATE_ASYNC, _audit_guest, _finish_guest_running_audit, _guest_destroy_with_client, _guest_post_with_client, _parse_guest_target_value)
+from .presenters import _config_enabled
+from .read_model_support import (_config_storage_ids, _guest_agent_config_enabled, _guest_pool_memberships, _linked_clone_children, _require_guest)
 from core.services.tags import TagValidationError, validate_tag
 
 
@@ -719,4 +722,3 @@ def _set_guest_agent_from_bulk_request(
 
     _update_current_guest_config(detail, updates, [])
     return "", audit_details, None, client
-

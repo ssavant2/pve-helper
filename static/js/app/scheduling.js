@@ -1,5 +1,5 @@
 import { openConfirmDialog } from "./dialogs.js";
-import { loadSoftNavigation } from "./guest-actions.js";
+import { loadSoftNavigation } from "./navigation.js";
 import { escapeHtml, recentTasksRefreshEvent, registerPageCleanup, renderGuestLabel } from "./shell.js";
 
 const initAutoSubmitForms = (root = document) => {

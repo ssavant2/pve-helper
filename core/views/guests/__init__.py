@@ -1,16 +1,11 @@
-"""Guest (VM/CT) views, split into a package. ``_core`` still holds the bulk;
-seams are extracted into sibling modules over time. Everything is re-exported so
-``views.<name>`` (URL routing) and ``core.views.guests.<name>`` keep resolving.
+"""Public VM/CT view facade used by URL routing.
 
-During the split this package is a transparent facade over its submodules: the
-public API comes through ``import *``, and the private ``_helpers`` that tests and
-``template_clone_views`` import by name are surfaced explicitly below. Note that
-patch targets must point at the module that *defines* a name (e.g.
-``core.views.guests._core._require_guest``), not at this facade, or the patch
-won't intercept intra-module calls.
+Private helpers are not discovered dynamically. The small explicit compatibility
+surface below exists only for older direct imports; new code imports the module
+that owns the helper.
 """
 
-from . import _core, firewall, console, tabs, replication, panels, hardware, read_models, dialogs, mutations, actions, create
+from . import _core, firewall, console, tabs, replication, panels, hardware, read_models, dialogs, mutations, actions, create, operation_lifecycle, presenters, read_model_support
 from ._core import *  # noqa: F401,F403
 from .firewall import *  # noqa: F401,F403
 from .console import *  # noqa: F401,F403
@@ -23,25 +18,18 @@ from .dialogs import *  # noqa: F401,F403
 from .mutations import *  # noqa: F401,F403
 from .actions import *  # noqa: F401,F403
 from .create import *  # noqa: F401,F403
+from .operation_lifecycle import *  # noqa: F401,F403
+from .presenters import *  # noqa: F401,F403
+from .read_model_support import *  # noqa: F401,F403
 
-
-def _surface_private(module):
-    """Re-export a submodule's single-underscore helpers onto the package so
-    ``from core.views.guests import _helper`` keeps working during the split."""
-    globals().update(
-        {name: value for name, value in vars(module).items() if name.startswith("_") and not name.startswith("__")}
-    )
-
-
-_surface_private(_core)
-_surface_private(firewall)
-_surface_private(console)
-_surface_private(tabs)
-_surface_private(replication)
-_surface_private(panels)
-_surface_private(hardware)
-_surface_private(read_models)
-_surface_private(dialogs)
-_surface_private(mutations)
-_surface_private(actions)
-_surface_private(create)
+# Explicit legacy imports. Tests and production helpers should migrate away
+# from this list instead of extending it with another dynamic private export.
+from ._core import _guest_cpu_model, _guest_movable_disks, _guest_nic_bridges  # noqa: F401,E402
+from .actions import _migrate_guest_from_bulk_request  # noqa: F401,E402
+from .read_model_support import (  # noqa: F401,E402
+    _apply_workspace_lineage,
+    _display_lock,
+    _guest_health,
+    _linked_clone_disk_edit_block,
+    _mark_linked_clones,
+)

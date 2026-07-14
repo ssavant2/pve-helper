@@ -2,7 +2,9 @@
 from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_create_guest,_guest_agent_summary,_guest_config_sections,_guest_os_label,_guest_tab_context,_require_guest)
+from ._core import _create_guest
+from .presenters import _guest_config_sections
+from .read_model_support import (_guest_agent_summary,_guest_os_label,_guest_tab_context,_require_guest)
 
 
 @app_login_required
@@ -102,7 +104,5 @@ def guest_agent_summary_api(request, object_type: str, vmid: int):
             "status_label": "Running" if summary.get("running") else "Not running",
         }
     )
-
-
 
 

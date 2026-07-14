@@ -57,7 +57,7 @@ from core.services.tags import (
     serialize_color_map,
     serialize_tag_style,
 )
-from core.views.guests._core import _decorate_guest_tag_chips, _guest_tab_context
+from core.views.guests.read_model_support import _decorate_guest_tag_chips, _guest_tab_context
 from core.views.tags import _tag_type_label
 
 
@@ -397,8 +397,8 @@ class TagViewTests(TestCase):
         prod = next(row for row in response.context["tag_rows"] if row.name == "prod")
         self.assertEqual(prod.guest_count, 1)
 
-    @patch("core.views.guests._core._apply_workspace_lineage", return_value=[])
-    @patch("core.views.guests._core._guest_rows", return_value=([], False, None))
+    @patch("core.views.guests.read_model_support._apply_workspace_lineage", return_value=[])
+    @patch("core.views.guests.read_model_support._guest_rows", return_value=([], False, None))
     @patch(
         "core.services.tag_catalog.registered_tags",
         return_value=({"unused": RegisteredTag("unused")}, ""),

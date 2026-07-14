@@ -1,7 +1,8 @@
 """Guest replication tab + create/delete (extracted from _core)."""
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_guest_tab_context,_require_guest,_write_result)
+from .operation_lifecycle import _write_result
+from .read_model_support import _guest_tab_context, _require_guest
 
 
 @app_login_required
@@ -77,7 +78,5 @@ def guest_replication_delete(request, object_type, vmid):
         except ProxmoxAPIError as exc:
             err = str(exc)
     return _write_result(request, detail, "core:guest_replication", err, "guest.replication.delete", {"job_id": job_id})
-
-
 
 

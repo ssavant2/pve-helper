@@ -2,7 +2,9 @@
 from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
-from ._core import (_backup_job_covers,_config_disk_bytes,_config_storage_ids,_guest_backup_archives,_guest_backup_storages,_guest_cpu_model,_guest_kind,_guest_movable_disks,_guest_nic_bridges,_guest_pool_memberships,_guest_snapshot_entries,_guest_tab_context,_migrate_not_allowed_reason,_node_available_bridges,_node_cpu_models,_node_cpu_signature,_ordered_snapshot_entries,_require_guest)
+from ._core import (_backup_job_covers,_guest_backup_archives,_guest_backup_storages,_guest_cpu_model,_guest_movable_disks,_guest_nic_bridges,_guest_snapshot_entries,_migrate_not_allowed_reason,_node_available_bridges,_node_cpu_models,_node_cpu_signature,_ordered_snapshot_entries)
+from .operation_lifecycle import _guest_kind
+from .read_model_support import (_config_disk_bytes,_config_storage_ids,_guest_pool_memberships,_guest_tab_context,_require_guest)
 
 
 @app_login_required
@@ -291,7 +293,4 @@ def guest_pool_options(request, object_type: str, vmid: int):
         except ProxmoxAPIError:
             continue
     return JsonResponse({"error": "Could not load pools from the guest's Proxmox endpoint."}, status=502)
-
-
-
 

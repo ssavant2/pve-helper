@@ -1,12 +1,8 @@
 import { initConsolePages } from "./console.js";
-import {
-  initBackupRestoreForms,
-  initContextMenu,
-  initGuestActionForms,
-  initSoftNavigation,
-  setPageInitializer,
-} from "./guest-actions.js";
+import { initContextMenu } from "./context-menus.js";
+import { initBackupRestoreForms, initGuestActionForms } from "./guest-actions.js";
 import { initHardwareEditor } from "./hardware.js";
+import { initSoftNavigation, setPageInitializer } from "./navigation.js";
 import { initRecentTasks } from "./recent-tasks.js";
 import { initVmRegister } from "./register.js";
 import {

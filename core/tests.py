@@ -432,14 +432,14 @@ class LinkedCloneBaseProtectionTests(TestCase):
         from types import SimpleNamespace
 
         from core.models import ProxmoxInventory
-        from core.views import guests as G
+        from core.views.guests.actions import _destroy_guest_from_bulk_request
 
         detail = SimpleNamespace(
             object_type=ProxmoxInventory.ObjectType.VM, vmid=505, name="tmpl", node="pve3", status="stopped"
         )
         request = RequestFactory().post("/", {"destroy_confirm_vmid": "505"})
         with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505, 103: 505}):
-            err, details, response, client = G._destroy_guest_from_bulk_request(request, detail)
+            err, details, response, client = _destroy_guest_from_bulk_request(request, detail)
         self.assertIn("linked clone", err.lower())
         self.assertIsNone(response)
         self.assertEqual(details["linked_children"], [102, 103])
@@ -2077,6 +2077,32 @@ class AuditEventTests(TestCase):
             allow_relocation=False,
             delete_if_authoritatively_absent=False,
         )
+
+
+class GuestModuleBoundaryTests(SimpleTestCase):
+    def _source(self, relative_path: str) -> str:
+        return (Path(settings.BASE_DIR) / relative_path).read_text(encoding="utf-8")
+
+    def test_guest_core_does_not_reabsorb_extracted_ownership(self):
+        source = self._source("core/views/guests/_core.py")
+
+        self.assertNotIn("def global_search(", source)
+        self.assertNotIn("def _resolve_guest_detail(", source)
+        self.assertNotIn("def _audit_guest(", source)
+        self.assertNotIn("def _parse_net_value(", source)
+
+    def test_guest_facade_has_no_dynamic_private_exports(self):
+        source = self._source("core/views/guests/__init__.py")
+
+        self.assertNotIn("_surface_private", source)
+        self.assertNotIn("globals().update", source)
+
+    def test_soft_navigation_breaks_the_previous_feature_import_cycle(self):
+        navigation = self._source("static/js/app/navigation.js")
+        scheduling = self._source("static/js/app/scheduling.js")
+
+        self.assertNotIn('from "./guest-actions.js"', navigation)
+        self.assertNotIn('from "./guest-actions.js"', scheduling)
 
 
 class StartupCheckTests(SimpleTestCase):

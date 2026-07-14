@@ -1,4 +1,5 @@
-import { loadSoftNavigation, openConfirmDialog } from "./guest-actions.js";
+import { openConfirmDialog } from "./dialogs.js";
+import { loadSoftNavigation } from "./navigation.js";
 import { escapeHtml } from "./shell.js";
 
 const initTags = (root = document) => {
