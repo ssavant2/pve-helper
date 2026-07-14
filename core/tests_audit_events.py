@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.test import RequestFactory, TestCase
+from django.urls import reverse
 
 from core.services.audit_events import audit_module_key, record_audit_event
 
@@ -48,6 +49,28 @@ class AuditEventServiceTests(TestCase):
         self.assertEqual(event.username, "system")
         self.assertIsNone(event.source_ip)
         self.assertEqual(event.module, "vms")
+
+    def test_worker_tag_event_is_visible_in_the_vms_audit_filter(self):
+        self.client.force_login(self.user)
+        worker_event = record_audit_event(
+            username="system",
+            action="tag.membership.removed",
+            object_type="guest",
+            object_id="vm:500@pve1",
+        )
+        system_event = record_audit_event(
+            username="system",
+            action="tag.deleted",
+            object_type="tag",
+            object_id="prod",
+        )
+
+        response = self.client.get(reverse("core:audit_log"), {"filter": "vms"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["audit_total"], 1)
+        self.assertEqual([event.pk for event in response.context["events"]], [worker_event.pk])
+        self.assertNotIn(system_event, response.context["events"])
 
     def test_worker_user_supplies_username_when_not_explicit(self):
         event = record_audit_event(

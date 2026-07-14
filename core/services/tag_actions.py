@@ -13,25 +13,17 @@ from core.services.proxmox import (
     configured_clients,
     fetch_verified_guest_inventory,
 )
+from core.services.tag_operation_confirmation import CHANGED_CONFIRMATION_ERROR, tag_membership_fingerprint
 from core.services.tag_registry import (
-    TAG_REGISTRY_CACHE_KEY,
-    TAG_REGISTRY_CACHE_SECONDS,
-    cache_registered_tags,
-    cluster_options,
-    refresh_registered_tags,
+    mutate_registered_tags,
     registered_tags,
 )
 from core.services.tags import (
     RegisteredTag,
     TagValidationError,
     join_tags,
-    parse_color_map,
-    parse_registered_tags,
-    parse_tag_style,
     parse_tags,
     readable_foreground,
-    serialize_color_map,
-    serialize_tag_style,
     validate_color,
     validate_tag,
 )
@@ -116,42 +108,6 @@ def retry_tag_operation(event_id: int) -> str:
     return enqueue_tag_operation(event)
 
 
-def _write_registry(mutator) -> tuple[dict[str, RegisteredTag], str]:
-    client, options, error = cluster_options()
-    if client is None:
-        return {}, error
-    names = list(parse_registered_tags(options))
-    style = parse_tag_style(options.get("tag-style"))
-    colors = parse_color_map(style.get("color-map", ""))
-    mutator(names, colors)
-    names = sorted(dict.fromkeys(names))
-    updates, delete = {}, []
-    if names:
-        updates["registered-tags"] = join_tags(names)
-    else:
-        delete.append("registered-tags")
-    if colors:
-        style["color-map"] = serialize_color_map(colors)
-    else:
-        style.pop("color-map", None)
-    serialized_style = serialize_tag_style(style)
-    if serialized_style:
-        updates["tag-style"] = serialized_style
-    elif options.get("tag-style") is not None:
-        delete.append("tag-style")
-    try:
-        client.set_cluster_options(updates, delete=delete)
-        refreshed = dict(options)
-        refreshed.update(updates)
-        for key in delete:
-            refreshed.pop(key, None)
-        result = parse_registered_tags(refreshed)
-        cache_registered_tags(result)
-        return result, ""
-    except ProxmoxAPIError as exc:
-        return {}, str(exc)
-
-
 def register_tag(tag: str, color: str = "") -> tuple[dict[str, RegisteredTag], str]:
     try:
         tag = validate_tag(tag)
@@ -165,7 +121,10 @@ def register_tag(tag: str, color: str = "") -> tuple[dict[str, RegisteredTag], s
         if color:
             colors[tag] = (color, readable_foreground(color))
 
-    return _write_registry(mutate)
+    return mutate_registered_tags(
+        mutate,
+        postcondition=lambda actual: tag in actual and (not color or actual[tag].background == color),
+    )
 
 
 def recolor_tag(tag: str, color: str) -> tuple[dict[str, RegisteredTag], str]:
@@ -180,7 +139,10 @@ def recolor_tag(tag: str, color: str) -> tuple[dict[str, RegisteredTag], str]:
         colors[tag] = (color, readable_foreground(color))
 
     try:
-        return _write_registry(mutate)
+        return mutate_registered_tags(
+            mutate,
+            postcondition=lambda actual: tag in actual and actual[tag].background == color,
+        )
     except TagValidationError as exc:
         return {}, str(exc)
 
@@ -195,7 +157,7 @@ def unregister_tag(tag: str) -> tuple[dict[str, RegisteredTag], str]:
         names[:] = [name for name in names if name != tag]
         colors.pop(tag, None)
 
-    return _write_registry(mutate)
+    return mutate_registered_tags(mutate, postcondition=lambda actual: tag not in actual)
 
 
 def _target_from_guest(row) -> dict:
@@ -217,7 +179,14 @@ def latest_tag_targets(tag: str) -> tuple[list[dict], VerifiedGuestInventory]:
     return sorted(targets.values(), key=lambda item: (item["object_type"], item["vmid"], item["node"])), live
 
 
-def prepare_tag_operation(event: AuditEvent, *, operation: str, source_tag: str, new_tag: str = "") -> str:
+def prepare_tag_operation(
+    event: AuditEvent,
+    *,
+    operation: str,
+    source_tag: str,
+    confirmed_membership_fingerprint: str,
+    new_tag: str = "",
+) -> str:
     try:
         source_tag = validate_tag(source_tag)
         new_tag = validate_tag(new_tag) if new_tag else ""
@@ -227,6 +196,8 @@ def prepare_tag_operation(event: AuditEvent, *, operation: str, source_tag: str,
     if error:
         return error
     targets, membership = latest_tag_targets(source_tag)
+    if tag_membership_fingerprint(targets) != confirmed_membership_fingerprint:
+        return CHANGED_CONFIRMATION_ERROR
     if not targets and not membership.complete:
         return "Could not verify tag membership on every Proxmox endpoint; no changes were made."
     if operation == "rename":

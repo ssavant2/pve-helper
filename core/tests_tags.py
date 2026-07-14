@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from datetime import timedelta
 
@@ -16,18 +16,33 @@ from core.models import AuditEvent, CurrentGuestInventory, CurrentGuestInventory
 from core.services.tag_actions import (
     TagOperationRetryError,
     execute_tag_operation,
+    latest_tag_targets,
     prepare_tag_operation,
+    recolor_tag,
+    register_tag,
     retry_tag_operation,
+    unregister_tag,
 )
 from core.services.tag_catalog import load_tag_catalog
-from core.services.tag_registry import TAG_REGISTRY_CACHE_KEY, refresh_registered_tags
 from core.services.tag_inventory_refresh import (
     TagInventoryRefreshAlreadyActive,
     execute_tag_inventory_refresh,
     queue_tag_inventory_refresh,
 )
+from core.services.tag_operation_confirmation import (
+    CHANGED_CONFIRMATION_ERROR,
+    INVALID_CONFIRMATION_ERROR,
+    issue_tag_operation_confirmation,
+    tag_membership_fingerprint,
+    validate_tag_operation_confirmation,
+)
+from core.services.tag_registry import (
+    TAG_REGISTRY_CACHE_KEY,
+    TAG_REGISTRY_CONFLICT_ERROR,
+    refresh_registered_tags,
+)
 from core.services.integration_tokens import issue_token
-from core.services.proxmox import VerifiedGuestInventory, fetch_verified_guest_inventory
+from core.services.proxmox import ProxmoxAPIError, VerifiedGuestInventory, fetch_verified_guest_inventory
 from core.services.recent_tasks import recent_task_page
 from core.services.task_queues import BULK_QUEUE_NAME
 from core.tasks import reap_stale_guest_tasks
@@ -47,6 +62,20 @@ from core.views.tags import _tag_type_label
 
 
 class TagServiceTests(TestCase):
+    class FakeRegistryClient:
+        def __init__(self, final_options=None, final_error=None):
+            self.final_options = final_options or {}
+            self.final_error = final_error
+            self.writes = []
+
+        def set_cluster_options(self, updates, *, delete=None):
+            self.writes.append((dict(updates), list(delete or [])))
+
+        def cluster_options(self):
+            if self.final_error:
+                raise self.final_error
+            return dict(self.final_options)
+
     def test_parse_join_lowercase_and_dedupe(self):
         self.assertEqual(parse_tags("Prod; web,PROD  db"), ["prod", "web", "db"])
         self.assertEqual(join_tags(["prod", "web", "prod"]), "prod;web")
@@ -79,6 +108,82 @@ class TagServiceTests(TestCase):
         self.assertEqual(list(refreshed), ["fresh"])
         self.assertEqual(list(cache.get(TAG_REGISTRY_CACHE_KEY)[0]), ["fresh"])
         cluster_options.assert_called_once_with()
+
+    @patch("core.services.tag_registry.cluster_options")
+    def test_registry_write_reloads_and_caches_actual_final_state(self, cluster_options):
+        client = self.FakeRegistryClient(
+            final_options={
+                "registered-tags": "existing;external;prod",
+                "tag-style": "shape=full,color-map=prod:112233:ffffff",
+            }
+        )
+        cluster_options.return_value = (
+            client,
+            {"registered-tags": "existing", "tag-style": "shape=full"},
+            "",
+        )
+
+        actual, error = register_tag("prod", "#112233")
+
+        self.assertEqual(error, "")
+        self.assertEqual(set(actual), {"existing", "external", "prod"})
+        self.assertEqual(actual["prod"].background, "112233")
+        self.assertEqual(set(cache.get(TAG_REGISTRY_CACHE_KEY)[0]), set(actual))
+        self.assertEqual(len(client.writes), 1)
+        updates, delete = client.writes[0]
+        self.assertEqual(updates["registered-tags"], "existing;prod")
+        self.assertIn("shape=full", updates["tag-style"])
+        self.assertEqual(delete, [])
+
+    @patch("core.services.tag_registry.cluster_options")
+    def test_registry_write_reports_concurrent_postcondition_conflict_without_retry(self, cluster_options):
+        client = self.FakeRegistryClient(final_options={"registered-tags": "existing;external"})
+        cluster_options.return_value = (client, {"registered-tags": "existing"}, "")
+
+        actual, error = register_tag("prod")
+
+        self.assertEqual(error, TAG_REGISTRY_CONFLICT_ERROR)
+        self.assertEqual(set(actual), {"existing", "external"})
+        self.assertEqual(set(cache.get(TAG_REGISTRY_CACHE_KEY)[0]), {"existing", "external"})
+        self.assertEqual(len(client.writes), 1)
+        cluster_options.assert_called_once_with()
+
+    @patch("core.services.tag_registry.cluster_options")
+    def test_unverifiable_registry_write_invalidates_display_cache(self, cluster_options):
+        client = self.FakeRegistryClient(final_error=ProxmoxAPIError("verification unavailable"))
+        cluster_options.return_value = (client, {"registered-tags": "existing"}, "")
+        cache.set(TAG_REGISTRY_CACHE_KEY, ({"stale": RegisteredTag("stale")}, ""), 60)
+
+        actual, error = register_tag("prod")
+
+        self.assertEqual(actual, {})
+        self.assertIn("write was submitted", error)
+        self.assertIn("could not be verified", error)
+        self.assertIsNone(cache.get(TAG_REGISTRY_CACHE_KEY))
+        self.assertEqual(len(client.writes), 1)
+
+    @patch("core.services.tag_registry.cluster_options")
+    def test_recolor_and_unregister_verify_their_specific_postconditions(self, cluster_options):
+        recolor_client = self.FakeRegistryClient(
+            final_options={"registered-tags": "prod", "tag-style": "color-map=prod:abcdef:000000"}
+        )
+        unregister_client = self.FakeRegistryClient(final_options={"registered-tags": "other"})
+        cluster_options.side_effect = [
+            (
+                recolor_client,
+                {"registered-tags": "prod", "tag-style": "color-map=prod:112233:ffffff"},
+                "",
+            ),
+            (unregister_client, {"registered-tags": "other;prod"}, ""),
+        ]
+
+        recolored, recolor_error = recolor_tag("prod", "#abcdef")
+        remaining, unregister_error = unregister_tag("prod")
+
+        self.assertEqual(recolor_error, "")
+        self.assertEqual(recolored["prod"].background, "abcdef")
+        self.assertEqual(unregister_error, "")
+        self.assertEqual(set(remaining), {"other"})
 
     def test_inventory_includes_registered_unused_and_assigned_tags(self):
         CurrentGuestInventory.objects.create(
@@ -128,6 +233,40 @@ class TagServiceTests(TestCase):
         with self.assertRaisesMessage(RuntimeError, "programming bug"):
             load_tag_catalog()
 
+    def test_tag_operation_confirmation_is_bound_to_user_and_expires(self):
+        summary = SimpleNamespace(
+            guest_count=1,
+            guests=[SimpleNamespace(node="pve1", object_type="vm", vmid=100)],
+            registered=True,
+        )
+        token = issue_tag_operation_confirmation(
+            operation="delete", tag="prod", summary=summary, user_id=10
+        )
+
+        confirmation, error = validate_tag_operation_confirmation(
+            token,
+            operation="delete",
+            tag="prod",
+            summary=summary,
+            user_id=11,
+        )
+        self.assertIsNone(confirmation)
+        self.assertEqual(error, INVALID_CONFIRMATION_ERROR)
+
+        with patch(
+            "core.services.tag_operation_confirmation.TAG_OPERATION_CONFIRMATION_MAX_AGE_SECONDS",
+            -1,
+        ):
+            confirmation, error = validate_tag_operation_confirmation(
+                token,
+                operation="delete",
+                tag="prod",
+                summary=summary,
+                user_id=10,
+            )
+        self.assertIsNone(confirmation)
+        self.assertEqual(error, INVALID_CONFIRMATION_ERROR)
+
     @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
     def test_guest_tag_choices_include_tags_from_the_full_latest_scan(self, _registered):
         CurrentGuestInventory.objects.create(
@@ -160,16 +299,28 @@ class TagServiceTests(TestCase):
             "https://pve1:8006",
             [{"node": "pve1", "type": "qemu", "vmid": 100, "name": "one", "tags": "prod"}],
         )
-        unavailable = FakeClient("https://pve2:8006", error=RuntimeError("unavailable"))
+        unavailable = FakeClient("https://pve2:8006", error=ProxmoxAPIError("unavailable"))
         clients.return_value = [available, unavailable]
 
-        result = fetch_verified_guest_inventory()
+        with self.assertLogs("core.services.proxmox", level="WARNING") as logs:
+            result = fetch_verified_guest_inventory()
 
         self.assertFalse(result.complete)
         self.assertEqual(result.guests[0].tags, ("prod",))
         self.assertEqual(result.successful_endpoints, ("https://pve1:8006",))
         self.assertIn("https://pve2:8006", result.errors[0])
         self.assertEqual(available.test_path, "cluster/resources?type=vm")
+        self.assertIn("operation=verified_guest_inventory", logs.output[0])
+        self.assertIn("endpoint=https://pve2:8006", logs.output[0])
+
+    @patch("core.services.proxmox.configured_clients")
+    def test_verified_inventory_does_not_hide_unexpected_errors(self, clients):
+        client = SimpleNamespace(endpoint="https://pve1:8006")
+        client.get = Mock(side_effect=RuntimeError("programming bug"))
+        clients.return_value = [client]
+
+        with self.assertRaisesMessage(RuntimeError, "programming bug"):
+            fetch_verified_guest_inventory()
 
 
 class TagViewTests(TestCase):
@@ -180,6 +331,20 @@ class TagViewTests(TestCase):
         CurrentGuestInventory.objects.create(
             node="pve1", object_type="vm", vmid=100, name="vm-one", observed_at=timezone.now(),
             config={"tags": "prod"},
+        )
+        cache.set(TAG_REGISTRY_CACHE_KEY, ({}, ""), 60)
+        self.addCleanup(cache.delete, TAG_REGISTRY_CACHE_KEY)
+        lineage_patch = patch("core.views.tags.common.fetch_live_guest_lineage", return_value={})
+        lineage_patch.start()
+        self.addCleanup(lineage_patch.stop)
+
+    def _confirmation(self, operation: str, tag: str = "prod") -> str:
+        summary = next(row for row in load_tag_catalog().summaries if row.name == tag)
+        return issue_tag_operation_confirmation(
+            operation=operation,
+            tag=tag,
+            summary=summary,
+            user_id=self.user.pk,
         )
 
     def test_tag_detail_type_labels_are_plain_object_types(self):
@@ -199,6 +364,28 @@ class TagViewTests(TestCase):
         self.assertContains(response, "prod")
         response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
         self.assertContains(response, "vm-one")
+        self.assertContains(response, 'name="confirmation"', count=2)
+
+    @patch(
+        "core.views.tags.common.fetch_live_guest_lineage",
+        side_effect=ProxmoxAPIError("lineage unavailable"),
+    )
+    def test_tag_detail_labels_expected_lineage_degradation(self, _lineage):
+        with self.assertLogs("core.views.tags", level="WARNING") as logs:
+            response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Guest type classification is partial")
+        self.assertContains(response, "Linked-clone classification is temporarily unavailable")
+        self.assertIn("operation=tag_detail_linked_clone_lineage", logs.output[0])
+
+    @patch(
+        "core.views.tags.common.fetch_live_guest_lineage",
+        side_effect=RuntimeError("programming bug"),
+    )
+    def test_tag_detail_does_not_hide_unexpected_lineage_errors(self, _lineage):
+        with self.assertRaisesMessage(RuntimeError, "programming bug"):
+            self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
 
     @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
     def test_overview_ignores_newer_completed_scans_without_guest_inventory(self, _registered):
@@ -269,7 +456,7 @@ class TagViewTests(TestCase):
     def test_bulk_operation_enqueue_failure_is_immediately_retryable(self, _prepare, _enqueue):
         response = self.client.post(
             reverse("core:tag_operation"),
-            {"operation": "delete", "tag": "prod"},
+            {"operation": "delete", "tag": "prod", "confirmation": self._confirmation("delete")},
         )
 
         self.assertRedirects(response, reverse("core:tags_overview"), fetch_redirect_response=False)
@@ -283,13 +470,63 @@ class TagViewTests(TestCase):
     def test_bulk_operation_persists_queue_identity_and_timestamp(self, _prepare, _enqueue):
         self.client.post(
             reverse("core:tag_operation"),
-            {"operation": "delete", "tag": "prod"},
+            {"operation": "delete", "tag": "prod", "confirmation": self._confirmation("delete")},
         )
 
         event = AuditEvent.objects.filter(action="tag.bulk_operation").latest("id")
         self.assertEqual(event.outcome, "queued")
         self.assertEqual(event.details["worker_task_id"], "worker-task-1")
         self.assertIsNotNone(event.details["queued_at"])
+
+    @patch("core.views.tags.prepare_tag_operation")
+    def test_bulk_operation_rejects_missing_confirmation_before_audit_or_prepare(self, prepare):
+        response = self.client.post(
+            reverse("core:tag_operation"),
+            {"operation": "delete", "tag": "prod"},
+            follow=True,
+        )
+
+        self.assertContains(response, INVALID_CONFIRMATION_ERROR)
+        self.assertFalse(AuditEvent.objects.filter(action="tag.bulk_operation").exists())
+        prepare.assert_not_called()
+
+    @patch("core.views.tags.prepare_tag_operation")
+    def test_bulk_operation_rejects_confirmation_for_another_operation(self, prepare):
+        response = self.client.post(
+            reverse("core:tag_operation"),
+            {
+                "operation": "delete",
+                "tag": "prod",
+                "confirmation": self._confirmation("rename"),
+            },
+            follow=True,
+        )
+
+        self.assertContains(response, INVALID_CONFIRMATION_ERROR)
+        self.assertFalse(AuditEvent.objects.filter(action="tag.bulk_operation").exists())
+        prepare.assert_not_called()
+
+    @patch("core.views.tags.prepare_tag_operation")
+    def test_bulk_operation_rejects_changed_membership_before_audit_or_prepare(self, prepare):
+        confirmation = self._confirmation("delete")
+        CurrentGuestInventory.objects.create(
+            node="pve2",
+            object_type="ct",
+            vmid=200,
+            name="ct-two",
+            observed_at=timezone.now(),
+            config={"tags": "prod"},
+        )
+
+        response = self.client.post(
+            reverse("core:tag_operation"),
+            {"operation": "delete", "tag": "prod", "confirmation": confirmation},
+            follow=True,
+        )
+
+        self.assertContains(response, CHANGED_CONFIRMATION_ERROR)
+        self.assertFalse(AuditEvent.objects.filter(action="tag.bulk_operation").exists())
+        prepare.assert_not_called()
 
     @patch("core.views.guests.hardware._available_user_tags", return_value=["prod", "qa"])
     def test_guest_tag_options_uses_current_guest_config(self, _available):
@@ -458,11 +695,29 @@ class TagFanoutTests(TestCase):
     @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
     def test_prepare_persists_snapshot_targets_when_live_coverage_is_incomplete(self, _registered, live):
         live.return_value = self.inventory(complete=False, errors=("pve2 unavailable",))
-        self.assertEqual(prepare_tag_operation(self.event, operation="delete", source_tag="old"), "")
+        self.assertEqual(
+            prepare_tag_operation(
+                self.event,
+                operation="delete",
+                source_tag="old",
+                confirmed_membership_fingerprint=tag_membership_fingerprint([self.row]),
+            ),
+            "",
+        )
         self.event.refresh_from_db()
         self.assertEqual(self.event.details["targets"][0]["vmid"], 100)
         self.assertEqual(self.event.details["succeeded"], [])
         self.assertFalse(self.event.details["membership_complete"])
+
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
+    def test_newer_empty_scan_does_not_hide_current_fanout_targets(self, live):
+        ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        live.return_value = self.inventory()
+
+        targets, membership = latest_tag_targets("old")
+
+        self.assertTrue(membership.complete)
+        self.assertEqual([(target["object_type"], target["vmid"]) for target in targets], [("vm", 100)])
 
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
     @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
@@ -473,7 +728,17 @@ class TagFanoutTests(TestCase):
             errors=("pve3 unavailable",),
         )
 
-        self.assertEqual(prepare_tag_operation(self.event, operation="delete", source_tag="old"), "")
+        self.assertEqual(
+            prepare_tag_operation(
+                self.event,
+                operation="delete",
+                source_tag="old",
+                confirmed_membership_fingerprint=tag_membership_fingerprint(
+                    [self.row, {"node": "pve2", "object_type": "ct", "vmid": 200}]
+                ),
+            ),
+            "",
+        )
 
         self.event.refresh_from_db()
         self.assertEqual(
@@ -490,10 +755,34 @@ class TagFanoutTests(TestCase):
         self.row.delete()
         live.return_value = self.inventory(complete=False, errors=("pve2 unavailable",))
 
-        error = prepare_tag_operation(self.event, operation="delete", source_tag="old")
+        error = prepare_tag_operation(
+            self.event,
+            operation="delete",
+            source_tag="old",
+            confirmed_membership_fingerprint=tag_membership_fingerprint([]),
+        )
 
         self.assertIn("Could not verify", error)
         unregister.assert_not_called()
+
+    @patch("core.services.tag_actions.fetch_verified_guest_inventory")
+    @patch("core.services.tag_actions.registered_tags", return_value=({}, ""))
+    def test_prepare_rejects_live_membership_added_after_confirmation(self, _registered, live):
+        live.return_value = self.inventory(
+            SimpleNamespace(node="pve2", object_type="ct", vmid=200, name="ct-two", tags=("old",)),
+            complete=True,
+        )
+
+        error = prepare_tag_operation(
+            self.event,
+            operation="delete",
+            source_tag="old",
+            confirmed_membership_fingerprint=tag_membership_fingerprint([self.row]),
+        )
+
+        self.assertEqual(error, CHANGED_CONFIRMATION_ERROR)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.details, {})
 
     @patch("core.services.tag_actions.unregister_tag", return_value=({}, ""))
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
@@ -628,6 +917,88 @@ class TagFanoutTests(TestCase):
         self.assertEqual(self.event.outcome, "failed")
         self.assertEqual(self.event.details["remaining_targets"][0]["vmid"], 100)
         unregister.assert_not_called()
+
+    def test_partial_rename_retry_preserves_both_registry_names_until_verified_success(self):
+        second = CurrentGuestInventory.objects.create(
+            source_scan=self.scan,
+            node="old-node",
+            object_type="ct",
+            vmid=101,
+            name="ct-two",
+            observed_at=timezone.now(),
+            config={"tags": "old"},
+        )
+        first_live = SimpleNamespace(
+            node=self.row.node,
+            object_type=self.row.object_type,
+            vmid=self.row.vmid,
+            name=self.row.name,
+            tags=("old",),
+        )
+        second_live = SimpleNamespace(
+            node=second.node,
+            object_type=second.object_type,
+            vmid=second.vmid,
+            name=second.name,
+            tags=("old",),
+        )
+        self.event.details = {
+            "operation": "rename",
+            "source_tag": "old",
+            "new_tag": "new",
+            "targets": [
+                {"node": self.row.node, "object_type": self.row.object_type, "vmid": self.row.vmid},
+                {"node": second.node, "object_type": second.object_type, "vmid": second.vmid},
+            ],
+            "succeeded": [],
+            "skipped": [],
+            "failed": [],
+            "username": "admin",
+        }
+        self.event.save(update_fields=["details"])
+        registry = {"old", "new"}
+
+        def unregister(tag):
+            registry.discard(tag)
+            return {}, ""
+
+        with (
+            patch(
+                "core.services.tag_actions.fetch_verified_guest_inventory",
+                side_effect=[self.inventory(first_live, second_live), self.inventory(second_live)],
+            ),
+            patch(
+                "core.services.tag_actions._update_target",
+                side_effect=[("succeeded", ""), ("failed", "Guest is locked (backup).")],
+            ),
+            patch("core.services.tag_actions.unregister_tag", side_effect=unregister) as unregister_mock,
+        ):
+            execute_tag_operation(self.event.id)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.outcome, "failed")
+        self.assertTrue(self.event.details["retryable"])
+        self.assertEqual(registry, {"old", "new"})
+        unregister_mock.assert_not_called()
+
+        with patch("core.services.tag_actions.async_task", return_value="retry-rename-task"):
+            retry_tag_operation(self.event.id)
+
+        with (
+            patch(
+                "core.services.tag_actions.fetch_verified_guest_inventory",
+                side_effect=[self.inventory(second_live), self.inventory()],
+            ),
+            patch("core.services.tag_actions._update_target", return_value=("succeeded", "")) as update,
+            patch("core.services.tag_actions.unregister_tag", side_effect=unregister) as unregister_mock,
+        ):
+            execute_tag_operation(self.event.id, 1)
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.outcome, "success")
+        self.assertEqual(registry, {"new"})
+        update.assert_called_once()
+        unregister_mock.assert_called_once_with("old")
 
     @staticmethod
     def inventory(*guests, complete=True, errors=()):
@@ -777,7 +1148,7 @@ class TagFanoutTests(TestCase):
 @override_settings(BACKUP_INTEGRATION_API_ENABLED=True)
 class TagApiTests(TestCase):
     def setUp(self):
-        _token, self.raw = issue_token("veeam")
+        self.token, self.raw = issue_token("veeam")
         CurrentGuestInventory.objects.create(
             node="pve1", object_type="vm", vmid=100, name="template-one", observed_at=timezone.now(),
             status="stopped", config={"tags": "backup-gold", "template": "1"},
@@ -804,6 +1175,43 @@ class TagApiTests(TestCase):
 
     def test_missing_token_is_rejected(self):
         self.assertEqual(self.client.get(reverse("core:api_tags"), secure=True).status_code, 401)
+
+    def test_invalid_token_secret_is_rejected(self):
+        invalid = f"{self.token.token_id}.not-the-issued-secret"
+        response = self.client.get(
+            reverse("core:api_tags"),
+            secure=True,
+            HTTP_AUTHORIZATION=f"Bearer {invalid}",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_expired_token_is_rejected(self):
+        _token, raw = issue_token("expired", expires_at=timezone.now() - timedelta(seconds=1))
+        response = self.client.get(
+            reverse("core:api_tags"),
+            secure=True,
+            HTTP_AUTHORIZATION=f"Bearer {raw}",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_revoked_token_is_rejected(self):
+        self.token.revoked_at = timezone.now()
+        self.token.save(update_fields=["revoked_at"])
+
+        self.assertEqual(
+            self.client.get(reverse("core:api_tags"), secure=True, **self.auth()).status_code,
+            401,
+        )
+
+    @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
+    def test_newer_empty_scan_does_not_hide_current_api_membership(self, _registered):
+        ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+
+        response = self.client.get(reverse("core:api_tags"), secure=True, **self.auth())
+
+        self.assertEqual(response.status_code, 200)
+        backup = next(tag for tag in response.json()["tags"] if tag["name"] == "backup-gold")
+        self.assertEqual(backup["guest_count"], 1)
 
     def test_plain_http_is_hidden_even_with_a_valid_token(self):
         self.assertEqual(self.client.get(reverse("core:api_tags"), **self.auth()).status_code, 404)

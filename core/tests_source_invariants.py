@@ -90,3 +90,27 @@ class BackendSourceInvariantTests(SimpleTestCase):
         )
         self.assertIn("default $scheme;", template)
         self.assertIn('"1:https" https;', template)
+
+    def test_production_tag_registry_writes_use_the_shared_service(self):
+        root = Path(settings.BASE_DIR)
+        allowed_path = Path("core/services/tag_registry.py")
+        violations = []
+        for path in sorted((root / "core").rglob("*.py")):
+            relative_path = path.relative_to(root)
+            if (
+                relative_path == allowed_path
+                or "migrations" in relative_path.parts
+                or path.name.startswith("tests")
+            ):
+                continue
+            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                if ".set_cluster_options(" in line:
+                    violations.append(f"{relative_path}:{line_number}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "Production tag registry writes must use "
+            "core.services.tag_registry.mutate_registered_tags(): "
+            f"{', '.join(violations)}",
+        )

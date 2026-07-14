@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
@@ -12,6 +13,9 @@ from django.conf import settings
 from django.core.cache import cache
 
 from .classification import extract_disk_references
+
+
+logger = logging.getLogger(__name__)
 
 
 LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
@@ -571,10 +575,29 @@ def fetch_verified_guest_inventory() -> VerifiedGuestInventory:
     for client in clients:
         try:
             resources = client.get("cluster/resources?type=vm")
-        except Exception as exc:
+        except ProxmoxAPIError as exc:
+            logger.warning(
+                "Proxmox read failed: endpoint=%s operation=verified_guest_inventory error=%s",
+                client.endpoint,
+                exc,
+                extra={
+                    "proxmox_endpoint": client.endpoint,
+                    "proxmox_operation": "verified_guest_inventory",
+                },
+            )
             errors.append(f"{client.endpoint}: {exc}")
             continue
         if not isinstance(resources, list):
+            logger.warning(
+                "Proxmox response was invalid: endpoint=%s operation=verified_guest_inventory type=%s",
+                client.endpoint,
+                type(resources).__name__,
+                extra={
+                    "proxmox_endpoint": client.endpoint,
+                    "proxmox_operation": "verified_guest_inventory",
+                    "proxmox_response_type": type(resources).__name__,
+                },
+            )
             errors.append(f"{client.endpoint}: cluster guest inventory returned an invalid response.")
             continue
         successful.append(client.endpoint)
@@ -615,7 +638,16 @@ def _fetch_live_guest_locks_uncached() -> dict[tuple[str, str, int], str]:
             break
         try:
             nodes = client.get("nodes", timeout=timeout)
-        except ProxmoxAPIError:
+        except ProxmoxAPIError as exc:
+            logger.warning(
+                "Proxmox read failed: endpoint=%s operation=linked_clone_nodes error=%s",
+                client.endpoint,
+                exc,
+                extra={
+                    "proxmox_endpoint": client.endpoint,
+                    "proxmox_operation": "linked_clone_nodes",
+                },
+            )
             continue
         if not isinstance(nodes, list):
             continue
@@ -681,7 +713,18 @@ def _fetch_live_guest_lineage_uncached() -> dict[int, int]:
                 return lineage
             try:
                 storages = client.get(f"nodes/{quote(node, safe='')}/storage?content=images", timeout=timeout)
-            except ProxmoxAPIError:
+            except ProxmoxAPIError as exc:
+                logger.warning(
+                    "Proxmox read failed: endpoint=%s operation=linked_clone_storages node=%s error=%s",
+                    client.endpoint,
+                    node,
+                    exc,
+                    extra={
+                        "proxmox_endpoint": client.endpoint,
+                        "proxmox_operation": "linked_clone_storages",
+                        "proxmox_node": node,
+                    },
+                )
                 continue
             if not isinstance(storages, list):
                 continue
@@ -700,7 +743,20 @@ def _fetch_live_guest_lineage_uncached() -> dict[int, int]:
                         f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content?content=images",
                         timeout=timeout,
                     )
-                except ProxmoxAPIError:
+                except ProxmoxAPIError as exc:
+                    logger.warning(
+                        "Proxmox read failed: endpoint=%s operation=linked_clone_content node=%s storage=%s error=%s",
+                        client.endpoint,
+                        node,
+                        storage_id,
+                        exc,
+                        extra={
+                            "proxmox_endpoint": client.endpoint,
+                            "proxmox_operation": "linked_clone_content",
+                            "proxmox_node": node,
+                            "proxmox_storage": storage_id,
+                        },
+                    )
                     continue
                 if not isinstance(content, list):
                     continue

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from urllib.parse import urlencode
 
 from django.contrib import messages
@@ -11,10 +12,15 @@ from django.views.decorators.http import require_POST
 
 from core.models import CurrentGuestInventory, ProxmoxInventory
 from core.services.guests import is_template
+from core.services.proxmox import ProxmoxAPIError
 from core.services.tag_inventory_refresh import (
     TagInventoryRefreshAlreadyActive,
     TagInventoryRefreshQueueError,
     queue_tag_inventory_refresh,
+)
+from core.services.tag_operation_confirmation import (
+    issue_tag_operation_confirmation,
+    validate_tag_operation_confirmation,
 )
 from core.services.tag_actions import (
     TagOperationQueueError,
@@ -28,6 +34,9 @@ from core.services.tags import parse_tags
 
 from . import common
 from .common import app_login_required, navigation_context, record_audit_event
+
+
+logger = logging.getLogger(__name__)
 
 
 def _tag_context(*, selected: str = "") -> dict:
@@ -74,13 +83,29 @@ def tag_detail(request):
     if summary is None:
         raise Http404("Tag not found")
     context["tag"] = summary
+    context["tag_rename_confirmation"] = issue_tag_operation_confirmation(
+        operation="rename", tag=tag, summary=summary, user_id=request.user.pk
+    )
+    context["tag_delete_confirmation"] = issue_tag_operation_confirmation(
+        operation="delete", tag=tag, summary=summary, user_id=request.user.pk
+    )
     if CurrentGuestInventory.objects.exists():
         try:
             linked_clones = set(common.fetch_live_guest_lineage())
-        except Exception:
+        except ProxmoxAPIError as exc:
             # Type is presentation metadata; a lineage outage must not make tag
             # membership administration unavailable.
+            logger.warning(
+                "Proxmox read failed: operation=tag_detail_linked_clone_lineage tag=%s error=%s",
+                tag,
+                exc,
+                extra={
+                    "proxmox_operation": "tag_detail_linked_clone_lineage",
+                    "tag_name": tag,
+                },
+            )
             linked_clones = set()
+            context["lineage_error"] = "Linked-clone classification is temporarily unavailable."
         assigned = {(guest.object_type, guest.vmid) for guest in summary.guests}
         assignable = list(
             CurrentGuestInventory.objects.all().order_by("name", "vmid", "node")
@@ -131,6 +156,20 @@ def tag_operation(request):
     new_tag = request.POST.get("new_tag", "").strip().lower()
     if operation not in {"delete", "rename"}:
         raise Http404("Unknown tag operation")
+    catalog = load_tag_catalog()
+    summary = next((row for row in catalog.summaries if row.name == source), None)
+    confirmation, error = validate_tag_operation_confirmation(
+        request.POST.get("confirmation", ""),
+        operation=operation,
+        tag=source,
+        summary=summary,
+        user_id=request.user.pk,
+    )
+    if error:
+        messages.error(request, error)
+        if summary is not None:
+            return redirect(f"{reverse('core:tag_detail')}?{urlencode({'tag': source})}")
+        return redirect("core:tags_overview")
     event = record_audit_event(
         request,
         action="tag.bulk_operation",
@@ -139,7 +178,13 @@ def tag_operation(request):
         outcome="queued",
         details={"username": request.user.get_username()},
     )
-    error = prepare_tag_operation(event, operation=operation, source_tag=source, new_tag=new_tag)
+    error = prepare_tag_operation(
+        event,
+        operation=operation,
+        source_tag=source,
+        new_tag=new_tag,
+        confirmed_membership_fingerprint=confirmation.membership_fingerprint,
+    )
     if error:
         event.outcome = "failed"
         event.details = {**(event.details or {}), "error": error}

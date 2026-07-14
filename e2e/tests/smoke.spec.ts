@@ -73,6 +73,16 @@ test("tag administration uses aligned controls and the guest editor separates ne
   await expect(page.getByText("The new cluster tag will be assigned to this object.")).toBeVisible();
 });
 
+test("partial tag inventory is labelled without hiding known membership", async ({ page }) => {
+  await page.goto("/tags/", { waitUntil: "load" });
+
+  const warning = page.locator(".tag-warning", { hasText: "Membership inventory is partial" });
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText("pve2 unavailable");
+  await expect(page.getByRole("link", { name: "prod", exact: true }).first()).toBeVisible();
+  await expect(page.locator('#tags-table tbody tr[data-filter-text="prod Ad-hoc"] td:last-child')).toHaveText("1");
+});
+
 test("tag inventory refresh queues work and soft-refreshes after completion", async ({ page }) => {
   let queued = false;
   await page.route("**/tags/refresh/", async (route) => {

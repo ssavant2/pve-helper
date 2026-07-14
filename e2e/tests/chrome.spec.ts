@@ -52,9 +52,64 @@ test("taskbar collapse toggle flips aria-expanded", async ({ page }) => {
   await expect.poll(() => toggle.getAttribute("aria-expanded")).not.toBe(before);
 });
 
-test("retryable tag failure exposes an in-place retry action", async ({ page }) => {
+test("retryable tag failure retries in place and refreshes its task row", async ({ page }) => {
   const row = page.locator('[data-task-retryable="true"]');
   await expect(row).toBeVisible();
+  const taskId = await row.getAttribute("data-task-id");
+  expect(taskId).toBeTruthy();
+  let retried = false;
+  await page.route("**/tasks/retry/", async (route) => {
+    retried = true;
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, queued_task_id: "e2e-retry-task" }),
+    });
+  });
+  await page.route("**/tasks/recent/**", async (route) => {
+    const tasks = retried
+      ? [
+          {
+            id: taskId,
+            kind: "guest",
+            action: "tag.bulk_operation",
+            name: "Tag operation",
+            target: "old-tag",
+            target_guest: null,
+            status: "Queued",
+            status_class: "queued",
+            details: "Retry requested",
+            initiator: "e2e",
+            queued_for: "-",
+            started_at: "-",
+            started_at_ms: 0,
+            finished_at: "-",
+            finished_at_ms: 0,
+            server: "pve1",
+            cancelable: false,
+            retryable: false,
+            offer_force_stop: false,
+          },
+        ]
+      : [];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        tasks,
+        page: 0,
+        limit: 5,
+        total: tasks.length,
+        has_previous: false,
+        has_next: false,
+        start_index: tasks.length ? 1 : 0,
+        end_index: tasks.length,
+      }),
+    });
+  });
+  await page.evaluate(() => {
+    (window as Window & { retrySoftNavigationMarker?: string }).retrySoftNavigationMarker = "preserved";
+  });
   await expect(row.locator('[data-column="status"]')).toContainText("Failed — right-click for options");
   await row.click({ button: "right" });
   const retry = page.locator('#context-menu [data-task-action="retry-task"]');
@@ -62,7 +117,20 @@ test("retryable tag failure exposes an in-place retry action", async ({ page }) 
   await retry.click();
   const dialog = page.locator("[data-vm-action-dialog]");
   await expect(dialog.getByRole("heading", { name: "Retry tag operation" })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+
+  await expect.poll(() => retried).toBe(true);
+  await page.evaluate(() =>
+    (window as unknown as { pveHelperRefreshRecentTasks?: () => void }).pveHelperRefreshRecentTasks?.(),
+  );
+  await expect(page.locator(`[data-task-row-key="${taskId}"] [data-column="status"]`)).toContainText("Queued");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as Window & { retrySoftNavigationMarker?: string }).retrySoftNavigationMarker,
+      ),
+    )
+    .toBe("preserved");
 });
 
 test("global search shows a clear button after typing and clears it", async ({ page }) => {
