@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
-from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -41,7 +41,6 @@ from core.services.tag_registry import (
     TAG_REGISTRY_CONFLICT_ERROR,
     refresh_registered_tags,
 )
-from core.services.integration_tokens import issue_token
 from core.services.proxmox import ProxmoxAPIError, VerifiedGuestInventory, fetch_verified_guest_inventory
 from core.services.recent_tasks import recent_task_page
 from core.services.task_queues import BULK_QUEUE_NAME
@@ -1143,87 +1142,3 @@ class TagFanoutTests(TestCase):
         inventory.assert_not_called()
         self.event.refresh_from_db()
         self.assertEqual(self.event.outcome, "queued")
-
-
-@override_settings(BACKUP_INTEGRATION_API_ENABLED=True)
-class TagApiTests(TestCase):
-    def setUp(self):
-        self.token, self.raw = issue_token("veeam")
-        CurrentGuestInventory.objects.create(
-            node="pve1", object_type="vm", vmid=100, name="template-one", observed_at=timezone.now(),
-            status="stopped", config={"tags": "backup-gold", "template": "1"},
-        )
-
-    def auth(self):
-        return {"HTTP_AUTHORIZATION": f"Bearer {self.raw}"}
-
-    @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
-    def test_backup_policy_does_not_filter_template(self, _registered):
-        response = self.client.get(reverse("core:api_backup_groups"), secure=True, **self.auth())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["groups"]["backup-gold"][0]["type"], "template")
-
-    @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
-    def test_real_tag_endpoint_and_real_tag_array(self, _registered):
-        response = self.client.get(
-            reverse("core:api_tag_guests", args=["backup-gold"]), secure=True, **self.auth()
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("kind", response.json())
-        self.assertEqual(response.json()["guests"][0]["tags"], ["backup-gold"])
-        self.assertEqual(response.json()["guests"][0]["type"], "template")
-
-    def test_missing_token_is_rejected(self):
-        self.assertEqual(self.client.get(reverse("core:api_tags"), secure=True).status_code, 401)
-
-    def test_invalid_token_secret_is_rejected(self):
-        invalid = f"{self.token.token_id}.not-the-issued-secret"
-        response = self.client.get(
-            reverse("core:api_tags"),
-            secure=True,
-            HTTP_AUTHORIZATION=f"Bearer {invalid}",
-        )
-        self.assertEqual(response.status_code, 401)
-
-    def test_expired_token_is_rejected(self):
-        _token, raw = issue_token("expired", expires_at=timezone.now() - timedelta(seconds=1))
-        response = self.client.get(
-            reverse("core:api_tags"),
-            secure=True,
-            HTTP_AUTHORIZATION=f"Bearer {raw}",
-        )
-        self.assertEqual(response.status_code, 401)
-
-    def test_revoked_token_is_rejected(self):
-        self.token.revoked_at = timezone.now()
-        self.token.save(update_fields=["revoked_at"])
-
-        self.assertEqual(
-            self.client.get(reverse("core:api_tags"), secure=True, **self.auth()).status_code,
-            401,
-        )
-
-    @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
-    def test_newer_empty_scan_does_not_hide_current_api_membership(self, _registered):
-        ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-
-        response = self.client.get(reverse("core:api_tags"), secure=True, **self.auth())
-
-        self.assertEqual(response.status_code, 200)
-        backup = next(tag for tag in response.json()["tags"] if tag["name"] == "backup-gold")
-        self.assertEqual(backup["guest_count"], 1)
-
-    def test_plain_http_is_hidden_even_with_a_valid_token(self):
-        self.assertEqual(self.client.get(reverse("core:api_tags"), **self.auth()).status_code, 404)
-
-    def test_api_is_get_only_and_session_is_not_authentication(self):
-        self.client.force_login(get_user_model().objects.create_user("browser-admin"))
-        self.assertEqual(self.client.get(reverse("core:api_tags"), secure=True).status_code, 401)
-        self.assertEqual(
-            self.client.post(reverse("core:api_tags"), secure=True, **self.auth()).status_code,
-            405,
-        )
-
-    @override_settings(BACKUP_INTEGRATION_API_ENABLED=False)
-    def test_disabled_api_is_404(self):
-        self.assertEqual(self.client.get(reverse("core:api_tags"), secure=True, **self.auth()).status_code, 404)

@@ -297,11 +297,6 @@ the Proxmox tag registry/colors and guest membership. Follow it in Recent Tasks;
 or endpoint was unavailable. Data from unavailable endpoints is preserved, and
 the membership **As of** time advances only when membership was actually read.
 
-An optional read-only `/api/v1` integration can expose tag membership to a
-backup reconciliation script. It is disabled by default and requires a
-dedicated bearer token issued with `issue_integration_token`; see the deployment
-runbook before enabling it.
-
 ## Operational guardrails
 
 - Confirmations, audits, preflight checks, and Recent Tasks are guardrails; they

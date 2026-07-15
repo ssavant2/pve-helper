@@ -464,7 +464,6 @@ def _audit_action_label(event: AuditEvent) -> str:
         "tag.membership.renamed": "Rename tag on guest",
         "tag.membership.removed": "Remove tag from guest",
         "tag.bulk_operation": "Update tag assignments",
-        "tag.integration.token": "Manage tag integration token",
     }
     if event.action in tag_action_labels:
         return tag_action_labels[event.action]

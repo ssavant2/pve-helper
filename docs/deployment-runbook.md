@@ -51,9 +51,7 @@ APP_BASE_URL=https://pve-helper.example.com
 
 The scheme controls session and CSRF Secure cookies. pve-helper itself always
 serves HTTP and neither provisions nor requires a certificate. HTTPS is strongly
-recommended whenever the administration network is not already trusted. The
-optional backup integration API is the exception: it deliberately remains
-unavailable unless Django sees a validated external HTTPS request.
+recommended whenever the administration network is not already trusted.
 
 The `nginx` service owns the public app port and proxies normal requests to the
 internal Django/Gunicorn `web` service. Authorized datastore downloads are served
@@ -339,8 +337,6 @@ PVE_ENDPOINTS=https://pve1.example.com:8006
 PVE_VERIFY_TLS=true
 PVE_API_TOKEN_ID=<token-id>
 PVE_API_TOKEN_SECRET=<token-secret>
-BACKUP_INTEGRATION_API_ENABLED=false
-BACKUP_POLICY_TAG_PREFIX=backup-
 SCHEDULED_ACTIONS_ENABLED=true
 SCHEDULED_ACTION_TIMEOUT_SECONDS=1800
 BACKUP_TASK_TIMEOUT_SECONDS=21600
@@ -357,62 +353,6 @@ When enabled, `SCHEDULED_ACTION_TIMEOUT_SECONDS` is the max time pve-helper will
 wait for a submitted Proxmox task before marking it timed out.
 `BACKUP_TASK_TIMEOUT_SECONDS` applies independently to long-running vzdump
 backup and restore jobs; the default is six hours.
-
-### Read-only backup integration API
-
-The backup integration API is disabled by default. Enable it only on an HTTPS
-deployment and recreate the app containers:
-
-```env
-BACKUP_INTEGRATION_API_ENABLED=true
-BACKUP_POLICY_TAG_PREFIX=backup-
-```
-
-```bash
-docker compose up -d --force-recreate web worker worker-bulk console nginx
-```
-
-Issue a dedicated bearer token. The command prints its secret once; store it in
-the backup server's secret store rather than in a script or shell history:
-
-```bash
-docker compose exec web python manage.py issue_integration_token veeam-production
-```
-
-The read-only endpoints are:
-
-- `/api/v1/tags.json` — registered and in-use Proxmox tags with membership counts.
-- `/api/v1/tags/<tag>/guests.json` — objects assigned to one Proxmox tag.
-- `/api/v1/backup-groups.json` — objects grouped by `BACKUP_POLICY_TAG_PREFIX`,
-  plus explicit `unassigned` and `conflicts` arrays.
-
-Calls require HTTPS and `Authorization: Bearer <token>`. Test from the backup
-server without putting the token on the command line:
-
-```bash
-read -rsp 'Integration token: ' PVEHELPER_TOKEN
-curl --fail --silent --show-error \
-  -H "Authorization: Bearer $PVEHELPER_TOKEN" \
-  https://pve-helper.example.com/api/v1/backup-groups.json
-unset PVEHELPER_TOKEN
-```
-
-The bundled nginx sidecar limits `/api/v1/` per validated client address to 30
-requests per minute with a small burst. At the outer reverse proxy, also
-allowlist the backup server's source IP when practical.
-
-Use [veeam-tag-reconcile.example.ps1](veeam-tag-reconcile.example.ps1) as the
-consumer-side starting point. It validates conflicts, reports unassigned
-objects, and supplies each policy group to an `ApplyGroup` script block. The
-actual Veeam job-update block must use the commands supported by the Veeam
-version and Proxmox plug-in installed on that backup server; inspect them there
-with `Get-VBRCommand` instead of hard-coding unverified cmdlet names.
-
-Revoke a token by its public ID (the part before the dot in the issued value):
-
-```bash
-docker compose exec web python manage.py revoke_integration_token <token-id>
-```
 
 ## Storage consumer safety
 

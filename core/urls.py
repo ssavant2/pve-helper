@@ -2,14 +2,10 @@ from django.urls import path
 
 from . import views
 from .template_clone_views import clone_guest_to_template
-from .views import tags_api
 
 app_name = "core"
 
 urlpatterns = [
-    path("api/v1/tags.json", tags_api.api_tags, name="api_tags"),
-    path("api/v1/tags/<str:tag>/guests.json", tags_api.api_tag_guests, name="api_tag_guests"),
-    path("api/v1/backup-groups.json", tags_api.api_backup_groups, name="api_backup_groups"),
     path("", views.dashboard, name="dashboard"),
     path("datastores/", views.datastores, name="datastores"),
     path("search/", views.global_search, name="global_search"),

@@ -367,23 +367,6 @@ class CurrentGuestInventoryState(TimestampedModel):
         return f"Current guest inventory ({'complete' if self.complete else 'partial'})"
 
 
-class IntegrationToken(TimestampedModel):
-    """Hashed bearer credential for the optional read-only integration API."""
-
-    token_id = models.CharField(max_length=32, unique=True)
-    name = models.CharField(max_length=120)
-    secret_hash = models.CharField(max_length=255)
-    expires_at = models.DateTimeField(null=True, blank=True)
-    revoked_at = models.DateTimeField(null=True, blank=True)
-    last_used_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["name", "token_id"]
-
-    def __str__(self) -> str:
-        return f"{self.name} ({self.token_id})"
-
-
 class ProxmoxStorageConsumer(TimestampedModel):
     storage = models.ForeignKey(
         StorageMount,
