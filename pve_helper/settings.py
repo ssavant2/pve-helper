@@ -41,6 +41,7 @@ SECRET_KEY = env("APP_SECRET_KEY", "dev-insecure-change-me")
 DEBUG = env_bool("DEBUG", True)
 APP_REQUIRE_LOGIN = env_bool("APP_REQUIRE_LOGIN", True)
 APP_BASE_URL = env("APP_BASE_URL", "https://pve-helper.example.com").rstrip("/")
+APP_VERSION = env("APP_VERSION", "DEV")
 
 ALLOWED_HOSTS = env_list(
     "ALLOWED_HOSTS",

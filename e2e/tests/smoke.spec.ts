@@ -33,6 +33,11 @@ for (const p of PAGES) {
   });
 }
 
+test("header displays the configured application version", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".brand-version")).toHaveText("DEV");
+});
+
 test("tag links use soft navigation", async ({ page }) => {
   await page.goto("/tags/");
   await page.evaluate(() => {

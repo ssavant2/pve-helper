@@ -6,6 +6,37 @@
 This document is for deployment and operation of the platform. For day-to-day
 use of the administration client, see the [user manual](user-manual.md).
 
+## Pull-only production deployment
+
+The development checkout builds `pve-helper-dev:local`. Production does not need a
+checkout or a local build: the manually triggered GitHub Actions workflow
+`.github/workflows/publish-latest.yml` runs Django, JavaScript and Playwright
+checks, then publishes `ghcr.io/ssavant2/pve-helper:latest` plus an immutable
+commit-SHA tag.
+
+The production directory contains only:
+
+- `docker-compose.yml`, copied from `docker-compose.production.yml`;
+- `.env` and `certs/ca-bundle.pem`;
+- `docker/nginx/templates/` and `docker/postgres/initdb/`; and
+- `scripts/deploy_latest.sh`.
+
+Set `APP_VERSION=v0.1` in production. A development stack uses
+`APP_VERSION=DEV`. The header renders this value directly; it is not inferred
+from the floating image tag.
+
+The first GHCR publication is private by default. Make the package public in its
+GitHub Package settings before an unauthenticated production pull. Subsequent
+fix-forward deployments run from the production directory:
+
+```bash
+./scripts/deploy_latest.sh
+```
+
+The script pulls `latest`, starts/waits for Postgres, stops application services,
+runs migrations with the newly pulled image and recreates the complete stack.
+`latest` alone never updates an already-running container.
+
 ## First local skeleton run
 
 1. Copy `.env.example` to `.env`.

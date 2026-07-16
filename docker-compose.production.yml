@@ -1,4 +1,4 @@
-name: pve-helper-dev
+name: pve-helper
 
 services:
   db:
@@ -80,8 +80,8 @@ services:
         max-file: "3"
 
   web:
-    build: .
-    image: pve-helper-dev:local
+    image: ${PVE_HELPER_IMAGE:-ghcr.io/ssavant2/pve-helper:latest}
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       db:
@@ -90,7 +90,7 @@ services:
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
       DEBUG: ${DEBUG:-true}
       APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-false}
-      APP_VERSION: ${APP_VERSION:-DEV}
+      APP_VERSION: ${APP_VERSION:-v0.1}
       APP_BASE_URL: ${APP_BASE_URL:-https://pve-helper.example.com}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-pve-helper.example.com,dockerhost,localhost,127.0.0.1}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://pve-helper.example.com,http://dockerhost:21080,http://localhost:21080}
@@ -144,8 +144,8 @@ services:
       TZ: ${TZ:-Europe/Stockholm}
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
+      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:rw
+      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:rw
     read_only: true
     tmpfs:
       - /tmp
@@ -170,7 +170,8 @@ services:
         max-file: "3"
 
   console:
-    image: pve-helper-dev:local
+    image: ${PVE_HELPER_IMAGE:-ghcr.io/ssavant2/pve-helper:latest}
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       db:
@@ -220,7 +221,8 @@ services:
         max-file: "3"
 
   worker:
-    image: pve-helper-dev:local
+    image: ${PVE_HELPER_IMAGE:-ghcr.io/ssavant2/pve-helper:latest}
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       db:
@@ -281,8 +283,8 @@ services:
       - "10001"
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
+      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:rw
+      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:rw
     healthcheck:
       test: ["CMD", "python", "/app/scripts/worker_healthcheck.py"]
       interval: 30s
@@ -323,4 +325,4 @@ volumes:
 
 networks:
   default:
-    name: pve-helper-dev
+    name: pve-helper

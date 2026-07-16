@@ -1,4 +1,4 @@
-name: pve-helper-tools
+name: pve-helper-dev-tools
 
 services:
   js-check:
@@ -29,7 +29,7 @@ services:
   # deployed image (docker-compose.yml + Dockerfile never reference it).
   # Run: docker compose -f docker-compose.tools.yml run --rm e2e
   e2e-web:
-    image: pve-helper:local
+    image: pve-helper-dev:local
     environment:
       DEBUG: "true"
       APP_REQUIRE_LOGIN: "false"

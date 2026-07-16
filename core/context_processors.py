@@ -10,6 +10,7 @@ def app_settings(request):
     task_page = recent_task_page()
     return {
         "app_base_url": settings.APP_BASE_URL,
+        "app_version": settings.APP_VERSION,
         "app_display_url": request.build_absolute_uri("/").rstrip("/"),
         "app_require_login": settings.APP_REQUIRE_LOGIN,
         "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
