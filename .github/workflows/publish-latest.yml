@@ -32,6 +32,11 @@ jobs:
 
       - name: Check JavaScript formatting and lint
         run: docker compose -f docker-compose.tools.yml run --rm js-check
+        env:
+          # actions/checkout creates the ephemeral workspace as root. Local runs
+          # retain the host UID/GID defaults so node_modules stays user-owned.
+          HOST_UID: "0"
+          HOST_GID: "0"
 
       - name: Run browser end-to-end tests
         run: docker compose -f docker-compose.tools.yml run --rm e2e
