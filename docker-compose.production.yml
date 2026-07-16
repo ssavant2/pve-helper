@@ -2,16 +2,15 @@ name: pve-helper
 
 services:
   db:
-    image: postgres:18-alpine
+    image: ${PVE_HELPER_DB_IMAGE:-ghcr.io/ssavant2/pve-helper-db:latest}
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME:-pve_helper}
       POSTGRES_USER: ${DB_ADMIN_USER:-pve_helper_admin}
-      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:-pve_helper_admin_dev_password}
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?Set DB_ADMIN_PASSWORD in .env}
       APP_DB_USER: ${DB_USER:-pve_helper}
-      APP_DB_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
+      APP_DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
     volumes:
-      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
       - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -25,7 +24,7 @@ services:
         max-file: "3"
 
   nginx:
-    image: nginx:alpine
+    image: ${PVE_HELPER_NGINX_IMAGE:-ghcr.io/ssavant2/pve-helper-nginx:latest}
     restart: unless-stopped
     depends_on:
       web:
@@ -46,9 +45,8 @@ services:
     ports:
       - "${APP_PORT:-21080}:80"
     volumes:
-      - ./docker/nginx/templates:/etc/nginx/templates:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}:ro
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}:ro
+      - ${TRUENAS_FS_HOST_PATH:?Set TRUENAS_FS_HOST_PATH in .env}:${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}:ro
+      - ${TRUENAS_VM_HOST_PATH:?Set TRUENAS_VM_HOST_PATH in .env}:${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}:ro
     read_only: true
     tmpfs:
       - /etc/nginx/conf.d
@@ -87,18 +85,18 @@ services:
       db:
         condition: service_healthy
     environment:
-      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
-      DEBUG: ${DEBUG:-true}
-      APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-false}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
+      DEBUG: ${DEBUG:-false}
+      APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-true}
       APP_VERSION: ${APP_VERSION:-v0.1}
-      APP_BASE_URL: ${APP_BASE_URL:-https://pve-helper.example.com}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-pve-helper.example.com,dockerhost,localhost,127.0.0.1}
-      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://pve-helper.example.com,http://dockerhost:21080,http://localhost:21080}
+      APP_BASE_URL: ${APP_BASE_URL:?Set APP_BASE_URL in .env}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS in .env}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?Set CSRF_TRUSTED_ORIGINS in .env}
       USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-true}
       SECURE_PROXY_SSL_HEADER: ${SECURE_PROXY_SSL_HEADER:-true}
       DB_NAME: ${DB_NAME:-pve_helper}
       DB_USER: ${DB_USER:-pve_helper}
-      DB_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_HOST: db
       DB_PORT: "5432"
       OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-https://auth.example.com/application/o/pve-helper/}
@@ -107,12 +105,12 @@ services:
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-https://pve-helper.example.com/auth/oidc/callback}
       OIDC_REQUIRED_GROUP: ${OIDC_REQUIRED_GROUP:-pve-helper-admins}
       OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
-      PVE_ENDPOINTS: ${PVE_ENDPOINTS:-https://pve-node-1.example.com:8006}
+      PVE_ENDPOINTS: ${PVE_ENDPOINTS:?Set PVE_ENDPOINTS in .env}
       PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
       PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
-      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-/etc/ssl/pve-helper-ca-bundle.pem}
-      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
-      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
+      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:?Set PVE_API_TOKEN_ID in .env}
+      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:?Set PVE_API_TOKEN_SECRET in .env}
       PVE_EXPECTED_CONSUMERS: ${PVE_EXPECTED_CONSUMERS:-pve-node-1}
       SCHEDULED_ACTIONS_ENABLED: ${SCHEDULED_ACTIONS_ENABLED:-true}
       SCHEDULED_ACTION_TIMEOUT_SECONDS: ${SCHEDULED_ACTION_TIMEOUT_SECONDS:-1800}
@@ -126,7 +124,7 @@ services:
       TRUENAS_VM_EXPORT: ${TRUENAS_VM_EXPORT:-}
       TRUENAS_FS_CONTAINER_PATH: ${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}
       TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
-      STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-true}
+      STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-false}
       STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
       FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:-/storages/truenas-fs/.pve-helper-upload-tmp}
       STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
@@ -144,8 +142,8 @@ services:
       TZ: ${TZ:-Europe/Stockholm}
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:rw
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:rw
+      - ${TRUENAS_FS_HOST_PATH:?Set TRUENAS_FS_HOST_PATH in .env}:/storages/truenas-fs:${STORAGE_MOUNT_MODE:-ro}
+      - ${TRUENAS_VM_HOST_PATH:?Set TRUENAS_VM_HOST_PATH in .env}:/storages/truenas-vm:${STORAGE_MOUNT_MODE:-ro}
     read_only: true
     tmpfs:
       - /tmp
@@ -178,19 +176,19 @@ services:
         condition: service_healthy
     command: ["uvicorn", "console_app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]
     environment:
-      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
-      DEBUG: ${DEBUG:-true}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
+      DEBUG: ${DEBUG:-false}
       DB_NAME: ${DB_NAME:-pve_helper}
       DB_USER: ${DB_USER:-pve_helper}
-      DB_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_HOST: db
       DB_PORT: "5432"
-      PVE_ENDPOINTS: ${PVE_ENDPOINTS:-https://pve-node-1.example.com:8006}
+      PVE_ENDPOINTS: ${PVE_ENDPOINTS:?Set PVE_ENDPOINTS in .env}
       PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
       PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
-      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-/etc/ssl/pve-helper-ca-bundle.pem}
-      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
-      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
+      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:?Set PVE_API_TOKEN_ID in .env}
+      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:?Set PVE_API_TOKEN_SECRET in .env}
       CONSOLE_ENABLED: ${CONSOLE_ENABLED:-true}
       CONSOLE_SESSION_TTL_SECONDS: ${CONSOLE_SESSION_TTL_SECONDS:-30}
       CONSOLE_CONNECT_TIMEOUT_SECONDS: ${CONSOLE_CONNECT_TIMEOUT_SECONDS:-10}
@@ -228,17 +226,17 @@ services:
       db:
         condition: service_healthy
     environment:
-      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
-      DEBUG: ${DEBUG:-true}
-      APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-false}
-      APP_BASE_URL: ${APP_BASE_URL:-https://pve-helper.example.com}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-pve-helper.example.com,dockerhost,localhost,127.0.0.1}
-      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://pve-helper.example.com,http://dockerhost:21080,http://localhost:21080}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
+      DEBUG: ${DEBUG:-false}
+      APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-true}
+      APP_BASE_URL: ${APP_BASE_URL:?Set APP_BASE_URL in .env}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS in .env}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?Set CSRF_TRUSTED_ORIGINS in .env}
       USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-true}
       SECURE_PROXY_SSL_HEADER: ${SECURE_PROXY_SSL_HEADER:-true}
       DB_NAME: ${DB_NAME:-pve_helper}
       DB_USER: ${DB_USER:-pve_helper}
-      DB_PASSWORD: ${DB_PASSWORD:-pve_helper_dev_password}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_HOST: db
       DB_PORT: "5432"
       OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-https://auth.example.com/application/o/pve-helper/}
@@ -247,12 +245,12 @@ services:
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-https://pve-helper.example.com/auth/oidc/callback}
       OIDC_REQUIRED_GROUP: ${OIDC_REQUIRED_GROUP:-pve-helper-admins}
       OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
-      PVE_ENDPOINTS: ${PVE_ENDPOINTS:-https://pve-node-1.example.com:8006}
+      PVE_ENDPOINTS: ${PVE_ENDPOINTS:?Set PVE_ENDPOINTS in .env}
       PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
       PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
-      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-/etc/ssl/pve-helper-ca-bundle.pem}
-      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
-      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
+      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:?Set PVE_API_TOKEN_ID in .env}
+      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:?Set PVE_API_TOKEN_SECRET in .env}
       PVE_EXPECTED_CONSUMERS: ${PVE_EXPECTED_CONSUMERS:-pve-node-1}
       SCHEDULED_ACTIONS_ENABLED: ${SCHEDULED_ACTIONS_ENABLED:-true}
       SCHEDULED_ACTION_TIMEOUT_SECONDS: ${SCHEDULED_ACTION_TIMEOUT_SECONDS:-1800}
@@ -266,7 +264,7 @@ services:
       TRUENAS_VM_EXPORT: ${TRUENAS_VM_EXPORT:-}
       TRUENAS_FS_CONTAINER_PATH: ${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}
       TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
-      STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-true}
+      STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-false}
       STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
       STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
       STORAGE_IMAGE_INFO_TIMEOUT_SECONDS: ${STORAGE_IMAGE_INFO_TIMEOUT_SECONDS:-15}
@@ -283,8 +281,8 @@ services:
       - "10001"
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:rw
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:rw
+      - ${TRUENAS_FS_HOST_PATH:?Set TRUENAS_FS_HOST_PATH in .env}:/storages/truenas-fs:${STORAGE_MOUNT_MODE:-ro}
+      - ${TRUENAS_VM_HOST_PATH:?Set TRUENAS_VM_HOST_PATH in .env}:/storages/truenas-vm:${STORAGE_MOUNT_MODE:-ro}
     healthcheck:
       test: ["CMD", "python", "/app/scripts/worker_healthcheck.py"]
       interval: 30s

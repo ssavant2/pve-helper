@@ -14,12 +14,15 @@ checkout or a local build: the GitHub Actions workflow
 explicit `publish-*` tag. It runs Django, JavaScript and Playwright checks, then
 publishes `ghcr.io/ssavant2/pve-helper:latest` plus an immutable commit-SHA tag.
 
-The production directory contains only:
+The release workflow attaches a standalone `docker-compose.yml` and
+`example.env` to each GitHub release. The Compose file uses three published
+runtime images: the app, a Postgres image containing the role-init script and
+an nginx image containing the proxy template. The production directory contains
+only:
 
-- `docker-compose.yml`, copied from `docker-compose.production.yml`;
-- `.env` and `certs/ca-bundle.pem`;
-- `docker/nginx/templates/` and `docker/postgres/initdb/`; and
-- `scripts/deploy_latest.sh`.
+- `docker-compose.yml`, packaged from `docker-compose.production.yml`;
+- `.env`; and
+- `certs/ca-bundle.pem` (empty when no private CA is needed).
 
 Set `APP_VERSION=v0.1` in production. A development stack uses
 `APP_VERSION=DEV`. The header renders this value directly; it is not inferred
@@ -30,17 +33,55 @@ GitHub Package settings before an unauthenticated production pull. Subsequent
 fix-forward deployments run from the production directory:
 
 ```bash
-./scripts/deploy_latest.sh
+docker compose pull
+docker compose up -d --wait db
+docker compose stop nginx web console worker worker-bulk
+docker compose run --rm --no-deps web python manage.py migrate --noinput
+docker compose up -d --remove-orphans --wait
 ```
 
-The script pulls `latest`, starts/waits for Postgres, stops application services,
-runs migrations with the newly pulled image and recreates the complete stack.
-`latest` alone never updates an already-running container.
+The sequence pulls `latest`, starts/waits for Postgres, stops application
+services, runs migrations with the newly pulled image and recreates the complete
+stack. Pulling `latest` alone never updates an already-running container.
 
-## First local skeleton run
+### CPU and memory requirements
 
-1. Copy `.env.example` to `.env`.
-2. Replace at least `APP_SECRET_KEY`, `DB_ADMIN_PASSWORD`, and `DB_PASSWORD`.
+These figures cover the complete stack — nginx, web, control worker, bulk worker,
+console and Postgres — rather than one process inside the application image:
+
+| Deployment | vCPU | RAM | Intended workload |
+|---|---:|---:|---|
+| Minimum single production stack | 2 | 2 GB | Small environment, normal scans and no overlapping heavy bulk jobs |
+| Recommended single production stack | 2 | 4 GB | Normal operation with headroom for scans, backups and inventory growth |
+| Concurrent-heavy production | 4 | 8 GB | Several overlapping bulk jobs, image processing or unusually large inventories |
+| Production and development on one host | 2–4 | 6–8 GB | Two databases/stacks plus builds, browser tests and development tooling |
+
+The Compose `mem_limit` values are **upper safety bounds**, not reserved memory.
+Adding them together does not give the VM's minimum RAM requirement. A normal
+small production stack is expected to use roughly 1–1.5 GB in steady operation;
+workload, process count and filesystem cache make this variable.
+
+For a development stack running beside production, start with
+`GUNICORN_WORKERS=1` and `Q_BULK_WORKERS=1`. Increase them only for a targeted
+concurrency test. Production defaults remain two Gunicorn and two bulk workers;
+the control worker already defaults to one.
+
+Large uploads do not justify more application RAM: place
+`FILE_UPLOAD_TEMP_DIR` on real mounted storage as described under *Storage write
+mode*. Container tmpfs is deliberately small and must not buffer datastore-sized
+files.
+
+Use `docker stats`, the host's available memory/swap and cgroup
+`memory.events`/`memory.peak` to size from observed load. An old kernel OOM line
+alone is not a current capacity measurement; correlate it with the lifetime and
+cgroup counters of the running container.
+
+## First production run
+
+1. Download `example.env` from the release as `.env`.
+2. Fill every required blank value: application and database secrets, external
+   URL/host/origin values, Proxmox endpoint/token and both storage host paths.
+   Configure the OIDC placeholders as well when login is enabled.
 3. Start Postgres:
 
    ```bash

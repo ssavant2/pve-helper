@@ -1,6 +1,14 @@
 # pve-helper
 
-Internal Proxmox helper toolbox.
+> [!WARNING]
+> **Early alpha software — use at your own risk.** pve-helper is under active
+> development and has not reached version 1.0. It administers infrastructure
+> and can perform destructive operations; bugs, breaking configuration changes
+> and incomplete recovery paths should be expected. Test it away from critical
+> workloads, keep independent backups and verify every permission before
+> enabling storage writes.
+
+Self-hosted Proxmox administration toolbox.
 
 `pve-helper` is intended to be a small internal web toolbox for Proxmox
 environments, starting with storage browsing/inventory helpers and growing into
@@ -62,7 +70,46 @@ read-only even when another datastore is writable. See `docs/deployment-runbook.
 This project is meant for internal homelab / small ops use. It is not designed
 or supported as an enterprise storage-management product.
 
-## Setup
+## System requirements
+
+For one production stack, the supported baseline is **2 vCPU and 2 GB RAM**;
+**2 vCPU and 4 GB RAM** is recommended. Four vCPU and 8 GB RAM is a capacity
+tier for overlapping bulk work, not the normal requirement. A host running both
+production and a development stack should have 6–8 GB RAM. Storage mounted for
+Proxmox content is additional and is not included in these figures.
+
+Docker `mem_limit` values are safety ceilings, not reservations and not additive
+host requirements. See the deployment runbook for workload assumptions and dev
+tuning.
+
+## Quick install
+
+No source checkout is required. Download the two release files, inspect and
+edit the environment file, then start the stack:
+
+```bash
+mkdir pve-helper && cd pve-helper
+curl -fLo docker-compose.yml https://github.com/ssavant2/pve-helper/releases/latest/download/docker-compose.yml
+curl -fLo .env https://github.com/ssavant2/pve-helper/releases/latest/download/example.env
+mkdir -p certs && touch certs/ca-bundle.pem
+# Edit .env and fill every required blank value before continuing.
+docker compose config --quiet
+docker compose up -d --wait db
+docker compose run --rm --no-deps web python manage.py migrate --noinput
+docker compose up -d --wait
+```
+
+See [INSTALL.md](INSTALL.md) for the complete first-install, storage and
+authentication instructions. The app serves HTTP itself; HTTPS, if wanted, is
+provided by an external reverse proxy.
+
+## Development
+
+Clone the repository and use `docker-compose.example.yml` as the tracked
+development template. Development builds the Dockerfile's local `test` target;
+only the lean `runtime` target is published to GHCR.
+
+## Setup reference
 
 Start with `docs/deployment-runbook.md`. For day-to-day administration, see
 `docs/user-manual.md`. For Authentik, see
@@ -70,7 +117,12 @@ Start with `docs/deployment-runbook.md`. For day-to-day administration, see
 `docs/proxmox-api-token.md`. For database role separation, see
 `docs/postgres-hardening.md`.
 
-The compose defaults are for local skeleton verification. Before real internal use, create `.env`, set real secrets, configure Authentik OIDC, and keep `APP_REQUIRE_LOGIN=true`. `APP_BASE_URL` should be the canonical URL that Authentik redirects back to, using `http://` for direct HTTP or `https://` when an external proxy supplies TLS. Its scheme also controls Secure session/CSRF cookies. The URL shown in the app header is taken from the current request.
+The production Compose file refuses to start without the required secrets,
+Proxmox connection and storage paths. Keep `APP_REQUIRE_LOGIN=true` unless the
+installation is isolated on a trusted network. `APP_BASE_URL` is the canonical
+browser-facing URL, using `http://` for direct access or `https://` when an
+external proxy supplies TLS. Its scheme also controls Secure session/CSRF
+cookies. The URL shown in the app header is taken from the current request.
 
 ## Documentation
 
@@ -81,3 +133,11 @@ The compose defaults are for local skeleton verification. Before real internal u
 Build/test/lint and the Playwright E2E workflow for working on the source live in
 a local `AGENTS.md` (kept out of git and out of published images — the deliverable
 is a built image, not the source tree).
+
+## License
+
+pve-helper is licensed under the [GNU Affero General Public License v3.0](LICENSE)
+(`AGPL-3.0-only`). You may use, modify and redistribute it, including
+commercially. If you distribute a modified version or let users interact with
+one over a network, the corresponding source must remain available under the
+same license.

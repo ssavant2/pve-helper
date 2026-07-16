@@ -1,0 +1,7 @@
+FROM postgres:18-alpine
+
+LABEL org.opencontainers.image.source="https://github.com/ssavant2/pve-helper" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
+
+COPY --chmod=0555 docker/postgres/initdb/10-create-app-role.sh /docker-entrypoint-initdb.d/
+COPY LICENSE /usr/share/licenses/pve-helper/LICENSE

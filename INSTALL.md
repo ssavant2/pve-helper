@@ -1,0 +1,112 @@
+# pve-helper installation guide
+
+> [!WARNING]
+> pve-helper is early alpha software. It has not reached version 1.0 and is not
+> production-mature. Use it only where you can tolerate bugs and breaking
+> changes, with independent backups and after testing its permissions and
+> destructive operations against non-critical infrastructure.
+
+pve-helper is distributed as three prebuilt runtime images plus a standalone
+Compose file and environment template. A production installation does not need
+Git, Python, Node.js or a source checkout. No development image is published.
+
+## Requirements
+
+- Docker Engine with Docker Compose v2
+- 2 vCPU and 2 GB RAM minimum; 2 vCPU and 4 GB RAM recommended
+- Network access from the containers to the Proxmox API
+- Host mounts for any Proxmox storage that pve-helper should browse
+- A Proxmox API token with the permissions described in
+  `docs/proxmox-api-token.md`
+
+## Install
+
+```bash
+mkdir pve-helper
+cd pve-helper
+curl -fLo docker-compose.yml https://github.com/ssavant2/pve-helper/releases/latest/download/docker-compose.yml
+curl -fLo .env https://github.com/ssavant2/pve-helper/releases/latest/download/example.env
+mkdir -p certs
+touch certs/ca-bundle.pem
+```
+
+Edit `.env` before starting. Fill every required blank value, replace the OIDC
+placeholders when login is enabled, and configure:
+
+- the public or internal `APP_BASE_URL`, allowed hosts and CSRF origins;
+- unique application and database secrets;
+- the Proxmox endpoint and API token;
+- both host storage paths and their matching Proxmox storage IDs;
+- OIDC values when `APP_REQUIRE_LOGIN=true`.
+
+The production template fails before container creation when required secrets,
+Proxmox values or storage paths are missing. It also starts with `DEBUG=false`,
+login required and storage writes disabled.
+
+If the Proxmox or OIDC endpoints use a private CA, place a PEM bundle at
+`certs/ca-bundle.pem` and set `REQUESTS_CA_BUNDLE` to
+`/etc/ssl/pve-helper-ca-bundle.pem`. Otherwise leave the created file empty and
+`REQUESTS_CA_BUNDLE` blank.
+
+Validate the rendered deployment, then start it:
+
+```bash
+docker compose config --quiet
+docker compose up -d --wait db
+docker compose run --rm --no-deps web python manage.py migrate --noinput
+docker compose up -d --wait
+```
+
+Open the configured `APP_BASE_URL`. pve-helper listens over HTTP. A certificate
+is neither provisioned nor required; an external reverse proxy may terminate
+HTTPS if your environment needs it.
+
+## Enabling storage writes
+
+The default is read-only twice: `STORAGE_WRITE_ENABLED=false` and
+`STORAGE_MOUNT_MODE=ro`. Verify host mounts, ACLs and the expected storage IDs
+first. To allow upload, trash and restore operations, set both values to their
+writable forms and recreate the affected services:
+
+```env
+STORAGE_WRITE_ENABLED=true
+STORAGE_MOUNT_MODE=rw
+```
+
+See `docs/deployment-runbook.md` for NFS mount guidance, upload temporary-space
+requirements, Authentik, reverse proxies and database role separation.
+
+## Update
+
+The following sequence preserves `.env`, certificates and Docker volumes. It
+pulls the current images, runs database migrations using the new app image and
+replaces the application containers:
+
+```bash
+docker compose pull
+docker compose up -d --wait db
+docker compose stop nginx web console worker worker-bulk
+docker compose run --rm --no-deps web python manage.py migrate --noinput
+docker compose up -d --remove-orphans --wait
+```
+
+When release notes mention Compose changes, download the new
+`docker-compose.yml` to a temporary path, compare it with the installed file,
+then replace that file before running the update. Never overwrite `.env`,
+`certs/` or Docker volumes during an update.
+
+## Development install
+
+Development is source-based and is not published as a separate image:
+
+```bash
+git clone https://github.com/ssavant2/pve-helper.git pve-helper-dev
+cd pve-helper-dev
+cp .env.example .env
+# Edit .env for the development environment.
+docker compose -f docker-compose.example.yml build
+docker compose -f docker-compose.example.yml up -d
+```
+
+The development compose project, image, network and volume use the
+`pve-helper-dev` prefix and do not share state with production.

@@ -1,0 +1,7 @@
+FROM nginx:alpine
+
+LABEL org.opencontainers.image.source="https://github.com/ssavant2/pve-helper" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
+
+COPY docker/nginx/templates/default.conf.template /etc/nginx/templates/default.conf.template
+COPY LICENSE /usr/share/licenses/pve-helper/LICENSE

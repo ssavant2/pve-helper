@@ -80,7 +80,9 @@ services:
         max-file: "3"
 
   web:
-    build: .
+    build:
+      context: .
+      target: test
     image: pve-helper-dev:local
     restart: unless-stopped
     depends_on:
