@@ -1,0 +1,33 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content">
+    <div class="panel panel-spaced">
+      <div class="panel-heading"><h2>Permissions</h2></div>
+      <p class="panel-meta">
+        Proxmox ACL entries that apply to <code>{{ guest_path }}</code>, including inherited entries from parent paths.
+      </p>
+      {% if permissions_error %}
+        <p class="muted"><span class="badge failed">Unavailable</span> {{ permissions_error }}</p>
+      {% endif %}
+      <table class="data-table compact">
+        <thead>
+          <tr><th>User / Group</th><th>Type</th><th>Role</th><th>Path</th><th>Source</th></tr>
+        </thead>
+        <tbody>
+          {% for entry in acl_entries %}
+            <tr>
+              <td>{{ entry.ugid }}</td>
+              <td>{{ entry.type }}</td>
+              <td>{{ entry.roleid }}</td>
+              <td><code class="disk-ref">{{ entry.path }}</code></td>
+              <td>{% if entry.inherited %}<span class="badge">Inherited</span>{% else %}<span class="badge completed">Direct</span>{% endif %}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="empty-state">No ACL entries apply to this guest.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+  {{ storage_options|json_script:"restore-storage-options" }}
+  <section class="restore-page-shell" data-backup-restore data-storage-options-id="restore-storage-options">
+    <div class="vm-action-dialog restore-page-dialog" role="dialog" aria-labelledby="restore-dialog-title">
+      {% if not archives %}
+        <div class="vm-action-dialog-form">
+          <div class="vm-action-dialog-heading"><h2 id="restore-dialog-title">Restore Backup</h2><a class="restore-dialog-close" href="{% url 'core:vms' %}" aria-label="Close">&times;</a></div>
+          <p class="empty-state">No restoreable backup archives are currently visible from Proxmox.</p>
+        </div>
+      {% else %}
+        <form method="post" class="vm-action-dialog-form" data-backup-restore-form>
+          {% csrf_token %}
+          <input type="hidden" name="source_type" value="{{ source_type }}">
+          <input type="hidden" name="source_vmid" value="{{ source_vmid }}">
+          <div class="vm-action-dialog-heading">
+            <h2 id="restore-dialog-title">Restore Backup</h2>
+            <a class="restore-dialog-close" href="{% url 'core:vms' %}" aria-label="Close">&times;</a>
+          </div>
+          <p class="restore-dialog-summary">{{ archives|length }} backup archive{{ archives|length|pluralize }}</p>
+          <div class="vm-action-dialog-body">
+            <label class="form-field"><span>Backup archive</span><select name="archive_key" required data-restore-archive>{% for archive in archives %}<option value="{{ archive.key }}" data-archive-type="{{ archive.object_type }}" data-endpoint="{{ archive.endpoint }}" data-source-vmid="{{ archive.source_vmid }}" {% if archive.key == selected_archive_key %}selected{% endif %}>{{ archive.name }} · {{ archive.type_label }} · {{ archive.storage }}{% if archive.ctime %} · {{ archive.ctime|date:"Y-m-d H:i" }}{% endif %}{% if archive.size %} · {{ archive.size|filesizeformat }}{% endif %}</option>{% endfor %}</select></label>
+            <label class="form-field"><span>Target node</span><select name="node" required data-restore-node>{% for node in nodes %}<option value="{{ node.key }}" data-endpoint="{{ node.endpoint }}" {% if form_values.node == node.key %}selected{% endif %}>{{ node.label }}</option>{% endfor %}</select></label>
+            <label class="form-field"><span>VMID</span><input name="vmid" type="number" min="1" step="1" required value="{{ form_values.vmid|default:nextid }}"></label>
+            <label class="form-field"><span>Target storage</span><select name="storage" required data-restore-storage></select></label>
+            <label class="form-field-inline"><input type="checkbox" name="start_after" {% if form_values.start_after %}checked{% endif %}><span>Start the restored guest</span></label>
+            <label class="form-field-inline"><input type="checkbox" name="overwrite" data-restore-overwrite {% if form_values.overwrite %}checked{% endif %}><span>Overwrite existing VM/CT</span></label>
+            <div class="danger-confirmation restore-confirmation" data-restore-confirm hidden>
+              <div>
+                <strong>Replace existing guest</strong>
+                <p>The existing guest is shut down cleanly first. A failed or timed-out shutdown stops the restore; pve-helper never hard-stops it automatically.</p>
+              </div>
+              <label class="form-field"><span>Enter the VMID again to confirm replacement</span><input name="overwrite_confirm" type="number" min="1" step="1" autocomplete="off"></label>
+            </div>
+          </div>
+          {% if restore_error %}<p class="form-error">{{ restore_error }}</p>{% endif %}
+          <div class="form-actions"><button type="submit" class="primary-action">Restore Backup</button><a class="primary-action" href="{% url 'core:vms' %}">Cancel</a></div>
+        </form>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

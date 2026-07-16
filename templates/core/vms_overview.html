@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% load guest_labels %}
+
+{% block content %}
+  <section
+    class="vm-overview-page"
+    data-vm-overview
+    data-vm-agent-info-url="{% url 'core:vms_overview_agent_info' %}"
+    data-vm-snapshot-info-url="{% url 'core:vms_overview_snapshot_info' %}"
+    data-vm-status-url="{% url 'core:vms_status' %}"
+    data-vm-migrate-nics-url="{% url 'core:guest_bulk_nics' %}"
+  >
+    {{ available_user_tags|json_script:"vm-overview-tag-options" }}
+    <div class="panel">
+      <div class="panel-heading vm-overview-heading">
+        <div>
+          <h2>{{ guest_count }} guest{{ guest_count|pluralize }}</h2>
+          <p class="panel-meta">
+            {{ running_count }} running.
+            {% if live_available %}
+              Power state updates right after an action and otherwise refreshes periodically.
+              Last refreshed {{ inventory_scan_at|date:"Y-m-d H:i:s" }}.
+            {% elif inventory_scan_at %}
+              Showing last scan from {{ inventory_scan_at|date:"Y-m-d H:i:s" }}.
+            {% else %}
+              No inventory data available.
+            {% endif %}
+          </p>
+        </div>
+        <details class="column-picker" data-column-picker="vm-overview">
+          <summary>Show Columns</summary>
+          <div class="column-picker-panel">
+            <label><input type="checkbox" data-column-toggle="name" checked disabled> Name</label>
+            <label><input type="checkbox" data-column-toggle="state" checked> State</label>
+            <label><input type="checkbox" data-column-toggle="provisioned" checked> Provisioned Space</label>
+            <label><input type="checkbox" data-column-toggle="used" checked> Used Space</label>
+            <label><input type="checkbox" data-column-toggle="cpu" checked> Host CPU</label>
+            <label><input type="checkbox" data-column-toggle="host-mem" checked> Host Mem</label>
+            <label><input type="checkbox" data-column-toggle="active-mem" checked> Active Memory</label>
+            <label><input type="checkbox" data-column-toggle="guest-os" checked> Guest OS</label>
+            <label><input type="checkbox" data-column-toggle="agent" checked> Guest Agent</label>
+            <label><input type="checkbox" data-column-toggle="node" checked> Node</label>
+            <label><input type="checkbox" data-column-toggle="has-snapshot" checked> Has snapshot</label>
+            <label><input type="checkbox" data-column-toggle="vmid"> VMID</label>
+            <label><input type="checkbox" data-column-toggle="type"> Type</label>
+            <label><input type="checkbox" data-column-toggle="memory-size"> Memory Size</label>
+            <label><input type="checkbox" data-column-toggle="cpus"> CPUs</label>
+            <label><input type="checkbox" data-column-toggle="nics"> NICs</label>
+            <label><input type="checkbox" data-column-toggle="disks"> Disks</label>
+            <label><input type="checkbox" data-column-toggle="uptime"> Uptime</label>
+            <label><input type="checkbox" data-column-toggle="ip"> IP Address</label>
+            <label><input type="checkbox" data-column-toggle="mac"> MAC Address</label>
+            <label><input type="checkbox" data-column-toggle="storage"> Storage</label>
+            <label><input type="checkbox" data-column-toggle="tags"> Tags</label>
+          </div>
+        </details>
+      </div>
+
+      {% if not live_available or runtime_inventory_stale %}
+        <p class="panel-meta">
+          <span class="badge {% if live_available %}warning{% else %}failed{% endif %}">
+            {% if live_available %}Runtime inventory is stale{% else %}No runtime inventory{% endif %}
+          </span>
+          Power state and usage may be out of date.
+        </p>
+      {% endif %}
+
+      <div class="vm-overview-toolbar">
+        <label class="datastore-search vm-overview-search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <span class="sr-only">Quick filter</span>
+          <input type="search" placeholder="Quick Filter" data-table-filter="#vm-overview-table" autocomplete="off">
+        </label>
+        <span class="vm-selection-status" data-vm-selection-status>0 selected</span>
+      </div>
+
+      <form method="post" action="{% url 'core:vms_bulk_action' %}" data-vm-bulk-form hidden>
+        {% csrf_token %}
+        <input type="hidden" name="bulk_action" data-vm-bulk-action>
+        <input type="hidden" name="snapshot_name" data-vm-bulk-snapshot-name>
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      </form>
+
+      <div class="data-table-scroll vm-overview-scroll">
+        <table class="data-table compact vm-overview-table" id="vm-overview-table" data-filterable-table data-sortable-table data-resizable-columns data-column-table="vm-overview">
+          <thead>
+            <tr>
+              <th class="vm-select-column">
+                <input type="checkbox" data-vm-select-all aria-label="Select all visible guests">
+              </th>
+              <th data-column="name" data-sort="text">Name</th>
+              <th data-column="state" data-sort="text">State</th>
+              <th data-column="provisioned" data-sort="number">Provisioned Space</th>
+              <th data-column="used" data-sort="number">Used Space</th>
+              <th data-column="cpu" data-sort="number">Host CPU</th>
+              <th data-column="host-mem" data-sort="number">Host Mem</th>
+              <th data-column="active-mem" data-sort="number">Active Memory</th>
+              <th data-column="guest-os" data-sort="text">Guest OS</th>
+              <th data-column="agent" data-sort="text">Guest Agent</th>
+              <th data-column="node" data-sort="text">Node</th>
+              <th data-column="has-snapshot" data-sort="text">Has snapshot</th>
+              <th data-column="vmid" data-sort="number">VMID</th>
+              <th data-column="type" data-sort="text">Type</th>
+              <th data-column="memory-size" data-sort="number">Memory Size</th>
+              <th data-column="cpus" data-sort="number">CPUs</th>
+              <th data-column="nics" data-sort="number">NICs</th>
+              <th data-column="disks" data-sort="number">Disks</th>
+              <th data-column="uptime" data-sort="number">Uptime</th>
+              <th data-column="ip" data-sort="text">IP Address</th>
+              <th data-column="mac" data-sort="text">MAC Address</th>
+              <th data-column="storage" data-sort="text">Storage</th>
+              <th data-column="tags" data-sort="text">Tags</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for g in guests %}
+              <tr
+                data-vm-overview-row
+                data-guest-target="{{ g.target_id }}"
+                data-guest-vmid="{{ g.vmid }}"
+                data-guest-parent-vmid="{{ g.parent_vmid|default:'' }}"
+                data-guest-type="{{ g.object_type }}"
+                data-guest-template="{{ g.is_template|yesno:'true,false' }}"
+                data-guest-linked-clone="{{ g.is_linked_clone|yesno:'true,false' }}"
+                data-guest-agent-enabled="{{ g.agent_enabled|yesno:'true,false' }}"
+                data-guest-status="{{ g.status }}"
+                data-guest-lock="{{ g.lock }}"
+                data-guest-label="{{ g.guest_identity.full_label_with_type }}"
+                data-guest-name="{{ g.name }}"
+                data-guest-tags="{{ g.tags|join:';' }}"
+                data-detail-url="{{ g.detail_url }}"
+                data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
+                data-backup-options-url="{% url 'core:guest_backup_options' g.object_type g.vmid %}"
+                data-backup-url="{% url 'core:guest_backup' g.object_type g.vmid %}"
+                data-clone-options-url="{% url 'core:guest_clone_options' g.object_type g.vmid %}"
+                data-pool-options-url="{% url 'core:guest_pool_options' g.object_type g.vmid %}"
+                data-tag-options-url="{% url 'core:guest_tag_options' g.object_type g.vmid %}?node={{ g.node|urlencode }}"
+                data-migrate-options-url="{% url 'core:guest_migrate_options' g.object_type g.vmid %}"
+                data-edit-tags-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=tags"
+                data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.object_type g.vmid %}"
+                data-edit-options-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=options"
+                data-filter-text="{{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }} {{ g.tags_label|lower }} {{ g.guest_os_label|lower }} {{ g.ip_label|lower }} {{ g.mac_label|lower }} {{ g.storage_label|lower }} {{ g.has_snapshot_label|lower }}"
+              >
+                <td class="vm-select-column">
+                  <input type="checkbox" data-vm-select value="{{ g.object_type }}:{{ g.vmid }}" aria-label="Select {{ g.guest_identity.full_label_with_type }}">
+                </td>
+                <td data-column="name" data-sort-value="{{ g.name|default:g.vmid }}">
+                  <a class="vm-name-link" href="{{ g.detail_url }}">
+                    {% if g.is_linked_clone %}<span class="clone-marker" title="Linked clone of {{ g.lineage_parent_name }} ({{ g.parent_vmid }})">L</span>{% endif %}
+                    <span class="guest-list-icon{% if g.status == 'running' %} running-icon{% elif g.status == 'paused' %} paused-icon{% elif g.status == 'hibernated' %} hibernated-icon{% endif %}" data-guest-status-icon title="{{ g.status|default:'unknown' }}">
+                      <i data-vicon="{% if g.object_type == 'ct' %}container{% elif g.is_template %}template{% else %}vm{% endif %}" aria-hidden="true"></i>
+                    </span>
+                    {% guest_label g.guest_identity %}
+                    <span class="guest-lock-badge" data-guest-lock-badge title="{% if g.lock %}Locked: {{ g.lock }}{% endif %}"{% if not g.lock %} hidden{% endif %}><i data-lucide="lock" aria-hidden="true"></i></span>
+                  </a>
+                </td>
+                <td data-column="state" data-guest-state-cell data-sort-value="{{ g.state_label }}">{{ g.state_label }}</td>
+                <td data-column="provisioned" data-sort-value="{{ g.provisioned_bytes }}">{{ g.provisioned_label }}</td>
+                <td data-column="used" data-sort-value="{{ g.used_bytes }}">{{ g.used_label }}</td>
+                <td data-column="cpu" data-sort-value="{{ g.cpu_value }}">{{ g.cpu_label }}</td>
+                <td data-column="host-mem" data-sort-value="{{ g.mem_bytes }}">{{ g.mem_label }}</td>
+                <td data-column="active-mem" data-sort-value="{{ g.active_mem_bytes }}">{{ g.active_mem_label }}</td>
+                <td data-column="guest-os" data-agent-os-cell data-sort-value="{{ g.guest_os_label }}">{{ g.guest_os_label }}</td>
+                <td data-column="agent" data-agent-status-cell data-sort-value="{{ g.agent_label }}">{{ g.agent_label }}</td>
+                <td data-column="node" data-sort-value="{{ g.node }}">{{ g.node|default:"-" }}</td>
+                <td data-column="has-snapshot" data-snapshot-status-cell data-sort-value="{{ g.has_snapshot_label }}">{{ g.has_snapshot_label }}</td>
+                <td data-column="vmid" data-sort-value="{{ g.vmid }}">{{ g.vmid }}</td>
+                <td data-column="type" data-sort-value="{{ g.type_label }}">{{ g.type_label }}</td>
+                <td data-column="memory-size" data-sort-value="{{ g.memory_size_bytes }}">{{ g.memory_size_label }}</td>
+                <td data-column="cpus" data-sort-value="{{ g.cpus }}">{{ g.cpu_count_label }}</td>
+                <td data-column="nics" data-sort-value="{{ g.nic_count }}">{{ g.nic_count_label }}</td>
+                <td data-column="disks" data-sort-value="{{ g.disk_count }}">{{ g.disk_count_label }}</td>
+                <td data-column="uptime" data-sort-value="{{ g.uptime_seconds }}">{{ g.uptime_label }}</td>
+                <td data-column="ip" data-agent-ip-cell data-ip-raw="{{ g.ip_label }}" data-sort-value="{{ g.ip_label }}">{{ g.ip_label }}</td>
+                <td data-column="mac" data-sort-value="{{ g.mac_label }}">{{ g.mac_label }}</td>
+                <td data-column="storage" data-sort-value="{{ g.storage_label }}">{{ g.storage_label }}</td>
+                <td data-column="tags" data-sort-value="{{ g.tags_label }}">{% for tag in g.tag_chips %}<a class="tag-chip" data-user-tag="{{ tag.name }}" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>{% if not forloop.last %} {% endif %}{% endfor %}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="24" class="empty-state">No guests found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+{% endblock %}

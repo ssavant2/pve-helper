@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Datastores</h1>
+      <p>Configured shared Proxmox storage roots mounted by pve-helper</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Server</th>
+          <th>Export</th>
+          <th>PVE path</th>
+          <th>Free / Total</th>
+          <th>Used</th>
+          <th>Filesystem</th>
+          <th>PVE options</th>
+          <th>Prealloc</th>
+          <th>Expected consumers</th>
+          <th>Shared Gate</th>
+          <th>PVE-helper access</th>
+          <th>Latest Scan</th>
+          <th>Likely orphans</th>
+          <th>Status</th>
+          <th aria-label="Actions"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for storage in storages %}
+          <tr data-context-label="{{ storage.storage_id }}">
+            <td>
+              <a href="{% url 'core:storage_browser' storage.storage_id %}">{{ storage.display_name }}</a>
+              <span class="subline"><code>{{ storage.storage_id }}</code></span>
+            </td>
+            <td>{{ storage.details.storage_type|default:"-" }}</td>
+            <td>{{ storage.details.server|default:"-" }}</td>
+            <td class="truncate-cell" title="{{ storage.details.export_path|default:'-' }}"><code>{{ storage.details.export_path|default:"-" }}</code></td>
+            <td class="truncate-cell" title="{{ storage.details.proxmox_path|default:'-' }}"><code>{{ storage.details.proxmox_path|default:"-" }}</code></td>
+            <td>
+              {% if storage.space_info.ok %}
+                {{ storage.space_info.available_bytes|filesizeformat }} / {{ storage.space_info.total_bytes|filesizeformat }}
+              {% else %}
+                <span class="muted">{{ storage.space_info.error|default:"unavailable" }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if storage.space_info.ok %}
+                {{ storage.space_info.used_percent|floatformat:1 }}%
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>
+              {% if storage.space_info.filesystem_type %}
+                <code>{{ storage.space_info.filesystem_type }}</code>
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td class="truncate-cell" title="{{ storage.details.options|default:'-' }}">{{ storage.details.options|default:"-" }}</td>
+            <td>{{ storage.details.preallocation|default:"default" }}</td>
+            <td>{{ storage.expected_consumers|join:", " }}</td>
+            <td>
+              {% if storage.latest_gate_status %}
+                <span class="badge {% if storage.latest_gate_status.ok %}completed{% else %}failed{% endif %}">
+                  {{ storage.latest_gate_status.status }}
+                </span>
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>
+              <span class="badge {{ storage.space_info.access_class }}" title="Effective access from the pve-helper web container">
+                {{ storage.space_info.access_label }}
+              </span>
+            </td>
+            <td>{{ storage.latest_scan_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+            <td>{{ storage.latest_counts.likely_orphan|default:0 }}</td>
+            <td><span class="badge {% if storage.enabled %}completed{% else %}failed{% endif %}">{% if storage.enabled %}Enabled{% else %}Disabled{% endif %}</span></td>
+            <td class="row-actions">
+              <a class="icon-link" href="{% url 'core:storage_browser' storage.storage_id %}" aria-label="Browse {{ storage.display_name }}" title="Browse">
+                <i data-lucide="folder-open" aria-hidden="true"></i>
+              </a>
+              <a class="icon-link" href="{% url 'core:storage_trash' storage.storage_id %}" aria-label="View {{ storage.display_name }} Recycle Bin" title="View Recycle Bin">
+                <i data-lucide="trash-2" aria-hidden="true"></i>
+              </a>
+            </td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="17" class="empty-state">No datastores configured in the database yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

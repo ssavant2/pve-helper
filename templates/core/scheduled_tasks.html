@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% load guest_labels %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Scheduled Tasks</h1>
+      <p>
+        {% if target_filter %}
+          VM and container power actions filtered to {{ target_filter_label }}
+        {% else %}
+          VM and container power actions managed by pve-helper
+        {% endif %}
+      </p>
+    </div>
+    <div class="page-header-actions">
+      {% if target_filter %}
+        <a class="secondary-action" href="{% url 'core:scheduled_tasks' %}">Clear Filter</a>
+      {% endif %}
+      <a class="primary-action" href="{% url 'core:scheduled_task_create' %}{% if scheduled_task_create_query %}?{{ scheduled_task_create_query }}{% endif %}">New Scheduled Task</a>
+    </div>
+  </section>
+
+  <section class="panel scheduled-warning-panel">
+    <div class="panel-note">
+      <p class="warning-copy">
+        <strong>Scheduled tasks only run while pve-helper web/worker services are up and running.</strong>
+        Missed tasks are skipped unless their schedule explicitly allows a late retry window.
+      </p>
+      <p class="muted">
+        Power actions are currently
+        <span class="badge {% if scheduled_actions_enabled %}completed{% else %}failed{% endif %}">
+          {% if scheduled_actions_enabled %}enabled{% else %}disabled{% endif %}
+        </span>
+        via <code>SCHEDULED_ACTIONS_ENABLED</code>. Default timezone: <code>{{ schedule_timezone }}</code>.
+        Run history retention: {{ run_retention_days }} days.
+      </p>
+    </div>
+  </section>
+
+  <section class="panel panel-spaced">
+    <div class="panel-heading">
+      <h2>Definitions</h2>
+    </div>
+    <table class="data-table compact">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>State</th>
+          <th>Action</th>
+          <th>Target</th>
+          <th>Schedule</th>
+          <th>Next Run</th>
+          <th>Catch-up</th>
+          <th>Last Status</th>
+          <th>Creator</th>
+          <th aria-label="Actions"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for action in scheduled_actions %}
+          <tr>
+            <td>{{ action.name }}</td>
+            <td>
+              <span class="badge {% if action.enabled %}completed{% else %}failed{% endif %}">
+                {% if action.enabled %}Enabled{% else %}Disabled{% endif %}
+              </span>
+            </td>
+            <td>{{ action.get_action_type_display }}</td>
+            <td>{% guest_label action.guest_identity %}</td>
+            <td>{{ action.display_schedule }}</td>
+            <td>{{ action.next_run_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+            <td>
+              {% if action.catch_up_policy == "run_once_late" %}
+                Retry up to {{ action.max_lateness_minutes }} min
+              {% else %}
+                Skip missed
+              {% endif %}
+            </td>
+            <td><span class="badge {{ action.display_status_class }}">{{ action.get_last_status_display }}</span></td>
+            <td>{{ action.display_creator }}</td>
+            <td class="row-actions">
+              {% if scheduled_actions_enabled %}
+                <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_run_now' action.id %}" data-confirm="Run {{ action.name }} now?" data-confirm-title="Run scheduled task" data-confirm-label="Run now">
+                  {% csrf_token %}
+                  <button class="icon-button" type="submit" title="Run Now" aria-label="Run {{ action.name }} now">
+                    <i data-lucide="play" aria-hidden="true"></i>
+                  </button>
+                </form>
+              {% else %}
+                <button class="icon-button" type="button" title="Run Now" aria-label="Run {{ action.name }} now" disabled>
+                  <i data-lucide="play" aria-hidden="true"></i>
+                </button>
+              {% endif %}
+              <a class="icon-link" href="{% url 'core:scheduled_task_edit' action.id %}" title="Edit" aria-label="Edit {{ action.name }}">
+                <i data-lucide="pencil" aria-hidden="true"></i>
+              </a>
+              <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_toggle' action.id %}">
+                {% csrf_token %}
+                <input type="hidden" name="enabled" value="{% if action.enabled %}0{% else %}1{% endif %}">
+                <button class="icon-button" type="submit" title="{% if action.enabled %}Disable{% else %}Enable{% endif %}" aria-label="{% if action.enabled %}Disable{% else %}Enable{% endif %} {{ action.name }}">
+                  <i data-lucide="{% if action.enabled %}pause{% else %}power{% endif %}" aria-hidden="true"></i>
+                </button>
+              </form>
+              <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_delete' action.id %}" data-confirm="Remove {{ action.name }}? Future runs stop; completed run history is retained." data-confirm-title="Delete scheduled task" data-confirm-label="Delete" data-confirm-danger="true">
+                {% csrf_token %}
+                <button class="icon-button danger" type="submit" title="Delete" aria-label="Delete {{ action.name }}">
+                  <i data-lucide="trash-2" aria-hidden="true"></i>
+                </button>
+              </form>
+            </td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="10" class="empty-state">No scheduled tasks have been created yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section
+    class="panel panel-spaced"
+    data-scheduled-runs
+    data-scheduled-runs-url="{{ scheduled_runs_url }}"
+    data-scheduled-runs-poll-ms="10000"
+  >
+    <div class="panel-heading">
+      <h2>Latest 10 Runs</h2>
+    </div>
+    <table class="data-table compact">
+      <thead>
+        <tr>
+          <th>Planned For</th>
+          <th>Task</th>
+          <th>Target</th>
+          <th>Status</th>
+          <th>Outcome</th>
+          <th>Started</th>
+          <th>Finished</th>
+          <th>Node</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody data-scheduled-run-rows>
+        {% for run in latest_runs %}
+          <tr>
+            <td>{{ run.planned_for|date:"Y-m-d H:i:s" }}</td>
+            <td>{{ run.scheduled_action.name }}</td>
+            <td>{% guest_label run.guest_identity %}</td>
+            <td><span class="badge {{ run.display_status_class }}">{{ run.get_status_display }}</span></td>
+            <td>{{ run.display_outcome }}</td>
+            <td>{{ run.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+            <td>{{ run.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+            <td>{{ run.display_node }}</td>
+            <td>{{ run.error|default:"-" }}</td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="9" class="empty-state">No scheduled task runs yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

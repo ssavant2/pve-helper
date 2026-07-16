@@ -1,0 +1,11 @@
+{
+  "name": "pve-helper-e2e",
+  "private": true,
+  "description": "Dev-only Playwright end-to-end tests. Not part of any deployed image.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}

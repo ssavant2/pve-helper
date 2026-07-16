@@ -1,0 +1,56 @@
+{% extends "core/guest_workspace.html" %}
+{% load guest_labels %}
+
+{% block workspace_detail %}
+  <section class="vs-object-header">
+    <div class="vs-title-row">
+      <div class="vs-title">
+        <span class="vs-title-icon"><i data-lucide="{% if guest.object_type == 'ct' %}box{% elif guest_is_template %}layers{% else %}monitor{% endif %}" aria-hidden="true"></i></span>
+        <div>
+          <h1>{% guest_label guest_identity %}</h1>
+          <p>
+            <span class="badge{% if guest_is_template %} infrastructure{% endif %}">{{ guest_type_label }}</span>
+            {% if guest.status == "running" %}
+              <span class="badge completed" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}">{{ guest.status }}</span>
+            {% else %}
+              <span class="badge" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}">{{ guest.status|default:"-" }}</span>
+            {% endif %}
+            on node <strong>{{ guest.node|default:"-" }}</strong>
+          </p>
+        </div>
+        {% if not guest.live_ok %}
+          <span class="vs-divider"></span>
+          <span class="vs-access">
+            <span class="badge failed" title="Live Proxmox data was unavailable; showing last scan">Live data unavailable</span>
+          </span>
+        {% endif %}
+      </div>
+      <div class="page-header-actions">
+        <a class="secondary-action" href="{{ schedule_action_url }}">Schedule Task</a>
+        {% if active_guest_tab == "summary" %}
+          <details class="column-picker card-picker" data-summary-card-picker>
+            <summary>Show cards</summary>
+            <div class="column-picker-panel" data-summary-card-picker-panel></div>
+          </details>
+        {% endif %}
+      </div>
+    </div>
+    {% if guest.ambiguous %}
+      <p class="panel-meta">
+        <span class="badge failed">Ambiguous target</span>
+        VMID {{ guest.vmid }} is exposed by multiple nodes ({{ guest.ambiguous_nodes|join:", " }}); live details are withheld until disambiguated.
+      </p>
+    {% endif %}
+    <nav class="vs-tabs" aria-label="Guest views">
+      {% for tab in guest_tabs %}
+        {% if tab.enabled %}
+          <a href="{{ tab.url }}" {% if tab.active %}class="active"{% endif %}>{{ tab.label }}</a>
+        {% else %}
+          <span class="disabled" title="Coming soon">{{ tab.label }}</span>
+        {% endif %}
+      {% endfor %}
+    </nav>
+  </section>
+
+  {% block guest_content %}{% endblock %}
+{% endblock %}

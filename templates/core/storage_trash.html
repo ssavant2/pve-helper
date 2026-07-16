@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>{{ storage.display_name }} Recycle Bin</h1>
+      <p>Restorable files moved by pve-helper</p>
+    </div>
+    <a class="secondary-action" href="{% url 'core:storage_browser' storage.storage_id %}">
+      <i data-lucide="arrow-left" aria-hidden="true"></i>
+      <span>Back to Files</span>
+    </a>
+  </section>
+
+  <section class="panel">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Original path</th>
+          <th>Moved</th>
+          <th>Moved by</th>
+          <th>Size</th>
+          <th>Trash path</th>
+          <th aria-label="Actions"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+          <tr data-context-label="{{ storage.storage_id }}:{{ item.original_path }}">
+            <td><code>{{ item.original_path }}</code></td>
+            <td>{{ item.moved_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+            <td>{{ item.moved_by.get_username|default:"-" }}</td>
+            <td>{% if item.metadata.original_size_bytes != None %}{{ item.metadata.original_size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
+            <td class="truncate-cell" title="{{ item.trash_path }}"><code>{{ item.trash_path }}</code></td>
+            <td class="row-actions">
+              {% if storage.storage_actions_enabled %}
+                <form class="inline-action-form" method="post" action="{% url 'core:storage_restore_file' item.id %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                  <button class="icon-button" type="submit" aria-label="Restore {{ item.original_path }}" title="Restore">
+                    <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+                  </button>
+                </form>
+                <form
+                  class="inline-action-form"
+                  method="post"
+                  action="{% url 'core:purge_trash_item' item.id %}"
+                  data-confirm-file-action
+                  data-action-kind="purge"
+                  data-file-name="{{ item.original_path }}"
+                >
+                  {% csrf_token %}
+                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                  <input type="hidden" name="confirm_basic" value="">
+                  <button class="icon-button danger" type="submit" aria-label="Delete {{ item.original_path }} permanently" title="Delete permanently">
+                    <i data-lucide="trash-2" aria-hidden="true"></i>
+                  </button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="6" class="empty-state">No restorable files in the Recycle Bin.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "core/storage_api/base.html" %}
+
+{% block api_storage_content %}
+  <section class="storage-tab-content">
+    <div class="panel">
+      <div class="panel-heading"><span>Proxmox Configuration</span></div>
+      <p class="panel-meta">Read-only storage definition from the latest scan. Edit content types on the Content tab.</p>
+      {% if config_rows %}
+        <dl class="details-list">
+          {% for row in config_rows %}
+            <div><dt>{{ row.key }}</dt><dd>{{ row.value }}</dd></div>
+          {% endfor %}
+        </dl>
+      {% else %}
+        <p class="empty-state">No storage configuration in the latest scan.</p>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

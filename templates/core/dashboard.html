@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Dashboard</h1>
+      <p>Cluster and storage inventory status</p>
+    </div>
+    <div class="scan-controls">
+      <form class="scan-schedule-form" method="post" action="{% url 'core:update_scan_schedule' %}" data-auto-submit-form>
+        {% csrf_token %}
+        <label class="checkbox-control">
+          <input type="checkbox" name="enabled" data-auto-submit-control {% if scan_schedule.enabled %}checked{% endif %}>
+          <span>Automatically scan all datastores every</span>
+        </label>
+        <input class="number-input" type="number" name="interval_minutes" min="1" max="9999" value="{{ scan_schedule.interval_minutes }}" data-auto-submit-control>
+        <span>minutes</span>
+      </form>
+      <form class="scan-schedule-form" method="post" action="{% url 'core:update_trash_purge_schedule' %}" data-auto-submit-form>
+        {% csrf_token %}
+        <label class="checkbox-control">
+          <input type="checkbox" name="enabled" data-auto-submit-control {% if trash_purge_schedule.enabled %}checked{% endif %}>
+          <span>Automatically purge trashed files older than</span>
+        </label>
+        <input class="number-input" type="number" name="max_age_days" min="1" max="99" value="{{ trash_purge_schedule.max_age_days }}" data-auto-submit-control>
+        <span>days</span>
+      </form>
+      <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button class="primary-action scan-action-button {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
+          <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
+            <i data-lucide="loader-circle" aria-hidden="true"></i>
+          </span>
+          <span data-scan-button-label>
+            {% if active_scan %}
+              {% if active_scan.status == "queued" %}Scan queued{% else %}Scanning{% endif %}
+            {% else %}
+              Start scan
+            {% endif %}
+          </span>
+        </button>
+      </form>
+    </div>
+  </section>
+
+  <section class="metric-grid">
+    <div class="metric">
+      <span class="metric-label">Storages</span>
+      <strong>{{ storage_count }}</strong>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Last inventory</span>
+      <strong>{% if result_scan %}{{ result_scan.finished_at|default:result_scan.created_at|date:"Y-m-d H:i" }}{% else %}-{% endif %}</strong>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Audit events</span>
+      <strong>{{ audit_count }}</strong>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Likely orphans</span>
+      <strong>{{ classification_counts.likely_orphan|default:0 }}</strong>
+    </div>
+  </section>
+
+  <section class="split-view">
+    <div class="panel">
+      <div class="panel-heading">
+        <h2>Latest scan</h2>
+      </div>
+      {% if latest_scan %}
+        <dl class="details-list">
+          <dt>Status</dt><dd><span class="badge {{ latest_scan.status }}">{{ latest_scan.get_status_display }}</span></dd>
+          <dt>Progress</dt><dd>{{ latest_scan.progress_message|default:"-" }}</dd>
+          <dt>Created</dt><dd>{{ latest_scan.created_at }}</dd>
+          <dt>Finished</dt><dd>{{ latest_scan.finished_at|default:"-" }}</dd>
+          <dt>Endpoints</dt><dd>{{ latest_scan.endpoints_succeeded|join:", "|default:"-" }}</dd>
+        </dl>
+      {% else %}
+        <div class="empty-state">No scan runs yet.</div>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading">
+        <h2>Classification</h2>
+      </div>
+      {% include "core/partials/classification_legend.html" %}
+      <table class="data-table compact">
+        <tbody>
+          <tr><th>Referenced</th><td><a href="{% url 'core:classified_files' %}?classification=referenced">{{ classification_counts.referenced|default:0 }}</a></td></tr>
+          <tr><th>Likely orphan</th><td><a href="{% url 'core:orphan_finder' %}">{{ classification_counts.likely_orphan|default:0 }}</a></td></tr>
+          <tr><th>Unknown</th><td><a href="{% url 'core:classified_files' %}?classification=unknown">{{ classification_counts.unknown|default:0 }}</a></td></tr>
+          <tr><th>Blocked</th><td><a href="{% url 'core:classified_files' %}?classification=classification_blocked">{{ classification_counts.classification_blocked|default:0 }}</a></td></tr>
+          <tr><th>Trash</th><td><a href="{% url 'core:classified_files' %}?classification=trash">{{ classification_counts.trash|default:0 }}</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if result_scan %}
+    <section class="panel">
+      <div class="panel-heading">
+        <h2>Storage gate</h2>
+      </div>
+      {% include "core/partials/storage_gate_help.html" %}
+      <table class="data-table compact">
+        <thead>
+          <tr>
+            <th>Storage</th>
+            <th>Type</th>
+            <th>Server</th>
+            <th>Status</th>
+            <th>PVE-helper access</th>
+            <th>Free / Total</th>
+            <th>FS</th>
+            <th>PVE options</th>
+            <th>Latest Scan</th>
+            <th>Expected consumers</th>
+            <th>Missing</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in storage_gate_rows %}
+            {% with gate=row.gate storage=row.storage %}
+            <tr data-context-label="{{ storage.storage_id }}">
+              <td><code>{{ storage.storage_id }}</code></td>
+              <td>{{ storage.details.storage_type|default:"-" }}</td>
+              <td>{{ storage.details.server|default:"-" }}</td>
+              <td>
+                {% if gate %}
+                  <span class="badge {% if gate.ok %}completed{% else %}failed{% endif %}">{{ gate.status }}</span>
+                {% else %}
+                  -
+                {% endif %}
+              </td>
+              <td>
+                <span class="badge {{ storage.space_info.access_class }}" title="Effective access from the pve-helper web container">
+                  {{ storage.space_info.access_label }}
+                </span>
+              </td>
+              <td>
+                {% if storage.space_info.ok %}
+                  {{ storage.space_info.available_bytes|filesizeformat }} / {{ storage.space_info.total_bytes|filesizeformat }}
+                {% else %}
+                  <span class="muted">{{ storage.space_info.error|default:"unavailable" }}</span>
+                {% endif %}
+              </td>
+              <td>{{ storage.space_info.filesystem_type|default:"-" }}</td>
+              <td class="truncate-cell" title="{{ storage.details.options|default:'-' }}">{{ storage.details.options|default:"-" }}</td>
+              <td>{{ row.latest_scan_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+              <td>{{ gate.expected_consumers|join:", "|default:"-" }}</td>
+              <td>{{ gate.missing_consumers|join:", "|default:"-" }}</td>
+            </tr>
+            {% endwith %}
+          {% empty %}
+            <tr>
+              <td colspan="11" class="empty-state">No storage gate data for this scan.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+{% endblock %}

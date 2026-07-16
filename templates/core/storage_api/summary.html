@@ -1,0 +1,30 @@
+{% extends "core/storage_api/base.html" %}
+
+{% block api_storage_content %}
+  <section class="storage-tab-content">
+    <div class="panel">
+      {% if capacity.total %}
+        <div class="api-capacity">
+          <div class="usage-bar-bg" role="img" aria-label="{{ capacity.used_pct|default:0 }}% used">
+            <div class="usage-bar-fill{% if capacity.used_pct >= 90 %} danger{% elif capacity.used_pct >= 75 %} warning{% endif %}" style="width: {{ capacity.used_pct|default:0 }}%;"></div>
+          </div>
+          <div class="api-capacity-legend">
+            <span><strong>{{ capacity.used|filesizeformat }}</strong> used{% if capacity.used_pct != None %} ({{ capacity.used_pct }}%){% endif %}</span>
+            <span><strong>{{ capacity.avail|filesizeformat }}</strong> free</span>
+            <span><strong>{{ capacity.total|filesizeformat }}</strong> total</span>
+          </div>
+        </div>
+      {% endif %}
+      <dl class="details-list">
+        <div><dt>Node</dt><dd>{{ node }}</dd></div>
+        {% if storage_type %}<div><dt>Type</dt><dd>{{ storage_type }}</dd></div>{% endif %}
+        {% if content_types %}<div><dt>Content</dt><dd>{% for c in content_types %}<span class="badge">{{ c }}</span> {% endfor %}</dd></div>{% endif %}
+        <div><dt>Shared</dt><dd>No (local to node)</dd></div>
+        <div><dt>Active</dt><dd>{% if storage_active %}<span class="badge completed">Active</span>{% else %}<span class="badge">Inactive</span>{% endif %}</dd></div>
+        <div><dt>Enabled</dt><dd>{{ storage_enabled|yesno:"Yes,No" }}</dd></div>
+        <div><dt>Volumes</dt><dd>{{ volume_count }}</dd></div>
+        <div><dt>Guests using it</dt><dd>{{ guest_count }}</dd></div>
+      </dl>
+    </div>
+  </section>
+{% endblock %}

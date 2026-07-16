@@ -1,0 +1,46 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.sqlite3
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+staticfiles/
+media/
+logs/
+certs/
+dev-storage/
+node_modules/
+npm-debug.log*
+
+# Local working notes with real environment values (never commit)
+.local/
+docs/*.local.md
+docs/local/
+
+# Live compose with real values — commit docker-compose.example.yml instead
+docker-compose.yml
+
+# Specific architecture plan with real topology — keep local
+PLAN.md
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Claude Code local (personal) settings
+.claude/settings.local.json
+
+# Playwright E2E (dev-only tooling)
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+
+# Local agent working notes (not part of the published product)
+AGENTS.md
+CLAUDE.md

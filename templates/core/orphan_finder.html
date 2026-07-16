@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Orphan Finder</h1>
+      <p>
+        Conservative read-only classification results
+        {% if latest_scan %}from inventory updated {{ latest_scan.filesystem_scan_at|default:latest_scan.finished_at|default:latest_scan.created_at|date:"Y-m-d H:i:s" }}{% endif %}
+      </p>
+    </div>
+  </section>
+
+  {% include "core/partials/classification_legend.html" %}
+  {% include "core/partials/storage_gate_help.html" %}
+
+  <section class="panel">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Storage</th>
+          <th>Path</th>
+          <th>Size</th>
+          <th>Evidence</th>
+          <th aria-label="Actions"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for file in files %}
+          <tr data-context-label="{{ file.path }}">
+            <td>{{ file.storage.display_name }}</td>
+            <td><code>{{ file.path }}</code></td>
+            <td>{% if file.size_bytes != None %}{{ file.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
+            <td>{{ file.classification_reason|default:"-" }}</td>
+            <td class="row-actions">
+              {% if file.derived_volid and "-disk-" in file.derived_volid %}
+                <a class="icon-button" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}" title="Register as a new VM" aria-label="Register {{ file.path }} as a new VM">
+                  <i data-lucide="package-plus" aria-hidden="true"></i>
+                </a>
+              {% endif %}
+              {% if file.storage.storage_actions_enabled and file.can_trash %}
+                <form
+                  class="inline-action-form"
+                  method="post"
+                  action="{% url 'core:storage_trash_file' file.storage.storage_id %}"
+                  data-confirm-file-action
+                  data-action-kind="trash"
+                  data-file-name="{{ file.path }}"
+                  data-risk-message="{{ file.action_warning_message }}"
+                  data-requires-risk-confirmation="{% if file.action_requires_extra_confirmation %}true{% else %}false{% endif %}"
+                >
+                  {% csrf_token %}
+                  <input type="hidden" name="path" value="{{ file.path }}">
+                  <input type="hidden" name="confirm_basic" value="">
+                  <input type="hidden" name="confirm_risk" value="">
+                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                  <button class="icon-button danger" type="submit" aria-label="Move {{ file.path }} to trash" title="Move to trash">
+                    <i data-lucide="trash-2" aria-hidden="true"></i>
+                  </button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="5" class="empty-state">No likely orphan files in the current inventory.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

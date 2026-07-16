@@ -1,0 +1,305 @@
+{% extends "core/storage_base.html" %}
+
+{% block storage_content %}
+  <section
+    class="datastore-file-manager"
+    data-storage-file-manager
+    data-storage-id="{{ storage.storage_id }}"
+    data-current-path="{{ current_path }}"
+    data-storage-actions-enabled="{% if storage.storage_actions_enabled %}true{% else %}false{% endif %}"
+  >
+    <aside class="datastore-folder-pane" aria-label="Datastore folder tree">
+      <label class="folder-filter">
+        <span>Filter by a folder name</span>
+        <input type="search" data-folder-filter autocomplete="off">
+      </label>
+      <nav class="datastore-folder-tree">
+        {% for node in folder_tree %}
+          <div
+            class="folder-tree-node {% if node.is_current %}active{% endif %} {% if node.is_ancestor %}ancestor{% endif %}"
+            style="--depth: {{ node.depth }}"
+            data-folder-node
+            data-folder-name="{{ node.name|lower }}"
+            data-folder-path="{{ node.path }}"
+            data-folder-depth="{{ node.depth }}"
+            data-folder-expanded="{% if node.is_expanded %}true{% else %}false{% endif %}"
+            {% if not node.is_initially_visible %}hidden{% endif %}
+          >
+            {% if node.has_children %}
+              <button class="folder-tree-caret" type="button" data-folder-toggle aria-label="Toggle {{ node.name }}">
+                {% if node.is_expanded %}
+                  <i data-lucide="chevron-down" aria-hidden="true"></i>
+                {% else %}
+                  <i data-lucide="chevron-right" aria-hidden="true"></i>
+                {% endif %}
+              </button>
+            {% else %}
+              <span class="folder-tree-caret folder-tree-caret-placeholder" aria-hidden="true"></span>
+            {% endif %}
+            <a
+              class="folder-tree-link"
+              href="{% url 'core:storage_browser' storage.storage_id %}{% if node.path %}?path={{ node.path|urlencode }}{% endif %}"
+            >
+              <span class="folder-tree-icon">
+                {% if node.depth == 0 %}
+                  <i data-vicon="storage" aria-hidden="true"></i>
+                {% else %}
+                  <i data-lucide="folder" aria-hidden="true"></i>
+                {% endif %}
+              </span>
+              <span class="folder-tree-label">{{ node.name }}</span>
+            </a>
+          </div>
+        {% empty %}
+          <span class="folder-tree-empty">Start a scan to load folders.</span>
+        {% endfor %}
+      </nav>
+    </aside>
+
+    <section class="datastore-file-pane">
+      <div class="datastore-file-toolbar">
+        <div class="vs-file-actions">
+          {% if storage_write_enabled %}
+            {% if storage.storage_actions_enabled %}
+              <form
+                class="vs-toolbar-form"
+                method="post"
+                action="{% url 'core:storage_create_folder' storage.storage_id %}"
+                data-confirm-file-action
+                data-action-kind="new-folder"
+              >
+                {% csrf_token %}
+                <input type="hidden" name="path" value="{{ current_path }}">
+                <input type="hidden" name="folder_name" value="" data-new-folder-input>
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <button class="vs-toolbar-button" type="submit">New Folder</button>
+              </form>
+            {% else %}
+              <button class="vs-toolbar-button" type="button" disabled>New Folder</button>
+            {% endif %}
+            {% if storage.storage_actions_enabled %}
+              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload' storage.storage_id %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-on-file-select>
+                {% csrf_token %}
+                <input type="hidden" name="path" value="{{ current_path }}">
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <label class="vs-toolbar-button">
+                  Upload Files
+                  <input class="sr-only" type="file" name="file" required>
+                </label>
+              </form>
+            {% else %}
+              <button class="vs-toolbar-button" type="button" disabled>Upload Files</button>
+            {% endif %}
+            {% if storage.storage_actions_enabled %}
+              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload_folder' storage.storage_id %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-folder-on-file-select>
+                {% csrf_token %}
+                <input type="hidden" name="path" value="{{ current_path }}">
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <label class="vs-toolbar-button">
+                  Upload Folder
+                  <input class="sr-only" type="file" name="files" multiple webkitdirectory directory required>
+                </label>
+              </form>
+            {% else %}
+              <button class="vs-toolbar-button" type="button" disabled>Upload Folder</button>
+            {% endif %}
+          {% endif %}
+          <a
+            class="vs-toolbar-button disabled"
+            href="#"
+            data-file-download-action
+            data-no-soft-navigation
+            aria-disabled="true"
+          >Download</a>
+          {% if storage_write_enabled %}
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_move_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="move"
+              data-selected-file-action
+              data-allow-multiple="true"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="new_path" value="" data-move-input>
+              <input type="hidden" name="dest_storage" value="" data-dest-storage>
+              <input type="hidden" name="dest_directory" value="" data-dest-directory>
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button" type="submit" data-selected-file-button disabled>Move To</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_copy_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="copy"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="dest_storage" value="" data-dest-storage>
+              <input type="hidden" name="dest_directory" value="" data-dest-directory>
+              <input type="hidden" name="dest_name" value="" data-dest-name>
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button" type="submit" data-selected-file-button disabled>Copy To</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_rename_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="rename"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="new_name" value="" data-rename-input>
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button" type="submit" data-selected-file-button disabled>Rename To</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_trash_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="trash"
+              data-selected-file-action
+              data-allow-multiple="true"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-toolbar-button danger" type="submit" data-selected-file-button disabled>Move to Recycle Bin</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_inflate_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="inflate"
+              data-inflate-mode="metadata"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="target_preallocation" value="metadata">
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button
+                class="vs-toolbar-button"
+                type="submit"
+                data-inflate-file-button
+                disabled
+                aria-label="Inflate selected QCOW2 disk to metadata preallocation"
+                title="Metadata preallocation allocates the QCOW2 map without zero-filling the whole virtual disk. The VM/CT must be stopped."
+              >Inflate Metadata</button>
+            </form>
+            <form
+              class="vs-toolbar-form"
+              method="post"
+              action="{% url 'core:storage_inflate_file' storage.storage_id %}"
+              data-confirm-file-action
+              data-action-kind="inflate"
+              data-inflate-mode="full"
+              data-selected-file-action
+            >
+              {% csrf_token %}
+              <input type="hidden" name="path" value="" data-selected-path-input>
+              <input type="hidden" name="target_preallocation" value="full">
+              <input type="hidden" name="confirm_basic" value="">
+              <input type="hidden" name="confirm_risk" value="">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button
+                class="vs-toolbar-button"
+                type="submit"
+                data-inflate-file-button
+                disabled
+                aria-label="Inflate selected QCOW2 disk to full preallocation"
+                title="Full preallocation writes out the whole virtual disk. It can take a long time, needs free space, and the VM/CT must be stopped."
+              >Inflate Full</button>
+            </form>
+          {% endif %}
+          <a class="vs-toolbar-button" href="{% url 'core:storage_trash' storage.storage_id %}">View Recycle Bin</a>
+        </div>
+        <label class="datastore-search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <span class="sr-only">Search in the current folder</span>
+          <input type="search" name="q" value="{{ file_query }}" placeholder="Search in the current folder" data-file-filter autocomplete="off">
+        </label>
+      </div>
+
+      <dialog class="move-picker-dialog" data-dest-picker>
+        <div class="move-picker-panel dest-picker-panel">
+          <header class="move-picker-header">
+            <strong data-dest-title>Move To</strong>
+            <button class="icon-button" type="button" data-dest-cancel aria-label="Close">
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </header>
+          <div class="dest-picker-body">
+            <label class="dest-picker-field">
+              <span>Destination storage</span>
+              <select data-dest-picker-storage>
+                {% for s in dest_storages %}<option value="{{ s.storage_id }}" data-folders-url="{% url 'core:storage_folders' s.storage_id %}">{{ s.display_name }}</option>{% endfor %}
+              </select>
+            </label>
+            <label class="dest-picker-field">
+              <span>Destination folder</span>
+              <select data-dest-picker-folder>
+                <option value="">(storage root)</option>
+              </select>
+            </label>
+            <label class="dest-picker-field">
+              <span>New subfolder <span class="hw-optional">(optional)</span></span>
+              <input type="text" data-dest-picker-folder-new placeholder="leave blank to use the selected folder">
+              <small class="hw-hint">Created under the selected folder if it does not exist yet.</small>
+            </label>
+            <label class="dest-picker-field" data-dest-picker-name-row hidden>
+              <span>File name</span>
+              <input type="text" data-dest-picker-name>
+            </label>
+          </div>
+          <footer class="move-picker-footer">
+            <span data-dest-picker-selection></span>
+            <button class="vs-toolbar-button" type="button" data-dest-picker-submit>OK</button>
+          </footer>
+        </div>
+      </dialog>
+
+      <div class="inline-help">
+        Classification is conservative: likely orphan requires a complete gate check; blocked means one or more expected consumers were missing.
+      </div>
+
+      <div class="datastore-file-table-shell">
+        <table class="data-table vs-file-table">
+          <thead>
+            <tr>
+              <th class="select-column" aria-label="Select"></th>
+              <th>Name</th>
+              <th>Virtual Size</th>
+              <th>Backend Used</th>
+              <th>QCOW2 Map</th>
+              <th>Modified</th>
+              <th>Type</th>
+              <th>Classification</th>
+              <th>Referenced by</th>
+              <th>Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% include "core/partials/storage_file_rows.html" %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+{% endblock storage_content %}

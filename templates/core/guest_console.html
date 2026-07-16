@@ -1,0 +1,113 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section
+    class="console-page"
+    data-console-page
+    data-guest-type="{{ guest.object_type }}"
+    data-session-url="{{ console_session_url }}"
+    data-power-url="{% url 'core:guest_power' guest.object_type guest.vmid %}"
+    data-novnc-url="{{ console_novnc_url }}"
+    data-xterm-js-url="{{ console_xterm_js_url }}"
+    data-xterm-fit-url="{{ console_xterm_fit_url }}"
+    data-xterm-css-url="{{ console_xterm_css_url }}"
+    data-csrf-token="{{ csrf_token }}"
+  >
+    <div class="console-toolbar">
+      <div>
+        <h2>Console</h2>
+      </div>
+      <div class="console-actions">
+        {% if guest.object_type != "ct" %}
+        <label class="console-keyboard-control">
+          <span>Paste keyboard language:</span>
+          <select data-console-keyboard-layout>
+            <option value="da">Danish</option>
+            <option value="en-gb">English (UK)</option>
+            <option value="en-us" selected>English (US)</option>
+            <option value="fi">Finnish</option>
+            <option value="de">German</option>
+            <option value="no">Norwegian</option>
+            <option value="sv">Swedish</option>
+          </select>
+        </label>
+        {% endif %}
+        <label class="console-keepalive-control">
+          <span>Auto-reconnect within</span>
+          <input type="number" min="1" max="99" value="10" data-console-keepalive-minutes>
+          <span>min</span>
+        </label>
+        <button type="button" data-console-connect {% if not console_enabled or not console_supported or console_require_running %}disabled{% endif %}>
+          Connect
+        </button>
+        <button type="button" class="secondary-action" data-console-disconnect disabled>
+          Disconnect
+        </button>
+      </div>
+    </div>
+
+    {% if not console_enabled %}
+      <div class="warning">Console access is disabled by CONSOLE_ENABLED.</div>
+    {% elif not console_supported %}
+      <div class="warning">Integrated console is currently implemented for VMs and containers only.</div>
+    {% elif console_require_running %}
+      <div class="warning">Start this guest before opening the console.</div>
+    {% endif %}
+
+    <div class="console-frame" data-console-frame>
+      <div class="console-placeholder" data-console-placeholder>
+        <i data-lucide="monitor" aria-hidden="true"></i>
+        <span data-console-status>Disconnected</span>
+      </div>
+      <div class="console-side-menu collapsed" data-console-side-menu>
+        <button type="button" class="console-menu-tab" data-console-menu-tab aria-label="Toggle console menu" title="Console menu">
+          <span></span>
+        </button>
+        <div class="console-menu-rail">
+          <button type="button" data-console-panel-toggle="keys" aria-label="Keyboard actions" title="Keyboard actions">
+            <span class="console-menu-letter">A</span>
+          </button>
+          <button type="button" data-console-action="fullscreen" aria-label="Fullscreen" title="Fullscreen">
+            <i data-lucide="maximize" aria-hidden="true"></i>
+          </button>
+          <button type="button" data-console-panel-toggle="settings" aria-label="Console settings" title="Console settings">
+            <i data-lucide="settings" aria-hidden="true"></i>
+          </button>
+          <button type="button" data-console-panel-toggle="commands" aria-label="Commands" title="Commands">
+            <i data-lucide="power" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="console-menu-panel console-commands-panel" data-console-panel="commands" hidden>
+          <h3><i data-lucide="power" aria-hidden="true"></i> Commands</h3>
+          <button type="button" data-console-power-action="start">Start</button>
+          <button type="button" data-console-power-action="shutdown">Shut Down</button>
+          <button type="button" data-console-power-action="stop">Hard Stop</button>
+          <button type="button" data-console-power-action="reset">Hard Reset</button>
+          <button type="button" data-console-action="reload">Reload noVNC</button>
+          <button type="button" data-console-action="disconnect">Disconnect</button>
+        </div>
+        <div class="console-menu-panel" data-console-panel="keys" hidden>
+          <h3>Keyboard</h3>
+          <button type="button" data-console-action="ctrl-alt-del">Send Ctrl+Alt+Del</button>
+          <button type="button" data-console-action="paste-clipboard">Paste clipboard</button>
+        </div>
+        <div class="console-menu-panel" data-console-panel="settings" hidden>
+          <h3>Settings</h3>
+          <label><input type="checkbox" data-console-setting="scaleViewport" checked> Scale display</label>
+          <label><input type="checkbox" data-console-setting="resizeSession" {% if guest.object_type != "ct" %}checked{% endif %}> Resize guest display</label>
+          <label><input type="checkbox" data-console-setting="viewOnly"> View only</label>
+          <label><input type="checkbox" data-console-setting="clipViewport"> Clip viewport</label>
+          <label>
+            Quality
+            <input type="range" min="0" max="9" value="6" data-console-setting="qualityLevel">
+          </label>
+          <label>
+            Compression
+            <input type="range" min="0" max="9" value="2" data-console-setting="compressionLevel">
+          </label>
+        </div>
+      </div>
+      <div class="console-screen" data-console-screen></div>
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>New {% if is_vm %}Virtual Machine{% else %}Container{% endif %}</h1>
+      <p>Creates a Proxmox {% if is_vm %}QEMU VM{% else %}LXC container{% endif %} on node <strong>{{ options.node }}</strong>.</p>
+    </div>
+    <div class="page-header-actions">
+      <a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a>
+    </div>
+  </section>
+
+  <section class="panel panel-spaced guest-edit-panel">
+    <form method="post" action="{% url 'core:guest_create' object_type %}">
+      {% csrf_token %}
+
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="c-node">Node</label>
+          <select id="c-node" name="node" data-node-reload>
+            {% for n in options.nodes %}<option value="{{ n }}" {% if n == options.node %}selected{% endif %}>{{ n }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="c-vmid">VMID</label>
+          <input type="number" id="c-vmid" name="vmid" value="{{ form_values.vmid }}" required>
+        </div>
+
+        {% if is_vm %}
+          <div class="form-field">
+            <label for="c-name">Name</label>
+            <input type="text" id="c-name" name="name" value="{{ form_values.name }}" autocomplete="off" required>
+          </div>
+          <div class="form-field">
+            <label for="c-ostype">OS type</label>
+            <select id="c-ostype" name="ostype">
+              {% for value, label in options.ostypes %}<option value="{{ value }}" {% if form_values.ostype == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+          </div>
+        {% else %}
+          <div class="form-field">
+            <label for="c-hostname">Hostname</label>
+            <input type="text" id="c-hostname" name="hostname" value="{{ form_values.hostname }}" autocomplete="off" required>
+          </div>
+          <div class="form-field">
+            <label for="c-tmpl">OS template</label>
+            <select id="c-tmpl" name="ostemplate" required>
+              <option value="">Select a template...</option>
+              {% for t in options.templates %}<option value="{{ t }}" {% if form_values.ostemplate == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+            </select>
+          </div>
+        {% endif %}
+
+        <div class="form-field">
+          <label for="c-cores">Cores</label>
+          <input type="number" min="1" id="c-cores" name="cores" value="{{ form_values.cores }}">
+        </div>
+        {% if is_vm %}
+          <div class="form-field">
+            <label for="c-sockets">Sockets</label>
+            <input type="number" min="1" id="c-sockets" name="sockets" value="{{ form_values.sockets }}">
+          </div>
+        {% endif %}
+        <div class="form-field">
+          <label for="c-memory">Memory <span class="muted">(MB)</span></label>
+          <input type="number" min="1" id="c-memory" name="memory" value="{{ form_values.memory }}">
+        </div>
+        {% if not is_vm %}
+          <div class="form-field">
+            <label for="c-swap">Swap <span class="muted">(MB)</span></label>
+            <input type="number" min="0" id="c-swap" name="swap" value="{{ form_values.swap }}">
+          </div>
+        {% endif %}
+
+        <div class="form-field">
+          <label for="c-storage">Disk storage</label>
+          <select id="c-storage" name="disk_storage" required>
+            <option value="">Select storage...</option>
+            {% for s in options.disk_storages %}<option value="{{ s }}" {% if form_values.disk_storage == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="c-disksize">Disk size <span class="muted">(GB)</span></label>
+          <input type="number" min="1" id="c-disksize" name="disk_size" value="{{ form_values.disk_size }}">
+        </div>
+
+        <div class="form-field">
+          <label for="c-bridge">Bridge / vnet</label>
+          <select id="c-bridge" name="bridge">
+            <option value="">None</option>
+            {% for b in options.bridges %}<option value="{{ b }}" {% if form_values.bridge == b %}selected{% endif %}>{{ b }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="c-vlan">VLAN tag <span class="muted">(optional)</span></label>
+          <input type="number" id="c-vlan" name="vlan" value="{{ form_values.vlan }}">
+        </div>
+
+        {% if is_vm %}
+          <div class="form-field">
+            <label for="c-iso">Boot ISO <span class="muted">(optional)</span></label>
+            <select id="c-iso" name="iso">
+              <option value="">None</option>
+              {% for iso in options.isos %}<option value="{{ iso }}" {% if form_values.iso == iso %}selected{% endif %}>{{ iso }}</option>{% endfor %}
+            </select>
+          </div>
+        {% else %}
+          <div class="form-field">
+            <label for="c-ip">IP <span class="muted">(dhcp or CIDR)</span></label>
+            <input type="text" id="c-ip" name="ip" value="{{ form_values.ip }}" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="c-pw">Root password</label>
+            <input type="password" id="c-pw" name="password" autocomplete="new-password">
+          </div>
+          <div class="form-field form-field-wide">
+            <label for="c-ssh">SSH public key <span class="muted">(alternative to password)</span></label>
+            <textarea id="c-ssh" name="ssh_keys" rows="2">{{ form_values.ssh_keys }}</textarea>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="form-field form-field-inline">
+        <label for="c-start"><input type="checkbox" id="c-start" name="start"> Start after creation</label>
+      </div>
+
+      <div class="form-actions">
+        <button class="primary-action" type="submit">Create</button>
+        <a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a>
+      </div>
+      <p class="muted">Changing the node reloads available storages, templates, ISOs and bridges for that node.</p>
+    </form>
+  </section>
+{% endblock %}

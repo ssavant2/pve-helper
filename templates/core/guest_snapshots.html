@@ -1,0 +1,26 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section
+    class="storage-tab-content"
+    data-guest-snapshots
+    data-object-type="{{ guest.object_type }}"
+    data-vmid="{{ guest.vmid }}"
+    data-rendered-at-ms="{{ snapshot_rendered_at_ms }}"
+  >
+
+      <div class="panel panel-spaced">
+        <div class="panel-heading"><h2>Take Snapshot</h2></div>
+        <form class="snapshot-form" method="post" action="{% url 'core:guest_snapshot_create' guest.object_type guest.vmid %}" data-guest-action-form data-action="snapshot" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}">
+          {% csrf_token %}
+          <input type="text" name="snapname" placeholder="Snapshot name" pattern="[A-Za-z][A-Za-z0-9_\-]*" title="Must start with a letter. Letters, digits, _ and - only." required autocomplete="off">
+          <input type="text" name="description" placeholder="Description (optional)" autocomplete="off">
+          {% if guest.object_type == 'vm' %}<label class="snapshot-vmstate"><input type="checkbox" name="vmstate"> Include RAM</label>{% endif %}
+          <button class="primary-action" type="submit">Take snapshot</button>
+        </form>
+      </div>
+
+
+    {% include "core/partials/guest_snapshot_panel.html" %}
+  </section>
+{% endblock %}

@@ -1,0 +1,154 @@
+{% load storage_tags %}
+{% if include_parent_row %}
+  <tr class="file-row parent-row" data-file-search="..">
+    <td class="select-column"></td>
+    <td class="browser-name">
+      <a href="{% url 'core:storage_browser' storage.storage_id %}{% if parent_path %}?path={{ parent_path|urlencode }}{% endif %}">
+        <span class="file-icon"><i data-lucide="corner-up-left" aria-hidden="true"></i></span>
+        <span>..</span>
+      </a>
+    </td>
+    <td>-</td>
+    <td>-</td>
+    <td>-</td>
+    <td>-</td>
+    <td>Directory</td>
+    <td>-</td>
+    <td>-</td>
+    <td>{% if parent_path %}[{{ storage.storage_id }}] {{ parent_path }}{% else %}[{{ storage.storage_id }}] /{% endif %}</td>
+  </tr>
+{% endif %}
+
+{% for entry in entries %}
+  <tr
+    class="file-row"
+    data-file-row
+    data-file-path="{{ entry.path }}"
+    data-file-name="{{ entry.name }}"
+    data-entry-type="{{ entry.entry_type }}"
+    data-can-action="{% if entry.can_rename %}true{% else %}false{% endif %}"
+    data-can-trash="{% if entry.can_trash %}true{% else %}false{% endif %}"
+    data-can-rename="{% if entry.can_rename %}true{% else %}false{% endif %}"
+    data-can-inflate="{% if entry.can_inflate %}true{% else %}false{% endif %}"
+    data-can-inflate-metadata="{% if entry.can_inflate_metadata %}true{% else %}false{% endif %}"
+    data-can-inflate-full="{% if entry.can_inflate_full %}true{% else %}false{% endif %}"
+    data-risk-message="{{ entry.action_warning_message }}"
+    data-requires-risk-confirmation="{% if entry.action_requires_extra_confirmation %}true{% else %}false{% endif %}"
+    data-inflate-risk-message="{{ entry.inflate_warning_message }}"
+    data-inflate-requires-risk-confirmation="{% if entry.inflate_requires_extra_confirmation %}true{% else %}false{% endif %}"
+    data-download-url="{% if entry.entry_type == 'file' %}{% url 'core:storage_download' storage.storage_id %}?path={{ entry.path|urlencode }}{% endif %}"
+    data-file-search="{{ entry.name|lower }} {{ entry.path|lower }} {{ entry.content_category|lower }} {{ entry.classification|lower }}"
+  >
+    <td class="select-column">
+      <input type="checkbox" data-file-select aria-label="Select {{ entry.name }}">
+    </td>
+    <td class="browser-name">
+      {% if entry.entry_type == "directory" %}
+        <a href="{% url 'core:storage_browser' storage.storage_id %}?path={{ entry.path|urlencode }}">
+          <span class="file-icon directory"><i data-lucide="folder" aria-hidden="true"></i></span>
+          <span>{{ entry.name }}</span>
+        </a>
+      {% elif entry.entry_type == "symlink" %}
+        <span class="browser-entry">
+          <span class="file-icon"><i data-lucide="file-symlink" aria-hidden="true"></i></span>
+          <span class="browser-entry-name">{{ entry.name }}</span>
+        </span>
+      {% else %}
+        <span class="browser-entry">
+          <span class="file-icon"><i data-lucide="file" aria-hidden="true"></i></span>
+          <span class="browser-entry-name">{{ entry.name }}</span>
+          {% if entry.content_category == "backup" %}
+            <a class="browser-import-action" href="{% url 'core:guest_backup_restore' %}?storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Restore this backup archive" aria-label="Restore {{ entry.name }}">
+              <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+            </a>
+          {% endif %}
+          {% if entry.name|is_disk_image and entry.classification != "referenced" %}
+            {% if entry.derived_volid and "-disk-" in entry.derived_volid %}
+              <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ entry.derived_volid|urlencode }}" title="Register as a new VM (use this disk in place, no copy)" aria-label="Register {{ entry.name }} as a new VM">
+                <i data-lucide="box" aria-hidden="true"></i>
+              </a>
+            {% endif %}
+            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=import&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM (copies the disk to a target storage)" aria-label="Import {{ entry.name }} as a new VM">
+              <i data-lucide="package-plus" aria-hidden="true"></i>
+            </a>
+          {% endif %}
+          {% if entry.name|is_ovf_package %}
+            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=ovf&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import OVA/OVF package as a new VM" aria-label="Import {{ entry.name }} as a new VM">
+              <i data-lucide="package-plus" aria-hidden="true"></i>
+            </a>
+          {% endif %}
+        </span>
+      {% endif %}
+    </td>
+    <td>
+      {% if entry.virtual_size_bytes != None %}
+        {{ entry.virtual_size_bytes|filesizeformat }}
+      {% else %}
+        -
+      {% endif %}
+    </td>
+    <td>
+      {% if entry.disk_size_bytes != None %}
+        <span {% if entry.has_thin_usage %}class="thin-usage"{% endif %}>
+          {{ entry.disk_size_bytes|filesizeformat }}
+        </span>
+      {% elif entry.image_info_error %}
+        <span class="muted" title="{{ entry.image_info_error }}">-</span>
+      {% else %}
+        -
+      {% endif %}
+    </td>
+    <td>
+      {% if entry.qcow2_allocation_percent != None %}
+        <span
+          class="{% if entry.has_qcow2_full_allocation %}qcow2-allocation-full{% else %}qcow2-allocation-thin{% endif %}"
+          {% if entry.qcow2_allocation_title %}title="{{ entry.qcow2_allocation_title }}"{% endif %}
+        >
+          {{ entry.qcow2_allocation_percent|floatformat:0 }}%
+        </span>
+      {% elif entry.qcow2_allocation_error %}
+        <span class="muted" title="{{ entry.qcow2_allocation_error }}">-</span>
+      {% else %}
+        -
+      {% endif %}
+    </td>
+    <td>{{ entry.modified_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+    <td>{{ entry.category_label }}</td>
+    <td><span class="badge {{ entry.classification_class }}">{{ entry.classification_label }}</span></td>
+    <td>
+      {% if entry.template_base %}
+        {% if entry.template_base.url %}<a href="{{ entry.template_base.url }}">{{ entry.template_base.name }}</a>{% else %}{{ entry.template_base.name }}{% endif %}
+        <span class="muted">· base{% if entry.template_base.clone_count %}, {{ entry.template_base.clone_count }} linked clone{{ entry.template_base.clone_count|pluralize }}{% endif %}</span>
+      {% elif entry.referenced_guest %}
+        <a href="{{ entry.referenced_guest.url }}">{{ entry.referenced_guest.name }}</a>
+        {% if entry.referenced_guest.linked_clone_of %}<span class="muted">· linked clone of {% if entry.referenced_guest.linked_clone_of.url %}<a href="{{ entry.referenced_guest.linked_clone_of.url }}">{{ entry.referenced_guest.linked_clone_of.name }}</a>{% else %}{{ entry.referenced_guest.linked_clone_of.name }}{% endif %}</span>{% endif %}
+      {% else %}-{% endif %}
+    </td>
+    <td class="truncate-cell" title="[{{ storage.storage_id }}] {{ entry.path }}">[{{ storage.storage_id }}] {{ entry.path }}</td>
+  </tr>
+{% empty %}
+  <tr>
+    <td colspan="10" class="empty-state">
+      {% if latest_scan %}
+        {% if file_query %}
+          No files in this directory match "{{ file_query }}".
+        {% else %}
+          This directory is empty in the latest scan.
+        {% endif %}
+      {% else %}
+        Start a scan before browsing storage contents.
+      {% endif %}
+    </td>
+  </tr>
+{% endfor %}
+
+{% if file_has_next %}
+  <tr class="file-load-more-row" data-file-load-more-row>
+    <td colspan="10">
+      <a class="file-load-more" href="{{ file_next_url }}" data-file-load-more data-no-soft-navigation>
+        Load next {{ file_batch_size }}
+      </a>
+      <span class="file-load-more-count">{{ file_end }} of {{ file_total }}</span>
+    </td>
+  </tr>
+{% endif %}

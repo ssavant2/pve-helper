@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% load guest_labels %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Edit {% guest_label guest_identity %} &mdash; {% if section == "hardware" %}Hardware{% elif section == "notes" %}Notes{% elif section == "tags" %}Tags{% else %}Options{% endif %}</h1>
+      <p>Editing writes to the Proxmox guest configuration.</p>
+    </div>
+    <div class="page-header-actions">
+      <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+    </div>
+  </section>
+
+  <section class="panel panel-spaced guest-edit-panel">
+    <form method="post" action="{% url 'core:guest_edit' guest.object_type guest.vmid %}">
+      {% csrf_token %}
+      <input type="hidden" name="section" value="{{ section }}">
+
+      {% if section == "hardware" %}
+        <div class="form-field">
+          <label for="guest-cores">Cores {% if is_vm %}<span class="muted">(per socket)</span>{% endif %}</label>
+          <input type="number" min="1" id="guest-cores" name="cores" value="{{ form_values.cores }}">
+        </div>
+        {% if is_vm %}
+          <div class="form-field">
+            <label for="guest-sockets">Sockets</label>
+            <input type="number" min="1" id="guest-sockets" name="sockets" value="{{ form_values.sockets }}">
+          </div>
+        {% endif %}
+        <div class="form-field">
+          <label for="guest-memory">Memory <span class="muted">(MB)</span></label>
+          <input type="number" min="1" id="guest-memory" name="memory" value="{{ form_values.memory }}">
+        </div>
+        {% if not is_vm %}
+          <div class="form-field">
+            <label for="guest-swap">Swap <span class="muted">(MB)</span></label>
+            <input type="number" min="0" id="guest-swap" name="swap" value="{{ form_values.swap }}">
+          </div>
+        {% endif %}
+        <p class="muted">Disk and network device changes are not editable here yet.</p>
+      {% elif section == "notes" %}
+        <div class="form-field">
+          <label for="guest-description">Notes</label>
+          <textarea id="guest-description" name="description" rows="6">{{ form_values.description }}</textarea>
+        </div>
+      {% elif section == "tags" %}
+        <div class="guest-tag-editor" data-guest-tag-editor>
+          <div class="form-field">
+            <label for="guest-existing-tag">Existing tags</label>
+            <div class="guest-tag-existing-row">
+              <select id="guest-existing-tag" data-existing-tag-select>
+                <option value="">Choose an existing tag…</option>
+                {% for tag in available_tags %}<option value="{{ tag }}">{{ tag }}</option>{% endfor %}
+              </select>
+              <button class="secondary-action" type="button" data-existing-tag-add>Add</button>
+            </div>
+          </div>
+          <input type="hidden" id="guest-tags" name="tags" value="{{ form_values.tags }}">
+          <div class="form-field">
+            <label>Assigned tags</label>
+            <div class="guest-tag-selections" data-selected-tags></div>
+          </div>
+          <section class="guest-tag-new" aria-labelledby="guest-tag-new-heading">
+            <div class="guest-tag-new-heading">
+              <h3 id="guest-tag-new-heading">Create new tag</h3>
+              <p class="muted">The new cluster tag will be assigned to this object.</p>
+            </div>
+            <div class="guest-tag-new-fields">
+              <label class="form-field"><span>New tag name</span><input type="text" name="new_tag" value="{{ form_values.new_tag }}" pattern="[a-z0-9_][a-z0-9_+.-]*" placeholder="new-tag" autocomplete="off"></label>
+              <label class="form-field guest-tag-color"><span>Color</span><input type="color" name="new_tag_color" value="{{ form_values.new_tag_color }}"></label>
+            </div>
+          </section>
+        </div>
+      {% else %}
+        <div class="form-field">
+          <label for="guest-name">{{ name_key_label }}</label>
+          <input type="text" id="guest-name" name="name" value="{{ form_values.name }}" autocomplete="off">
+        </div>
+        <div class="form-field form-field-inline">
+          <label for="guest-onboot">
+            <input type="checkbox" id="guest-onboot" name="onboot" {% if form_values.onboot %}checked{% endif %}>
+            Start at boot
+          </label>
+        </div>
+      {% endif %}
+
+      {% if form_error %}<p class="form-error guest-edit-error">{{ form_error }}</p>{% endif %}
+      <div class="form-actions">
+        <button class="primary-action" type="submit">Save changes</button>
+        <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

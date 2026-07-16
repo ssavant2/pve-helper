@@ -1,0 +1,22 @@
+{% extends "core/guest_workspace.html" %}
+
+{% block workspace_detail %}
+  <section class="guest-detail-empty">
+    <div class="panel">
+      <div class="panel-heading">
+        <h2>{{ guest_count }} guest{{ guest_count|pluralize }}</h2>
+      </div>
+      <p class="muted">
+        {{ running_count }} running. Select a VM or container from the list to view its details.
+      </p>
+      {% if not live_available or runtime_inventory_stale %}
+        <p>
+          <span class="badge {% if live_available %}warning{% else %}failed{% endif %}">
+            {% if live_available %}Runtime inventory is stale{% else %}No runtime inventory{% endif %}
+          </span>
+          Power state and usage may be out of date.
+        </p>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

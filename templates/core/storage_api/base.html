@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="storage-object-view">
+    <section class="vs-object-header">
+      <div class="vs-title-row">
+        <div class="vs-title">
+          <span class="vs-title-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
+          <div>
+            <h1>{{ storage }}</h1>
+            <p>
+              Local storage on node <strong>{{ node }}</strong>
+              {% if storage_type %} &middot; {{ storage_type }}{% endif %}
+            </p>
+          </div>
+          <span class="vs-divider"></span>
+          <span class="vs-access">
+            <span class="vs-access-label">PVE-helper access</span>
+            <span class="badge" title="Local storage cannot be mounted by pve-helper; shown read-only via the Proxmox API">Read-only (API)</span>
+          </span>
+        </div>
+      </div>
+      <nav class="vs-tabs" aria-label="Datastore views">
+        {% for tab in api_storage_tabs %}
+          <a href="{{ tab.url }}" {% if tab.active %}class="active"{% endif %}>{{ tab.label }}</a>
+        {% endfor %}
+      </nav>
+    </section>
+
+    {% if not found %}
+      <div class="panel">
+        <p class="muted panel-empty-note">
+          <span class="badge failed">Unavailable</span>
+          Could not read this storage via the Proxmox API{% if error %} ({{ error }}){% endif %}.
+        </p>
+      </div>
+    {% endif %}
+
+    {% block api_storage_content %}{% endblock %}
+  </div>
+{% endblock %}

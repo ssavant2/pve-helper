@@ -1,0 +1,43 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content" data-guest-backup data-object-type="{{ guest.object_type }}" data-vmid="{{ guest.vmid }}" data-rendered-at-ms="{% now 'U' %}000">
+
+      <div class="panel panel-spaced">
+        <div class="panel-heading"><h2>Back up now</h2></div>
+        <form class="snapshot-form backup-now-form" method="post" action="{% url 'core:guest_backup_now' guest.object_type guest.vmid %}" data-guest-action-form data-action="backup" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-skip-soft-refresh="true">
+          {% csrf_token %}
+          <label class="form-field"><span>Storage</span><select name="storage" required><option value="">Select storage...</option>{% for storage in backup_storages %}<option value="{{ storage.id }}">{{ storage.label }}</option>{% endfor %}</select></label>
+          <label class="form-field"><span>Mode</span><select name="mode"><option value="snapshot">Snapshot - no downtime</option><option value="suspend">Suspend - brief pause</option><option value="stop">Stop - offline backup</option></select></label>
+          <label class="form-field"><span>Compression</span><select name="compress"><option value="zstd">ZSTD - fast and good</option><option value="gzip">GZIP - best compatibility</option><option value="lzo">LZO - low CPU use</option><option value="0">None</option></select></label>
+          <label class="form-field"><span>Notifications</span><select name="notification_mode"><option value="auto">Use global settings</option><option value="notification-system">Proxmox notification system</option><option value="legacy-sendmail">Legacy sendmail</option></select></label>
+          <label class="form-field"><span>Notes</span><input name="notes_template" value="{% templatetag openvariable %}guestname{% templatetag closevariable %}" maxlength="1024"></label>
+          <label class="form-field-inline"><input type="checkbox" name="protected"><span>Protect archive from automatic pruning</span></label>
+          <button class="primary-action" type="submit">Back up now</button>
+        </form>
+      </div>
+
+
+    <div class="panel panel-spaced">
+      <div class="panel-heading"><h2>Backup Jobs</h2></div>
+      <table class="data-table compact">
+        <thead><tr><th>Job</th><th>Schedule</th><th>Storage</th><th>Selection</th><th>State</th></tr></thead>
+        <tbody>
+          {% for job in backup_jobs %}
+            <tr>
+              <td>{{ job.id }}</td>
+              <td>{{ job.schedule|default:"-" }}</td>
+              <td>{{ job.storage|default:"-" }}</td>
+              <td>{{ job.selection }}</td>
+              <td>{% if job.enabled %}<span class="badge completed">Enabled</span>{% else %}<span class="badge">Disabled</span>{% endif %}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="empty-state">No backup job covers this guest.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% include "core/partials/guest_backup_panel.html" %}
+  </section>
+{% endblock %}

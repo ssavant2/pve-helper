@@ -1,0 +1,21 @@
+<section class="help-panel" aria-label="Classification legend">
+  <div class="help-panel-title">Classification legend</div>
+  <dl class="legend-list">
+    <dt><span class="badge referenced">Referenced</span></dt>
+    <dd>Matched to a VM/CT disk reference in the latest Proxmox inventory.</dd>
+    <dt><span class="badge likely_orphan">Likely orphan</span></dt>
+    <dd>No matching Proxmox reference was found, and all expected consumers were scanned.</dd>
+    <dt><span class="badge classification_blocked">Blocked</span></dt>
+    <dd>pve-helper could not safely decide because one or more expected consumers were missing.</dd>
+    <dt><span class="badge unknown">Unknown</span></dt>
+    <dd>Regular file, but not enough evidence to call it referenced or orphaned.</dd>
+    <dt><span class="badge infrastructure">Infrastructure</span></dt>
+    <dd>Directory or datastore structure that is not treated as an orphan candidate.</dd>
+    <dt><span class="badge proxmox_content">Proxmox content</span></dt>
+    <dd>Recognized Proxmox-managed content that should be handled conservatively.</dd>
+    <dt><span class="badge import_source">Import source</span></dt>
+    <dd>OVA/OVF metadata, manifests, or loose disks recognized as VM import sources.</dd>
+    <dt><span class="badge trash">Trash</span></dt>
+    <dd>File is already inside pve-helper's Recycle Bin area.</dd>
+  </dl>
+</section>

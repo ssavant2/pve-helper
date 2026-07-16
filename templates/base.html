@@ -1,0 +1,329 @@
+{% load static guest_labels nav_tags %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pve-helper</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("pve-helper-theme");
+          if (theme !== "light" && theme !== "dark") {
+            theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (error) {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
+    <script>
+      (function () {
+        try {
+          var guestNameStyle = localStorage.getItem("pve-helper-guest-name-style");
+          document.documentElement.dataset.guestNameStyle = guestNameStyle === "name-only" ? "name-only" : "id-name";
+        } catch (error) {
+          document.documentElement.dataset.guestNameStyle = "id-name";
+        }
+      })();
+    </script>
+    <script>
+      (function () {
+        try {
+          var ipVersionStyle = localStorage.getItem("pve-helper-ip-version-style");
+          document.documentElement.dataset.ipVersionStyle = ipVersionStyle === "ipv4-only" ? "ipv4-only" : "all";
+        } catch (error) {
+          document.documentElement.dataset.ipVersionStyle = "all";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="{% static 'css/app/foundation.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/layout.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/topbar.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/workspace.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/components.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/storage-browser.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/scheduling.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/audit.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/console.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/taskbar.css' %}?v=20260714-75">
+    <link rel="stylesheet" href="{% static 'css/app/context-menu.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/action-dialog.css' %}?v=20260712-60">
+    <link rel="stylesheet" href="{% static 'css/app/shared.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/guest-workspace.css' %}?v=20260713-67">
+    <link rel="stylesheet" href="{% static 'css/app/hardware-editor.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/register-import.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/hardware-devices.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/guest-tabs.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/vm-overview.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/hardware-forms.css' %}?v=20260712-61">
+    <link rel="stylesheet" href="{% static 'css/app/tags.css' %}?v=20260713-74">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260712-60">
+    <link rel="icon" href="{% static 'img/favicon.svg' %}?v=2" type="image/svg+xml">
+    <script defer src="{% static 'vendor/lucide.min.js' %}"></script>
+    <script type="module" src="{% static 'js/app.js' %}?v=20260714-75"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">pve</span>
+          <span class="brand-name">pve-helper</span>
+          <span class="brand-version">{{ app_version }}</span>
+        </div>
+        <div class="global-search" data-global-search data-global-search-url="{% url 'core:global_search' %}">
+          <label class="global-search-box">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <span class="sr-only">Global search</span>
+            <input type="search" placeholder="Search" autocomplete="off" spellcheck="false" data-global-search-input>
+          </label>
+          <button class="global-search-clear" type="button" data-global-search-clear aria-label="Clear search" hidden>
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+          <div class="global-search-results" data-global-search-results role="listbox" hidden></div>
+        </div>
+        <div class="user-area">
+          <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">
+            <span data-theme-label>Theme</span>
+          </button>
+          <button class="theme-toggle" type="button" data-guest-id-toggle aria-pressed="true" aria-label="Hide VM/CT IDs" title="Toggle VM/CT ID display">
+            <span data-guest-id-label>IDs on</span>
+          </button>
+          <button class="theme-toggle" type="button" data-ip-version-toggle aria-pressed="false" aria-label="Show IPv4 only" title="Toggle IPv6 display">
+            <span data-ip-version-label>IPv4+IPv6</span>
+          </button>
+          {% if request.user.is_authenticated %}
+            <span>{{ request.user.get_username }}</span>
+            <form class="inline-form" method="post" action="{% url 'logout' %}">
+              {% csrf_token %}
+              <button type="submit">Log out</button>
+            </form>
+          {% else %}
+            <a href="{% url 'oidc_authentication_init' %}">Log in</a>
+          {% endif %}
+        </div>
+      </header>
+
+      <aside class="sidebar" data-sidebar>
+        <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-label="Collapse navigation" aria-expanded="true">
+          <i data-lucide="chevron-left" data-sidebar-expanded-icon aria-hidden="true"></i>
+          <i data-lucide="chevron-right" data-sidebar-collapsed-icon aria-hidden="true"></i>
+        </button>
+        <div class="sidebar-top-divider" aria-hidden="true"></div>
+        <nav class="nav-tree" aria-label="Module navigation" data-soft-nav-tree>
+          <section class="tree-module" aria-label="Clusters module">
+            <div class="tree-node module-node disabled">
+              <span class="tree-caret">></span>
+              <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
+              <span class="tree-label">Clusters</span>
+            </div>
+          </section>
+
+          <section class="tree-module expanded" data-tree-module="vms" aria-label="VMs and containers module">
+            <button class="tree-node module-node {% if active_nav == 'vms' or active_nav == 'vms_overview' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="true">
+              <span class="tree-caret" data-tree-caret>v</span>
+              <span class="tree-icon"><i data-vicon="vm" aria-hidden="true"></i></span>
+              <span class="tree-label">VMs/CTs</span>
+            </button>
+            <div class="tree-children">
+              <a class="tree-node tree-leaf {% if active_nav == 'vms_overview' %}active{% endif %}" href="{% url 'core:vms_overview' %}">
+                <span class="tree-icon"><i data-lucide="layout-dashboard" aria-hidden="true"></i></span>
+                <span class="tree-label">Overview</span>
+              </a>
+              <a class="tree-node tree-leaf {% if active_nav == 'vms' %}active{% endif %}" href="{% url 'core:vms' %}">
+                <span class="tree-icon"><i data-vicon="vm" aria-hidden="true"></i></span>
+                <span class="tree-label">Inventory</span>
+              </a>
+            </div>
+          </section>
+
+          <section class="tree-module expanded" data-tree-module="storage" aria-label="Storage module">
+            <button class="tree-node module-node {% if active_nav == 'dashboard' or active_nav == 'datastores' or active_nav == 'storage_browser' or active_nav == 'orphans' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="true">
+              <span class="tree-caret" data-tree-caret>v</span>
+              <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
+              <span class="tree-label">Storage</span>
+            </button>
+            <div class="tree-children">
+              <a class="tree-node tree-leaf {% if active_nav == 'dashboard' or active_nav == 'datastores' %}active{% endif %}" href="{% url 'core:dashboard' %}">
+                <span class="tree-icon"><i data-lucide="layout-dashboard" aria-hidden="true"></i></span>
+                <span class="tree-label">Overview</span>
+              </a>
+
+              {% if app_nav_local_datastores %}
+                <section class="tree-module tree-group expanded" data-tree-module="local-datastores" aria-label="Local datastores">
+                  <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
+                    <span class="tree-caret" data-tree-caret>v</span>
+                    <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
+                    <span class="tree-label">Local Datastores</span>
+                  </button>
+                  <div class="tree-children">
+                    {% for host in app_nav_local_datastores %}
+                      <section class="tree-module tree-group expanded" data-tree-module="local-node-{{ host.node }}" aria-label="{{ host.node }} local datastores">
+                        <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
+                          <span class="tree-caret" data-tree-caret>v</span>
+                          <span class="tree-icon"><i data-vicon="host" aria-hidden="true"></i></span>
+                          <span class="tree-label">{{ host.node }}</span>
+                        </button>
+                        <div class="tree-children">
+                          {% for s in host.storages %}
+                            {% url 'core:api_storage_summary' host.node s.storage_id as api_summary_url %}
+                            <a class="tree-node tree-leaf storage-leaf {% if active_api_node == host.node and active_api_storage == s.storage_id %}active{% endif %}" href="{% sticky_object_url api_summary_url %}" title="{{ s.storage_id }}{% if s.type %} ({{ s.type }}){% endif %}">
+                              <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
+                              <span class="tree-label">{{ s.storage_id }}</span>
+                            </a>
+                          {% endfor %}
+                        </div>
+                      </section>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endif %}
+
+              {% if app_nav_storages %}
+                <section class="tree-module tree-group expanded" data-tree-module="shared-datastores" aria-label="Shared datastores">
+                  <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
+                    <span class="tree-caret" data-tree-caret>v</span>
+                    <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
+                    <span class="tree-label">Shared Datastores</span>
+                  </button>
+                  <div class="tree-children">
+                    {% for nav_storage in app_nav_storages %}
+                      {% url 'core:storage_summary' nav_storage.storage_id as storage_summary_url %}
+                      <a class="tree-node tree-leaf storage-leaf {% if active_storage_id == nav_storage.storage_id %}active{% endif %}" href="{% sticky_object_url storage_summary_url %}">
+                        <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
+                        <span class="tree-label">{{ nav_storage.display_name }}</span>
+                      </a>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endif %}
+
+              <a class="tree-node tree-leaf {% if active_nav == 'orphans' %}active{% endif %}" href="{% url 'core:orphan_finder' %}">
+                <span class="tree-icon"><i data-lucide="file-question" aria-hidden="true"></i></span>
+                <span class="tree-label">Orphan Finder</span>
+              </a>
+            </div>
+          </section>
+
+          <section class="tree-module" aria-label="Network module">
+            <div class="tree-node module-node disabled">
+              <span class="tree-caret">></span>
+              <span class="tree-icon"><i data-vicon="network" aria-hidden="true"></i></span>
+              <span class="tree-label">Network</span>
+            </div>
+          </section>
+
+          <a class="tree-node module-node {% if active_nav == 'tags' %}active{% endif %}" href="{% url 'core:tags_overview' %}">
+            <span class="tree-caret"></span>
+            <span class="tree-icon"><i data-lucide="tags" aria-hidden="true"></i></span>
+            <span class="tree-label">Tags</span>
+          </a>
+
+          <a class="tree-node module-node {% if active_nav == 'scheduled_tasks' %}active{% endif %}" href="{% url 'core:scheduled_tasks' %}">
+            <span class="tree-caret"></span>
+            <span class="tree-icon"><i data-lucide="calendar-clock" aria-hidden="true"></i></span>
+            <span class="tree-label">Scheduled Tasks</span>
+          </a>
+
+          <a class="tree-node module-node {% if active_nav == 'audit' %}active{% endif %}" href="{% url 'core:audit_log' %}">
+            <span class="tree-caret"></span>
+            <span class="tree-icon"><i data-lucide="clipboard-list" aria-hidden="true"></i></span>
+            <span class="tree-label">Audit</span>
+          </a>
+        </nav>
+        <div class="sidebar-resize-handle" data-sidebar-resize-handle role="separator" aria-orientation="vertical" aria-label="Resize navigation"></div>
+      </aside>
+
+      <main class="content" data-soft-nav-content tabindex="-1">
+        {% if messages %}
+          <div class="messages">
+            {% for message in messages %}
+              <div class="message {{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+
+      <footer
+        class="taskbar"
+        data-recent-tasks
+        data-tasks-url="{% url 'core:recent_tasks' %}"
+        data-task-cancel-url="{% url 'core:cancel_recent_task' %}"
+        data-task-retry-url="{% url 'core:retry_recent_task' %}"
+        data-vms-bulk-action-url="{% url 'core:vms_bulk_action' %}"
+        data-dismiss-question-url="{% url 'core:dismiss_task_question' %}"
+        data-task-page="0"
+        data-task-poll-ms="10000"
+        data-task-rendered-at="{{ app_recent_tasks_rendered_at|date:'c' }}"
+        data-csrf-token="{{ csrf_token }}"
+      >
+        <div class="taskbar-header">
+          <button class="taskbar-toggle" type="button" data-taskbar-toggle aria-label="Hide recent tasks" aria-expanded="true">
+            <i data-lucide="chevron-down" data-taskbar-expanded-icon aria-hidden="true"></i>
+            <i data-lucide="chevron-up" data-taskbar-collapsed-icon aria-hidden="true"></i>
+          </button>
+          <div class="taskbar-tabs" role="tablist" aria-label="Operations">
+            <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
+          </div>
+          <div class="taskbar-controls">
+            <button class="taskbar-page-button" type="button" data-task-prev {% if not app_recent_tasks_page.has_previous %}disabled{% endif %}>Previous 5</button>
+            <span class="taskbar-page-label" data-task-page-label>
+              {% if app_recent_tasks_page.total %}
+                {{ app_recent_tasks_page.start_index }}-{{ app_recent_tasks_page.end_index }} of {{ app_recent_tasks_page.total }}
+              {% else %}
+                0 of 0
+              {% endif %}
+            </span>
+            <button class="taskbar-page-button" type="button" data-task-next {% if not app_recent_tasks_page.has_next %}disabled{% endif %}>Next 5</button>
+          </div>
+        </div>
+        <div class="task-table-wrap">
+          <table class="task-table" data-resizable-columns data-column-table="recent-tasks">
+            <thead>
+              <tr>
+                <th data-column="task-name">Task Name</th>
+                <th data-column="target">Target</th>
+                <th data-column="status">Status</th>
+                <th data-column="details">Details</th>
+                <th data-column="initiator">Initiator</th>
+                <th data-column="queued">Queued For</th>
+                <th data-column="started" class="fixed-sort-heading" aria-sort="descending">Start Time</th>
+                <th data-column="finished">Completion Time</th>
+                <th data-column="server">Server</th>
+              </tr>
+            </thead>
+            <tbody data-task-rows>
+              {% for task in app_recent_tasks %}
+                <tr data-task-row-key="{{ task.id }}" data-task-id="{{ task.id }}" data-task-cancelable="{{ task.cancelable|yesno:'true,false' }}" data-task-retryable="{{ task.retryable|yesno:'true,false' }}">
+                  <td data-column="task-name" data-sort-value="{{ task.name }}">{{ task.name }}</td>
+                  <td data-column="target" data-sort-value="{% if task.target_guest %}{{ task.target_guest.name|default:task.target_guest.vmid }}{% else %}{{ task.target }}{% endif %}">{% if task.target_guest %}{% guest_label task.target_guest %}{% else %}{{ task.target }}{% endif %}</td>
+                  <td data-column="status" data-sort-value="{{ task.status }}">
+                    <span class="badge {{ task.status_class }}"{% if task.retryable %} title="{{ task.retry_label }}; right-click for actions"{% endif %}>{{ task.status }}</span>
+                  </td>
+                  <td data-column="details" data-sort-value="{{ task.details }}">{{ task.details }}</td>
+                  <td data-column="initiator" data-sort-value="{{ task.initiator }}">{{ task.initiator }}</td>
+                  <td data-column="queued" data-sort-value="{{ task.queued_for }}">{{ task.queued_for }}</td>
+                  <td data-column="started" data-sort-value="{{ task.started_at|date:'U'|default:'0' }}">{{ task.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                  <td data-column="finished" data-sort-value="{{ task.finished_at|date:'U'|default:'0' }}">{{ task.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                  <td data-column="server" data-sort-value="{{ task.server|default:'-' }}">{{ task.server|default:"-" }}</td>
+                </tr>
+              {% empty %}
+                <tr>
+                  <td colspan="9" class="empty-state">No recent tasks.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </footer>
+    </div>
+
+    <div id="context-menu" class="context-menu" hidden>
+      <button type="button" data-action="details">Details</button>
+      <button type="button" data-action="copy-path">Copy path</button>
+    </div>
+  </body>
+</html>

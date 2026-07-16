@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="hardware-editor-page vm-register-page" data-vm-register>
+    <div class="hardware-editor-header">
+      <div class="hardware-editor-title">
+        <h1>{% if mode == "adopt" %}Register VM from Disk{% elif mode == "ovf" %}Import OVA/OVF as New VM{% else %}Import Disk as New VM{% endif %}</h1>
+        <span class="hardware-title-separator" aria-hidden="true"></span>
+        <span class="hardware-editor-guest">{{ form_values.name|default:"New virtual machine" }}</span>
+      </div>
+      <a class="hardware-editor-close" href="{% url 'core:vms' %}" aria-label="Close">x</a>
+    </div>
+
+    <form class="hardware-editor-form" method="post" action="{% url 'core:register_vm' %}">
+      {% csrf_token %}
+      <input type="hidden" name="mode" value="{{ mode }}">
+      <input type="hidden" name="node" value="{{ form_values.node }}">
+      {% if mode == "adopt" %}
+        <input type="hidden" name="volid" value="{{ form_values.volid }}">
+      {% elif form_values.source_volid %}
+        <input type="hidden" name="source_volid" value="{{ form_values.source_volid }}">
+      {% else %}
+        <input type="hidden" name="source_storage" value="{{ form_values.source_storage }}">
+        <input type="hidden" name="source_path" value="{{ form_values.source_path }}">
+      {% endif %}
+
+      {# ---- Source card ---- #}
+      <div class="vmreg-source">
+        <span class="vmreg-source-icon" aria-hidden="true"><i data-lucide="hard-drive"></i></span>
+        <div class="vmreg-source-main">
+          <span class="badge {% if mode == 'adopt' %}infrastructure{% else %}completed{% endif %}">
+            {% if mode == "adopt" %}Register &middot; use disk in place{% elif mode == "ovf" %}{{ form_values.package_kind }} import &middot; {{ form_values.package_disk_count }} disk{{ form_values.package_disk_count|pluralize }}{% else %}Import &middot; copy to storage{% endif %}
+          </span>
+          <div class="vmreg-source-path">
+            {% if mode == "adopt" %}{{ form_values.volid }}{% elif form_values.source_volid %}{{ form_values.source_volid }}{% else %}{{ form_values.source_storage }}:{{ form_values.source_path }}{% endif %}
+          </div>
+          {% if mode == "ovf" and form_values.package_disks %}
+            <div class="vmreg-source-path muted">
+              {% for disk in form_values.package_disks %}{{ disk.href }}{% if disk.capacity_bytes %} ({{ disk.capacity_bytes|filesizeformat }}){% endif %}{% if not forloop.last %} &middot; {% endif %}{% endfor %}
+            </div>
+          {% endif %}
+        </div>
+        <details class="vmreg-help">
+          <summary>What do these mean?</summary>
+          <ul>
+            <li><strong>Defaults are the most compatible.</strong> SATA disk, E1000 NIC and SeaBIOS&nbsp;+&nbsp;i440fx boot almost any image. If you know how the image was built, pick matching values.</li>
+            <li><strong>Bootable disk.</strong> The selected image must be the guest's bootable OS disk — a data-only disk will attach but won't boot.</li>
+            <li><strong>VirtIO needs drivers.</strong> SCSI/VirtIO disk and the VirtIO NIC are faster but require the guest to already have VirtIO drivers (Linux usually does; Windows often doesn't).</li>
+            <li><strong>UEFI images</strong> need BIOS&nbsp;=&nbsp;OVMF. A fresh EFI vars disk with Secure Boot keys is created automatically; point to your own EFI vars file only if the image needs it.</li>
+            <li><strong>Chipset.</strong> i440fx is the most compatible and boots almost any image; q35 (modern, PCIe) is what many newer OS images expect.</li>
+            <li><strong>If it doesn't boot,</strong> it's usually a BIOS / machine / disk-bus mismatch — change those and reboot, no re-import needed.</li>
+            {% if mode == "adopt" %}
+              <li><strong>Register</strong> uses the disk in place (no copy) and takes over its VMID — make sure no other VM references it.</li>
+            {% else %}
+              <li><strong>Import</strong> copies the disk into the target storage (can take a while for large images); the source file is left untouched.</li>
+            {% endif %}
+            {% if mode == "ovf" %}
+              <li><strong>OVA/OVF networks are descriptive.</strong> Each adapter below is mapped explicitly to a Proxmox bridge; review these before importing.</li>
+              <li><strong>Package validation</strong> checks referenced members before importing. A present OVF manifest is checksum-verified by the worker before any VM is created.</li>
+            {% endif %}
+          </ul>
+        </details>
+      </div>
+
+      <div class="hw-list">
+        {# ---- Identity ---- #}
+        <div class="hw-item is-open" data-hw-item>
+          <div class="hw-item-head">
+            <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+              <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+              <span class="hw-item-name">Identity</span>
+            </button>
+            <div class="hw-item-primary"><span class="hw-current-value">VMID {{ form_values.vmid }} &middot; {{ form_values.name }}</span></div>
+          </div>
+          <div class="hw-item-body hw-field-grid-2">
+            <div class="hw-field"><span>VMID</span>
+              <input type="number" min="100" name="vmid" value="{{ form_values.vmid }}" {% if mode == "adopt" %}readonly{% endif %}>
+            </div>
+            <div class="hw-field"><span>Name <span class="hw-req">*</span></span>
+              <input type="text" name="name" value="{{ form_values.name }}" required placeholder="my-server">
+            </div>
+            <div class="hw-field"><span>OS type</span>
+              <select name="ostype">
+                {% for value, label in options.ostypes %}<option value="{{ value }}" {% if value == form_values.ostype %}selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="hw-field"><span>Node</span><span class="hw-static-val">{{ form_values.node }}</span></div>
+          </div>
+        </div>
+
+        {# ---- Compute ---- #}
+        <div class="hw-item is-open" data-hw-item>
+          <div class="hw-item-head">
+            <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+              <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+              <span class="hw-item-name">Compute</span>
+            </button>
+            <div class="hw-item-primary"><span class="hw-current-value">{{ form_values.cores }} cores &middot; {{ form_values.memory }} MiB</span></div>
+          </div>
+          <div class="hw-item-body hw-field-grid-2">
+            <div class="hw-field"><span>Cores</span><input type="number" min="1" name="cores" value="{{ form_values.cores }}"></div>
+            <div class="hw-field"><span>Sockets</span><input type="number" min="1" name="sockets" value="{{ form_values.sockets }}"></div>
+            <div class="hw-field"><span>Memory (MiB)</span><input type="number" min="16" name="memory" value="{{ form_values.memory }}"></div>
+          </div>
+        </div>
+
+        {# ---- Firmware ---- #}
+        <div class="hw-item" data-hw-item>
+          <div class="hw-item-head">
+            <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+              <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+              <span class="hw-item-name">Firmware &amp; chipset</span>
+            </button>
+            <div class="hw-item-primary"><span class="hw-current-value" data-vmreg-firmware-summary>SeaBIOS &middot; i440fx</span></div>
+          </div>
+          <div class="hw-item-body hw-field-grid-2">
+            <div class="hw-field"><span>BIOS</span>
+              <select name="bios" data-vmreg-bios>
+                {% for value, label in options.bios_choices %}<option value="{{ value }}" {% if value == form_values.bios %}selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+              <small class="hw-hint">OVMF = UEFI. Only for images built for UEFI.</small>
+            </div>
+            <div class="hw-field"><span>Machine</span>
+              <select name="machine">
+                {% for value, label in options.machine_choices %}<option value="{{ value }}" {% if value == form_values.machine %}selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+              <small class="hw-hint">i440fx boots almost any image; q35 is the modern PCIe chipset newer OSes may prefer.</small>
+            </div>
+            <div class="hw-field hw-field-wide vmreg-efi" data-vmreg-efi {% if form_values.bios != "ovmf" %}hidden{% endif %}>
+              <div class="hw-field-grid-2">
+                <div class="hw-field"><span>EFI vars storage</span>
+                  <select name="efidisk_storage">
+                    {% for s in options.disk_storages %}<option value="{{ s }}" {% if s == form_values.efidisk_storage %}selected{% endif %}>{{ s }}</option>{% endfor %}
+                  </select>
+                </div>
+                <div class="hw-field"><span>EFI vars source <span class="hw-optional">(optional)</span></span>
+                  <input type="text" name="efidisk_source" value="{{ form_values.efidisk_source }}" placeholder="leave blank to create fresh">
+                  <small class="hw-hint">A storage volid to import existing UEFI variables; blank creates a fresh disk with Secure Boot keys.</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {# ---- Disk ---- #}
+        <div class="hw-item is-open" data-hw-item>
+          <div class="hw-item-head">
+            <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+              <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+              <span class="hw-item-name">Boot disk</span>
+            </button>
+            <div class="hw-item-primary"><span class="hw-current-value">{{ form_values.disk_bus|upper }}{% if mode != "adopt" %} &rarr; {{ form_values.target_storage }}{% endif %}</span></div>
+          </div>
+          <div class="hw-item-body hw-field-grid-2">
+            <div class="hw-field"><span>Attach as</span>
+              <select name="disk_bus">
+                {% for value, label in options.disk_buses %}<option value="{{ value }}" {% if value == form_values.disk_bus %}selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+              <small class="hw-hint">SATA boots almost anything; SCSI/VirtIO need guest drivers.</small>
+            </div>
+            {% if mode != "adopt" %}
+              <div class="hw-field"><span>Target storage</span>
+                <select name="target_storage">
+                  {% for s in options.disk_storages %}<option value="{{ s }}" {% if s == form_values.target_storage %}selected{% endif %}>{{ s }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="hw-field"><span>Format</span>
+                <select name="format">
+                  <option value="qcow2" {% if form_values.format == "qcow2" %}selected{% endif %}>qcow2</option>
+                  <option value="raw" {% if form_values.format == "raw" %}selected{% endif %}>raw</option>
+                  <option value="vmdk" {% if form_values.format == "vmdk" %}selected{% endif %}>vmdk</option>
+                </select>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+
+        {# ---- Network ---- #}
+        <div class="hw-item is-open" data-hw-item>
+          <div class="hw-item-head">
+            <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="true">
+              <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+              <span class="hw-item-name">Network</span>
+            </button>
+            <div class="hw-item-primary"><span class="hw-current-value">{{ nic_rows|length }} adapter{{ nic_rows|length|pluralize }}</span></div>
+          </div>
+          <div class="hw-item-body">
+            <div class="vmreg-nics" data-vmreg-nics>
+              {% for nic in nic_rows %}
+                <div class="vmreg-nic" data-vmreg-nic>
+                  <div class="hw-field"><span>Model</span>
+                    <select name="nic{{ forloop.counter0 }}_model">
+                      {% for value, label in options.nic_models %}<option value="{{ value }}" {% if value == nic.model %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                    </select>
+                  </div>
+                  <div class="hw-field"><span>Bridge</span>
+                    <select name="nic{{ forloop.counter0 }}_bridge" data-vmreg-nic-bridge>
+                      <option value="">None</option>
+                      {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
+                    </select>
+                  </div>
+                  <div class="hw-field"><span>VLAN</span><input type="number" name="nic{{ forloop.counter0 }}_vlan" value="{{ nic.vlan }}" placeholder="none"></div>
+                  <button type="button" class="icon-button vmreg-nic-remove" data-vmreg-remove-nic aria-label="Remove adapter"><i data-lucide="x"></i></button>
+                </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="secondary-action vmreg-add-nic" data-vmreg-add-nic><i data-lucide="plus" aria-hidden="true"></i> Add network adapter</button>
+          </div>
+        </div>
+
+        {# ---- Options ---- #}
+        <div class="hw-item" data-hw-item>
+          <div class="hw-item-head">
+            <button type="button" class="hw-item-toggle" data-hw-toggle aria-expanded="false">
+              <span class="hw-chevron" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+              <span class="hw-item-name">Options</span>
+            </button>
+            <div class="hw-item-primary"><span class="hw-current-value">Start after create: off</span></div>
+          </div>
+          <div class="hw-item-body">
+            <div class="hw-field"><span>Start after create</span>
+              <label class="hw-switch"><input type="checkbox" name="start" {% if form_values.start %}checked{% endif %}> Power on the VM once it is created</label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {# NIC template for "Add network adapter" (cloned by JS) #}
+      <template data-vmreg-nic-template>
+        <div class="vmreg-nic" data-vmreg-nic>
+          <div class="hw-field"><span>Model</span>
+            <select data-name="model">
+              {% for value, label in options.nic_models %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="hw-field"><span>Bridge</span>
+            <select data-name="bridge" data-vmreg-nic-bridge>
+              <option value="">None</option>
+              {% for b in options.bridges %}<option value="{{ b }}" {% if b == default_bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="hw-field"><span>VLAN</span><input type="number" data-name="vlan" placeholder="none"></div>
+          <button type="button" class="icon-button vmreg-nic-remove" data-vmreg-remove-nic aria-label="Remove adapter"><i data-lucide="x"></i></button>
+        </div>
+      </template>
+
+      <div class="hardware-editor-actions">
+        <button class="primary-action" type="submit">{% if mode == "adopt" %}Register VM{% elif mode == "ovf" %}Import Package &amp; Create{% else %}Import &amp; Create{% endif %}</button>
+        <a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

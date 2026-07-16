@@ -1,0 +1,72 @@
+/* --- advanced hardware cards --- */
+.hw-inline.hw-wide {
+  flex: 1 1 420px;
+}
+
+.hw-inline.hw-wide input[type="text"] {
+  width: 100%;
+  min-width: 260px;
+  padding: 5px 8px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.hw-add-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+  padding: 12px 0 4px;
+}
+
+.hw-add-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface_alt, transparent);
+}
+
+.hw-add-card h4 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.hw-add-card input[type="text"],
+.hw-add-card input[type="number"],
+.hw-add-card select {
+  width: 100%;
+  padding: 6px 9px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.hw-add-card label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.api-import-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.api-import-link svg {
+  width: 14px;
+  height: 14px;
+}
+

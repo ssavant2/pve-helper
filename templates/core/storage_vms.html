@@ -1,0 +1,99 @@
+{% extends "core/storage_base.html" %}
+{% load guest_labels %}
+
+{% block storage_content %}
+  <section class="storage-tab-content">
+    <div class="panel">
+      <div class="panel-heading">
+        <span>VMs/CTs on {{ storage.display_name }}</span>
+      </div>
+      <p class="panel-meta">
+        Power state updates immediately after operations and otherwise through the periodic current-inventory refresh.
+        Disk references are from inventory scanned
+        {% if inventory_scan_at %}{{ inventory_scan_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}.
+      </p>
+      <div class="datastore-file-toolbar datastore-file-toolbar-compact">
+        <label class="datastore-search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <span class="sr-only">Search VMs/CTs</span>
+          <input type="search" placeholder="Search by name, VMID, or node" data-table-filter autocomplete="off">
+        </label>
+      </div>
+      <table class="data-table compact" data-filterable-table>
+        <thead>
+          <tr>
+            <th>Guest</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Node</th>
+            <th>Disk References</th>
+            <th>Scheduled Tasks</th>
+            <th aria-label="Actions"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for guest in guests %}
+            <tr data-filter-text="{{ guest.vmid }} {{ guest.name|lower }} {{ guest.node|lower }} {{ guest.object_type|lower }} {{ guest.scheduled_action_search_text|lower }}">
+              <td>{% guest_label guest %}</td>
+              <td>
+                {% if guest.object_type == "vm" %}
+                  <span class="badge">VM</span>
+                {% else %}
+                  <span class="badge">CT</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if guest.status == "running" %}
+                  <span class="badge completed">{{ guest.status }}</span>
+                {% else %}
+                  <span class="badge">{{ guest.status|default:"-" }}</span>
+                {% endif %}
+              </td>
+              <td>{{ guest.node }}</td>
+              <td>
+                {% for ref in guest.matching_disk_references %}
+                  <code class="disk-ref">{{ ref.volid }}</code>{% if ref.backed_by %} <span class="muted disk-ref-note">(backed by {{ ref.backed_by }})</span>{% endif %}{% if not forloop.last %} {% endif %}
+                {% endfor %}
+              </td>
+              <td>
+                {% if guest.scheduled_actions %}
+                  <div class="guest-scheduled-actions">
+                    {% for action in guest.scheduled_actions|slice:":3" %}
+                      <a class="scheduled-action-chip" href="{% url 'core:scheduled_task_edit' action.id %}" title="{{ action.display_schedule }}">
+                        <span>{{ action.name }}</span>
+                        <span class="badge {{ action.display_status_class }}">{{ action.get_last_status_display }}</span>
+                      </a>
+                    {% endfor %}
+                    {% if guest.scheduled_action_count > 3 %}
+                      <a class="muted-link" href="{{ guest.scheduled_actions_url }}">View all {{ guest.scheduled_action_count }}</a>
+                    {% endif %}
+                  </div>
+                {% else %}
+                  <span class="muted">No scheduled tasks</span>
+                {% endif %}
+              </td>
+              <td class="row-actions">
+                <a class="icon-link" href="{{ guest.schedule_action_url }}" title="Schedule Task" aria-label="Schedule task for {{ guest.vmid }}">
+                  <i data-lucide="calendar-clock" aria-hidden="true"></i>
+                </a>
+                <a class="icon-link" href="{{ guest.scheduled_actions_url }}" title="View Scheduled Tasks" aria-label="View scheduled tasks for {{ guest.vmid }}">
+                  <i data-lucide="list-checks" aria-hidden="true"></i>
+                </a>
+              </td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="7" class="empty-state">
+                {% if latest_scan %}
+                  No VMs or containers use this storage.
+                {% else %}
+                  Run a scan to discover VMs/CTs.
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock storage_content %}

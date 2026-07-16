@@ -1,0 +1,140 @@
+.vm-action-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--context-shadow);
+}
+
+.vm-action-dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}
+
+.vm-action-dialog-form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.vm-action-dialog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vm-action-dialog-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.vm-action-dialog-heading button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.vm-action-dialog-body {
+  display: grid;
+  gap: 12px;
+}
+
+.vm-action-dialog .form-field {
+  display: grid;
+  gap: 6px;
+}
+
+.vm-action-dialog .migrate-net-check .migrate-net-warn {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.vm-action-dialog .migrate-net-check .migrate-net-warn .form-hint,
+.vm-action-dialog .migrate-warn {
+  color: #e0a83c;
+}
+
+.vm-action-dialog .form-field span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vm-action-dialog .form-hint {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vm-action-dialog input[type="text"],
+.vm-action-dialog input[type="number"],
+.vm-action-dialog select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface_alt, transparent);
+  color: var(--text);
+  font: inherit;
+}
+
+.vm-action-dialog .form-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vm-action-dialog .form-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.vm-action-dialog .form-error {
+  margin: 0;
+  color: #fecaca;
+  font-size: 13px;
+}
+
+.action-feedback {
+  margin: 10px 16px;
+  padding: 9px 11px;
+  border: 1px solid rgb(239 68 68 / 0.5);
+  border-radius: 6px;
+  background: rgb(127 29 29 / 0.2);
+  color: #fecaca;
+  font-size: 13px;
+}
+
+.vm-action-dialog .action-feedback {
+  margin: 0;
+}
+
+.danger-confirmation {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid rgb(245 158 11 / 0.45);
+  border-radius: 6px;
+  background: rgb(245 158 11 / 0.12);
+}
+
+.danger-confirmation svg {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  color: #f59e0b;
+}
+
+.danger-confirmation p {
+  margin: 0 0 4px;
+}

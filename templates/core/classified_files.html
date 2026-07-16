@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>{{ classification_label }} files</h1>
+      <p>
+        Files classified as
+        <span class="badge {{ classification_value }}">{{ classification_label }}</span>
+        in the latest per-storage scan
+        {% if latest_scan %}(updated {{ latest_scan.filesystem_scan_at|default:latest_scan.finished_at|default:latest_scan.created_at|date:"Y-m-d H:i:s" }}){% endif %}
+      </p>
+    </div>
+    <a class="secondary-action" href="{% url 'core:dashboard' %}">Return to overview</a>
+  </section>
+
+  {% include "core/partials/classification_legend.html" %}
+
+  <section class="panel">
+    <div class="panel-heading">
+      <span>{{ total }} file{{ total|pluralize }}</span>
+      {% if has_prev or has_next %}
+        <span class="panel-heading-controls">
+          <a class="page-button{% if not has_prev %} disabled{% endif %}" href="?{{ prev_query }}">Previous 200</a>
+          <span class="page-label">{{ start_index }}-{{ end_index }} of {{ total }}</span>
+          <a class="page-button{% if not has_next %} disabled{% endif %}" href="?{{ next_query }}">Next 200</a>
+        </span>
+      {% endif %}
+    </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Storage</th>
+          <th>Path</th>
+          <th>Size</th>
+          <th>Category</th>
+          <th>Classification</th>
+          <th>Evidence</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for file in files %}
+          <tr data-context-label="{{ file.path }}">
+            <td>{{ file.storage.display_name }}</td>
+            <td class="truncate-cell" title="[{{ file.storage.storage_id }}] {{ file.path }}">
+              <a href="{{ file.browser_url }}" title="Open in storage browser"><code>[{{ file.storage.storage_id }}] {{ file.path }}</code></a>
+            </td>
+            <td>{% if file.size_bytes != None %}{{ file.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
+            <td>{{ file.category_label }}</td>
+            <td><span class="badge {{ classification_value }}">{{ classification_label }}</span></td>
+            <td>{{ file.classification_reason|default:"-" }}</td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="6" class="empty-state">No {{ classification_label|lower }} files in the current inventory.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

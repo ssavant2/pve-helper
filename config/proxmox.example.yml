@@ -1,0 +1,7 @@
+nodes:
+  - name: pve-node-1
+    endpoint: https://pve-node-1.example.com:8006
+    enabled: true
+
+# Add further nodes (pve-node-2, pve-node-3, ...) before those nodes can consume the shared NFS storages.
+# The orphan classifier must see every expected storage consumer in the same scan-run.

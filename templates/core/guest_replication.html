@@ -1,0 +1,51 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content">
+    <div class="panel panel-spaced">
+      <div class="panel-heading"><h2>Replication Jobs</h2></div>
+      {% if replication_error %}<p class="panel-meta"><span class="badge failed">Error</span> {{ replication_error }}</p>{% endif %}
+      <table class="data-table compact">
+        <thead><tr><th>Job</th><th>Target</th><th>Schedule</th><th>Rate</th><th>State</th><th>Comment</th><th></th></tr></thead>
+        <tbody>
+          {% for job in replication_jobs %}
+            <tr>
+              <td>{{ job.id }}</td>
+              <td>{{ job.target|default:"-" }}</td>
+              <td>{{ job.schedule|default:"-" }}</td>
+              <td>{{ job.rate|default:"-" }}</td>
+              <td>{% if job.disabled %}<span class="badge">Disabled</span>{% else %}<span class="badge completed">Enabled</span>{% endif %}</td>
+              <td>{{ job.comment|default:"-" }}</td>
+
+                <td class="row-actions">
+                  <form class="inline-action-form" method="post" action="{% url 'core:guest_replication_delete' guest.object_type guest.vmid %}" data-confirm="Delete replication job {{ job.id }}?" data-confirm-title="Delete replication job" data-confirm-label="Delete" data-confirm-danger="true">
+                    {% csrf_token %}<input type="hidden" name="job_id" value="{{ job.id }}">
+                    <button class="icon-button danger" type="submit" title="Delete"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+                  </form>
+                </td>
+
+            </tr>
+          {% empty %}
+            <tr><td colspan="7" class="empty-state">No replication jobs for this guest.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+        {% if target_nodes %}
+          <form class="snapshot-form" method="post" action="{% url 'core:guest_replication_create' guest.object_type guest.vmid %}">
+            {% csrf_token %}
+            <span class="muted">New job:</span>
+            <select name="target" required>
+              <option value="">target node...</option>
+              {% for n in target_nodes %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
+            </select>
+            <input type="text" name="schedule" placeholder="schedule (e.g. */15)">
+            <button class="secondary-action" type="submit">Create job</button>
+          </form>
+        {% else %}
+          <p class="panel-meta muted">Replication needs a second node with ZFS as a target &mdash; none available on this single-node cluster.</p>
+        {% endif %}
+
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "core/guest_base.html" %}
+
+{% block guest_content %}
+  <section class="storage-tab-content">
+    <div class="panel panel-spaced">
+      <div class="panel-heading guest-config-scheduled-heading">
+        <h2>Scheduled Tasks <span class="muted">({{ scheduled_actions|length }})</span></h2>
+        <div class="card-heading-actions">
+          <a class="card-edit" href="{{ scheduled_task_create_url }}">New</a>
+        </div>
+      </div>
+      <table class="data-table compact">
+        <thead>
+          <tr><th>Name</th><th>Action</th><th>Schedule</th><th>Next Run</th><th>State</th><th>Last Status</th></tr>
+        </thead>
+        <tbody>
+          {% for action in scheduled_actions %}
+            <tr>
+              <td><a class="muted-link" href="{% url 'core:scheduled_task_edit' action.id %}">{{ action.name }}</a></td>
+              <td>{{ action.get_action_type_display }}</td>
+              <td>{{ action.display_schedule }}</td>
+              <td>{{ action.next_run_at|date:"Y-m-d H:i"|default:"-" }}</td>
+              <td>{% if action.enabled %}<span class="badge completed">Enabled</span>{% else %}<span class="badge">Disabled</span>{% endif %}</td>
+              <td><span class="badge {{ action.display_status_class }}">{{ action.get_last_status_display }}</span></td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6" class="empty-state">No scheduled tasks target this guest.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="vm-summary-grid">
+      {% for section in config_sections %}
+        <div class="panel summary-card">
+          <div class="panel-heading"><h2>{{ section.title }}</h2></div>
+          <dl class="details-list config-list">
+            {% for row in section.rows %}
+              <div>
+                <dt>{{ row.key }}</dt>
+                <dd>
+                  {% if row.lines %}
+                    <span class="config-multiline">
+                      {% for line in row.lines %}<span>{{ line }}</span>{% endfor %}
+                    </span>
+                  {% else %}
+                    <code class="disk-ref">{{ row.value }}</code>
+                  {% endif %}
+                </dd>
+              </div>
+            {% endfor %}
+          </dl>
+        </div>
+      {% empty %}
+        <div class="panel"><p class="muted panel-empty-note">No configuration available.</p></div>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

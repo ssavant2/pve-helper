@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% load guest_labels %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Audit Log</h1>
+      <p>Authentication, storage scans, and file actions</p>
+    </div>
+    <div class="scan-controls">
+      <button class="page-button audit-export-header-button" type="button" data-audit-export-open>Export</button>
+      <form class="scan-schedule-form" method="post" action="{% url 'core:update_audit_retention_schedule' %}" data-auto-submit-form>
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <label class="checkbox-control">
+          <input type="checkbox" name="enabled" data-auto-submit-control {% if audit_retention_schedule.enabled %}checked{% endif %}>
+          <span>Keep audit logs for</span>
+        </label>
+        <input class="number-input" type="number" name="retention_days" min="1" max="999" value="{{ audit_retention_schedule.retention_days }}" data-auto-submit-control>
+        <span>days</span>
+      </form>
+    </div>
+  </section>
+
+  <section class="audit-panel panel">
+    <div class="audit-toolbar">
+      <div class="segmented-control" aria-label="Audit module filter">
+        {% for filter in audit_filters %}
+          <a class="segmented-button {% if filter.key == audit_filter %}active{% endif %}" href="?filter={{ filter.key }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}" aria-pressed="{% if filter.key == audit_filter %}true{% else %}false{% endif %}">
+            {{ filter.label }}
+          </a>
+        {% endfor %}
+      </div>
+      <form class="search-control" method="get" role="search">
+        <span class="sr-only">Search audit log</span>
+        <input type="hidden" name="filter" value="{{ audit_filter }}">
+        <input type="search" name="q" value="{{ audit_query }}" placeholder="Search for anything" autocomplete="off">
+      </form>
+      <span class="audit-count">{{ audit_total }} event{{ audit_total|pluralize }}</span>
+      <span class="panel-heading-controls">
+        <a class="page-button{% if not audit_has_prev %} disabled{% endif %}" href="?page={{ audit_page|add:"-1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Previous 200</a>
+        <span class="page-label">{{ audit_start }}-{{ audit_end }} of {{ audit_total }}</span>
+        <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Next 200</a>
+      </span>
+    </div>
+    <table class="data-table audit-table" data-sortable-table data-resizable-columns data-column-table="audit-log">
+      <thead>
+        <tr>
+          <th data-column="time" data-sort="number">Time</th>
+          <th data-column="module" data-sort="text">Module</th>
+          <th data-column="user" data-sort="text">User</th>
+          <th data-column="source" data-sort="text">Source IP</th>
+          <th data-column="action" data-sort="text">Action</th>
+          <th data-column="object" data-sort="text">Object</th>
+          <th data-column="outcome" data-sort="text">Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in events %}
+          <tr data-context-label="{{ event.object_id }}">
+            <td data-column="time" data-sort-value="{{ event.timestamp|date:'U' }}">{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
+            <td data-column="module" data-sort-value="{{ event.display_module }}">{{ event.display_module }}</td>
+            <td data-column="user" data-sort-value="{{ event.username|default:'-' }}">{{ event.username|default:"-" }}</td>
+            <td data-column="source" data-sort-value="{{ event.source_ip|default:'-' }}">{{ event.source_ip|default:"-" }}</td>
+            <td data-column="action" data-sort-value="{{ event.display_action }}">{{ event.display_action }}</td>
+            <td data-column="object" data-sort-value="{% if event.guest_identity %}{{ event.guest_identity.name|default:event.guest_identity.vmid }}{% else %}{{ event.display_object }}{% endif %}">
+              {% if event.guest_identity %}
+                {% guest_label event.guest_identity %}
+              {% else %}
+                {{ event.display_object }}
+              {% endif %}
+            </td>
+            <td data-column="outcome" data-sort-value="{{ event.outcome }}"><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
+          </tr>
+        {% endfor %}
+        {% if not events %}
+          <tr>
+            <td colspan="7" class="empty-state">{% if audit_filter != 'all' or audit_query %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </section>
+
+  <dialog class="audit-export-dialog" data-audit-export-dialog>
+    <form class="audit-export-form" method="get" action="{% url 'core:audit_export' %}">
+      <div class="audit-export-heading">
+        <h2>Export Audit Log</h2>
+        <button type="button" data-audit-export-close aria-label="Close">x</button>
+      </div>
+      <div class="audit-export-body">
+        <label class="form-field">
+          <span>Format</span>
+          <select name="format">
+            <option value="xlsx">Excel workbook (.xlsx)</option>
+            <option value="csv">CSV (.csv)</option>
+            <option value="json">JSON (.json)</option>
+          </select>
+          <small>Excel exports are limited to {{ audit_xlsx_max_rows }} events. CSV and JSON stream all matching events.</small>
+        </label>
+        <label class="form-field">
+          <span>Scope</span>
+          <select name="scope">
+            <option value="matching">All matching events</option>
+            <option value="page">Current page only</option>
+          </select>
+        </label>
+        <input type="hidden" name="page" value="{{ audit_page }}">
+        <label class="form-field">
+          <span>Module</span>
+          <select name="filter">
+            {% for filter in audit_filters %}
+              <option value="{{ filter.key }}"{% if filter.key == audit_filter %} selected{% endif %}>{{ filter.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="form-field">
+          <span>Search</span>
+          <input type="search" name="q" value="{{ audit_query }}" placeholder="Optional text filter" autocomplete="off">
+        </label>
+        <div class="audit-export-dates">
+          <label class="form-field">
+            <span>From</span>
+            <span class="audit-export-datetime" data-audit-export-datetime data-audit-export-default-hour="00" data-audit-export-default-minute="00" data-audit-export-label="From">
+              <input type="hidden" name="start" data-audit-export-datetime-value>
+              <input type="text" readonly placeholder="YYYY-MM-DD HH:MM" aria-label="From date and time" data-audit-export-display>
+              <button type="button" aria-label="Pick from date and time" data-audit-export-open-picker>
+                <i data-lucide="calendar-clock" aria-hidden="true"></i>
+              </button>
+            </span>
+          </label>
+          <label class="form-field">
+            <span>To</span>
+            <span class="audit-export-datetime" data-audit-export-datetime data-audit-export-default-hour="23" data-audit-export-default-minute="59" data-audit-export-label="To">
+              <input type="hidden" name="end" data-audit-export-datetime-value>
+              <input type="text" readonly placeholder="YYYY-MM-DD HH:MM" aria-label="To date and time" data-audit-export-display>
+              <button type="button" aria-label="Pick to date and time" data-audit-export-open-picker>
+                <i data-lucide="calendar-clock" aria-hidden="true"></i>
+              </button>
+            </span>
+          </label>
+        </div>
+        <label class="form-field-inline">
+          <input type="checkbox" name="include_technical">
+          <span>Include raw action, object id, and details</span>
+        </label>
+      </div>
+      <div class="form-actions">
+        <button class="primary-action" type="submit">Export</button>
+        <button class="secondary-action" type="button" data-audit-export-cancel>Cancel</button>
+      </div>
+    </form>
+    <div class="audit-date-picker-modal" data-audit-date-modal hidden>
+      <div class="audit-date-picker-panel" data-audit-date-panel role="dialog" aria-modal="true" aria-label="Pick date and time"></div>
+    </div>
+  </dialog>
+{% endblock %}

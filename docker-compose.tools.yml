@@ -1,0 +1,70 @@
+name: pve-helper-dev-tools
+
+services:
+  js-check:
+    image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /workspace
+    network_mode: bridge
+    command: sh -lc "npm ci --no-audit --no-fund && npm run check"
+    environment:
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      - .:/workspace
+
+  js-format:
+    image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /workspace
+    network_mode: bridge
+    command: sh -lc "npm ci --no-audit --no-fund && npm run format"
+    environment:
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      - .:/workspace
+
+  # --- Dev-only Playwright E2E stack. Isolated + prod-safe: uses the app image
+  # with APP_REQUIRE_LOGIN off, PVE network disabled and a throwaway SQLite DB, so
+  # it needs no login, no Proxmox and no Postgres role. None of this ships in the
+  # deployed image (docker-compose.yml + Dockerfile never reference it).
+  # Run: docker compose -f docker-compose.tools.yml run --rm e2e
+  e2e-web:
+    image: pve-helper-dev:local
+    environment:
+      DEBUG: "true"
+      APP_REQUIRE_LOGIN: "false"
+      APP_BASE_URL: http://e2e-web:8000
+      PVE_TEST_NETWORK_DISABLED: "true"
+      PVE_ENDPOINTS: ""
+      DB_ENGINE: sqlite
+      DB_NAME: /tmp/e2e/db.sqlite3
+      APP_SECRET_KEY: e2e-not-a-secret
+      ALLOWED_HOSTS: "e2e-web,localhost,127.0.0.1"
+    command: >
+      sh -lc "mkdir -p /tmp/e2e && python manage.py migrate --noinput &&
+      python manage.py shell -c \"from django.utils import timezone; from core.models import StorageMount, ScanRun, CurrentGuestInventory, CurrentGuestInventoryState, AuditEvent;
+      StorageMount.objects.get_or_create(storage_id='e2e-store', defaults={'display_name':'E2E Store','path':'/tmp/e2e-store'});
+      s=ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message='e2e seed');
+      CurrentGuestInventory.objects.create(source_scan=s, node='pve1', object_type='vm', vmid=100, name='e2e-vm-running', status='running', config={'tags':'prod'}, observed_at=timezone.now());
+      CurrentGuestInventory.objects.create(source_scan=s, node='pve1', object_type='vm', vmid=101, name='e2e-vm-stopped', status='stopped', observed_at=timezone.now());
+      CurrentGuestInventoryState.objects.create(pk=1, refreshed_at=timezone.now(), complete=False, endpoints_attempted=['pve1','pve2'], endpoints_succeeded=['pve1'], errors={'live_inventory':['pve2 unavailable']}, source_scan=s);
+      AuditEvent.objects.create(username='e2e', action='tag.bulk_operation', object_type='tag', object_id='old-tag', outcome='failed', details={'operation':'delete','source_tag':'old-tag','targets':[{'node':'pve1','object_type':'vm','vmid':100}],'failed':[{'vmid':100,'reason':'locked'}],'retryable':True})\" &&
+      python manage.py runserver 0.0.0.0:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/vms/overview/')"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
+    working_dir: /workspace/e2e
+    environment:
+      BASE_URL: http://e2e-web:8000
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    command: sh -lc "npm ci --no-audit --no-fund && npx playwright test"
+    volumes:
+      - .:/workspace
+    depends_on:
+      e2e-web:
+        condition: service_healthy

@@ -1,0 +1,45 @@
+{% extends "core/storage_api/base.html" %}
+{% load guest_labels %}
+
+{% block api_storage_content %}
+  <section class="storage-tab-content">
+    <div class="panel">
+      <div class="panel-heading">
+        <span>VMs/CTs on {{ storage }}</span>
+      </div>
+      <p class="panel-meta">
+        Guests on node <strong>{{ node }}</strong> with a disk on this storage.
+        Power state updates immediately after operations and otherwise through the periodic current-inventory refresh.
+      </p>
+      <div class="datastore-file-toolbar datastore-file-toolbar-compact">
+        <label class="datastore-search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <span class="sr-only">Search VMs/CTs</span>
+          <input type="search" placeholder="Search by name, VMID, or node" data-table-filter autocomplete="off">
+        </label>
+      </div>
+      <table class="data-table compact" data-filterable-table>
+        <thead>
+          <tr><th>Guest</th><th>Type</th><th>Status</th><th>Node</th><th>Disk References</th></tr>
+        </thead>
+        <tbody>
+          {% for guest in guests %}
+            <tr data-filter-text="{{ guest.vmid }} {{ guest.name|lower }} {{ guest.node|lower }} {{ guest.object_type|lower }}">
+              <td>{% guest_label guest %}</td>
+              <td>{% if guest.object_type == "vm" %}<span class="badge">VM</span>{% else %}<span class="badge">CT</span>{% endif %}</td>
+              <td>
+                {% if guest.status == "running" %}<span class="badge completed">{{ guest.status }}</span>{% else %}<span class="badge">{{ guest.status|default:"-" }}</span>{% endif %}
+              </td>
+              <td>{{ guest.node }}</td>
+              <td>
+                {% for ref in guest.matching_disk_references %}<code class="disk-ref">{{ ref.volid }}</code>{% if ref.backed_by %} <span class="muted disk-ref-note">(backed by {{ ref.backed_by }})</span>{% endif %}{% if not forloop.last %} {% endif %}{% endfor %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="empty-state">No guests reference this storage in the latest scan.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

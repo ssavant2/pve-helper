@@ -1,0 +1,180 @@
+name: Test and publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/ssavant2/pve-helper
+  DB_IMAGE_NAME: ghcr.io/ssavant2/pve-helper-db
+  NGINX_IMAGE_NAME: ghcr.io/ssavant2/pve-helper-nginx
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up runtime Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Audit locked Python dependencies
+        uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
+        with:
+          inputs: requirements.txt
+          require-hashes: true
+
+      - name: Build test image
+        run: docker compose -f docker-compose.example.yml build web
+
+      - name: Run Django tests
+        run: >-
+          docker compose -f docker-compose.example.yml run --rm
+          -e DB_USER=pve_helper_admin
+          -e DB_PASSWORD=pve_helper_admin_dev_password
+          web python manage.py test --settings=pve_helper.test_settings
+
+      - name: Check JavaScript formatting and lint
+        run: docker compose -f docker-compose.tools.yml run --rm js-check
+        env:
+          # actions/checkout creates the ephemeral workspace as root. Local runs
+          # retain the host UID/GID defaults so node_modules stays user-owned.
+          HOST_UID: "0"
+          HOST_GID: "0"
+
+      - name: Run browser end-to-end tests
+        run: docker compose -f docker-compose.tools.yml run --rm e2e
+
+      - name: Tear down test stacks
+        if: always()
+        run: |
+          docker compose -f docker-compose.tools.yml down --volumes --remove-orphans
+          docker compose -f docker-compose.example.yml down --volumes --remove-orphans
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Resolve release version
+        id: release
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="$GITHUB_REF_NAME"
+            if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Release tags must use semantic versioning (for example v0.1.0-alpha.1)." >&2
+              exit 1
+            fi
+            is_release=true
+          else
+            version="dev-${GITHUB_SHA:0:12}"
+            is_release=false
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "is_release=$is_release" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish application image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: true
+          build-args: |
+            RELEASE_VERSION=${{ steps.release.outputs.version }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      - name: Build and publish database image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: Dockerfile.db
+          push: true
+          tags: |
+            ${{ env.DB_IMAGE_NAME }}:latest
+            ${{ env.DB_IMAGE_NAME }}:sha-${{ github.sha }}
+            ${{ env.DB_IMAGE_NAME }}:${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=db
+          cache-to: type=gha,mode=max,scope=db
+
+      - name: Build and publish nginx image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: Dockerfile.nginx
+          push: true
+          tags: |
+            ${{ env.NGINX_IMAGE_NAME }}:latest
+            ${{ env.NGINX_IMAGE_NAME }}:sha-${{ github.sha }}
+            ${{ env.NGINX_IMAGE_NAME }}:${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=nginx
+          cache-to: type=gha,mode=max,scope=nginx
+
+      - name: Build deployment assets
+        if: steps.release.outputs.is_release == 'true'
+        run: ./scripts/build_release_assets.sh
+
+      - name: Publish deployment assets
+        if: steps.release.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              dist/docker-compose.yml \
+              dist/example.env \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              dist/docker-compose.yml \
+              dist/example.env \
+              --title "pve-helper ${{ steps.release.outputs.version }}" \
+              --generate-notes
+          fi
