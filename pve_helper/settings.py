@@ -144,10 +144,12 @@ LOGIN_URL = "/auth/oidc/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
 
-AUTHENTICATION_BACKENDS = [
-    "core.auth.PveHelperOIDCBackend",
-    "django.contrib.auth.backends.ModelBackend",
-]
+# Production is OIDC-only: Authentik is the sole way in, Django admin included.
+# The username/password backend (admin login form, createsuperuser) is kept only
+# for the dev/E2E path, where login is not the enforced OIDC gate.
+AUTHENTICATION_BACKENDS = ["core.auth.PveHelperOIDCBackend"]
+if not APP_REQUIRE_LOGIN:
+    AUTHENTICATION_BACKENDS.append("django.contrib.auth.backends.ModelBackend")
 
 OIDC_ISSUER_URL = env("OIDC_ISSUER_URL", "https://auth.example.com/application/o/pve-helper/").rstrip("/")
 OIDC_RP_CLIENT_ID = env("OIDC_CLIENT_ID", "")
