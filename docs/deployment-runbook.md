@@ -9,10 +9,10 @@ use of the administration client, see the [user manual](user-manual.md).
 ## Pull-only production deployment
 
 The development checkout builds `pve-helper-dev:local`. Production does not need a
-checkout or a local build: the manually triggered GitHub Actions workflow
-`.github/workflows/publish-latest.yml` runs Django, JavaScript and Playwright
-checks, then publishes `ghcr.io/ssavant2/pve-helper:latest` plus an immutable
-commit-SHA tag.
+checkout or a local build: the GitHub Actions workflow
+`.github/workflows/publish-latest.yml` can be started manually or by pushing an
+explicit `publish-*` tag. It runs Django, JavaScript and Playwright checks, then
+publishes `ghcr.io/ssavant2/pve-helper:latest` plus an immutable commit-SHA tag.
 
 The production directory contains only:
 

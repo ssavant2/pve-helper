@@ -2,6 +2,9 @@ name: Test and publish latest
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "publish-*"
 
 permissions:
   contents: read
