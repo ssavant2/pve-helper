@@ -129,6 +129,7 @@ cookies. The URL shown in the app header is taken from the current request.
 - Deployment: `docs/deployment-runbook.md`
 - End-user guide: `docs/user-manual.md`
 - OIDC / Authentik setup: `docs/authentik-oidc-setup.md`
+- Security policy and vulnerability reporting: `SECURITY.md`
 
 Build/test/lint and the Playwright E2E workflow for working on the source live in
 a local `AGENTS.md` (kept out of git and out of published images — the deliverable

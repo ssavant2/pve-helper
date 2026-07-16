@@ -2,7 +2,7 @@ name: pve-helper-dev
 
 services:
   db:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME:-pve_helper}
@@ -25,7 +25,7 @@ services:
         max-file: "3"
 
   nginx:
-    image: nginx:alpine
+    image: nginx:alpine@sha256:7068961d45b07b2af510ac002e9daa63a1d3eba2111202d6768798690800fffd
     restart: unless-stopped
     depends_on:
       web:
@@ -92,7 +92,6 @@ services:
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
       DEBUG: ${DEBUG:-true}
       APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-false}
-      APP_VERSION: ${APP_VERSION:-DEV}
       APP_BASE_URL: ${APP_BASE_URL:-https://pve-helper.example.com}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-pve-helper.example.com,dockerhost,localhost,127.0.0.1}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://pve-helper.example.com,http://dockerhost:21080,http://localhost:21080}
@@ -160,7 +159,7 @@ services:
     mem_limit: 512m
     cpu_shares: 512
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz/live', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import os, urllib.parse, urllib.request; host=urllib.parse.urlparse(os.environ['APP_BASE_URL']).netloc; request=urllib.request.Request('http://127.0.0.1:8000/healthz/live', headers={'Host': host}); urllib.request.urlopen(request, timeout=5).read()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -268,6 +267,7 @@ services:
       TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
       STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-true}
       STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
+      FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:-/storages/truenas-fs/.pve-helper-upload-tmp}
       STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
       STORAGE_IMAGE_INFO_TIMEOUT_SECONDS: ${STORAGE_IMAGE_INFO_TIMEOUT_SECONDS:-15}
       STORAGE_INFLATE_TIMEOUT_SECONDS: ${STORAGE_INFLATE_TIMEOUT_SECONDS:-14400}

@@ -1,4 +1,4 @@
-FROM nginx:alpine
+FROM nginx:alpine@sha256:7068961d45b07b2af510ac002e9daa63a1d3eba2111202d6768798690800fffd
 
 LABEL org.opencontainers.image.source="https://github.com/ssavant2/pve-helper" \
       org.opencontainers.image.licenses="AGPL-3.0-only"

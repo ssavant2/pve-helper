@@ -39,6 +39,9 @@ placeholders when login is enabled, and configure:
 - both host storage paths and their matching Proxmox storage IDs;
 - OIDC values when `APP_REQUIRE_LOGIN=true`.
 
+`PVE_HELPER_NETWORK` and Docker's Compose project name must be unique when more
+than one production-style stack runs on the same Docker host.
+
 The production template fails before container creation when required secrets,
 Proxmox values or storage paths are missing. It also starts with `DEBUG=false`,
 login required and storage writes disabled.
@@ -65,12 +68,14 @@ HTTPS if your environment needs it.
 
 The default is read-only twice: `STORAGE_WRITE_ENABLED=false` and
 `STORAGE_MOUNT_MODE=ro`. Verify host mounts, ACLs and the expected storage IDs
-first. To allow upload, trash and restore operations, set both values to their
-writable forms and recreate the affected services:
+first. To allow upload, trash and restore operations, create a temporary upload
+directory on real writable storage, then set all three values and recreate the
+affected services:
 
 ```env
 STORAGE_WRITE_ENABLED=true
 STORAGE_MOUNT_MODE=rw
+FILE_UPLOAD_TEMP_DIR=/storages/truenas-fs/.pve-helper-upload-tmp
 ```
 
 See `docs/deployment-runbook.md` for NFS mount guidance, upload temporary-space

@@ -89,4 +89,15 @@ def production_startup_errors():
                 )
             )
 
+    if getattr(settings, "STORAGE_WRITE_ENABLED", False) and not getattr(
+        settings, "FILE_UPLOAD_TEMP_DIR", None
+    ):
+        errors.append(
+            Error(
+                "FILE_UPLOAD_TEMP_DIR is required when storage writes are enabled.",
+                hint="Create a temporary upload directory on real writable storage and configure its container path.",
+                id="pve_helper.E008",
+            )
+        )
+
     return errors

@@ -52,6 +52,12 @@ server {
 
     access_log /dev/stdout pve_helper_download if=$pve_helper_is_download;
 
+    location = /healthz/nginx {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
     location /_pve_helper_download/${TRUENAS_FS_STORAGE_ID}/ {
         internal;
         alias ${TRUENAS_FS_CONTAINER_PATH}/;

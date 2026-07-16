@@ -2,7 +2,8 @@ name: pve-helper
 
 services:
   db:
-    image: ${PVE_HELPER_DB_IMAGE:-ghcr.io/ssavant2/pve-helper-db:latest}
+    image: ghcr.io/ssavant2/pve-helper-db:${PVE_HELPER_VERSION:-latest}
+    pull_policy: missing
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME:-pve_helper}
@@ -24,7 +25,8 @@ services:
         max-file: "3"
 
   nginx:
-    image: ${PVE_HELPER_NGINX_IMAGE:-ghcr.io/ssavant2/pve-helper-nginx:latest}
+    image: ghcr.io/ssavant2/pve-helper-nginx:${PVE_HELPER_VERSION:-latest}
+    pull_policy: missing
     restart: unless-stopped
     depends_on:
       web:
@@ -66,7 +68,7 @@ services:
     mem_limit: 256m
     cpu_shares: 256
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/healthz/live || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/healthz/nginx || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -78,8 +80,8 @@ services:
         max-file: "3"
 
   web:
-    image: ${PVE_HELPER_IMAGE:-ghcr.io/ssavant2/pve-helper:latest}
-    pull_policy: always
+    image: ghcr.io/ssavant2/pve-helper:${PVE_HELPER_VERSION:-latest}
+    pull_policy: missing
     restart: unless-stopped
     depends_on:
       db:
@@ -88,7 +90,6 @@ services:
       APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
       DEBUG: ${DEBUG:-false}
       APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-true}
-      APP_VERSION: ${APP_VERSION:-v0.1}
       APP_BASE_URL: ${APP_BASE_URL:?Set APP_BASE_URL in .env}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS in .env}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?Set CSRF_TRUSTED_ORIGINS in .env}
@@ -126,7 +127,7 @@ services:
       TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
       STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-false}
       STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
-      FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:-/storages/truenas-fs/.pve-helper-upload-tmp}
+      FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:-}
       STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
       STORAGE_IMAGE_INFO_TIMEOUT_SECONDS: ${STORAGE_IMAGE_INFO_TIMEOUT_SECONDS:-15}
       STORAGE_INFLATE_TIMEOUT_SECONDS: ${STORAGE_INFLATE_TIMEOUT_SECONDS:-14400}
@@ -156,7 +157,7 @@ services:
     mem_limit: 512m
     cpu_shares: 512
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz/live', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import os, urllib.parse, urllib.request; host=urllib.parse.urlparse(os.environ['APP_BASE_URL']).netloc; request=urllib.request.Request('http://127.0.0.1:8000/healthz/live', headers={'Host': host}); urllib.request.urlopen(request, timeout=5).read()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -168,8 +169,8 @@ services:
         max-file: "3"
 
   console:
-    image: ${PVE_HELPER_IMAGE:-ghcr.io/ssavant2/pve-helper:latest}
-    pull_policy: always
+    image: ghcr.io/ssavant2/pve-helper:${PVE_HELPER_VERSION:-latest}
+    pull_policy: missing
     restart: unless-stopped
     depends_on:
       db:
@@ -219,8 +220,8 @@ services:
         max-file: "3"
 
   worker:
-    image: ${PVE_HELPER_IMAGE:-ghcr.io/ssavant2/pve-helper:latest}
-    pull_policy: always
+    image: ghcr.io/ssavant2/pve-helper:${PVE_HELPER_VERSION:-latest}
+    pull_policy: missing
     restart: unless-stopped
     depends_on:
       db:
@@ -266,6 +267,7 @@ services:
       TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
       STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-false}
       STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
+      FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:-}
       STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
       STORAGE_IMAGE_INFO_TIMEOUT_SECONDS: ${STORAGE_IMAGE_INFO_TIMEOUT_SECONDS:-15}
       STORAGE_INFLATE_TIMEOUT_SECONDS: ${STORAGE_INFLATE_TIMEOUT_SECONDS:-14400}
@@ -323,4 +325,4 @@ volumes:
 
 networks:
   default:
-    name: pve-helper
+    name: ${PVE_HELPER_NETWORK:-pve-helper}

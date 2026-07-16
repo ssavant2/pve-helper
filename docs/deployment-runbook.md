@@ -9,10 +9,12 @@ use of the administration client, see the [user manual](user-manual.md).
 ## Pull-only production deployment
 
 The development checkout builds `pve-helper-dev:local`. Production does not need a
-checkout or a local build: the GitHub Actions workflow
-`.github/workflows/publish-latest.yml` can be started manually or by pushing an
-explicit `publish-*` tag. It runs Django, JavaScript and Playwright checks, then
-publishes `ghcr.io/ssavant2/pve-helper:latest` plus an immutable commit-SHA tag.
+checkout or a local build. Pushing a semantic version tag such as
+`v0.1.0-alpha.1` starts `.github/workflows/publish-latest.yml`. It audits the
+locked dependencies, runs Django, JavaScript and Playwright checks, then
+publishes all three images as `latest`, with the version tag and with a
+commit-addressed SHA tag. A manual workflow run publishes images but does not
+create a GitHub release.
 
 The release workflow attaches a standalone `docker-compose.yml` and
 `example.env` to each GitHub release. The Compose file uses three published
@@ -24,9 +26,11 @@ only:
 - `.env`; and
 - `certs/ca-bundle.pem` (empty when no private CA is needed).
 
-Set `APP_VERSION=v0.1` in production. A development stack uses
-`APP_VERSION=DEV`. The header renders this value directly; it is not inferred
-from the floating image tag.
+The application version shown in the header is baked into the image by the
+release workflow. Local development builds display `DEV`. Set
+`PVE_HELPER_VERSION=latest` to follow the newest successful release, or use the
+same semantic version/commit-addressed SHA tag for all three images when pinning a
+deployment.
 
 The first GHCR publication is private by default. Make the package public in its
 GitHub Package settings before an unauthenticated production pull. Subsequent

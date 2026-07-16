@@ -2155,6 +2155,21 @@ class StartupCheckTests(SimpleTestCase):
         ):
             self.assertEqual(production_startup_errors(), [])
 
+    def test_production_startup_checks_require_real_upload_temp_storage_for_writes(self):
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="not-the-dev-secret",
+            ALLOWED_HOSTS=["pve-helper.internal"],
+            APP_BASE_URL="http://pve-helper.internal:21080",
+            APP_REQUIRE_LOGIN=False,
+            STORAGE_WRITE_ENABLED=True,
+            FILE_UPLOAD_TEMP_DIR=None,
+        ):
+            self.assertEqual(
+                {error.id for error in production_startup_errors()},
+                {"pve_helper.E008"},
+            )
+
     def test_production_startup_checks_reject_unsupported_external_scheme(self):
         with override_settings(
             DEBUG=False,
