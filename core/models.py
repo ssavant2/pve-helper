@@ -224,6 +224,11 @@ class ProxmoxEndpoint(TimestampedModel):
         on_delete=models.PROTECT,
         related_name="endpoints",
     )
+    # Canonical form of `url`, kept in sync on save. It exists so the database can
+    # enforce that one transport is never claimed by two clusters: an endpoint
+    # answering for the wrong cluster would file its inventory under the wrong
+    # identity, which is the whole failure this foundation prevents.
+    normalized_url = models.CharField(max_length=512, blank=True)
     enabled = models.BooleanField(default=True)
     last_health_status = models.CharField(max_length=60, blank=True)
     last_successful_scan = models.DateTimeField(null=True, blank=True)
@@ -231,6 +236,24 @@ class ProxmoxEndpoint(TimestampedModel):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["normalized_url"],
+                condition=~models.Q(normalized_url=""),
+                name="unique_endpoint_normalized_url",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        from core.services.config import normalize_endpoint_url
+
+        self.normalized_url = normalize_endpoint_url(self.url)
+        if "update_fields" in kwargs and kwargs["update_fields"] is not None:
+            update_fields = set(kwargs["update_fields"])
+            if "url" in update_fields:
+                update_fields.add("normalized_url")
+                kwargs["update_fields"] = sorted(update_fields)
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return self.name

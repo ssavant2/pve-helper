@@ -271,6 +271,55 @@ class CredentialCutoverTests(TestCase):
         self.assertEqual(settings.PVE_API_TOKEN_SECRET, "legacy-secret")
 
 
+class EndpointUrlIdentityTests(TestCase):
+    """One transport belongs to one cluster: an endpoint answering for the wrong
+    cluster would file its inventory under the wrong identity."""
+
+    def test_normalization_treats_the_same_host_as_the_same_endpoint(self):
+        from core.services.config import normalize_endpoint_url
+
+        canonical = "https://pve201.example.net:8006"
+        for variant in [
+            "https://pve201.example.net:8006",
+            "https://PVE201.example.net:8006/",
+            "https://pve201.example.net:8006//",
+            "pve201.example.net:8006",
+        ]:
+            with self.subTest(variant=variant):
+                self.assertEqual(normalize_endpoint_url(variant), canonical)
+
+    def test_default_port_and_explicit_port_match(self):
+        from core.services.config import normalize_endpoint_url
+
+        self.assertEqual(normalize_endpoint_url("https://p.example.net"), "https://p.example.net:8006")
+
+    def test_two_clusters_cannot_claim_the_same_transport(self):
+        from django.db import IntegrityError, transaction
+
+        first = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)
+        second = ProxmoxCluster.objects.create(key="b", display_name="B", enabled=False)
+        ProxmoxEndpoint.objects.create(
+            name="a1", url="https://pve.example.net:8006", cluster=first, enabled=True
+        )
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ProxmoxEndpoint.objects.create(
+                name="b1", url="https://PVE.example.net:8006/", cluster=second, enabled=True
+            )
+
+    def test_editing_a_url_keeps_the_canonical_form_in_sync(self):
+        cluster = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)
+        endpoint = ProxmoxEndpoint.objects.create(
+            name="a1", url="https://old.example.net:8006", cluster=cluster, enabled=True
+        )
+
+        endpoint.url = "https://new.example.net:8006/"
+        endpoint.save(update_fields=["url"])
+
+        endpoint.refresh_from_db()
+        self.assertEqual(endpoint.normalized_url, "https://new.example.net:8006")
+
+
 class RecoveryCommandTests(SimpleTestCase):
     """The keyring check reports a missing key by failing the deployment. The
     commands that recover from that state must still run in it — otherwise the
