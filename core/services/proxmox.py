@@ -154,6 +154,39 @@ class ProxmoxAPIError(Exception):
     pass
 
 
+class ProxmoxTransportError(ProxmoxAPIError):
+    """The call failed below the API: no Proxmox response was interpreted.
+
+    `request_sent` is the part that matters for writes. A connection that was never
+    established proves the mutation did not happen, so another endpoint in the same
+    cluster may safely be tried. Anything after the bytes may have left — a read
+    timeout, a half-written request, a dropped connection — is ambiguous: the
+    mutation may already have been applied, and replaying it elsewhere could double
+    it. Ambiguity is assumed unless the failure proves otherwise.
+
+    An HTTP status error is deliberately *not* a transport error: the server
+    received the request and decided, so retrying it on another endpoint would ask a
+    second member of the same control plane the same settled question.
+    """
+
+    def __init__(self, message: str, *, request_sent: bool = True):
+        super().__init__(message)
+        self.request_sent = request_sent
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.request_sent
+
+
+# Failures that prove the request never reached the server. Everything else is
+# treated as ambiguous, so this set must only ever contain the provably-unsent.
+_UNSENT_TRANSPORT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+
+
 def _proxmox_error_detail(response) -> str:
     """Pull Proxmox's human-readable reason out of an error response.
 
@@ -481,7 +514,10 @@ class ProxmoxClient:
             suffix = f": {detail}" if detail else f" from {path}"
             raise ProxmoxAPIError(f"{exc.response.status_code}{suffix}") from exc
         except httpx.HTTPError as exc:
-            raise ProxmoxAPIError(f"{exc.__class__.__name__} from {path}") from exc
+            raise ProxmoxTransportError(
+                f"{exc.__class__.__name__} from {path}",
+                request_sent=not isinstance(exc, _UNSENT_TRANSPORT_ERRORS),
+            ) from exc
 
         try:
             payload = response.json()

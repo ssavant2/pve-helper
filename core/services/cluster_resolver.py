@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from core.models import ProxmoxCluster, ProxmoxEndpoint, RuntimeConfigurationState
-from core.services.proxmox import ProxmoxAPIError, ProxmoxClient
+from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTransportError
 
 
 logger = logging.getLogger(__name__)
@@ -133,12 +133,7 @@ def cluster_wide_read(
 
 
 def pin_cluster_write_client(cluster: ProxmoxCluster) -> tuple[ProxmoxEndpoint, ProxmoxClient]:
-    """Pin exactly one endpoint for a write, before preflight.
-
-    Deliberately has no failover. A mutation whose response is lost must not be
-    repeated on a second endpoint: whether that is safe is an operation-specific
-    idempotency/postcondition decision, not a transport concern.
-    """
+    """Pin exactly one endpoint for a write, before preflight."""
     endpoints = enabled_endpoints(cluster)
     if not endpoints:
         raise ClusterResolutionError(
@@ -146,6 +141,90 @@ def pin_cluster_write_client(cluster: ProxmoxCluster) -> tuple[ProxmoxEndpoint, 
         )
     endpoint = endpoints[0]
     return endpoint, client_for_endpoint(endpoint)
+
+
+@dataclass(frozen=True)
+class ClusterWriteResult:
+    cluster_key: str
+    value: Any
+    answering_endpoint: str
+    client: ProxmoxClient | None
+    error: str
+    attempted: tuple[EndpointAttempt, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+def cluster_write(
+    cluster: ProxmoxCluster,
+    *,
+    operation: str,
+    call: Callable[[ProxmoxClient], Any],
+    error_message: Callable[[ProxmoxAPIError], str],
+) -> ClusterWriteResult:
+    """Perform one mutation inside exactly this cluster, never replaying an
+    ambiguous attempt.
+
+    The old convention looped over every configured endpoint and retried the
+    mutation on the next one after any failure. That is unsafe twice over: with two
+    clusters it can mutate a same-VMID guest in the wrong one, and even within a
+    cluster it replays a write whose outcome is unknown, so a timed-out shutdown or
+    snapshot could be applied twice.
+
+    Advancing to the next endpoint is allowed only when the failure *proves* the
+    request never left — a refused connection. A request that may have been applied
+    stops here and is reported; whether it can be retried is an operation-specific
+    idempotency/postcondition decision, not something transport may assume. An HTTP
+    error is the server's answer and is never re-asked elsewhere.
+    """
+    attempts: list[EndpointAttempt] = []
+    endpoints = enabled_endpoints(cluster)
+    if not endpoints:
+        raise ClusterResolutionError(
+            f"Cluster '{cluster.key}' has no enabled endpoint to write through."
+        )
+
+    error = ""
+    for endpoint in endpoints:
+        client = client_for_endpoint(endpoint)
+        try:
+            value = call(client)
+        except ProxmoxAPIError as exc:
+            unsent = isinstance(exc, ProxmoxTransportError) and not exc.request_sent
+            logger.warning(
+                "Proxmox write failed: cluster=%s endpoint=%s operation=%s unsent=%s error=%s",
+                cluster.key,
+                endpoint.name,
+                operation,
+                unsent,
+                exc,
+            )
+            attempts.append(EndpointAttempt(endpoint.name, False, str(exc)))
+            error = error_message(exc)
+            if unsent:
+                continue
+            break
+
+        attempts.append(EndpointAttempt(endpoint.name, True))
+        return ClusterWriteResult(
+            cluster_key=cluster.key,
+            value=value,
+            answering_endpoint=endpoint.name,
+            client=client,
+            error="",
+            attempted=tuple(attempts),
+        )
+
+    return ClusterWriteResult(
+        cluster_key=cluster.key,
+        value=None,
+        answering_endpoint="",
+        client=None,
+        error=error or "No Proxmox endpoint in this cluster could reach the guest.",
+        attempted=tuple(attempts),
+    )
 
 
 def require_sole_enabled_cluster_for_legacy_caller() -> ProxmoxCluster:

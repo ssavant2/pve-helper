@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 from ..common import *  # noqa: F401,F403
 from .. import common
+from core.services.cluster_resolver import (
+    cluster_write,
+    require_sole_enabled_cluster_for_legacy_caller,
+)
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.public_errors import public_exception_message
 
@@ -19,23 +23,56 @@ def guest_kind(detail: SimpleNamespace) -> str:
     return "qemu" if detail.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
 
 
+def guest_cluster(detail: SimpleNamespace):
+    """The cluster a guest operation acts inside.
+
+    Every guest write funnels through this module, so this is the one boundary where
+    scope is resolved for them. `detail` does not carry a cluster yet: Phase 3 gives
+    it a GuestRef, and this falls away with the adapter in Phase 4. Until then the
+    lookup is explicit and fails closed rather than letting a write pick an endpoint
+    from an ambient global list.
+    """
+    cluster = getattr(detail, "cluster", None)
+    if cluster is not None:
+        return cluster
+    return require_sole_enabled_cluster_for_legacy_caller()
+
+
+def _guest_path(detail: SimpleNamespace, subpath: str = "") -> str:
+    path = f"nodes/{quote(detail.node, safe='')}/{guest_kind(detail)}/{detail.vmid}"
+    return f"{path}/{subpath}" if subpath else path
+
+
+def _guest_write(detail: SimpleNamespace, *, operation: str, fallback: str, call):
+    """Run one guest mutation inside the guest's own cluster.
+
+    Replaces the old fan-out over every configured endpoint, which both risked
+    mutating a same-VMID guest in another cluster and replayed a write whose outcome
+    was unknown. cluster_write() advances to another endpoint only when the failure
+    proves the request never left.
+    """
+    return cluster_write(
+        guest_cluster(detail),
+        operation=operation,
+        call=call,
+        error_message=lambda exc: public_exception_message(
+            exc, operation=operation, fallback=fallback
+        ),
+    )
+
+
 def guest_post_with_client(detail: SimpleNamespace, subpath: str, data: dict | None = None):
     if not detail.node:
         return None, "The guest's node could not be resolved.", None
-    err = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
-        try:
-            return client.post(
-                f"nodes/{quote(detail.node, safe='')}/{guest_kind(detail)}/{detail.vmid}/{subpath}",
-                data=data or {},
-            ), None, client
-        except ProxmoxAPIError as exc:
-            err = public_exception_message(
-                exc,
-                operation="guest_post",
-                fallback="Proxmox could not complete the guest operation.",
-            )
-    return None, err, None
+    result = _guest_write(
+        detail,
+        operation="guest_post",
+        fallback="Proxmox could not complete the guest operation.",
+        call=lambda client: client.post(_guest_path(detail, subpath), data=data or {}),
+    )
+    if not result.ok:
+        return None, result.error, None
+    return result.value, None, result.client
 
 
 def guest_post(detail: SimpleNamespace, subpath: str, data: dict | None = None):
@@ -46,19 +83,15 @@ def guest_post(detail: SimpleNamespace, subpath: str, data: dict | None = None):
 def guest_delete_with_client(detail: SimpleNamespace, subpath: str):
     if not detail.node:
         return None, "The guest's node could not be resolved.", None
-    err = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
-        try:
-            return client.delete(
-                f"nodes/{quote(detail.node, safe='')}/{guest_kind(detail)}/{detail.vmid}/{subpath}"
-            ), None, client
-        except ProxmoxAPIError as exc:
-            err = public_exception_message(
-                exc,
-                operation="guest_delete",
-                fallback="Proxmox could not complete the guest operation.",
-            )
-    return None, err, None
+    result = _guest_write(
+        detail,
+        operation="guest_delete",
+        fallback="Proxmox could not complete the guest operation.",
+        call=lambda client: client.delete(_guest_path(detail, subpath)),
+    )
+    if not result.ok:
+        return None, result.error, None
+    return result.value, None, result.client
 
 
 def guest_delete(detail: SimpleNamespace, subpath: str):
@@ -93,26 +126,20 @@ def guest_post_wait_task(
 ):
     if not detail.node:
         return None, "The guest's node could not be resolved."
-    err = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
-        try:
-            response = client.post(
-                f"nodes/{quote(detail.node, safe='')}/{guest_kind(detail)}/{detail.vmid}/{subpath}",
-                data=data or {},
-            )
-            return response, wait_for_proxmox_task_if_returned(
-                client,
-                detail.node,
-                response,
-                timeout_seconds=timeout_seconds,
-            )
-        except ProxmoxAPIError as exc:
-            err = public_exception_message(
-                exc,
-                operation="guest_post_wait",
-                fallback="Proxmox could not complete the guest operation.",
-            )
-    return None, err
+    result = _guest_write(
+        detail,
+        operation="guest_post_wait",
+        fallback="Proxmox could not complete the guest operation.",
+        call=lambda client: client.post(_guest_path(detail, subpath), data=data or {}),
+    )
+    if not result.ok:
+        return None, result.error
+    return result.value, wait_for_proxmox_task_if_returned(
+        result.client,
+        detail.node,
+        result.value,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def guest_delete_wait_task(
@@ -123,63 +150,51 @@ def guest_delete_wait_task(
 ):
     if not detail.node:
         return None, "The guest's node could not be resolved."
-    err = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
-        try:
-            response = client.delete(
-                f"nodes/{quote(detail.node, safe='')}/{guest_kind(detail)}/{detail.vmid}/{subpath}"
-            )
-            return response, wait_for_proxmox_task_if_returned(
-                client,
-                detail.node,
-                response,
-                timeout_seconds=timeout_seconds,
-            )
-        except ProxmoxAPIError as exc:
-            err = public_exception_message(
-                exc,
-                operation="guest_delete_wait",
-                fallback="Proxmox could not complete the guest operation.",
-            )
-    return None, err
+    result = _guest_write(
+        detail,
+        operation="guest_delete_wait",
+        fallback="Proxmox could not complete the guest operation.",
+        call=lambda client: client.delete(_guest_path(detail, subpath)),
+    )
+    if not result.ok:
+        return None, result.error
+    return result.value, wait_for_proxmox_task_if_returned(
+        result.client,
+        detail.node,
+        result.value,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def guest_destroy_with_client(detail: SimpleNamespace, query: str):
     if not detail.node:
         return None, "The guest's node could not be resolved.", None
-    err = "No Proxmox endpoint could reach this guest."
-    path = f"nodes/{quote(detail.node, safe='')}/{guest_kind(detail)}/{detail.vmid}"
+    path = _guest_path(detail)
     if query:
         path = f"{path}?{query}"
-    for client in common.configured_clients():
-        try:
-            return client.delete(path), None, client
-        except ProxmoxAPIError as exc:
-            err = public_exception_message(
-                exc,
-                operation="guest_destroy",
-                fallback="Proxmox could not delete the guest.",
-            )
-    return None, err, None
+    result = _guest_write(
+        detail,
+        operation="guest_destroy",
+        fallback="Proxmox could not delete the guest.",
+        call=lambda client: client.delete(path),
+    )
+    if not result.ok:
+        return None, result.error, None
+    return result.value, None, result.client
 
 
 def guest_put(detail: SimpleNamespace, subpath: str, data: dict | None = None):
     if not detail.node:
         return None, "The guest's node could not be resolved."
-    err = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
-        try:
-            return client.put(
-                f"nodes/{quote(detail.node, safe='')}/{guest_kind(detail)}/{detail.vmid}/{subpath}",
-                data=data or {},
-            ), None
-        except ProxmoxAPIError as exc:
-            err = public_exception_message(
-                exc,
-                operation="guest_put",
-                fallback="Proxmox could not update the guest.",
-            )
-    return None, err
+    result = _guest_write(
+        detail,
+        operation="guest_put",
+        fallback="Proxmox could not update the guest.",
+        call=lambda client: client.put(_guest_path(detail, subpath), data=data or {}),
+    )
+    if not result.ok:
+        return None, result.error
+    return result.value, None
 
 
 def audit_guest(

@@ -134,6 +134,35 @@ class HermeticProxmoxMixin:
             mocked.start()
             self.addCleanup(mocked.stop)
 
+    def _patch_provider_client(self, client):
+        """Make `client` the provider client the selected cluster resolves to.
+
+        Guest writes now resolve an explicit cluster and build their client from its
+        endpoint, so patching the global fan-out alone no longer reaches them. The
+        cluster fixture lives here rather than in setUp because this mixin is also
+        used by SimpleTestCase classes, which may not touch the database.
+        """
+        # Only one cluster may be enabled before activation, so reuse whatever the
+        # test already configured rather than violating that invariant.
+        cluster = ProxmoxCluster.objects.filter(enabled=True).first()
+        if cluster is None:
+            cluster = ProxmoxCluster.objects.create(
+                key="default", display_name="Default cluster", enabled=True
+            )
+        if not ProxmoxEndpoint.objects.filter(cluster=cluster, enabled=True).exists():
+            ProxmoxEndpoint.objects.create(
+                name="hermetic-pve",
+                url="https://pve.test.invalid:8006",
+                cluster=cluster,
+                enabled=True,
+            )
+        self.test_cluster = cluster
+
+        mocked = patch("core.services.cluster_resolver.client_for_endpoint", return_value=client)
+        mocked.start()
+        self.addCleanup(mocked.stop)
+        return client
+
 
 class PowerActionMapTests(SimpleTestCase):
     def test_power_action_map_and_vm_only_set(self):
@@ -3076,7 +3105,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     ]
                 raise ProxmoxAPIError(path)
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         with patch("core.services.proxmox.configured_clients", return_value=[fake_client]):
             statuses = _fetch_live_guest_status_uncached()
 
@@ -6495,7 +6524,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return []
                 raise ProxmoxAPIError(path)
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         CurrentGuestInventory.objects.filter(object_type="vm", vmid=500).update(
             config=fake_client.guest_config(node="pve1", object_type="vm", vmid=500),
@@ -6539,7 +6568,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return []
                 raise ProxmoxAPIError(path)
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         with (
             patch("core.views.common.configured_clients", return_value=[fake_client]),
             patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
@@ -6581,7 +6610,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.digest = digest
                 return None
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -6662,7 +6691,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.updates = updates
                 return None
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -6735,7 +6764,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return []
                 raise ProxmoxAPIError(path)
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -6791,7 +6820,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.resize_calls.append((path, data or {}))
                 return None
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -6893,7 +6922,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.posts.append((path, data or {}))
                 return "UPID:pve1:create:500:root@pam:"
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         with patch("core.services.guest_create.configured_clients", return_value=[fake_client]):
             response = self.client.post(
                 reverse("core:guest_create", args=["vm"]),
@@ -6933,7 +6962,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.posts.append((path, data or {}))
                 return "UPID:pve1:00000001:00000002:00000003:qmstart:500:root@pam:"
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -6977,7 +7006,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.posts.append((path, data or {}))
                 return "UPID:pve1:clone:500:root@pam:"
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7046,7 +7075,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 def set_guest_config(self, *, node, object_type, vmid, updates, delete=None, digest=None):
                     self.updates.append((node, object_type, vmid, updates, delete, digest))
 
-            fake_client = FakeClient()
+            fake_client = self._patch_provider_client(FakeClient())
             live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
             with (
                 patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7116,7 +7145,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 def set_guest_config(self, **_kwargs):
                     self.updated = True
 
-            fake_client = FakeClient()
+            fake_client = self._patch_provider_client(FakeClient())
             live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
             with (
                 patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7168,7 +7197,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             def put(self, path, *, data=None):
                 self.puts.append((path, data or {}))
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7211,7 +7240,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return {"poolid": "operations", "members": [{"type": "lxc", "vmid": 601}]}
                 raise ProxmoxAPIError(path)
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="ct", vmid=601, name="Lab CT", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7256,7 +7285,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.deletes.append(path)
                 return "UPID:pve1:snapshot-delete:500:root@pam:"
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7307,7 +7336,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     raw={"status": "stopped", "exitstatus": "OK"},
                 )
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7348,7 +7377,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     ]
                 raise ProxmoxAPIError(path)
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7381,7 +7410,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.posts.append((path, data or {}))
                 return "UPID:pve1:clone:500:root@pam:"
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7423,7 +7452,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.deletes.append(path)
                 return "UPID:pve1:destroy:500:root@pam:"
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7481,7 +7510,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 self.updates.append((vmid, updates, delete or []))
                 return None
 
-        fake_client = FakeClient()
+        fake_client = self._patch_provider_client(FakeClient())
         live_guests = [
             self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped"),
             self._live_guest(object_type="vm", vmid=501, name="Other VM", node="pve1", status="stopped"),

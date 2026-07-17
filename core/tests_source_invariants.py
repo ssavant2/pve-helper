@@ -37,7 +37,6 @@ LEGACY_CONFIGURED_CLIENTS_MODULES = frozenset(
         "core/views/guests/dialogs.py",
         "core/views/guests/hardware.py",
         "core/views/guests/mutations.py",
-        "core/views/guests/operation_lifecycle.py",
         "core/views/guests/read_model_support.py",
         "core/views/guests/replication.py",
         "core/views/guests/tabs.py",
@@ -52,6 +51,9 @@ LEGACY_CONFIGURED_CLIENTS_MODULES = frozenset(
 LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset(
     {
         "core/services/cluster_resolver.py",  # the definition itself
+        # The single boundary where guest writes resolve scope. Phase 3 gives
+        # `detail` a GuestRef and this call goes away with the adapter in Phase 4.
+        "core/views/guests/operation_lifecycle.py",
     }
 )
 

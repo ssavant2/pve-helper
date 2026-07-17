@@ -9,11 +9,12 @@ from core.services.cluster_resolver import (
     ClusterResolutionError,
     LegacyClusterScopeError,
     cluster_wide_read,
+    cluster_write,
     enabled_endpoints,
     pin_cluster_write_client,
     require_sole_enabled_cluster_for_legacy_caller,
 )
-from core.services.proxmox import ProxmoxAPIError
+from core.services.proxmox import ProxmoxAPIError, ProxmoxTransportError
 
 
 class FakeClient:
@@ -147,6 +148,78 @@ class ClusterWriteTests(ClusterResolverTestCase):
 
         with self.assertRaises(ClusterResolutionError):
             pin_cluster_write_client(self.cluster_a)
+
+
+class ClusterWriteContractTests(ClusterResolverTestCase):
+    """A mutation must never be replayed on a second endpoint unless the first
+    attempt provably never left."""
+
+    def _write(self, clients):
+        with self._clients(clients):
+            return cluster_write(
+                self.cluster_a,
+                operation="guest_post",
+                call=lambda c: c.read(),
+                error_message=lambda exc: f"public: {exc}",
+            )
+
+    def test_a_refused_connection_may_advance_to_another_endpoint(self):
+        # Nothing was sent, so the mutation demonstrably did not happen.
+        clients = {
+            "a1": FakeClient("a1", error=ProxmoxTransportError("refused", request_sent=False)),
+            "a2": FakeClient("a2", value="UPID:ok"),
+        }
+
+        result = self._write(clients)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.answering_endpoint, "a2")
+        self.assertEqual(clients["a2"].calls, 1)
+
+    def test_an_ambiguous_failure_is_never_replayed(self):
+        # The request may already have been applied; replaying it could shut down
+        # or snapshot the guest twice.
+        clients = {
+            "a1": FakeClient("a1", error=ProxmoxTransportError("read timeout", request_sent=True)),
+            "a2": FakeClient("a2", value="UPID:ok"),
+        }
+
+        result = self._write(clients)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(clients["a2"].calls, 0)
+        self.assertIn("public:", result.error)
+
+    def test_an_http_error_is_not_re_asked_on_another_endpoint(self):
+        # The server received the request and decided; another member of the same
+        # control plane would answer the same settled question.
+        clients = {
+            "a1": FakeClient("a1", error=ProxmoxAPIError("403: permission denied")),
+            "a2": FakeClient("a2", value="UPID:ok"),
+        }
+
+        result = self._write(clients)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(clients["a2"].calls, 0)
+
+    def test_a_write_never_reaches_another_cluster(self):
+        clients = {
+            "a1": FakeClient("a1", error=ProxmoxTransportError("refused", request_sent=False)),
+            "a2": FakeClient("a2", error=ProxmoxTransportError("refused", request_sent=False)),
+            "b1": FakeClient("b1", value="UPID:wrong-cluster"),
+        }
+
+        result = self._write(clients)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(clients["b1"].calls, 0)
+
+    def test_transport_ambiguity_defaults_to_unsafe(self):
+        # Anything not proven unsent must be treated as possibly applied.
+        self.assertTrue(ProxmoxTransportError("boom").ambiguous)
+        self.assertTrue(ProxmoxTransportError("boom", request_sent=True).ambiguous)
+        self.assertFalse(ProxmoxTransportError("boom", request_sent=False).ambiguous)
 
 
 class LegacyScopeAdapterTests(ClusterResolverTestCase):
