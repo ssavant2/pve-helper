@@ -6,8 +6,10 @@ from django.test import TestCase
 
 from core.models import ProxmoxCluster, ProxmoxEndpoint, RuntimeConfigurationState
 from core.services.cluster_resolver import (
+    ClusterDisabledError,
     ClusterResolutionError,
     LegacyClusterScopeError,
+    cluster_clients,
     cluster_wide_read,
     cluster_write,
     enabled_endpoints,
@@ -148,6 +150,40 @@ class ClusterWriteTests(ClusterResolverTestCase):
 
         with self.assertRaises(ClusterResolutionError):
             pin_cluster_write_client(self.cluster_a)
+
+
+class DisabledClusterTests(ClusterResolverTestCase):
+    """Disabling a cluster blocks live acquisition immediately. Stored read models
+    and history stay readable; only new provider traffic stops."""
+
+    def setUp(self):
+        super().setUp()
+        self.cluster_a.enabled = False
+        self.cluster_a.save(update_fields=["enabled"])
+
+    def test_reads_are_refused(self):
+        with self.assertRaises(ClusterDisabledError):
+            cluster_wide_read(self.cluster_a, operation="inventory", call=lambda c: c.read())
+
+    def test_writes_are_refused(self):
+        with self.assertRaises(ClusterDisabledError):
+            cluster_write(
+                self.cluster_a,
+                operation="guest_post",
+                call=lambda c: c.read(),
+                error_message=str,
+            )
+
+    def test_client_selection_is_refused(self):
+        with self.assertRaises(ClusterDisabledError):
+            cluster_clients(self.cluster_a)
+        with self.assertRaises(ClusterDisabledError):
+            pin_cluster_write_client(self.cluster_a)
+
+    def test_endpoint_query_still_answers_for_verification_flows(self):
+        # Onboarding and re-enable must be able to inspect a cluster that is not
+        # enabled yet; only acquisition is gated.
+        self.assertEqual([e.name for e in enabled_endpoints(self.cluster_a)], ["a1", "a2"])
 
 
 class ClusterWriteContractTests(ClusterResolverTestCase):

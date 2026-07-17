@@ -33,6 +33,31 @@ class LegacyClusterScopeError(ClusterResolutionError):
     """A legacy caller could not be given an unambiguous cluster."""
 
 
+class ClusterDisabledError(ClusterResolutionError):
+    """Acquisition was attempted against a cluster an operator has disabled."""
+
+
+def _require_enabled(cluster: ProxmoxCluster) -> None:
+    """Refuse live acquisition against a disabled cluster.
+
+    Disabling blocks new provider writes, scheduled executions, consoles and
+    refresh acquisition immediately, while last-known read models and history stay
+    readable as visibly stale. The check lives at each acquisition entry point
+    rather than inside the endpoint query, because verification flows — onboarding
+    a cluster, or re-verifying identity before re-enabling one — legitimately talk
+    to a cluster that is not enabled yet.
+
+    Today the legacy adapter only ever yields an enabled cluster, so nothing
+    reaches this. Phase 3 hands callers an explicit cluster, which is exactly when
+    a disabled one could arrive here.
+    """
+    if not cluster.enabled:
+        raise ClusterDisabledError(
+            f"Cluster '{cluster.key}' is disabled. Re-enable it, which re-verifies its "
+            "identity and trust, before reading from or writing to it."
+        )
+
+
 @dataclass(frozen=True)
 class EndpointAttempt:
     endpoint_name: str
@@ -81,6 +106,7 @@ def client_for_endpoint(endpoint: ProxmoxEndpoint) -> ProxmoxClient:
 
 def cluster_clients(cluster: ProxmoxCluster) -> list[ProxmoxClient]:
     """Clients for this cluster's enabled endpoints, and no other cluster's."""
+    _require_enabled(cluster)
     return [client_for_endpoint(endpoint) for endpoint in enabled_endpoints(cluster)]
 
 
@@ -100,6 +126,7 @@ def cluster_wide_read(
     Only ProxmoxAPIError is caught. An unexpected exception is a bug and stays
     visible to tests and monitoring rather than being reported as degradation.
     """
+    _require_enabled(cluster)
     attempts: list[EndpointAttempt] = []
 
     for endpoint in enabled_endpoints(cluster):
@@ -138,6 +165,7 @@ def cluster_wide_read(
 
 def pin_cluster_write_client(cluster: ProxmoxCluster) -> tuple[ProxmoxEndpoint, ProxmoxClient]:
     """Pin exactly one endpoint for a write, before preflight."""
+    _require_enabled(cluster)
     endpoints = enabled_endpoints(cluster)
     if not endpoints:
         raise ClusterResolutionError(
@@ -183,6 +211,7 @@ def cluster_write(
     idempotency/postcondition decision, not something transport may assume. An HTTP
     error is the server's answer and is never re-asked elsewhere.
     """
+    _require_enabled(cluster)
     attempts: list[EndpointAttempt] = []
     endpoints = enabled_endpoints(cluster)
     if not endpoints:
