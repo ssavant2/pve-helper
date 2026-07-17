@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.validators import RegexValidator
 from django.db import models
+from django.db.models.functions import Lower
 
 
 class TimestampedModel(models.Model):
@@ -84,9 +86,107 @@ def _details_text(details: dict, key: str, max_length: int) -> str:
     return str(value)[:max_length]
 
 
+RUNTIME_CONFIGURATION_SINGLETON_PK = 1
+
+cluster_key_validator = RegexValidator(
+    regex=r"^[a-z0-9][a-z0-9-]{0,62}$",
+    message=(
+        "Cluster key must be lowercase and URL-safe: it may contain a-z, 0-9 and hyphens, "
+        "must start with a letter or digit, and may be at most 63 characters."
+    ),
+)
+
+
+class ProxmoxCluster(TimestampedModel):
+    """An independent Proxmox cluster. Durable guest identity is (cluster.key, object_type, vmid).
+
+    The key is operator-controlled and immutable once cluster-qualified contracts
+    activate; an endpoint is a transport for this cluster, never its identity. The
+    discovered_* fields corroborate the binding and must never define it.
+    """
+
+    key = models.CharField(max_length=63, validators=[cluster_key_validator])
+    display_name = models.CharField(max_length=160)
+    enabled = models.BooleanField(default=True)
+    # Corroborating metadata observed from the cluster itself. Identity is `key`;
+    # these confirm that an endpoint still speaks for the cluster it claims.
+    discovered_name = models.CharField(max_length=255, blank=True)
+    discovered_ca_uuid = models.CharField(max_length=64, blank=True)
+    discovered_ca_fingerprint = models.CharField(max_length=200, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["key"]
+        constraints = [
+            models.UniqueConstraint(
+                Lower("key"),
+                name="unique_cluster_key_case_insensitive",
+            ),
+            # The multi-cluster activation invariant, enforced in the database and
+            # not only in the enable service: among rows where enabled is true,
+            # `enabled` itself must be unique, so at most one cluster is enabled.
+            # The activation migration drops this once every read, write, URL and
+            # payload boundary is cluster-qualified (identity contract version 1).
+            models.UniqueConstraint(
+                fields=["enabled"],
+                condition=models.Q(enabled=True),
+                name="single_enabled_cluster_until_activation",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.display_name} ({self.key})"
+
+
+class RuntimeConfigurationState(TimestampedModel):
+    """Singleton recording who owns runtime configuration and how far identity has migrated.
+
+    The database is the source of truth for configuration; environment is a
+    bootstrap importer that runs exactly once. This marker is what distinguishes an
+    unbootstrapped installation from one an operator deliberately emptied, so it
+    must survive deletion of every cluster record.
+    """
+
+    SINGLETON_PK = RUNTIME_CONFIGURATION_SINGLETON_PK
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=RUNTIME_CONFIGURATION_SINGLETON_PK)
+    bootstrap_completed = models.BooleanField(default=False)
+    bootstrap_completed_at = models.DateTimeField(null=True, blank=True)
+    bootstrap_fingerprint = models.CharField(max_length=64, blank=True)
+    identity_contract_version = models.PositiveSmallIntegerField(default=0)
+    # Phase 1c/1d write these; once set, runtime stops reading the legacy global
+    # token/CA settings. They are ignored at cutover, never deleted, so a code
+    # rollback resumes reading them and re-import stays idempotent.
+    credential_cutover_completed_at = models.DateTimeField(null=True, blank=True)
+    trust_cutover_completed_at = models.DateTimeField(null=True, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(id=RUNTIME_CONFIGURATION_SINGLETON_PK),
+                name="runtime_configuration_state_is_singleton",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        state = "bootstrapped" if self.bootstrap_completed else "unbootstrapped"
+        return f"runtime configuration ({state}, identity contract v{self.identity_contract_version})"
+
+
 class ProxmoxEndpoint(TimestampedModel):
     name = models.CharField(max_length=120, unique=True)
     url = models.URLField()
+    # Nullable for the additive Phase 1a deploy: old code must tolerate the new
+    # column and new code must tolerate rows not yet backfilled. Made non-null by a
+    # follow-up migration once the env writers are gone.
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="endpoints",
+    )
     enabled = models.BooleanField(default=True)
     last_health_status = models.CharField(max_length=60, blank=True)
     last_successful_scan = models.DateTimeField(null=True, blank=True)

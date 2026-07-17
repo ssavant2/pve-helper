@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 import zipfile
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -13,11 +14,17 @@ from unittest.mock import Mock, patch
 import httpx
 from django.conf import settings
 from django.core.cache import cache
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.apps import apps
-from django.db import IntegrityError, transaction
-from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.db import IntegrityError, connection, transaction
+from django.test import (
+    RequestFactory,
+    SimpleTestCase,
+    TestCase,
+    TransactionTestCase,
+    override_settings,
+)
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.contrib.messages import get_messages
@@ -32,8 +39,10 @@ from core.models import (
     CurrentGuestInventory,
     FileInventory,
     OidcIdentity,
+    ProxmoxCluster,
     ProxmoxEndpoint,
     ProxmoxInventory,
+    RuntimeConfigurationState,
     ScanRun,
     ScheduledAction,
     ScheduledActionRun,
@@ -45,7 +54,13 @@ from core.signals import ensure_always_on_schedules
 from core.tasks import poll_guest_audit_task, restore_guest_backup_task
 from core.services.audit_retention_schedule import AUDIT_RETENTION_SCHEDULE_NAME, audit_retention_schedule_state
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
-from core.services.config import sync_runtime_configuration
+from core.services.cluster_activation import (
+    ClusterActivationError,
+    enable_cluster,
+    set_initial_cluster_key,
+)
+from core.services import runtime_bootstrap
+from core.services.runtime_bootstrap import ensure_bootstrap
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
 from core.services.proxmox import (
     LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS,
@@ -1063,24 +1078,75 @@ class ClassificationTests(SimpleTestCase):
         self.assertEqual(mount_access_mode(mount), "read_only")
 
 
+@override_settings(
+    PVE_ENDPOINTS=["https://pve-node-1.example.com:8006"],
+    PVE_EXPECTED_CONSUMERS=["pve-node-1"],
+    TRUENAS_FS_STORAGE_ID="nfs-fs",
+    TRUENAS_VM_STORAGE_ID="nfs-vm",
+    TRUENAS_FS_EXPORT="truenas.example.com:/mnt/tank/proxmox-fs",
+    TRUENAS_VM_EXPORT="truenas.example.com:/mnt/tank/proxmox-vm",
+    TRUENAS_FS_CONTAINER_PATH="/storages/truenas-fs",
+    TRUENAS_VM_CONTAINER_PATH="/storages/truenas-vm",
+)
 class RuntimeConfigurationTests(TestCase):
-    @override_settings(
-        PVE_ENDPOINTS=["https://pve-node-1.example.com:8006"],
-        PVE_EXPECTED_CONSUMERS=["pve-node-1"],
-        TRUENAS_FS_STORAGE_ID="nfs-fs",
-        TRUENAS_VM_STORAGE_ID="nfs-vm",
-        TRUENAS_FS_EXPORT="truenas.example.com:/mnt/tank/proxmox-fs",
-        TRUENAS_VM_EXPORT="truenas.example.com:/mnt/tank/proxmox-vm",
-        TRUENAS_FS_CONTAINER_PATH="/storages/truenas-fs",
-        TRUENAS_VM_CONTAINER_PATH="/storages/truenas-vm",
-    )
-    def test_sync_runtime_configuration_from_settings(self):
-        endpoints, storages = sync_runtime_configuration()
+    def test_bootstrap_imports_environment_into_default_cluster(self):
+        state = ensure_bootstrap()
 
-        self.assertEqual([endpoint.name for endpoint in endpoints], ["pve-node-1"])
+        self.assertTrue(state.bootstrap_completed)
+        self.assertTrue(state.bootstrap_fingerprint)
+        self.assertEqual(state.identity_contract_version, 0)
+
+        cluster = ProxmoxCluster.objects.get(key="default")
         self.assertEqual(ProxmoxEndpoint.objects.get(name="pve-node-1").url, "https://pve-node-1.example.com:8006")
-        self.assertEqual({storage.storage_id for storage in storages}, {"nfs-fs", "nfs-vm"})
+        self.assertEqual(ProxmoxEndpoint.objects.get(name="pve-node-1").cluster, cluster)
+        self.assertEqual(
+            set(StorageMount.objects.values_list("storage_id", flat=True)),
+            {"nfs-fs", "nfs-vm"},
+        )
         self.assertEqual(StorageMount.objects.get(storage_id="nfs-vm").expected_consumers, ["pve-node-1"])
+
+    def test_bootstrap_does_not_reapply_environment_after_marker_exists(self):
+        ensure_bootstrap()
+
+        endpoint = ProxmoxEndpoint.objects.get(name="pve-node-1")
+        endpoint.url = "https://operator-chosen.example.com:8006"
+        endpoint.save(update_fields=["url"])
+        storage = StorageMount.objects.get(storage_id="nfs-vm")
+        storage.display_name = "Operator renamed"
+        storage.save(update_fields=["display_name"])
+
+        # A later environment change must not mutate DB-owned configuration: the
+        # database is the sole runtime authority once the marker exists.
+        with self.settings(PVE_ENDPOINTS=["https://env-changed.example.com:8006"]):
+            ensure_bootstrap()
+
+        endpoint.refresh_from_db()
+        storage.refresh_from_db()
+        self.assertEqual(endpoint.url, "https://operator-chosen.example.com:8006")
+        self.assertEqual(storage.display_name, "Operator renamed")
+        self.assertFalse(ProxmoxEndpoint.objects.filter(name="env-changed").exists())
+
+    def test_bootstrap_is_idempotent_and_keeps_one_default_cluster(self):
+        first = ensure_bootstrap()
+        second = ensure_bootstrap()
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(ProxmoxCluster.objects.count(), 1)
+        self.assertEqual(RuntimeConfigurationState.objects.count(), 1)
+        self.assertEqual(ProxmoxEndpoint.objects.filter(name="pve-node-1").count(), 1)
+
+    def test_emptied_configuration_is_not_silently_reimported_from_environment(self):
+        ensure_bootstrap()
+        ProxmoxEndpoint.objects.all().update(cluster=None)
+        ProxmoxEndpoint.objects.all().delete()
+        ProxmoxCluster.objects.all().delete()
+
+        # The marker survives deletion of cluster records, so an installation an
+        # operator deliberately emptied stays empty.
+        ensure_bootstrap()
+
+        self.assertFalse(ProxmoxCluster.objects.exists())
+        self.assertFalse(ProxmoxEndpoint.objects.exists())
 
     def test_storage_details_normalizes_pve_options_order(self):
         storage = StorageMount.objects.create(
@@ -1101,6 +1167,118 @@ class RuntimeConfigurationTests(TestCase):
         details = storage_details(storage, scan, StorageSpaceInfo(ok=False))
 
         self.assertEqual(details.options, "vers=4.2,nconnect=4")
+
+
+class ClusterActivationInvariantTests(TestCase):
+    """More than one enabled cluster is permitted only once every read, write, URL
+    and payload boundary is cluster-qualified. Until then the app must refuse it."""
+
+    def setUp(self):
+        super().setUp()
+        ensure_bootstrap()
+        self.default = ProxmoxCluster.objects.get(key="default")
+
+    def test_second_cluster_cannot_be_enabled_at_contract_version_zero(self):
+        second = ProxmoxCluster.objects.create(key="lab", display_name="Lab", enabled=False)
+
+        with self.assertRaises(ClusterActivationError):
+            enable_cluster(second)
+
+        second.refresh_from_db()
+        self.assertFalse(second.enabled)
+
+    def test_database_refuses_a_second_enabled_cluster_without_the_service(self):
+        # The invariant is not merely service-level: no lower-level path may flip
+        # `enabled` for cluster two while the contract is at version 0.
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ProxmoxCluster.objects.create(key="lab", display_name="Lab", enabled=True)
+
+    def test_enabling_the_sole_cluster_is_allowed(self):
+        self.default.enabled = False
+        self.default.save(update_fields=["enabled"])
+
+        enable_cluster(self.default)
+
+        self.default.refresh_from_db()
+        self.assertTrue(self.default.enabled)
+
+    def test_cluster_key_is_case_insensitively_unique(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ProxmoxCluster.objects.create(key="DEFAULT", display_name="Shouting", enabled=False)
+
+    def test_initial_cluster_key_can_be_chosen_before_activation(self):
+        cluster = set_initial_cluster_key("lab")
+
+        self.assertEqual(cluster.key, "lab")
+        self.assertEqual(ProxmoxCluster.objects.get(pk=self.default.pk).key, "lab")
+
+    def test_initial_cluster_key_rejects_invalid_keys(self):
+        for invalid in ["with space", "-leading", "under_score", "", "a" * 64]:
+            with self.subTest(key=invalid), self.assertRaises((ValidationError, ClusterActivationError)):
+                set_initial_cluster_key(invalid)
+
+        self.assertEqual(ProxmoxCluster.objects.get(pk=self.default.pk).key, "default")
+
+    def test_initial_cluster_key_is_normalized_rather_than_rejected(self):
+        # Operators type what looks natural; the stored key is the canonical form.
+        cluster = set_initial_cluster_key("  LAB  ")
+
+        self.assertEqual(cluster.key, "lab")
+
+    def test_initial_cluster_key_is_immutable_once_contract_is_active(self):
+        RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).update(
+            identity_contract_version=1
+        )
+
+        with self.assertRaises(ClusterActivationError):
+            set_initial_cluster_key("lab")
+
+        self.assertEqual(ProxmoxCluster.objects.get(pk=self.default.pk).key, "default")
+
+
+class ConcurrentBootstrapTests(TransactionTestCase):
+    """Bootstrap is a service invariant, not a process-startup assumption: scans
+    already overlap, so concurrent callers must serialize on the advisory lock."""
+
+    def test_concurrent_bootstrap_imports_exactly_once(self):
+        # Counting imports rather than surviving rows is the point: the unique
+        # constraints make the row counts converge even with no lock at all, so only
+        # the import count distinguishes "serialized" from "raced, then repaired by
+        # an IntegrityError". The contract is that losers observe the committed
+        # marker and never repeat the import.
+        real_import = runtime_bootstrap._import_environment
+        counter_lock = threading.Lock()
+        import_calls: list[int] = []
+
+        def counting_import(state):
+            with counter_lock:
+                import_calls.append(1)
+            return real_import(state)
+
+        barrier = threading.Barrier(4)
+        errors: list[Exception] = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=10)
+                ensure_bootstrap()
+            except Exception as exc:  # surfaced below; a silent thread failure would fake a pass
+                errors.append(exc)
+            finally:
+                connection.close()
+
+        with patch.object(runtime_bootstrap, "_import_environment", counting_import):
+            threads = [threading.Thread(target=worker) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(import_calls), 1)
+        self.assertEqual(ProxmoxCluster.objects.count(), 1)
+        self.assertEqual(RuntimeConfigurationState.objects.count(), 1)
+        self.assertTrue(RuntimeConfigurationState.objects.get().bootstrap_completed)
 
 
 class LocalDatastoreNavTests(TestCase):
@@ -1989,7 +2167,7 @@ class ScanTaskTests(TestCase):
         with (
             patch("core.tasks.ProxmoxClient", FakeProxmoxClient),
             patch("core.tasks.StorageScanner", EmptyScanner),
-            patch("core.tasks.sync_runtime_configuration"),
+            patch("core.tasks.ensure_bootstrap"),
             patch("core.tasks._prune_scan_history_after_success"),
         ):
             run_scan(scan.id)
@@ -2568,7 +2746,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             fake_client.storage_config.return_value = {"content": "images,iso"}
 
             with (
-                patch("core.tasks.sync_runtime_configuration"),
+                patch("core.tasks.ensure_bootstrap"),
                 patch("core.views.storage.common.configured_clients", return_value=[fake_client]),
             ):
                 response = self.client.post(

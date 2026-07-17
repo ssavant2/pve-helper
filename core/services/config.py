@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 
-from core.models import ProxmoxEndpoint, ProxmoxStorageConsumer, StorageMount
+from core.models import ProxmoxStorageConsumer, StorageMount
 
 
 @dataclass(frozen=True)
@@ -65,56 +65,6 @@ def configured_storage_definitions() -> list[StorageDefinition]:
         for storage in candidates
         if storage.storage_id and not storage.storage_id.startswith("replace-with-")
     ]
-
-
-def sync_runtime_configuration() -> tuple[list[ProxmoxEndpoint], list[StorageMount]]:
-    endpoints = []
-    for definition in configured_endpoint_definitions():
-        endpoint, created = ProxmoxEndpoint.objects.get_or_create(
-            name=definition.name,
-            defaults={
-                "url": definition.url,
-                "enabled": True,
-            },
-        )
-        if not created and endpoint.url != definition.url:
-            endpoint.url = definition.url
-            endpoint.save(update_fields=["url", "updated_at"])
-        endpoints.append(endpoint)
-
-    storages = []
-    for definition in configured_storage_definitions():
-        storage, created = StorageMount.objects.get_or_create(
-            storage_id=definition.storage_id,
-            defaults={
-                "display_name": definition.display_name,
-                "export": definition.export,
-                "path": definition.path,
-                "trash_path": definition.trash_path,
-                "expected_consumers": definition.expected_consumers,
-                "enabled": True,
-            },
-        )
-        if not created:
-            storage.display_name = definition.display_name
-            storage.export = definition.export
-            storage.path = definition.path
-            storage.trash_path = definition.trash_path
-            storage.expected_consumers = definition.expected_consumers
-            storage.save(
-                update_fields=[
-                    "display_name",
-                    "export",
-                    "path",
-                    "trash_path",
-                    "expected_consumers",
-                    "updated_at",
-                ]
-            )
-        storages.append(storage)
-        sync_storage_consumers(storage)
-
-    return endpoints, storages
 
 
 def sync_storage_consumers(storage: StorageMount) -> None:

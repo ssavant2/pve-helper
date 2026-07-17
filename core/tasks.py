@@ -27,7 +27,7 @@ from .models import (
 from .services.classification import classify_entry, extract_disk_references
 from .services.audit_events import record_audit_event
 from .services.console_session_cleanup import prune_console_sessions
-from .services.config import sync_runtime_configuration
+from .services.runtime_bootstrap import ensure_bootstrap
 from .services.current_guest_inventory import (
     ScanGuestObservation,
     reconcile_live_guest_inventory,
@@ -1103,10 +1103,13 @@ def _run_scan(scan: ScanRun) -> None:
     now = timezone.now()
     scan.status = ScanRun.Status.RUNNING
     scan.started_at = now
-    scan.progress_message = "Syncing runtime configuration."
+    scan.progress_message = "Resolving runtime configuration."
     scan.save(update_fields=["status", "started_at", "progress_message", "updated_at"])
 
-    sync_runtime_configuration()
+    # Ensure the installation was bootstrapped, then read DB-owned configuration.
+    # The environment is not reapplied here: after the durable marker exists the
+    # database is the sole runtime authority for endpoints, storage and consumers.
+    ensure_bootstrap()
     endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True).order_by("name"))
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
     scan_target = scan.target_storage
