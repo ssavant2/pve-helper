@@ -340,6 +340,124 @@ For new deployments this is handled by the init script mounted into
 with `DB_USER` as `POSTGRES_USER`, follow `docs/postgres-hardening.md` once
 before switching the DB service to `DB_ADMIN_USER`.
 
+## Secret encryption keyring
+
+Proxmox API tokens are stored per cluster in the database, encrypted at rest. The
+key that decrypts them lives only in the environment, in
+`PVE_HELPER_ENCRYPTION_KEYS`.
+
+**This is the most load-bearing secret in the deployment.** `.env` is reduced to
+the app secret, the database and this keyring, and every cluster credential is
+sealed under it. Lose the active key and no cluster credential can be read: the
+app refuses to start rather than pretending the clusters are merely unreachable,
+and the only way back is re-entering every token by hand.
+
+It is deliberately not `SECRET_KEY`. That key gets rotated for session and signing
+reasons, and doing so must never make every cluster credential unreadable.
+
+### Format
+
+```
+PVE_HELPER_ENCRYPTION_KEYS=<key-id>:<base64-32-byte-key>[,<key-id>:<base64-32-byte-key>...]
+PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID=<key-id>
+```
+
+Key ids are lowercase (`a-z`, `0-9`, `-`, `_`) and are stored inside every sealed
+value, which is how a read knows which key to use. `PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID`
+names the key that seals *new* secrets; it may be omitted only when the keyring
+holds exactly one key. Keep old keys in the keyring until nothing is sealed under
+them any more.
+
+Generate a key:
+
+```bash
+docker compose exec -T web python -c \
+  "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"
+```
+
+### Custody
+
+- **Back up every key id that any stored ciphertext still names**, not just the
+  active one. `rotate_encryption_keys` (below) is what makes an old key
+  droppable; until it has run, that key is still required to read data.
+- Store the backup somewhere that survives the loss of this host and of `.env`,
+  and that is not the same place as a database backup — a backup holding both the
+  ciphertext and its key protects nothing.
+- Treat a key id as permanent. Reusing an id for different key material makes
+  every value sealed under the old one undecryptable *and* unidentifiable.
+- A database backup taken today is only restorable while the keys referenced by
+  the credentials **in that backup** still exist. Retire keys on the same schedule
+  as the backups that depend on them.
+
+### Rotation
+
+Rotation decrypts each credential with the key that sealed it and re-seals it
+under the active key. The Proxmox token itself does not change. This is what makes
+a compromised key recoverable.
+
+```bash
+# 1. Add the new key alongside the old one and make it active, then restart.
+#    PVE_HELPER_ENCRYPTION_KEYS=old1:<...>,new1:<...>
+#    PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID=new1
+
+# 2. See what would change. This is the default; nothing is written.
+docker compose exec -T web python manage.py rotate_encryption_keys
+
+# 3. Apply.
+docker compose exec -T web python manage.py rotate_encryption_keys --apply
+
+# 4. Only once this reports nothing pending may the old key be dropped from the
+#    keyring — and only after any database backup that still needs it has aged out.
+docker compose exec -T web python manage.py rotate_encryption_keys
+```
+
+Audit records which cluster was rotated and between which key ids. It never
+records secret material.
+
+### Recovering from a missing key
+
+Startup fails with `pve_helper.E010`, naming the key ids that are missing:
+
+```
+Stored cluster credentials reference encryption keys that are not in the keyring: <key-id>.
+```
+
+This is not a Proxmox outage and must not be treated as one. Two ways back:
+
+1. **Restore the named key** into `PVE_HELPER_ENCRYPTION_KEYS` from backup/escrow
+   and restart. Nothing else is needed; the credentials were never damaged.
+2. **Re-enter the tokens.** If the key is genuinely gone, the sealed secrets are
+   unrecoverable and each cluster's token must be set again:
+
+   ```bash
+   docker compose exec -T web sh -c \
+     'PVE_HELPER_TOKEN_SECRET="<token secret>" \
+      python manage.py set_cluster_credential <cluster-key> "<token-id>"'
+   ```
+
+   `set_cluster_credential` and `rotate_encryption_keys` deliberately skip the
+   startup checks, so they run in exactly the broken state they repair. Without
+   that, the check reporting the problem would block the command fixing it.
+
+The token secret is read from `PVE_HELPER_TOKEN_SECRET` or stdin and never from an
+argument: arguments are visible in the process list and in shell history.
+
+### Credential cutover
+
+Existing installations start with the legacy global `PVE_API_TOKEN_ID` /
+`PVE_API_TOKEN_SECRET`. Moving to per-cluster credentials is one explicit step,
+because it changes where every provider call gets its identity:
+
+```bash
+docker compose exec -T web python manage.py complete_credential_cutover
+```
+
+It seals the legacy token into the bootstrap cluster and records a durable marker;
+from then on the legacy settings are never read. They are *ignored, not deleted* —
+rolling the code back resumes reading them, and re-import is idempotent. **Do not
+remove the legacy token from the environment until the identity contract version 1
+boundary has succeeded.**
+
 ## Authentik
 
 Follow `docs/authentik-oidc-setup.md`.

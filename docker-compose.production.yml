@@ -112,6 +112,11 @@ services:
       REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
       PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:?Set PVE_API_TOKEN_ID in .env}
       PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:?Set PVE_API_TOKEN_SECRET in .env}
+      # Seals cluster API tokens at rest. Optional until the credential cutover;
+      # required afterwards, and losing the active key makes every stored cluster
+      # credential unrecoverable. See the deployment runbook on custody and rotation.
+      PVE_HELPER_ENCRYPTION_KEYS: ${PVE_HELPER_ENCRYPTION_KEYS:-}
+      PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID: ${PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID:-}
       PVE_EXPECTED_CONSUMERS: ${PVE_EXPECTED_CONSUMERS:-pve-node-1}
       SCHEDULED_ACTIONS_ENABLED: ${SCHEDULED_ACTIONS_ENABLED:-true}
       SCHEDULED_ACTION_TIMEOUT_SECONDS: ${SCHEDULED_ACTION_TIMEOUT_SECONDS:-1800}
@@ -190,6 +195,11 @@ services:
       REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
       PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:?Set PVE_API_TOKEN_ID in .env}
       PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:?Set PVE_API_TOKEN_SECRET in .env}
+      # Seals cluster API tokens at rest. Optional until the credential cutover;
+      # required afterwards, and losing the active key makes every stored cluster
+      # credential unrecoverable. See the deployment runbook on custody and rotation.
+      PVE_HELPER_ENCRYPTION_KEYS: ${PVE_HELPER_ENCRYPTION_KEYS:-}
+      PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID: ${PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID:-}
       CONSOLE_ENABLED: ${CONSOLE_ENABLED:-true}
       CONSOLE_SESSION_TTL_SECONDS: ${CONSOLE_SESSION_TTL_SECONDS:-30}
       CONSOLE_CONNECT_TIMEOUT_SECONDS: ${CONSOLE_CONNECT_TIMEOUT_SECONDS:-10}
@@ -252,6 +262,11 @@ services:
       REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
       PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:?Set PVE_API_TOKEN_ID in .env}
       PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:?Set PVE_API_TOKEN_SECRET in .env}
+      # Seals cluster API tokens at rest. Optional until the credential cutover;
+      # required afterwards, and losing the active key makes every stored cluster
+      # credential unrecoverable. See the deployment runbook on custody and rotation.
+      PVE_HELPER_ENCRYPTION_KEYS: ${PVE_HELPER_ENCRYPTION_KEYS:-}
+      PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID: ${PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID:-}
       PVE_EXPECTED_CONSUMERS: ${PVE_EXPECTED_CONSUMERS:-pve-node-1}
       SCHEDULED_ACTIONS_ENABLED: ${SCHEDULED_ACTIONS_ENABLED:-true}
       SCHEDULED_ACTION_TIMEOUT_SECONDS: ${SCHEDULED_ACTION_TIMEOUT_SECONDS:-1800}
