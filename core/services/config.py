@@ -67,12 +67,18 @@ def configured_storage_definitions() -> list[StorageDefinition]:
     ]
 
 
-def sync_storage_consumers(storage: StorageMount) -> None:
+def sync_storage_consumers(storage: StorageMount, cluster) -> None:
+    """Reconcile the storage's expected consumers within one cluster.
+
+    Consumers are cluster-qualified, so this only ever adds, removes or reads rows
+    for `cluster`; another cluster's expectations for the same mount are untouched.
+    """
     expected = set(storage.expected_consumers or [])
     for node_name in expected:
         ProxmoxStorageConsumer.objects.get_or_create(
             storage=storage,
+            cluster=cluster,
             expected_node_name=node_name,
         )
 
-    storage.consumer_statuses.exclude(expected_node_name__in=expected).delete()
+    storage.consumer_statuses.filter(cluster=cluster).exclude(expected_node_name__in=expected).delete()

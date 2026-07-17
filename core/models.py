@@ -5,6 +5,9 @@ from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models.functions import Lower
 
+# A dependency-free value object: refs.py must never import models, or this cycles.
+from core.services.refs import NodeRef
+
 
 class TimestampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
@@ -468,10 +471,28 @@ class CurrentGuestInventoryState(TimestampedModel):
 
 
 class ProxmoxStorageConsumer(TimestampedModel):
+    """One cluster-qualified node expected to have a storage mounted.
+
+    Gate identity is (storage, cluster, node), consistent with NodeRef. A bare node
+    name is not enough: the gate governs destructive file operations, so if two
+    clusters each have a `pve1`, an unqualified consumer lets one cluster's scan
+    clear the other cluster's gate.
+    """
+
     storage = models.ForeignKey(
         StorageMount,
         on_delete=models.CASCADE,
         related_name="consumer_statuses",
+    )
+    # Nullable for the additive deploy only; the backfill attaches every existing
+    # row to the sole cluster. The gate fails closed on an unattributed consumer
+    # rather than matching it by bare name.
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="storage_consumers",
     )
     expected_node_name = models.CharField(max_length=120)
     last_successful_inventory_scan = models.DateTimeField(null=True, blank=True)
@@ -480,14 +501,59 @@ class ProxmoxStorageConsumer(TimestampedModel):
     class Meta:
         ordering = ["storage__display_name", "expected_node_name"]
         constraints = [
+            # Replaces the old (storage, expected_node_name) uniqueness, which would
+            # wrongly reject cluster B's `pve1` once a second cluster exists.
+            # nulls_distinct=False keeps the rule enforced for not-yet-backfilled rows.
             models.UniqueConstraint(
-                fields=["storage", "expected_node_name"],
-                name="unique_storage_expected_consumer",
+                fields=["storage", "cluster", "expected_node_name"],
+                name="unique_storage_cluster_expected_consumer",
+                nulls_distinct=False,
+            )
+        ]
+
+    def node_ref(self) -> "NodeRef | None":
+        if self.cluster_id is None:
+            return None
+        return NodeRef(cluster_key=self.cluster.key, node=self.expected_node_name)
+
+    def __str__(self) -> str:
+        cluster_key = self.cluster.key if self.cluster_id is not None else "unqualified"
+        return f"{self.storage.storage_id}: {cluster_key}/{self.expected_node_name}"
+
+
+class ScanClusterObservation(TimestampedModel):
+    """One scan's coverage of one cluster.
+
+    A scan stays a global orchestration job, but coverage belongs per cluster: a
+    single global list of node names is not adequate historical evidence once nodes
+    in different clusters share names.
+    """
+
+    scan_run = models.ForeignKey(
+        ScanRun,
+        on_delete=models.CASCADE,
+        related_name="cluster_observations",
+    )
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        on_delete=models.PROTECT,
+        related_name="scan_observations",
+    )
+    nodes_attempted = models.JSONField(default=list, blank=True)
+    nodes_succeeded = models.JSONField(default=list, blank=True)
+    errors = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["cluster__key"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scan_run", "cluster"],
+                name="unique_scan_cluster_observation",
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.storage.storage_id}: {self.expected_node_name}"
+        return f"scan {self.scan_run_id} coverage of {self.cluster.key}"
 
 
 class ScheduledAction(TimestampedModel):

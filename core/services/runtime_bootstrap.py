@@ -123,7 +123,7 @@ def _import_environment(state: RuntimeConfigurationState) -> None:
                 "enabled": True,
             },
         )
-        sync_storage_consumers(storage)
+        sync_storage_consumers(storage, cluster)
 
     state.bootstrap_completed = True
     state.bootstrap_completed_at = timezone.now()

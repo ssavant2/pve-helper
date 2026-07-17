@@ -42,6 +42,7 @@ from core.models import (
     ProxmoxCluster,
     ProxmoxEndpoint,
     ProxmoxInventory,
+    ProxmoxStorageConsumer,
     RuntimeConfigurationState,
     ScanRun,
     ScheduledAction,
@@ -60,6 +61,7 @@ from core.services.cluster_activation import (
     set_initial_cluster_key,
 )
 from core.services import runtime_bootstrap
+from core.services.refs import NodeRef, RefParseError
 from core.services.runtime_bootstrap import ensure_bootstrap
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
 from core.services.proxmox import (
@@ -98,7 +100,9 @@ from core.services.storage_actions import (
 )
 from core.services.storage_details import storage_details
 from core.services.trash_schedule import TRASH_PURGE_SCHEDULE_NAME, trash_purge_schedule_state
+from core.services.file_actions import _storage_gate_blocked
 from core.tasks import (
+    _storage_gate_status,
     dispatch_scheduled_actions,
     enqueue_scheduled_scan,
     inflate_storage_file_task,
@@ -1137,7 +1141,9 @@ class RuntimeConfigurationTests(TestCase):
 
     def test_emptied_configuration_is_not_silently_reimported_from_environment(self):
         ensure_bootstrap()
-        ProxmoxEndpoint.objects.all().update(cluster=None)
+        # Clusters are PROTECTed by the records that reference them, so emptying
+        # configuration means removing those first — as an explicit removal flow would.
+        ProxmoxStorageConsumer.objects.all().delete()
         ProxmoxEndpoint.objects.all().delete()
         ProxmoxCluster.objects.all().delete()
 
@@ -1234,6 +1240,132 @@ class ClusterActivationInvariantTests(TestCase):
             set_initial_cluster_key("lab")
 
         self.assertEqual(ProxmoxCluster.objects.get(pk=self.default.pk).key, "default")
+
+
+class StorageGateClusterIdentityTests(TestCase):
+    """The storage gate governs destructive file operations, so its evidence must be
+    cluster-qualified: two clusters may each contain a node named `pve1`."""
+
+    def setUp(self):
+        super().setUp()
+        self.cluster_a = ProxmoxCluster.objects.create(key="a", display_name="Cluster A", enabled=True)
+        # Cluster two cannot be enabled before activation; it may still be configured.
+        self.cluster_b = ProxmoxCluster.objects.create(key="b", display_name="Cluster B", enabled=False)
+        self.storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            export="truenas.example.com:/mnt/tank/proxmox-vm",
+            path="/storages/truenas-vm",
+            expected_consumers=["pve1"],
+        )
+        self.now = timezone.now()
+
+    def _consumer(self, cluster, node="pve1"):
+        return ProxmoxStorageConsumer.objects.create(
+            storage=self.storage, cluster=cluster, expected_node_name=node
+        )
+
+    def test_cluster_a_success_does_not_satisfy_cluster_b_gate(self):
+        self._consumer(self.cluster_a)
+        consumer_b = self._consumer(self.cluster_b)
+
+        # Only cluster A's pve1 was inventoried successfully.
+        status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
+
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["status"], "blocked")
+        self.assertIn("nr1:b:pve1", status["missing_node_refs"])
+        self.assertNotIn("nr1:a:pve1", status["missing_node_refs"])
+
+        consumer_b.refresh_from_db()
+        self.assertEqual(consumer_b.last_gate_status, "blocked")
+        self.assertIsNone(consumer_b.last_successful_inventory_scan)
+
+    def test_file_operations_stay_blocked_when_another_cluster_is_uncovered(self):
+        self._consumer(self.cluster_a)
+        self._consumer(self.cluster_b)
+
+        gate = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status=gate)
+        entry = FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.storage,
+            path="images/100/vm-100-disk-0.qcow2",
+            size_bytes=1,
+            classification=FileInventory.Classification.REFERENCED,
+        )
+
+        self.assertTrue(_storage_gate_blocked(entry))
+
+    def test_single_cluster_coverage_still_opens_its_own_gate(self):
+        consumer_a = self._consumer(self.cluster_a)
+
+        status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
+
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["inventoried_consumers"], ["pve1"])
+        self.assertEqual(status["expected_node_refs"], ["nr1:a:pve1"])
+
+        consumer_a.refresh_from_db()
+        self.assertEqual(consumer_a.last_gate_status, "ok")
+        self.assertEqual(consumer_a.last_successful_inventory_scan, self.now)
+
+    def test_unattributed_consumer_fails_closed(self):
+        # A consumer with no cluster cannot be shown to have been covered by the
+        # right cluster, so it must not be matched by bare node name.
+        ProxmoxStorageConsumer.objects.create(
+            storage=self.storage, cluster=None, expected_node_name="pve1"
+        )
+
+        status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
+
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["missing_consumers"], ["pve1"])
+
+    def test_expectation_without_a_consumer_row_is_missing(self):
+        status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
+
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["missing_consumers"], ["pve1"])
+
+    def test_same_node_name_in_two_clusters_are_distinct_consumers(self):
+        self._consumer(self.cluster_a)
+        self._consumer(self.cluster_b)
+
+        self.assertEqual(self.storage.consumer_statuses.count(), 2)
+        self.assertEqual(
+            sorted(str(c.node_ref()) for c in self.storage.consumer_statuses.all()),
+            ["nr1:a:pve1", "nr1:b:pve1"],
+        )
+
+    def test_duplicate_consumer_within_one_cluster_is_still_rejected(self):
+        self._consumer(self.cluster_a)
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._consumer(self.cluster_a)
+
+
+class NodeRefTests(SimpleTestCase):
+    def test_roundtrips_through_the_versioned_serializer(self):
+        ref = NodeRef(cluster_key="lab", node="pve1")
+
+        self.assertEqual(ref.serialize(), "nr1:lab:pve1")
+        self.assertEqual(NodeRef.parse("nr1:lab:pve1"), ref)
+
+    def test_same_node_name_in_two_clusters_is_not_equal(self):
+        self.assertNotEqual(NodeRef(cluster_key="a", node="pve1"), NodeRef(cluster_key="b", node="pve1"))
+
+    def test_rejects_malformed_or_unknown_versions(self):
+        for raw in ["", "pve1", "lab:pve1", "nr2:lab:pve1", "nr1::pve1", "nr1:LAB:pve1"]:
+            with self.subTest(raw=raw), self.assertRaises(RefParseError):
+                NodeRef.parse(raw)
+
+    def test_rejects_invalid_construction(self):
+        with self.assertRaises(RefParseError):
+            NodeRef(cluster_key="Lab", node="pve1")
+        with self.assertRaises(RefParseError):
+            NodeRef(cluster_key="lab", node="")
 
 
 class ConcurrentBootstrapTests(TransactionTestCase):

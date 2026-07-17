@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -19,6 +20,7 @@ from .models import (
     FileInventory,
     ProxmoxEndpoint,
     ProxmoxInventory,
+    ScanClusterObservation,
     ScanRun,
     StorageMount,
     StorageSpaceSnapshot,
@@ -1131,15 +1133,27 @@ def _run_scan(scan: ScanRun) -> None:
     referenced_volids: set[str] = set()
     template_vmids: set[int] = set()
 
+    # Coverage is recorded per cluster: a node name alone is not evidence, because
+    # two clusters may both have a `pve1`. An endpoint with no cluster contributes
+    # to no cluster's coverage rather than to a global pool.
+    cluster_attempts: dict[int, set[str]] = defaultdict(set)
+    cluster_coverage: dict[int, set[str]] = defaultdict(set)
+    cluster_errors: dict[int, dict[str, Any]] = defaultdict(dict)
+
     for endpoint in endpoints:
         client = ProxmoxClient(endpoint.url)
         node_name = client.discover_node_name(endpoint.name)
         endpoint_attempts.append(node_name)
         result = client.inventory(node_name)
 
+        if endpoint.cluster_id is not None:
+            cluster_attempts[endpoint.cluster_id].add(node_name)
+
         if result.ok:
             endpoint_successes.append(node_name)
             successful_endpoint_objects.append(endpoint)
+            if endpoint.cluster_id is not None:
+                cluster_coverage[endpoint.cluster_id].add(node_name)
             endpoint.last_health_status = "ok"
             endpoint.last_successful_scan = timezone.now()
             endpoint.details = {"node": node_name}
@@ -1147,6 +1161,8 @@ def _run_scan(scan: ScanRun) -> None:
             endpoint.last_health_status = "error"
             endpoint.details = {"node": node_name, "errors": result.errors}
             endpoint_errors[node_name] = result.errors
+            if endpoint.cluster_id is not None:
+                cluster_errors[endpoint.cluster_id][node_name] = result.errors
         endpoint.save(update_fields=["last_health_status", "last_successful_scan", "details", "updated_at"])
 
         for obj in result.objects:
@@ -1179,8 +1195,11 @@ def _run_scan(scan: ScanRun) -> None:
         errors=endpoint_errors,
         observed_at=inventory_at,
     )
-    gate_status = _storage_gate_status(storages, endpoint_successes, inventory_at)
+    _record_cluster_observations(scan, endpoints, cluster_attempts, cluster_coverage, cluster_errors)
+    gate_status = _storage_gate_status(storages, cluster_coverage, inventory_at)
 
+    # Retained as legacy global evidence for existing history readers; the
+    # authoritative coverage is now the per-cluster observations above.
     scan.endpoints_attempted = endpoint_attempts
     scan.endpoints_succeeded = endpoint_successes
     scan.proxmox_inventory_at = inventory_at
@@ -1375,30 +1394,95 @@ def _record_space_snapshots(
     return created
 
 
+def _record_cluster_observations(
+    scan: ScanRun,
+    endpoints: list[ProxmoxEndpoint],
+    cluster_attempts: dict[int, set[str]],
+    cluster_coverage: dict[int, set[str]],
+    cluster_errors: dict[int, dict[str, Any]],
+) -> None:
+    """Store one coverage observation per cluster this scan attempted."""
+    cluster_ids = {endpoint.cluster_id for endpoint in endpoints if endpoint.cluster_id is not None}
+    for cluster_id in cluster_ids:
+        ScanClusterObservation.objects.update_or_create(
+            scan_run=scan,
+            cluster_id=cluster_id,
+            defaults={
+                "nodes_attempted": sorted(cluster_attempts.get(cluster_id, set())),
+                "nodes_succeeded": sorted(cluster_coverage.get(cluster_id, set())),
+                "errors": cluster_errors.get(cluster_id, {}),
+            },
+        )
+
+
 def _storage_gate_status(
     storages: list[StorageMount],
-    endpoint_successes: list[str],
+    cluster_coverage: dict[int, set[str]],
     inventory_at: datetime,
 ) -> dict[str, dict[str, Any]]:
-    succeeded = set(endpoint_successes)
+    """Decide, per storage, whether inventory coverage justifies file operations.
+
+    Coverage is matched on (cluster, node), never on a bare node name: this gate
+    governs destructive file operations, so cluster A's `pve1` scanning successfully
+    must not clear a gate for storage in cluster B. An unattributed consumer — one
+    with no cluster — is treated as uncovered rather than matched by name, because
+    the evidence cannot be shown to come from the right cluster.
+    """
     result: dict[str, dict[str, Any]] = {}
 
     for storage in storages:
-        expected = list(storage.expected_consumers or [])
-        missing = sorted(set(expected) - succeeded)
-        status = "ok" if not missing else "blocked"
-        result[storage.storage_id] = {
-            "ok": not missing,
-            "status": status,
-            "expected_consumers": expected,
-            "inventoried_consumers": sorted(set(expected) & succeeded),
-            "missing_consumers": missing,
-        }
-        for consumer in storage.consumer_statuses.all():
-            consumer.last_gate_status = status if consumer.expected_node_name in expected else "not_expected"
-            if consumer.expected_node_name in succeeded:
+        expected_names = set(storage.expected_consumers or [])
+        consumers = list(storage.consumer_statuses.select_related("cluster").all())
+
+        expected_refs: list[str] = []
+        covered_names: list[str] = []
+        missing_names: list[str] = []
+        missing_refs: list[str] = []
+
+        for consumer in consumers:
+            if consumer.expected_node_name not in expected_names:
+                consumer.last_gate_status = "not_expected"
+                consumer.save(update_fields=["last_gate_status", "updated_at"])
+                continue
+
+            ref = consumer.node_ref()
+            covered = (
+                ref is not None
+                and consumer.expected_node_name in cluster_coverage.get(consumer.cluster_id, set())
+            )
+            label = ref.serialize() if ref is not None else consumer.expected_node_name
+            expected_refs.append(label)
+
+            if covered:
+                covered_names.append(consumer.expected_node_name)
                 consumer.last_successful_inventory_scan = inventory_at
-            consumer.save(update_fields=["last_gate_status", "last_successful_inventory_scan", "updated_at"])
+                consumer.last_gate_status = "ok"
+            else:
+                missing_names.append(consumer.expected_node_name)
+                missing_refs.append(label)
+                consumer.last_gate_status = "blocked"
+            consumer.save(
+                update_fields=["last_gate_status", "last_successful_inventory_scan", "updated_at"]
+            )
+
+        # An expectation with no consumer row cannot have been covered by anything.
+        unqualified = sorted(expected_names - {c.expected_node_name for c in consumers})
+        missing_names.extend(unqualified)
+        missing_refs.extend(unqualified)
+
+        status = "ok" if not missing_names else "blocked"
+        result[storage.storage_id] = {
+            "ok": not missing_names,
+            "status": status,
+            # Display lists stay bare node names so the single-cluster UI is
+            # unchanged; the *_refs lists carry the unambiguous evidence. Phase 4
+            # owns cluster qualification of what is rendered.
+            "expected_consumers": sorted(expected_names),
+            "inventoried_consumers": sorted(covered_names),
+            "missing_consumers": sorted(missing_names),
+            "expected_node_refs": sorted(expected_refs),
+            "missing_node_refs": sorted(missing_refs),
+        }
 
     return result
 
