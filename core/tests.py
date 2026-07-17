@@ -164,6 +164,40 @@ class HermeticProxmoxMixin:
         return client
 
 
+
+class LiveGuestDisplayReadTests(TestCase):
+    """Display reads resolve an explicit cluster and read through its endpoints."""
+
+    def test_live_guest_inventory_uses_cluster_resources(self):
+        client = Mock()
+
+        def get(path, timeout=None):
+            if path == "cluster/resources?type=vm":
+                return [
+                    {"type": "qemu", "vmid": 500, "name": "Lab VM", "node": "pve1", "status": "running"},
+                    {"type": "lxc", "vmid": 101, "name": "Lab CT", "node": "pve2", "status": "stopped"},
+                ]
+            if path == "nodes":
+                return []
+            raise AssertionError(f"Unexpected Proxmox path: {path}")
+
+        client.get.side_effect = get
+
+        # The read resolves its cluster and builds the client from that cluster's
+        # endpoint, so the double is bound there rather than to the global fan-out.
+        cluster = ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
+        ProxmoxEndpoint.objects.create(
+            name="inv-pve", url="https://pve.test.invalid:8006", cluster=cluster, enabled=True
+        )
+        with patch("core.services.cluster_resolver.client_for_endpoint", return_value=client):
+            guests = _fetch_live_guest_inventory_uncached()
+
+        self.assertEqual([(guest.object_type, guest.vmid, guest.name, guest.node) for guest in guests], [
+            ("ct", 101, "Lab CT", "pve2"),
+            ("vm", 500, "Lab VM", "pve1"),
+        ])
+
+
 class PowerActionMapTests(SimpleTestCase):
     def test_power_action_map_and_vm_only_set(self):
         from core.views.common import (
@@ -1645,29 +1679,6 @@ class ProxmoxClientTests(SimpleTestCase):
                 client.power_action(node="pve1", object_type="vm", vmid=100, action="suspend")
 
         mock_http.request.assert_not_called()
-
-    def test_live_guest_inventory_uses_cluster_resources(self):
-        client = Mock()
-
-        def get(path, timeout=None):
-            if path == "cluster/resources?type=vm":
-                return [
-                    {"type": "qemu", "vmid": 500, "name": "Lab VM", "node": "pve1", "status": "running"},
-                    {"type": "lxc", "vmid": 101, "name": "Lab CT", "node": "pve2", "status": "stopped"},
-                ]
-            if path == "nodes":
-                return []
-            raise AssertionError(f"Unexpected Proxmox path: {path}")
-
-        client.get.side_effect = get
-
-        with patch("core.services.proxmox.configured_clients", return_value=[client]):
-            guests = _fetch_live_guest_inventory_uncached()
-
-        self.assertEqual([(guest.object_type, guest.vmid, guest.name, guest.node) for guest in guests], [
-            ("ct", 101, "Lab CT", "pve2"),
-            ("vm", 500, "Lab VM", "pve1"),
-        ])
 
     def test_wait_for_task_returns_successful_result(self):
         client = ProxmoxClient("https://pve.example.com:8006")

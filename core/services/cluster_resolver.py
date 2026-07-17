@@ -56,6 +56,9 @@ class ClusterReadResult:
     answering_endpoint: str
     attempted: tuple[EndpointAttempt, ...]
     complete: bool
+    # The client that answered. Follow-up node-local reads must go through the
+    # endpoint that proved reachable, not through a fresh pick that might not be.
+    client: ProxmoxClient | None = None
 
     @property
     def errors(self) -> list[str]:
@@ -121,6 +124,7 @@ def cluster_wide_read(
             answering_endpoint=endpoint.name,
             attempted=tuple(attempts),
             complete=True,
+            client=client,
         )
 
     return ClusterReadResult(

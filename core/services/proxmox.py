@@ -680,51 +680,94 @@ def fetch_live_guest_locks() -> dict[tuple[str, str, int], str]:
     return result
 
 
-def _fetch_live_guest_locks_uncached() -> dict[tuple[str, str, int], str]:
-    locks: dict[tuple[str, str, int], str] = {}
-    deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
-    for client in configured_clients():
+def _display_cluster():
+    """The cluster a passive display read renders, or None.
+
+    Display reads tolerate missing data by design, so an unresolvable scope
+    produces an empty result rather than an exception: a page must not break
+    because no cluster is configured yet. Destructive callers use
+    fetch_verified_guest_inventory(), which reports coverage explicitly instead.
+    """
+    from core.services.cluster_resolver import require_sole_enabled_cluster_for_legacy_caller
+
+    try:
+        return require_sole_enabled_cluster_for_legacy_caller()
+    except Exception:
+        return None
+
+
+def _cluster_nodes(cluster, *, operation: str, deadline: float):
+    """List the cluster's nodes from whichever member answers first.
+
+    `nodes` is a cluster-wide response, so one answer covers the cluster and the
+    follow-up node-local reads ride on the endpoint that just proved reachable.
+    Asking a second member would return the same list and reach the same nodes.
+    """
+    from core.services.cluster_resolver import cluster_wide_read
+
+    def _read(client):
         timeout = _remaining_display_timeout(deadline)
         if timeout is None:
-            break
-        try:
-            nodes = client.get("nodes", timeout=timeout)
-        except ProxmoxAPIError as exc:
-            logger.warning(
-                "Proxmox read failed: endpoint=%s operation=linked_clone_nodes error=%s",
-                client.endpoint,
-                exc,
-                extra={
-                    "proxmox_endpoint": client.endpoint,
-                    "proxmox_operation": "linked_clone_nodes",
-                },
-            )
-            continue
+            raise ProxmoxAPIError("display timeout budget exhausted")
+        nodes = client.get("nodes", timeout=timeout)
         if not isinstance(nodes, list):
+            raise ProxmoxAPIError("node listing returned an invalid response")
+        return nodes
+
+    result = cluster_wide_read(cluster, operation=operation, call=_read)
+    return (result.client, result.value or []) if result.complete else (None, [])
+
+
+def _cluster_resources(cluster, *, operation: str, deadline: float) -> list:
+    """Read cluster/resources for guests from whichever member answers first."""
+    from core.services.cluster_resolver import cluster_wide_read
+
+    def _read(client):
+        timeout = _remaining_display_timeout(deadline)
+        if timeout is None:
+            raise ProxmoxAPIError("display timeout budget exhausted")
+        resources = client.get("cluster/resources?type=vm", timeout=timeout)
+        if not isinstance(resources, list):
+            raise ProxmoxAPIError("cluster resources returned an invalid response")
+        return resources
+
+    result = cluster_wide_read(cluster, operation=operation, call=_read)
+    return result.value or []
+
+
+def _fetch_live_guest_locks_uncached(*, cluster=None) -> dict[tuple[str, str, int], str]:
+    locks: dict[tuple[str, str, int], str] = {}
+    cluster = cluster or _display_cluster()
+    if cluster is None:
+        return locks
+    deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
+    client, nodes = _cluster_nodes(cluster, operation="guest_locks_nodes", deadline=deadline)
+    if client is None:
+        return locks
+
+    for node_info in nodes:
+        node = str(node_info.get("node") or "") if isinstance(node_info, dict) else ""
+        if not node or str(node_info.get("status") or "") != "online":
             continue
-        for node_info in nodes:
-            node = str(node_info.get("node") or "")
-            if not node or str(node_info.get("status") or "") != "online":
+        for resource_type, object_type in (("qemu", "vm"), ("lxc", "ct")):
+            timeout = _remaining_display_timeout(deadline)
+            if timeout is None:
+                return locks
+            try:
+                guests = client.get(f"nodes/{quote(node, safe='')}/{resource_type}", timeout=timeout)
+            except ProxmoxAPIError:
                 continue
-            for resource_type, object_type in (("qemu", "vm"), ("lxc", "ct")):
-                timeout = _remaining_display_timeout(deadline)
-                if timeout is None:
-                    return locks
+            if not isinstance(guests, list):
+                continue
+            for guest in guests:
+                lock = str(guest.get("lock") or "").strip() if isinstance(guest, dict) else ""
+                if not lock:
+                    continue
                 try:
-                    guests = client.get(f"nodes/{quote(node, safe='')}/{resource_type}", timeout=timeout)
-                except ProxmoxAPIError:
+                    vmid = int(guest.get("vmid"))
+                except (TypeError, ValueError):
                     continue
-                if not isinstance(guests, list):
-                    continue
-                for guest in guests:
-                    lock = str(guest.get("lock") or "").strip() if isinstance(guest, dict) else ""
-                    if not lock:
-                        continue
-                    try:
-                        vmid = int(guest.get("vmid"))
-                    except (TypeError, ValueError):
-                        continue
-                    locks[(node, object_type, vmid)] = lock
+                locks[(node, object_type, vmid)] = lock
     return locks
 
 
@@ -741,89 +784,92 @@ def fetch_live_guest_lineage() -> dict[int, int]:
     return result
 
 
-def _fetch_live_guest_lineage_uncached() -> dict[int, int]:
+def _fetch_live_guest_lineage_uncached(*, cluster=None) -> dict[int, int]:
     lineage: dict[int, int] = {}
+    cluster = cluster or _display_cluster()
+    if cluster is None:
+        return lineage
     seen_storages: set[str] = set()
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
-    for client in configured_clients():
+    client, nodes = _cluster_nodes(cluster, operation="linked_clone_nodes", deadline=deadline)
+    if client is None:
+        return lineage
+
+    for node_info in nodes:
+        node = str(node_info.get("node") or "") if isinstance(node_info, dict) else ""
+        if not node or str(node_info.get("status") or "") != "online":
+            continue
         timeout = _remaining_display_timeout(deadline)
         if timeout is None:
-            break
+            return lineage
         try:
-            nodes = client.get("nodes", timeout=timeout)
-        except ProxmoxAPIError:
+            storages = client.get(f"nodes/{quote(node, safe='')}/storage?content=images", timeout=timeout)
+        except ProxmoxAPIError as exc:
+            logger.warning(
+                "Proxmox read failed: cluster=%s endpoint=%s operation=linked_clone_storages node=%s error=%s",
+                cluster.key,
+                client.endpoint,
+                node,
+                exc,
+                extra={
+                    "proxmox_cluster": cluster.key,
+                    "proxmox_endpoint": client.endpoint,
+                    "proxmox_operation": "linked_clone_storages",
+                    "proxmox_node": node,
+                },
+            )
             continue
-        if not isinstance(nodes, list):
+        if not isinstance(storages, list):
             continue
-        for node_info in nodes:
-            node = str(node_info.get("node") or "")
-            if not node or str(node_info.get("status") or "") != "online":
+        for storage in storages:
+            if not isinstance(storage, dict) or not storage.get("storage"):
                 continue
+            storage_id = str(storage["storage"])
+            # Shared storage is reported by every node that mounts it; its content
+            # only needs reading once per cluster.
+            if storage_id in seen_storages:
+                continue
+            seen_storages.add(storage_id)
             timeout = _remaining_display_timeout(deadline)
             if timeout is None:
                 return lineage
             try:
-                storages = client.get(f"nodes/{quote(node, safe='')}/storage?content=images", timeout=timeout)
+                content = client.get(
+                    f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content?content=images",
+                    timeout=timeout,
+                )
             except ProxmoxAPIError as exc:
                 logger.warning(
-                    "Proxmox read failed: endpoint=%s operation=linked_clone_storages node=%s error=%s",
+                    "Proxmox read failed: cluster=%s endpoint=%s operation=linked_clone_content node=%s storage=%s error=%s",
+                    cluster.key,
                     client.endpoint,
                     node,
+                    storage_id,
                     exc,
                     extra={
+                        "proxmox_cluster": cluster.key,
                         "proxmox_endpoint": client.endpoint,
-                        "proxmox_operation": "linked_clone_storages",
+                        "proxmox_operation": "linked_clone_content",
                         "proxmox_node": node,
+                        "proxmox_storage": storage_id,
                     },
                 )
                 continue
-            if not isinstance(storages, list):
+            if not isinstance(content, list):
                 continue
-            for storage in storages:
-                if not isinstance(storage, dict) or not storage.get("storage"):
+            for item in content:
+                if not isinstance(item, dict):
                     continue
-                storage_id = str(storage["storage"])
-                if storage_id in seen_storages:
+                match = _BASE_VOLUME_RE.search(str(item.get("parent") or ""))
+                if not match:
                     continue
-                seen_storages.add(storage_id)
-                timeout = _remaining_display_timeout(deadline)
-                if timeout is None:
-                    return lineage
                 try:
-                    content = client.get(
-                        f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content?content=images",
-                        timeout=timeout,
-                    )
-                except ProxmoxAPIError as exc:
-                    logger.warning(
-                        "Proxmox read failed: endpoint=%s operation=linked_clone_content node=%s storage=%s error=%s",
-                        client.endpoint,
-                        node,
-                        storage_id,
-                        exc,
-                        extra={
-                            "proxmox_endpoint": client.endpoint,
-                            "proxmox_operation": "linked_clone_content",
-                            "proxmox_node": node,
-                            "proxmox_storage": storage_id,
-                        },
-                    )
+                    child = int(item.get("vmid"))
+                    parent = int(match.group(1))
+                except (TypeError, ValueError):
                     continue
-                if not isinstance(content, list):
-                    continue
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    match = _BASE_VOLUME_RE.search(str(item.get("parent") or ""))
-                    if not match:
-                        continue
-                    try:
-                        child = int(item.get("vmid"))
-                        parent = int(match.group(1))
-                    except (TypeError, ValueError):
-                        continue
-                    if child and parent and child != parent:
-                        lineage[child] = parent
+                if child and parent and child != parent:
+                    lineage[child] = parent
     return lineage
 
 
@@ -838,14 +884,21 @@ def clear_live_guest_caches() -> None:
     )
 
 
-def _paused_vm_keys(unknown_vm_keys, deadline) -> set[tuple[str, str, int]]:
+def _paused_vm_keys(unknown_vm_keys, deadline, *, cluster) -> set[tuple[str, str, int]]:
     """A RAM-suspended VM reports status ``unknown`` in cluster/resources; the
     real signal is ``qmpstatus == paused`` from status/current. Resolve only the
-    (rare) unknown VMs, best-effort within the display timeout budget."""
+    (rare) unknown VMs, best-effort within the display timeout budget.
+
+    Unlike a cluster-wide listing this addresses a specific node, so the endpoint
+    loop is transport failover rather than a fan-out: it is bounded to this
+    cluster's endpoints, and a node reached through either member is the same node.
+    """
+    from core.services.cluster_resolver import cluster_clients
+
     paused: set[tuple[str, str, int]] = set()
     if not unknown_vm_keys:
         return paused
-    for client in configured_clients():
+    for client in cluster_clients(cluster):
         remaining = [key for key in unknown_vm_keys if key not in paused]
         if not remaining:
             break
@@ -864,10 +917,16 @@ def _paused_vm_keys(unknown_vm_keys, deadline) -> set[tuple[str, str, int]]:
     return paused
 
 
-def _hibernated_vm_keys(stopped_vm_keys, deadline) -> set[tuple[str, str, int]]:
+def _hibernated_vm_keys(stopped_vm_keys, deadline, *, cluster) -> set[tuple[str, str, int]]:
     """A hibernated (suspend-to-disk) VM is reported ``stopped`` but carries
     ``lock == suspended``. Resolve it cheaply with one ``nodes/<node>/qemu`` call
-    per node (which includes ``lock`` for every VM), not per VM."""
+    per node (which includes ``lock`` for every VM), not per VM.
+
+    As with the paused lookup, the endpoint loop is transport failover for a
+    node-addressed read and stays inside the selected cluster.
+    """
+    from core.services.cluster_resolver import cluster_clients
+
     hibernated: set[tuple[str, str, int]] = set()
     if not stopped_vm_keys:
         return hibernated
@@ -875,7 +934,7 @@ def _hibernated_vm_keys(stopped_vm_keys, deadline) -> set[tuple[str, str, int]]:
     for node, _object_type, vmid in stopped_vm_keys:
         stopped_by_node.setdefault(node, set()).add(vmid)
     pending_nodes = set(stopped_by_node)
-    for client in configured_clients():
+    for client in cluster_clients(cluster):
         for node in list(pending_nodes):
             timeout = _remaining_display_timeout(deadline)
             if timeout is None:
@@ -906,28 +965,24 @@ def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
     bounded; safety checks use direct guest APIs elsewhere.
     """
     statuses: dict[tuple[str, str, int], str] = {}
+    cluster = _display_cluster()
+    if cluster is None:
+        return statuses
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
-    for client in configured_clients():
-        timeout = _remaining_display_timeout(deadline)
-        if timeout is None:
-            break
-        try:
-            resources = client.get("cluster/resources?type=vm", timeout=timeout)
-        except ProxmoxAPIError:
-            continue
-        if not isinstance(resources, list):
-            continue
-        guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
-        for resource in resources:
-            _add_guest_summary(guests_by_key, resource)
-        for guest in guests_by_key.values():
-            if guest.status:
-                statuses[(guest.node, guest.object_type, guest.vmid)] = guest.status
+    resources = _cluster_resources(cluster, operation="live_guest_status", deadline=deadline)
+
+    guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
+    for resource in resources:
+        _add_guest_summary(guests_by_key, resource)
+    for guest in guests_by_key.values():
+        if guest.status:
+            statuses[(guest.node, guest.object_type, guest.vmid)] = guest.status
+
     unknown_vm_keys = [key for key, status in statuses.items() if status == "unknown" and key[1] == "vm"]
-    for key in _paused_vm_keys(unknown_vm_keys, deadline):
+    for key in _paused_vm_keys(unknown_vm_keys, deadline, cluster=cluster):
         statuses[key] = "paused"
     stopped_vm_keys = [key for key, status in statuses.items() if status == "stopped" and key[1] == "vm"]
-    for key in _hibernated_vm_keys(stopped_vm_keys, deadline):
+    for key in _hibernated_vm_keys(stopped_vm_keys, deadline, cluster=cluster):
         statuses[key] = "hibernated"
     return statuses
 
@@ -935,53 +990,43 @@ def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
 def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
     """Return lightweight guest inventory across all configured endpoints."""
     guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
+    cluster = _display_cluster()
+    if cluster is None:
+        return []
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
-    for client in configured_clients():
-        timeout = _remaining_display_timeout(deadline)
-        if timeout is None:
-            break
-        try:
-            resources = client.get("cluster/resources?type=vm", timeout=timeout)
-        except ProxmoxAPIError:
-            resources = []
-        if isinstance(resources, list):
-            guest_count_before = len(guests_by_key)
-            for resource in resources:
-                _add_guest_summary(guests_by_key, resource)
-            if len(guests_by_key) > guest_count_before:
-                continue
 
-        timeout = _remaining_display_timeout(deadline)
-        if timeout is None:
-            break
-        try:
-            nodes = client.get("nodes", timeout=timeout)
-        except ProxmoxAPIError:
-            continue
-        if not isinstance(nodes, list):
-            continue
-        for node_info in nodes:
-            node = str(node_info.get("node") or "")
-            if not node:
-                continue
-            for resource_type in ("qemu", "lxc"):
-                object_type = "vm" if resource_type == "qemu" else "ct"
-                timeout = _remaining_display_timeout(deadline)
-                if timeout is None:
-                    break
-                try:
-                    guests = client.get(f"nodes/{quote(node)}/{resource_type}", timeout=timeout)
-                except ProxmoxAPIError:
+    for resource in _cluster_resources(cluster, operation="live_guest_inventory", deadline=deadline):
+        _add_guest_summary(guests_by_key, resource)
+
+    if not guests_by_key:
+        # cluster/resources gave nothing usable, so ask each node directly through
+        # the endpoint that answers. Kept as a display-resilience path only: the
+        # authoritative membership read is fetch_verified_guest_inventory().
+        client, nodes = _cluster_nodes(cluster, operation="live_guest_inventory_nodes", deadline=deadline)
+        if client is not None:
+            for node_info in nodes:
+                node = str(node_info.get("node") or "") if isinstance(node_info, dict) else ""
+                if not node:
                     continue
-                if not isinstance(guests, list):
-                    continue
-                for guest in guests:
-                    _add_guest_summary(guests_by_key, guest, node=node, object_type=object_type)
+                for resource_type in ("qemu", "lxc"):
+                    object_type = "vm" if resource_type == "qemu" else "ct"
+                    timeout = _remaining_display_timeout(deadline)
+                    if timeout is None:
+                        break
+                    try:
+                        guests = client.get(f"nodes/{quote(node)}/{resource_type}", timeout=timeout)
+                    except ProxmoxAPIError:
+                        continue
+                    if not isinstance(guests, list):
+                        continue
+                    for guest in guests:
+                        _add_guest_summary(guests_by_key, guest, node=node, object_type=object_type)
+
     unknown_vm_keys = [key for key, guest in guests_by_key.items() if guest.status == "unknown" and key[1] == "vm"]
-    for key in _paused_vm_keys(unknown_vm_keys, deadline):
+    for key in _paused_vm_keys(unknown_vm_keys, deadline, cluster=cluster):
         guests_by_key[key] = replace(guests_by_key[key], status="paused")
     stopped_vm_keys = [key for key, guest in guests_by_key.items() if guest.status == "stopped" and key[1] == "vm"]
-    for key in _hibernated_vm_keys(stopped_vm_keys, deadline):
+    for key in _hibernated_vm_keys(stopped_vm_keys, deadline, cluster=cluster):
         guests_by_key[key] = replace(guests_by_key[key], status="hibernated")
     for key, lock in fetch_live_guest_locks().items():
         if key in guests_by_key:
