@@ -111,11 +111,19 @@ class ProxmoxCluster(TimestampedModel):
     key = models.CharField(max_length=63, validators=[cluster_key_validator])
     display_name = models.CharField(max_length=160)
     enabled = models.BooleanField(default=True)
-    # Corroborating metadata observed from the cluster itself. Identity is `key`;
-    # these confirm that an endpoint still speaks for the cluster it claims.
+    # The pinned identity binding. `discovered_ca_uuid` is the identity claim (the
+    # cluster CA's UUID), `discovered_ca_fingerprint` the trust anchor pinned on
+    # first approval, `discovered_name` mutable corroboration. Identity is still
+    # `key`; these confirm that an endpoint still speaks for the cluster it claims.
     discovered_name = models.CharField(max_length=255, blank=True)
     discovered_ca_uuid = models.CharField(max_length=64, blank=True)
     discovered_ca_fingerprint = models.CharField(max_length=200, blank=True)
+    # Ingestion halts when an endpoint reports a different cluster CA than the one
+    # pinned: a re-pointed or restored endpoint would otherwise merge another
+    # cluster's guests under this key. Cleared only by explicit re-approval.
+    ingestion_quarantined = models.BooleanField(default=False)
+    quarantine_reason = models.CharField(max_length=255, blank=True)
+    quarantined_at = models.DateTimeField(null=True, blank=True)
     details = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -173,6 +181,42 @@ class ClusterCredential(TimestampedModel):
 
     def __str__(self) -> str:
         return f"credential for {self.cluster.key} ({self.token_id})"
+
+
+class ClusterTransportTrust(TimestampedModel):
+    """How this cluster's TLS certificate chain is trusted.
+
+    Deliberately separate from the identity binding on ProxmoxCluster: transport
+    trust answers which chain the HTTP client accepts, identity binding answers
+    which cluster an authenticated endpoint belongs to. They are often the same PVE
+    CA, but not when pveproxy serves a publicly trusted certificate while the
+    internal cluster CA remains the identity claim.
+
+    `PVE_CA_BUNDLE` cannot express this: it is one global file outside the database,
+    so it cannot say "cluster A trusts CA X, cluster B trusts CA Y" and a UI cannot
+    manage it. Trust therefore lives here, per cluster.
+    """
+
+    class Mode(models.TextChoices):
+        PUBLIC = "public", "Publicly trusted"
+        CA_PEM = "ca_pem", "Internal CA bundle"
+
+    cluster = models.OneToOneField(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="transport_trust",
+    )
+    mode = models.CharField(max_length=20, choices=Mode.choices, default=Mode.PUBLIC)
+    # The exclusively trusted CA bundle for CA_PEM mode; empty for PUBLIC.
+    ca_pem = models.TextField(blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["cluster__key"]
+
+    def __str__(self) -> str:
+        return f"transport trust for {self.cluster.key} ({self.mode})"
 
 
 class RuntimeConfigurationState(TimestampedModel):

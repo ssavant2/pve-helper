@@ -7,9 +7,9 @@ endpoint, and failover stays inside the selected cluster. Cross-cluster fallback
 VMID or node name is forbidden — it is precisely how a write reaches the wrong
 cluster.
 
-Credentials and TLS trust still come from the global compatibility settings via
-ProxmoxClient, because only one cluster can be enabled before activation. Phase 1c
-and 1d move those onto the cluster; this module is where they will be injected.
+Credentials and TLS trust are resolved per cluster in `client_for_endpoint`: the
+credential seals the request header, the trust profile selects the pooled TLS
+client. Before their cutovers both fall back to the global compatibility settings.
 """
 
 from __future__ import annotations
@@ -37,24 +37,32 @@ class ClusterDisabledError(ClusterResolutionError):
     """Acquisition was attempted against a cluster an operator has disabled."""
 
 
-def _require_enabled(cluster: ProxmoxCluster) -> None:
-    """Refuse live acquisition against a disabled cluster.
+class ClusterQuarantinedError(ClusterResolutionError):
+    """Acquisition was attempted against a cluster whose identity is in doubt."""
 
-    Disabling blocks new provider writes, scheduled executions, consoles and
-    refresh acquisition immediately, while last-known read models and history stay
-    readable as visibly stale. The check lives at each acquisition entry point
-    rather than inside the endpoint query, because verification flows — onboarding
-    a cluster, or re-verifying identity before re-enabling one — legitimately talk
-    to a cluster that is not enabled yet.
 
-    Today the legacy adapter only ever yields an enabled cluster, so nothing
-    reaches this. Phase 3 hands callers an explicit cluster, which is exactly when
-    a disabled one could arrive here.
+def _require_acquirable(cluster: ProxmoxCluster) -> None:
+    """Refuse live acquisition against a disabled or quarantined cluster.
+
+    Both block new provider writes, scheduled executions, consoles and refresh
+    acquisition immediately, while last-known read models and history stay readable
+    as visibly stale. Disabling is an operator choice; quarantine is automatic on a
+    cluster-CA mismatch, where ingesting would merge a different cluster's guests.
+
+    The check lives at each acquisition entry point, not inside the endpoint query,
+    because verification flows legitimately talk to a cluster that is neither enabled
+    nor cleared: onboarding, re-verifying identity, and the CA discovery that lifts a
+    quarantine all build clients via `client_for_endpoint`, which stays ungated.
     """
     if not cluster.enabled:
         raise ClusterDisabledError(
             f"Cluster '{cluster.key}' is disabled. Re-enable it, which re-verifies its "
             "identity and trust, before reading from or writing to it."
+        )
+    if cluster.ingestion_quarantined:
+        raise ClusterQuarantinedError(
+            f"Cluster '{cluster.key}' is quarantined: {cluster.quarantine_reason} "
+            "Re-approve its identity before reading from or writing to it."
         )
 
 
@@ -105,8 +113,10 @@ def client_for_endpoint(endpoint: ProxmoxEndpoint) -> ProxmoxClient:
     Phase 1d adds the cluster's transport-trust profile alongside this.
     """
     from core.services.cluster_credentials import ClusterCredentialError, resolve_credential
+    from core.services.cluster_trust import TransportTrustError, resolve_trust_profile
 
     credential = None
+    trust_profile = None
     if endpoint.cluster_id is not None:
         try:
             credential = resolve_credential(endpoint.cluster)
@@ -114,12 +124,16 @@ def client_for_endpoint(endpoint: ProxmoxEndpoint) -> ProxmoxClient:
             # Fall through to the client's own legacy handling, which produces a
             # clear provider error rather than a resolver-shaped one.
             credential = None
-    return ProxmoxClient(endpoint.url, credential=credential)
+        try:
+            trust_profile = resolve_trust_profile(endpoint.cluster)
+        except TransportTrustError:
+            trust_profile = None
+    return ProxmoxClient(endpoint.url, credential=credential, trust_profile=trust_profile)
 
 
 def cluster_clients(cluster: ProxmoxCluster) -> list[ProxmoxClient]:
     """Clients for this cluster's enabled endpoints, and no other cluster's."""
-    _require_enabled(cluster)
+    _require_acquirable(cluster)
     return [client_for_endpoint(endpoint) for endpoint in enabled_endpoints(cluster)]
 
 
@@ -139,7 +153,7 @@ def cluster_wide_read(
     Only ProxmoxAPIError is caught. An unexpected exception is a bug and stays
     visible to tests and monitoring rather than being reported as degradation.
     """
-    _require_enabled(cluster)
+    _require_acquirable(cluster)
     attempts: list[EndpointAttempt] = []
 
     for endpoint in enabled_endpoints(cluster):
@@ -178,7 +192,7 @@ def cluster_wide_read(
 
 def pin_cluster_write_client(cluster: ProxmoxCluster) -> tuple[ProxmoxEndpoint, ProxmoxClient]:
     """Pin exactly one endpoint for a write, before preflight."""
-    _require_enabled(cluster)
+    _require_acquirable(cluster)
     endpoints = enabled_endpoints(cluster)
     if not endpoints:
         raise ClusterResolutionError(
@@ -224,7 +238,7 @@ def cluster_write(
     idempotency/postcondition decision, not something transport may assume. An HTTP
     error is the server's answer and is never re-asked elsewhere.
     """
-    _require_enabled(cluster)
+    _require_acquirable(cluster)
     attempts: list[EndpointAttempt] = []
     endpoints = enabled_endpoints(cluster)
     if not endpoints:

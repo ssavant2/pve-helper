@@ -1614,7 +1614,7 @@ class ProxmoxClientTests(SimpleTestCase):
         )
         mock_http = Mock()
         mock_http.request.return_value = error_response
-        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+        with patch("core.services.cluster_trust.http_client_for", return_value=mock_http):
             with self.assertRaisesMessage(ProxmoxAPIError, "Linked clone feature is not supported"):
                 client.post("nodes/pve3/qemu/507/clone", data={"newid": 102, "full": 0})
 
@@ -1649,7 +1649,7 @@ class ProxmoxClientTests(SimpleTestCase):
             with self.subTest(label=label):
                 mock_http = Mock()
                 mock_http.request.return_value = response
-                with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+                with patch("core.services.cluster_trust.http_client_for", return_value=mock_http):
                     with self.assertRaises(ProxmoxAPIError):
                         client.get("version")
 
@@ -1658,7 +1658,7 @@ class ProxmoxClientTests(SimpleTestCase):
         client = ProxmoxClient("https://pve.example.com:8006")
 
         mock_http = Mock()
-        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+        with patch("core.services.cluster_trust.http_client_for", return_value=mock_http):
             with self.assertRaisesMessage(ProxmoxAPIError, "disabled"):
                 client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
 
@@ -1669,7 +1669,7 @@ class ProxmoxClientTests(SimpleTestCase):
         client = ProxmoxClient("https://pve.example.com:8006")
         mock_http = Mock()
 
-        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+        with patch("core.services.cluster_trust.http_client_for", return_value=mock_http):
             with self.assertRaisesMessage(ProxmoxAPIError, "disabled"):
                 client.set_storage_content("nfs-vm", ["images"])
 
@@ -1688,7 +1688,7 @@ class ProxmoxClientTests(SimpleTestCase):
 
         mock_http = Mock()
         mock_http.request.return_value = self._response(upid)
-        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+        with patch("core.services.cluster_trust.http_client_for", return_value=mock_http):
             result = client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
 
         self.assertEqual(result, upid)
@@ -1704,7 +1704,7 @@ class ProxmoxClientTests(SimpleTestCase):
         client = ProxmoxClient("https://pve.example.com:8006")
 
         mock_http = Mock()
-        with patch("core.services.proxmox._shared_http_client", return_value=mock_http):
+        with patch("core.services.cluster_trust.http_client_for", return_value=mock_http):
             with self.assertRaisesMessage(ProxmoxAPIError, "Unsupported power action"):
                 client.power_action(node="pve1", object_type="vm", vmid=100, action="suspend")
 
@@ -2367,7 +2367,7 @@ class ScanTaskTests(TestCase):
                 return iter(())
 
         with (
-            patch("core.tasks.ProxmoxClient", FakeProxmoxClient),
+            patch("core.tasks.client_for_endpoint", lambda ep: FakeProxmoxClient(ep.url)),
             patch("core.tasks.StorageScanner", EmptyScanner),
             patch("core.tasks.ensure_bootstrap"),
             patch("core.tasks._prune_scan_history_after_success"),

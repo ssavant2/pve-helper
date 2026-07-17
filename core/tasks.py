@@ -29,6 +29,7 @@ from .models import (
 from .services.classification import classify_entry, extract_disk_references
 from .services.audit_events import record_audit_event
 from .services.console_session_cleanup import prune_console_sessions
+from .services.cluster_resolver import client_for_endpoint
 from .services.runtime_bootstrap import ensure_bootstrap
 from .services.current_guest_inventory import (
     ScanGuestObservation,
@@ -1129,6 +1130,45 @@ def inflate_storage_file_task(
             raise
 
 
+def _verify_scan_cluster_identities(endpoints: list[ProxmoxEndpoint]) -> set[int]:
+    """Verify each scanned cluster's CA identity, returning the quarantined ones.
+
+    Trust-on-first-use: a cluster with no pinned CA yet is bound to the one its
+    endpoint reports. A mismatch quarantines the cluster and its guests are skipped
+    below, so a re-pointed or restored endpoint cannot merge a different cluster's
+    inventory under an existing key. A cluster whose CA is simply unreachable is not
+    quarantined — that is coverage degradation, handled as an ordinary scan gap.
+    """
+    from .services.cluster_identity import (
+        ClusterIdentityError,
+        ClusterIdentityMismatch,
+        observe_cluster_identity,
+        verify_or_bind_identity,
+    )
+
+    quarantined: set[int] = set()
+    seen_clusters: set[int] = set()
+    for endpoint in endpoints:
+        cluster_id = endpoint.cluster_id
+        if cluster_id is None or cluster_id in seen_clusters:
+            continue
+        seen_clusters.add(cluster_id)
+        cluster = endpoint.cluster
+        try:
+            # Fails over across the cluster's endpoints: a single down node must not
+            # block identity verification while another member answers.
+            observed = observe_cluster_identity(cluster)
+        except ClusterIdentityError as exc:
+            logger.warning("Cluster identity unreadable: cluster=%s error=%s", cluster.key, exc)
+            continue
+        try:
+            verify_or_bind_identity(cluster, observed)
+        except ClusterIdentityMismatch as exc:
+            logger.error("Cluster identity mismatch: cluster=%s error=%s", cluster.key, exc)
+            quarantined.add(cluster_id)
+    return quarantined
+
+
 def _run_scan(scan: ScanRun) -> None:
     now = timezone.now()
     scan.status = ScanRun.Status.RUNNING
@@ -1140,7 +1180,15 @@ def _run_scan(scan: ScanRun) -> None:
     # The environment is not reapplied here: after the durable marker exists the
     # database is the sole runtime authority for endpoints, storage and consumers.
     ensure_bootstrap()
-    endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True).order_by("name"))
+    # A disabled cluster blocks refresh acquisition, so its endpoints are not
+    # scanned even though the endpoint rows are enabled. exclude() keeps legacy
+    # null-cluster endpoints and enabled-cluster endpoints; it drops only those whose
+    # cluster is explicitly disabled.
+    endpoints = list(
+        ProxmoxEndpoint.objects.filter(enabled=True)
+        .exclude(cluster__enabled=False)
+        .order_by("name")
+    )
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
     scan_target = scan.target_storage
     if scan_target is not None:
@@ -1167,11 +1215,24 @@ def _run_scan(scan: ScanRun) -> None:
     cluster_attempts: dict[int, set[str]] = defaultdict(set)
     cluster_coverage: dict[int, set[str]] = defaultdict(set)
     cluster_errors: dict[int, dict[str, Any]] = defaultdict(dict)
+    # Clusters whose reported CA no longer matches the pinned one. Their guests must
+    # not be ingested: a re-pointed endpoint would merge another cluster's inventory.
+    quarantined_cluster_ids = _verify_scan_cluster_identities(endpoints)
 
     for endpoint in endpoints:
-        client = ProxmoxClient(endpoint.url)
+        # Build through the resolver so the client carries this cluster's own
+        # credential and TLS trust, not the global fallback.
+        client = client_for_endpoint(endpoint)
         node_name = client.discover_node_name(endpoint.name)
         endpoint_attempts.append(node_name)
+        if endpoint.cluster_id in quarantined_cluster_ids:
+            # Record the attempt as a coverage gap without ingesting anything.
+            cluster_attempts[endpoint.cluster_id].add(node_name)
+            cluster_errors[endpoint.cluster_id][node_name] = ["cluster identity quarantined"]
+            endpoint.last_health_status = "quarantined"
+            endpoint.details = {"node": node_name, "quarantined": True}
+            endpoint.save(update_fields=["last_health_status", "details", "updated_at"])
+            continue
         result = client.inventory(node_name)
 
         if endpoint.cluster_id is not None:

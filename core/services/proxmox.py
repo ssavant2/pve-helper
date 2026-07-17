@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Any
@@ -31,40 +30,6 @@ LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS = 2.5
 # A linked clone's disk is a qcow2 whose storage-content `parent` names the
 # template's base volume, e.g. "../102/base-102-disk-0.qcow2" → parent VMID 102.
 _BASE_VOLUME_RE = re.compile(r"base-(\d+)-disk-")
-
-
-_http_client: httpx.Client | None = None
-_http_client_lock = threading.Lock()
-
-
-class _TestNetworkDisabledClient:
-    def request(self, *_args, **_kwargs):
-        raise AssertionError(
-            "Test attempted an unmocked Proxmox HTTP request. Patch the client or use an explicit integration suite."
-        )
-
-
-def _shared_http_client() -> httpx.Client:
-    """Process-wide pooled HTTP client so Proxmox calls reuse keep-alive TLS
-    connections instead of doing a fresh handshake on every request (inventory
-    loops and polling endpoints issue many small calls to the same hosts)."""
-    if settings.PVE_TEST_NETWORK_DISABLED:
-        return _TestNetworkDisabledClient()  # type: ignore[return-value]
-
-    global _http_client
-    client = _http_client
-    if client is None:
-        with _http_client_lock:
-            client = _http_client
-            if client is None:
-                verify: bool | str = settings.PVE_CA_BUNDLE or settings.PVE_VERIFY_TLS
-                client = httpx.Client(
-                    verify=verify,
-                    timeout=15,
-                    limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
-                )
-                _http_client = client
-    return client
 
 
 @dataclass(frozen=True)
@@ -227,15 +192,24 @@ class ProxmoxTaskTimeout(ProxmoxAPIError):
 class ProxmoxClient:
     """Small Proxmox API client."""
 
-    def __init__(self, endpoint: str, *, credential=None):
-        """`credential` is the identity to authenticate with.
+    def __init__(self, endpoint: str, *, credential=None, trust_profile=None):
+        """`credential` is the identity to authenticate with; `trust_profile` is the
+        TLS chain to accept.
 
-        It is resolved from the selected cluster by the resolver. When absent, the
-        legacy global token is used — a documented single-cluster compatibility
-        input that stops being read once the credential cutover is recorded.
+        Both are resolved from the selected cluster by the resolver. When a trust
+        profile is absent the client uses the legacy global TLS settings — a
+        documented single-cluster compatibility input that stops being read once the
+        trust cutover is recorded.
         """
         self.endpoint = endpoint.rstrip("/")
         self._credential = credential
+        self._trust_profile = trust_profile
+
+    def _http_client(self):
+        from core.services.cluster_trust import http_client_for, legacy_trust_profile
+
+        profile = self._trust_profile if self._trust_profile is not None else legacy_trust_profile()
+        return http_client_for(profile)
 
     def health(self) -> EndpointHealth:
         try:
@@ -526,7 +500,7 @@ class ProxmoxClient:
         if timeout is not None:
             request_kwargs["timeout"] = timeout
         try:
-            response = _shared_http_client().request(method, url, **request_kwargs)
+            response = self._http_client().request(method, url, **request_kwargs)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = _proxmox_error_detail(exc.response)
