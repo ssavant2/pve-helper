@@ -37,8 +37,24 @@ class TargetedGuestRefresh:
     error: str = ""
 
 
-def current_inventory_state() -> CurrentGuestInventoryState | None:
-    return CurrentGuestInventoryState.objects.filter(pk=1).first()
+def current_inventory_state(cluster=None) -> CurrentGuestInventoryState | None:
+    """The freshness/coverage record for one cluster.
+
+    Callers that have no explicit cluster yet resolve the sole enabled one, the same
+    bounded adapter the rest of Phase 1-2 uses until Phase 3 threads a cluster
+    through.
+    """
+    if cluster is None:
+        from core.services.cluster_resolver import (
+            ClusterResolutionError,
+            require_sole_enabled_cluster_for_legacy_caller,
+        )
+
+        try:
+            cluster = require_sole_enabled_cluster_for_legacy_caller()
+        except ClusterResolutionError:
+            return None
+    return CurrentGuestInventoryState.objects.filter(cluster=cluster).first()
 
 
 def current_guest_queryset():
@@ -61,19 +77,25 @@ def _delete_missing(queryset, observed: set[tuple[str, int]]) -> None:
 
 def _update_state(
     *,
+    cluster,
     refreshed_at,
     complete: bool,
     attempted: list[str],
     succeeded: list[str],
     errors: dict,
     source_scan: ScanRun | None,
+    unreachable: bool = False,
 ) -> CurrentGuestInventoryState:
-    state, _created = CurrentGuestInventoryState.objects.select_for_update().get_or_create(pk=1)
-    state.refreshed_at = refreshed_at
-    if complete:
-        state.last_complete_at = refreshed_at
-    state.source_scan = source_scan
+    state, _created = CurrentGuestInventoryState.objects.select_for_update().get_or_create(cluster=cluster)
+    # A cluster whose every endpoint failed keeps its last-known freshness: guests
+    # are unknown, not absent, so refreshed_at does not advance and nothing retires.
+    if not unreachable:
+        state.refreshed_at = refreshed_at
+        if complete:
+            state.last_complete_at = refreshed_at
+        state.source_scan = source_scan
     state.complete = complete
+    state.unreachable = unreachable
     state.endpoints_attempted = attempted
     state.endpoints_succeeded = succeeded
     state.errors = errors
@@ -95,53 +117,78 @@ def reconcile_scan_guest_inventory(
     observations = [item for item in observations if item.guest.object_type in GUEST_TYPES and item.guest.vmid is not None]
     attempted = list(attempted_endpoints)
     succeeded = list(successful_endpoints)
-    complete = bool(attempted) and {item.pk for item in attempted} == {item.pk for item in succeeded}
 
-    observed_by_endpoint: dict[int, set[tuple[str, int]]] = {endpoint.pk: set() for endpoint in succeeded}
-    all_observed: set[tuple[str, int]] = set()
-    for item in observations:
-        key = (item.guest.object_type, int(item.guest.vmid))
-        all_observed.add(key)
-        if item.endpoint.pk in observed_by_endpoint:
-            observed_by_endpoint[item.endpoint.pk].add(key)
-
-    if complete:
-        _delete_missing(CurrentGuestInventory.objects.all(), all_observed)
-    else:
-        for endpoint in succeeded:
-            _delete_missing(
-                CurrentGuestInventory.objects.filter(source_endpoint=endpoint),
-                observed_by_endpoint.get(endpoint.pk, set()),
-            )
-
-    for item in observations:
-        guest = item.guest
-        CurrentGuestInventory.objects.update_or_create(
-            object_type=guest.object_type,
-            vmid=int(guest.vmid),
-            defaults={
-                "source_endpoint": item.endpoint,
-                "source_scan": scan,
-                "node": guest.node,
-                "name": guest.name,
-                "status": guest.status,
-                "runtime_observed_at": observed_at,
-                "config": dict(guest.config or {}),
-                "config_complete": True,
-                "config_observed_at": observed_at,
-                "disk_references": list(guest.disk_references or []),
-                "observed_at": observed_at,
-            },
+    # Completeness and absence are evaluated per cluster: cluster A succeeding says
+    # nothing about cluster B, and a partial answer in one cluster must never retire
+    # another cluster's rows. Group everything the scan saw by the cluster it came
+    # from, then reconcile each cluster independently against only its own data.
+    cluster_ids = {ep.cluster_id for ep in attempted if ep.cluster_id is not None}
+    states: list[CurrentGuestInventoryState] = []
+    for cluster_id in cluster_ids:
+        cluster_attempted = [ep for ep in attempted if ep.cluster_id == cluster_id]
+        cluster_succeeded = [ep for ep in succeeded if ep.cluster_id == cluster_id]
+        cluster_obs = [item for item in observations if item.endpoint.cluster_id == cluster_id]
+        cluster = cluster_attempted[0].cluster
+        complete = bool(cluster_attempted) and (
+            {ep.pk for ep in cluster_attempted} == {ep.pk for ep in cluster_succeeded}
         )
 
-    return _update_state(
-        refreshed_at=observed_at,
-        complete=complete,
-        attempted=[item.name for item in attempted],
-        succeeded=[item.name for item in succeeded],
-        errors=errors,
-        source_scan=scan,
-    )
+        observed_by_endpoint: dict[int, set[tuple[str, int]]] = {ep.pk: set() for ep in cluster_succeeded}
+        all_observed: set[tuple[str, int]] = set()
+        for item in cluster_obs:
+            key = (item.guest.object_type, int(item.guest.vmid))
+            all_observed.add(key)
+            if item.endpoint.pk in observed_by_endpoint:
+                observed_by_endpoint[item.endpoint.pk].add(key)
+
+        cluster_rows = CurrentGuestInventory.objects.filter(cluster=cluster)
+        if complete:
+            _delete_missing(cluster_rows, all_observed)
+        else:
+            for endpoint in cluster_succeeded:
+                _delete_missing(
+                    cluster_rows.filter(source_endpoint=endpoint),
+                    observed_by_endpoint.get(endpoint.pk, set()),
+                )
+
+        for item in cluster_obs:
+            guest = item.guest
+            CurrentGuestInventory.objects.update_or_create(
+                cluster=cluster,
+                object_type=guest.object_type,
+                vmid=int(guest.vmid),
+                defaults={
+                    "source_endpoint": item.endpoint,
+                    "source_scan": scan,
+                    "node": guest.node,
+                    "name": guest.name,
+                    "status": guest.status,
+                    "runtime_observed_at": observed_at,
+                    "config": dict(guest.config or {}),
+                    "config_complete": True,
+                    "config_observed_at": observed_at,
+                    "disk_references": list(guest.disk_references or []),
+                    "observed_at": observed_at,
+                },
+            )
+
+        states.append(
+            _update_state(
+                cluster=cluster,
+                refreshed_at=observed_at,
+                complete=complete,
+                unreachable=bool(cluster_attempted) and not cluster_succeeded,
+                attempted=[ep.name for ep in cluster_attempted],
+                succeeded=[ep.name for ep in cluster_succeeded],
+                errors=errors,
+                source_scan=scan,
+            )
+        )
+
+    # The scan orchestrator historically expected one state back; return the first
+    # so existing single-cluster callers keep working while the projection is
+    # per-cluster underneath.
+    return states[0] if states else None
 
 
 def _endpoint_for_live_guest(
@@ -191,19 +238,33 @@ def reconcile_live_guest_inventory(
     observed_at=None,
 ) -> CurrentGuestInventoryState:
     observed_at = observed_at or timezone.now()
+    from core.models import ProxmoxCluster
+
+    cluster = ProxmoxCluster.objects.filter(key=inventory.cluster_key).first() if inventory.cluster_key else None
+    if cluster is None:
+        from core.services.cluster_resolver import (
+            ClusterResolutionError,
+            require_sole_enabled_cluster_for_legacy_caller,
+        )
+
+        try:
+            cluster = require_sole_enabled_cluster_for_legacy_caller()
+        except ClusterResolutionError:
+            return None
+
     observed = {(guest.object_type, guest.vmid) for guest in inventory.guests}
-    endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True))
+    endpoints = list(ProxmoxEndpoint.objects.filter(cluster=cluster, enabled=True))
+    cluster_rows = CurrentGuestInventory.objects.filter(cluster=cluster)
+    # Only a complete answer may retire rows, and only within this cluster.
     if inventory.complete:
-        _delete_missing(CurrentGuestInventory.objects.all(), observed)
+        _delete_missing(cluster_rows, observed)
 
     for guest in inventory.guests:
-        existing = CurrentGuestInventory.objects.filter(
-            object_type=guest.object_type,
-            vmid=guest.vmid,
-        ).first()
+        existing = cluster_rows.filter(object_type=guest.object_type, vmid=guest.vmid).first()
         endpoint = _endpoint_for_live_guest(guest, endpoints)
         config = _live_config(existing, guest)
         CurrentGuestInventory.objects.update_or_create(
+            cluster=cluster,
             object_type=guest.object_type,
             vmid=guest.vmid,
             defaults={
@@ -228,20 +289,46 @@ def reconcile_live_guest_inventory(
             },
         )
 
+    prior = current_inventory_state(cluster)
     return _update_state(
+        cluster=cluster,
         refreshed_at=observed_at,
         complete=inventory.complete,
+        unreachable=bool(inventory.attempted_endpoints) and not inventory.successful_endpoints,
         attempted=list(inventory.attempted_endpoints),
         succeeded=list(inventory.successful_endpoints),
         errors={"live_inventory": list(inventory.errors)} if inventory.errors else {},
-        source_scan=(current_inventory_state() or CurrentGuestInventoryState()).source_scan,
+        source_scan=prior.source_scan if prior else None,
     )
 
 
+def _target_cluster(cluster=None, *, endpoint=None):
+    """The cluster a targeted single-guest write belongs to.
+
+    Prefer an explicit cluster, then the answering endpoint's cluster, then the sole
+    enabled cluster — the same bounded adapter used elsewhere until Phase 3 threads a
+    GuestRef through these call sites.
+    """
+    if cluster is not None:
+        return cluster
+    if endpoint is not None and endpoint.cluster_id is not None:
+        return endpoint.cluster
+    from core.services.cluster_resolver import (
+        ClusterResolutionError,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    try:
+        return require_sole_enabled_cluster_for_legacy_caller()
+    except ClusterResolutionError:
+        return None
+
+
 @transaction.atomic
-def update_current_guest_config(*, object_type: str, vmid: int, node: str = "", updates=None, delete=None) -> None:
+def update_current_guest_config(*, object_type: str, vmid: int, node: str = "", updates=None, delete=None, cluster=None) -> None:
     observed_at = timezone.now()
     guest, _created = CurrentGuestInventory.objects.select_for_update().get_or_create(
+        cluster=_target_cluster(cluster),
         object_type=object_type,
         vmid=vmid,
         defaults={
@@ -278,9 +365,11 @@ def upsert_current_guest(
     disk_max_bytes: int = 0,
     uptime_seconds: int = 0,
     runtime_lock: str = "",
+    cluster=None,
 ) -> CurrentGuestInventory:
     observed_at = timezone.now()
     return CurrentGuestInventory.objects.update_or_create(
+        cluster=_target_cluster(cluster),
         object_type=object_type,
         vmid=vmid,
         defaults={
@@ -304,8 +393,10 @@ def upsert_current_guest(
     )[0]
 
 
-def delete_current_guest(*, object_type: str, vmid: int) -> None:
-    CurrentGuestInventory.objects.filter(object_type=object_type, vmid=vmid).delete()
+def delete_current_guest(*, object_type: str, vmid: int, cluster=None) -> None:
+    CurrentGuestInventory.objects.filter(
+        cluster=_target_cluster(cluster), object_type=object_type, vmid=vmid
+    ).delete()
 
 
 def refresh_current_guest_from_client(
@@ -351,7 +442,10 @@ def refresh_current_guest_from_client(
         ]
         if not matches:
             if delete_if_authoritatively_absent:
-                delete_current_guest(object_type=object_type, vmid=vmid)
+                endpoint = ProxmoxEndpoint.objects.filter(url=getattr(client, "endpoint", "")).first()
+                delete_current_guest(
+                    object_type=object_type, vmid=vmid, cluster=_target_cluster(endpoint=endpoint)
+                )
             return TargetedGuestRefresh(found=False, absent=True)
         if len(matches) != 1:
             return TargetedGuestRefresh(found=False, error="Guest identity was ambiguous after the operation.")
@@ -368,7 +462,11 @@ def refresh_current_guest_from_client(
     if current is None:
         return TargetedGuestRefresh(found=False, node=resolved_node, error=direct_error or "Guest status unavailable.")
 
-    existing = CurrentGuestInventory.objects.filter(object_type=object_type, vmid=vmid).first()
+    endpoint = ProxmoxEndpoint.objects.filter(url=getattr(client, "endpoint", "")).first()
+    target_cluster = _target_cluster(endpoint=endpoint)
+    existing = CurrentGuestInventory.objects.filter(
+        cluster=target_cluster, object_type=object_type, vmid=vmid
+    ).first()
     config = dict(existing.config or {}) if existing else {}
     config_complete = existing.config_complete if existing else False
     config_observed_at = existing.config_observed_at if existing else None
@@ -384,8 +482,8 @@ def refresh_current_guest_from_client(
 
     observed_at = timezone.now()
     name_key = "name" if object_type == ProxmoxInventory.ObjectType.VM else "hostname"
-    endpoint = ProxmoxEndpoint.objects.filter(url=getattr(client, "endpoint", "")).first()
     CurrentGuestInventory.objects.update_or_create(
+        cluster=target_cluster,
         object_type=object_type,
         vmid=vmid,
         defaults={

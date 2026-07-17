@@ -19,8 +19,11 @@ from core.tasks import refresh_current_guest_inventory
 
 class CurrentGuestInventoryTests(TestCase):
     def setUp(self):
-        self.pve1 = ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1:8006")
-        self.pve2 = ProxmoxEndpoint.objects.create(name="pve2", url="https://pve2:8006")
+        from core.models import ProxmoxCluster
+
+        self.cluster = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)
+        self.pve1 = ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1:8006", cluster=self.cluster)
+        self.pve2 = ProxmoxEndpoint.objects.create(name="pve2", url="https://pve2:8006", cluster=self.cluster)
         self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
 
     @staticmethod
@@ -37,6 +40,7 @@ class CurrentGuestInventoryTests(TestCase):
 
     def current_guest(self, *, endpoint, object_type, vmid, name):
         return CurrentGuestInventory.objects.create(
+            cluster=endpoint.cluster,
             source_endpoint=endpoint,
             source_scan=self.scan,
             node=endpoint.name,
@@ -284,3 +288,93 @@ class CurrentGuestInventoryTests(TestCase):
         guest = CurrentGuestInventory.objects.get(vmid=100)
         self.assertEqual(guest.status, "running")
         self.assertEqual(guest.cpu_usage, 0.75)
+
+
+class DuplicateVmidAcrossClustersTests(TestCase):
+    """The same VMID in two clusters is two distinct guests. A scan of one cluster
+    must never touch the other's projection, and completeness is per cluster."""
+
+    def setUp(self):
+        from core.models import ProxmoxCluster
+
+        self.hq = ProxmoxCluster.objects.create(key="hq", display_name="HQ", enabled=True)
+        self.b = ProxmoxCluster.objects.create(key="b", display_name="B", enabled=False)
+        self.hq_ep = ProxmoxEndpoint.objects.create(name="pve3", url="https://pve3:8006", cluster=self.hq)
+        self.b_ep = ProxmoxEndpoint.objects.create(name="pve201", url="https://pve201:8006", cluster=self.b)
+        self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+
+    @staticmethod
+    def _guest(node, name):
+        return SimpleNamespace(
+            node=node, object_type="vm", vmid=500, name=name, status="running",
+            config={}, disk_references=[],
+        )
+
+    def test_both_clusters_keep_their_own_vm500(self):
+        reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[
+                ScanGuestObservation(endpoint=self.hq_ep, guest=self._guest("pve3", "hq-500")),
+                ScanGuestObservation(endpoint=self.b_ep, guest=self._guest("pve201", "b-500")),
+            ],
+            attempted_endpoints=[self.hq_ep, self.b_ep],
+            successful_endpoints=[self.hq_ep, self.b_ep],
+            errors={},
+        )
+
+        rows = CurrentGuestInventory.objects.filter(vmid=500).order_by("cluster__key")
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(
+            {(r.cluster.key, r.name) for r in rows},
+            {("hq", "hq-500"), ("b", "b-500")},
+        )
+
+    def test_complete_scan_of_one_cluster_does_not_retire_the_other(self):
+        # Seed both, then run a complete scan of only HQ that no longer sees vm:500.
+        reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[
+                ScanGuestObservation(endpoint=self.hq_ep, guest=self._guest("pve3", "hq-500")),
+                ScanGuestObservation(endpoint=self.b_ep, guest=self._guest("pve201", "b-500")),
+            ],
+            attempted_endpoints=[self.hq_ep, self.b_ep],
+            successful_endpoints=[self.hq_ep, self.b_ep],
+            errors={},
+        )
+
+        reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[],  # HQ's vm:500 is gone
+            attempted_endpoints=[self.hq_ep],
+            successful_endpoints=[self.hq_ep],
+            errors={},
+        )
+
+        remaining = CurrentGuestInventory.objects.filter(vmid=500)
+        # HQ's row retired (complete coverage saw it absent); B's untouched.
+        self.assertEqual([r.cluster.key for r in remaining], ["b"])
+
+    def test_unreachable_cluster_is_unknown_not_absent(self):
+        reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[ScanGuestObservation(endpoint=self.hq_ep, guest=self._guest("pve3", "hq-500"))],
+            attempted_endpoints=[self.hq_ep],
+            successful_endpoints=[self.hq_ep],
+            errors={},
+        )
+
+        # A later scan where HQ's only endpoint failed: guests are unknown, not gone.
+        reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[],
+            attempted_endpoints=[self.hq_ep],
+            successful_endpoints=[],
+            errors={"pve3": ["down"]},
+        )
+
+        from core.services.current_guest_inventory import current_inventory_state
+
+        self.assertTrue(CurrentGuestInventory.objects.filter(cluster=self.hq, vmid=500).exists())
+        state = current_inventory_state(self.hq)
+        self.assertTrue(state.unreachable)
+        self.assertFalse(state.complete)

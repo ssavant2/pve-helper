@@ -42,6 +42,9 @@ LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset(
         "core/tasks.py",
         "core/views/common.py",
         "core/views/guests/operation_lifecycle.py",
+        # The read-model reconciler resolves a cluster for targeted single-guest
+        # writes and freshness state until Phase 3 threads a GuestRef through.
+        "core/services/current_guest_inventory.py",
     }
 )
 

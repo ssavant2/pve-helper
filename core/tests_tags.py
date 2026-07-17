@@ -91,12 +91,16 @@ class ClusterFixtureMixin:
     to fakes instead of patching the global fan-out.
     """
 
-    def _configure_cluster(self, *fakes):
+    def _ensure_cluster(self):
         cluster = ProxmoxCluster.objects.filter(enabled=True).first()
         if cluster is None:
             cluster = ProxmoxCluster.objects.create(
                 key="default", display_name="Default cluster", enabled=True
             )
+        return cluster
+
+    def _configure_cluster(self, *fakes):
+        cluster = self._ensure_cluster()
         endpoints = []
         for index, fake in enumerate(fakes):
             endpoints.append(
@@ -257,7 +261,9 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
     )
     def test_catalog_unifies_names_colors_freshness_and_degraded_metadata(self, _registered):
         refreshed_at = timezone.now()
+        cluster = self._ensure_cluster()
         CurrentGuestInventory.objects.create(
+            cluster=cluster,
             node="pve1",
             object_type="vm",
             vmid=100,
@@ -266,7 +272,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
             config={"tags": "prod"},
         )
         CurrentGuestInventoryState.objects.create(
-            pk=1,
+            cluster=cluster,
             refreshed_at=refreshed_at,
             complete=False,
             endpoints_attempted=["pve1", "pve2"],
@@ -757,7 +763,9 @@ class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):
 class TagFanoutTests(ClusterFixtureMixin, TestCase):
     def setUp(self):
         self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        self.tag_cluster = self._ensure_cluster()
         self.row = CurrentGuestInventory.objects.create(
+            cluster=self.tag_cluster,
             source_scan=self.scan, node="old-node", object_type="vm", vmid=100, name="vm-one",
             observed_at=timezone.now(),
             config={"tags": "old;keep"},

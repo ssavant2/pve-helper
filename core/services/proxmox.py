@@ -82,6 +82,9 @@ class VerifiedGuestInventory:
     attempted_endpoints: tuple[str, ...]
     successful_endpoints: tuple[str, ...]
     errors: tuple[str, ...]
+    # The cluster this inventory describes. The read model keys guests by cluster,
+    # so reconciliation must know which one an authoritative answer belongs to.
+    cluster_key: str = ""
 
     @property
     def complete(self) -> bool:
@@ -645,6 +648,7 @@ def fetch_verified_guest_inventory(*, cluster=None) -> VerifiedGuestInventory:
         attempted_endpoints=attempted,
         successful_endpoints=(result.answering_endpoint,) if result.complete else (),
         errors=errors,
+        cluster_key=result.cluster_key,
     )
 
 

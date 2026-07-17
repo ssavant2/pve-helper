@@ -481,6 +481,16 @@ class ProxmoxInventory(TimestampedModel):
         NODE = "node", "Node"
 
     scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="proxmox_objects")
+    # Which cluster this scan evidence came from. Nullable for the additive
+    # migration; backfilled from the sole cluster. Historical rows keep whatever
+    # cluster produced them so the same VMID in two clusters stays unambiguous.
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="proxmox_objects",
+    )
     node = models.CharField(max_length=120, db_index=True)
     object_type = models.CharField(max_length=30, choices=ObjectType.choices)
     vmid = models.IntegerField(null=True, blank=True, db_index=True)
@@ -494,6 +504,7 @@ class ProxmoxInventory(TimestampedModel):
         indexes = [
             models.Index(fields=["scan_run", "node"]),
             models.Index(fields=["object_type", "vmid"]),
+            models.Index(fields=["cluster", "object_type", "vmid"], name="core_pinv_cluster_type_vmid"),
         ]
 
     def __str__(self) -> str:
@@ -512,6 +523,17 @@ class CurrentGuestInventory(TimestampedModel):
         VM = ProxmoxInventory.ObjectType.VM, "VM"
         CT = ProxmoxInventory.ObjectType.CT, "Container"
 
+    # Durable cluster identity of the guest. A guest is (cluster, object_type, vmid);
+    # the source_endpoint below is only where this projection was last observed and
+    # may change. Nullable for the additive migration; backfilled from
+    # source_endpoint.cluster where known, otherwise the sole cluster.
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="current_guests",
+    )
     source_endpoint = models.ForeignKey(
         ProxmoxEndpoint,
         null=True,
@@ -548,14 +570,18 @@ class CurrentGuestInventory(TimestampedModel):
     class Meta:
         ordering = ["node", "object_type", "vmid"]
         constraints = [
+            # Replaces (object_type, vmid), which wrongly forbade the same VMID in
+            # two clusters. nulls_distinct=False keeps the rule enforced for rows not
+            # yet backfilled, so a duplicate cannot slip in during the migration.
             models.UniqueConstraint(
-                fields=["object_type", "vmid"],
-                name="unique_current_guest_identity",
+                fields=["cluster", "object_type", "vmid"],
+                name="unique_current_guest_cluster_identity",
+                nulls_distinct=False,
             )
         ]
         indexes = [
             models.Index(fields=["source_endpoint", "object_type"], name="core_curg_endpoint_type_idx"),
-            models.Index(fields=["object_type", "vmid"], name="core_curguest_type_vmid_idx"),
+            models.Index(fields=["cluster", "node", "object_type", "vmid"], name="core_curg_cluster_node_idx"),
         ]
 
     def __str__(self) -> str:
@@ -563,8 +589,22 @@ class CurrentGuestInventory(TimestampedModel):
 
 
 class CurrentGuestInventoryState(TimestampedModel):
-    """Singleton (pk=1) describing current projection coverage/freshness."""
+    """Per-cluster projection coverage/freshness.
 
+    Was a singleton (pk=1) describing the whole installation. It is now one record
+    per cluster: completeness and absence are evaluated per cluster, and a targeted
+    refresh in one cluster must not advance another cluster's freshness. A cluster
+    whose every endpoint failed is ``unreachable`` — its guests are unknown, not
+    absent, so nothing is retired and its freshness does not advance.
+    """
+
+    cluster = models.OneToOneField(
+        ProxmoxCluster,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="inventory_state",
+    )
     refreshed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_complete_at = models.DateTimeField(null=True, blank=True)
     source_scan = models.ForeignKey(
@@ -575,12 +615,25 @@ class CurrentGuestInventoryState(TimestampedModel):
         related_name="current_inventory_states",
     )
     complete = models.BooleanField(default=False)
+    # True when no endpoint of the cluster answered: guests shown are last-known,
+    # not confirmed absent. Distinct from partial coverage within a reachable cluster.
+    unreachable = models.BooleanField(default=False)
     endpoints_attempted = models.JSONField(default=list, blank=True)
     endpoints_succeeded = models.JSONField(default=list, blank=True)
     errors = models.JSONField(default=dict, blank=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cluster"],
+                name="unique_inventory_state_per_cluster",
+                nulls_distinct=False,
+            )
+        ]
+
     def __str__(self) -> str:
-        return f"Current guest inventory ({'complete' if self.complete else 'partial'})"
+        key = self.cluster.key if self.cluster_id else "unqualified"
+        return f"Current guest inventory [{key}] ({'complete' if self.complete else 'partial'})"
 
 
 class ProxmoxStorageConsumer(TimestampedModel):
