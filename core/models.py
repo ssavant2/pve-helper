@@ -141,6 +141,40 @@ class ProxmoxCluster(TimestampedModel):
         return f"{self.display_name} ({self.key})"
 
 
+class ClusterCredential(TimestampedModel):
+    """The API token pve-helper authenticates to one cluster with.
+
+    The credential belongs to the cluster and is shared by its endpoints, which are
+    alternative transports to the same control plane. Endpoint-specific credentials
+    would need an explicit use case rather than becoming an accidental second
+    convention.
+
+    The secret is only ever stored sealed. `encryption_key_id` duplicates the key id
+    that the ciphertext already names, so rotation can find rows sealed under an old
+    key, and startup can check that every referenced key is present, without
+    decrypting anything.
+    """
+
+    cluster = models.OneToOneField(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="credential",
+    )
+    # Not a secret: an identifier like `pve-helper@pve!pve-helper`, shown in the UI
+    # and in audit so an operator can tell which token is in use.
+    token_id = models.CharField(max_length=255)
+    token_secret_sealed = models.TextField()
+    encryption_key_id = models.CharField(max_length=64, db_index=True)
+    rotated_at = models.DateTimeField(null=True, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["cluster__key"]
+
+    def __str__(self) -> str:
+        return f"credential for {self.cluster.key} ({self.token_id})"
+
+
 class RuntimeConfigurationState(TimestampedModel):
     """Singleton recording who owns runtime configuration and how far identity has migrated.
 

@@ -188,6 +188,15 @@ if env_bool("SECURE_PROXY_SSL_HEADER", True):
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
+# Secrets stored in the database (cluster API tokens) are sealed under this
+# keyring, deliberately not under SECRET_KEY: SECRET_KEY is rotated for session
+# and signing reasons, and doing so must not make every cluster credential
+# unreadable. Format: "<key-id>:<base64-32-byte-key>,<key-id>:<...>".
+# Losing the active key makes all cluster credentials unrecoverable, so every key
+# id still named by stored ciphertext needs backup/escrow — see the runbook.
+PVE_HELPER_ENCRYPTION_KEYS = env("PVE_HELPER_ENCRYPTION_KEYS", "")
+PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID = env("PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID", "")
+
 PVE_ENDPOINTS = env_list("PVE_ENDPOINTS", "https://pve-node-1.example.com:8006")
 PVE_VERIFY_TLS = env_bool("PVE_VERIFY_TLS", True)
 PVE_CA_BUNDLE = env("PVE_CA_BUNDLE", "")

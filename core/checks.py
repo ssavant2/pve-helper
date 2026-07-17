@@ -19,6 +19,54 @@ def production_startup_checks(app_configs, **kwargs):
     return production_startup_errors()
 
 
+@register()
+def encryption_keyring_checks(app_configs, **kwargs):
+    """Fail the deployment when a stored secret's key is missing or unusable.
+
+    A cluster whose credential cannot be decrypted must not quietly stop working:
+    that looks like a Proxmox outage and hides a deployment error. Deployments run
+    migrations explicitly before serving, so this fires there.
+
+    Database errors are tolerated on purpose — the image build and the very first
+    migration run before the table exists. The check has teeth from the next run
+    onwards, which is every run where a credential could actually exist.
+    """
+    if "test" in sys.argv:
+        return []
+
+    from django.db import DatabaseError
+
+    from core.services.cluster_credentials import missing_encryption_key_ids
+    from core.services.secret_encryption import EncryptionConfigurationError
+
+    try:
+        missing = missing_encryption_key_ids()
+    except DatabaseError:
+        return []
+    except EncryptionConfigurationError as exc:
+        return [
+            Error(
+                f"The secret encryption keyring is unusable: {exc}",
+                hint="Fix PVE_HELPER_ENCRYPTION_KEYS. Stored cluster credentials cannot be read without it.",
+                id="pve_helper.E009",
+            )
+        ]
+
+    if missing:
+        return [
+            Error(
+                "Stored cluster credentials reference encryption keys that are not in the "
+                f"keyring: {', '.join(missing)}.",
+                hint=(
+                    "Restore those key ids from backup/escrow into PVE_HELPER_ENCRYPTION_KEYS. "
+                    "The affected credentials cannot be decrypted without them."
+                ),
+                id="pve_helper.E010",
+            )
+        ]
+    return []
+
+
 def production_startup_errors():
     if settings.DEBUG:
         return []

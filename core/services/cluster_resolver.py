@@ -96,12 +96,25 @@ def enabled_endpoints(cluster: ProxmoxCluster) -> list[ProxmoxEndpoint]:
 
 
 def client_for_endpoint(endpoint: ProxmoxEndpoint) -> ProxmoxClient:
-    """Build a client for one endpoint.
+    """Build a client for one endpoint, carrying its cluster's own identity.
 
-    Phase 1c/1d replace the global credential and trust settings baked into
-    ProxmoxClient with the cluster's own; this is the single seam where that lands.
+    The credential is resolved here, per client, rather than cached on one: a
+    rotation then takes effect on the next call with no pool to invalidate. The
+    secret is unsealed only to build the request's header.
+
+    Phase 1d adds the cluster's transport-trust profile alongside this.
     """
-    return ProxmoxClient(endpoint.url)
+    from core.services.cluster_credentials import ClusterCredentialError, resolve_credential
+
+    credential = None
+    if endpoint.cluster_id is not None:
+        try:
+            credential = resolve_credential(endpoint.cluster)
+        except ClusterCredentialError:
+            # Fall through to the client's own legacy handling, which produces a
+            # clear provider error rather than a resolver-shaped one.
+            credential = None
+    return ProxmoxClient(endpoint.url, credential=credential)
 
 
 def cluster_clients(cluster: ProxmoxCluster) -> list[ProxmoxClient]:

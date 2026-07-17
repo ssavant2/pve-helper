@@ -227,8 +227,15 @@ class ProxmoxTaskTimeout(ProxmoxAPIError):
 class ProxmoxClient:
     """Small Proxmox API client."""
 
-    def __init__(self, endpoint: str):
+    def __init__(self, endpoint: str, *, credential=None):
+        """`credential` is the identity to authenticate with.
+
+        It is resolved from the selected cluster by the resolver. When absent, the
+        legacy global token is used — a documented single-cluster compatibility
+        input that stops being read once the credential cutover is recorded.
+        """
         self.endpoint = endpoint.rstrip("/")
+        self._credential = credential
 
     def health(self) -> EndpointHealth:
         try:
@@ -505,10 +512,14 @@ class ProxmoxClient:
 
     def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         headers = {}
-        token_id = settings.PVE_API_TOKEN_ID
-        token_secret = settings.PVE_API_TOKEN_SECRET
-        if token_id and token_secret:
-            headers["Authorization"] = f"PVEAPIToken={token_id}={token_secret}"
+        credential = self._credential
+        if credential is not None:
+            headers["Authorization"] = credential.authorization_header()
+        else:
+            token_id = settings.PVE_API_TOKEN_ID
+            token_secret = settings.PVE_API_TOKEN_SECRET
+            if token_id and token_secret:
+                headers["Authorization"] = f"PVEAPIToken={token_id}={token_secret}"
 
         url = f"{self.endpoint}/api2/json/{path.lstrip('/')}"
         request_kwargs: dict[str, Any] = {"headers": headers, "data": data}
