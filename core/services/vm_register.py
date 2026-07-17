@@ -30,7 +30,7 @@ from urllib.parse import quote
 
 from core.models import StorageMount
 from core.services.ovf_import import OvfImportError, OvfPackage, package_disk_volids, parse_ovf_package
-from core.services.proxmox import ProxmoxAPIError, configured_clients
+from core.services.proxmox import ProxmoxAPIError
 
 # Disk bus -> config key prefix. The default bus is SATA (boots almost any image
 # without extra guest drivers); virtio-scsi is faster but needs drivers.
@@ -57,10 +57,18 @@ class VmRegisterError(Exception):
 
 
 def _client():
-    clients = configured_clients()
-    if not clients:
-        raise VmRegisterError("No Proxmox endpoint is configured.")
-    return clients[0]
+    from core.services.cluster_resolver import (
+        ClusterResolutionError,
+        pin_cluster_write_client,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    try:
+        cluster = require_sole_enabled_cluster_for_legacy_caller()
+        _endpoint, client = pin_cluster_write_client(cluster)
+    except ClusterResolutionError as exc:
+        raise VmRegisterError(str(exc)) from exc
+    return client
 
 
 def vmid_from_volid(volid: str) -> int | None:

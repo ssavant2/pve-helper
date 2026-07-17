@@ -861,8 +861,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
 
     @patch("core.services.tag_actions.unregister_tag", return_value=({}, ""))
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
-    @patch("core.services.tag_actions.configured_clients")
-    def test_execute_rediscovery_digest_and_cache_update(self, clients, live, _unregister):
+    def test_execute_rediscovery_digest_and_cache_update(self, live, _unregister):
         class FakeClient:
             def guest_config(self, **_kwargs):
                 return {"tags": "old;keep", "digest": "digest-1"}
@@ -871,7 +870,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
                 self.written = kwargs
 
         client = FakeClient()
-        clients.return_value = [client]
+        self._configure_cluster(client)
         live.side_effect = [
             self.inventory(
                 SimpleNamespace(
@@ -925,8 +924,9 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
 
     @patch("core.services.tag_actions.unregister_tag")
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
-    @patch("core.services.tag_actions.configured_clients")
-    def test_execute_refuses_ambiguous_same_vmid_rediscovery(self, clients, live, unregister):
+    @patch("core.services.cluster_resolver.client_for_endpoint")
+    def test_execute_refuses_ambiguous_same_vmid_rediscovery(self, client_for_endpoint, live, unregister):
+        self._configure_cluster()
         duplicate_guests = (
             SimpleNamespace(object_type="vm", vmid=100, node="node-a", name="one", tags=("old",)),
             SimpleNamespace(object_type="vm", vmid=100, node="node-b", name="two", tags=("old",)),
@@ -947,15 +947,17 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
         self.event.refresh_from_db()
         self.assertEqual(self.event.outcome, "failed")
         self.assertIn("not found", self.event.details["failed"][0]["reason"])
-        clients.assert_not_called()
+        # An ambiguous vmid must be refused before any provider client is built:
+        # picking one of two same-vmid guests is exactly the wrong-target write.
+        client_for_endpoint.assert_not_called()
         unregister.assert_not_called()
 
     @patch("core.services.tag_actions.unregister_tag")
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
-    @patch("core.services.tag_actions.configured_clients", return_value=[])
     def test_execute_keeps_source_registered_when_final_verification_is_incomplete(
-        self, _clients, live, unregister
+        self, live, unregister
     ):
+        self._configure_cluster()  # a cluster with no reachable endpoint
         guest = SimpleNamespace(object_type="vm", vmid=100, node="old-node", name="vm-one", tags=("old",))
         live.side_effect = [
             self.inventory(guest),
@@ -976,8 +978,8 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
 
     @patch("core.services.tag_actions.unregister_tag")
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
-    @patch("core.services.tag_actions.configured_clients", return_value=[])
-    def test_execute_keeps_source_registered_when_a_guest_still_has_it(self, _clients, live, unregister):
+    def test_execute_keeps_source_registered_when_a_guest_still_has_it(self, live, unregister):
+        self._configure_cluster()  # a cluster with no reachable endpoint
         guest = SimpleNamespace(object_type="vm", vmid=100, node="old-node", name="vm-one", tags=("old",))
         live.side_effect = [self.inventory(guest), self.inventory(guest)]
         self.event.details = {

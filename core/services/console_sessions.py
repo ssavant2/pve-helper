@@ -9,7 +9,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from core.models import ConsoleSession
-from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, clear_live_guest_caches, configured_clients
+from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, clear_live_guest_caches
 from core.services.request_metadata import client_ip
 
 
@@ -41,7 +41,24 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     response: dict | None = None
     selected_client: ProxmoxClient | None = None
     last_error = "No Proxmox endpoint could create a console session."
-    for client in configured_clients():
+    # A console must attach to the guest in its own cluster: a same-VMID guest on a
+    # same-named node elsewhere would hand the operator a shell on the wrong
+    # machine. Endpoint selection is scoped here; resolving the cluster's own
+    # credentials and WSS trust at connect time is Phase 1e.
+    from core.services.cluster_resolver import (
+        ClusterResolutionError,
+        cluster_clients,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    try:
+        cluster = require_sole_enabled_cluster_for_legacy_caller()
+        candidates = cluster_clients(cluster)
+    except ClusterResolutionError as exc:
+        candidates = []
+        last_error = str(exc)
+
+    for client in candidates:
         try:
             data = client.post(
                 f"nodes/{quote(detail.node, safe='')}/{proxmox_kind}/{detail.vmid}/{proxy_endpoint}",

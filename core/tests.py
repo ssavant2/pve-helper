@@ -6545,7 +6545,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.configured_clients", return_value=[fake_client]),
-            patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_hardware_edit", args=["vm", 500]))
 
@@ -6582,7 +6581,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         fake_client = self._patch_provider_client(FakeClient())
         with (
             patch("core.views.common.configured_clients", return_value=[fake_client]),
-            patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_create", args=["vm"]))
 
@@ -6780,7 +6778,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.configured_clients", return_value=[fake_client]),
-            patch("core.services.guest_create.configured_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_hardware_edit", args=["ct", 601]))
 
@@ -6934,22 +6931,21 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 return "UPID:pve1:create:500:root@pam:"
 
         fake_client = self._patch_provider_client(FakeClient())
-        with patch("core.services.guest_create.configured_clients", return_value=[fake_client]):
-            response = self.client.post(
-                reverse("core:guest_create", args=["vm"]),
-                {
-                    "node": "pve1",
-                    "vmid": "500",
-                    "name": "",
-                    "ostype": "l26",
-                    "cores": "1",
-                    "sockets": "1",
-                    "memory": "2048",
-                    "disk_storage": "nfs-vm",
-                    "disk_size": "32",
-                    "bridge": "vmbr0",
-                },
-            )
+        response = self.client.post(
+            reverse("core:guest_create", args=["vm"]),
+            {
+                "node": "pve1",
+                "vmid": "500",
+                "name": "",
+                "ostype": "l26",
+                "cores": "1",
+                "sockets": "1",
+                "memory": "2048",
+                "disk_storage": "nfs-vm",
+                "disk_size": "32",
+                "bridge": "vmbr0",
+            },
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Name is required.")

@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from django.core.cache import cache
 from django.db import connection
 
-from core.services.proxmox import ProxmoxAPIError, configured_clients
+from core.services.proxmox import ProxmoxAPIError
 from core.services.public_errors import public_exception_message
 from core.services.tags import (
     RegisteredTag,
@@ -48,18 +48,40 @@ def _registry_mutation_lock():
                     cursor.execute("SELECT pg_advisory_unlock(%s)", [_REGISTRY_MUTATION_LOCK_ID])
 
 
-def cluster_options() -> tuple[object | None, dict, str]:
-    error = "No Proxmox endpoint could read cluster tag options."
-    for client in configured_clients():
+def cluster_options(cluster=None) -> tuple[object | None, dict, str]:
+    """Read one cluster's tag registry options.
+
+    `/cluster/options` is a cluster-wide response, and tag registries are
+    per-cluster: same-named tags in different clusters are distinct entries and may
+    carry different colours, so a fallback to another cluster's options would merge
+    two registries into one writable catalog.
+    """
+    from core.services.cluster_resolver import (
+        cluster_wide_read,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    if cluster is None:
         try:
-            return client, client.cluster_options(), ""
-        except ProxmoxAPIError as exc:
+            cluster = require_sole_enabled_cluster_for_legacy_caller()
+        except Exception as exc:
+            return None, {}, str(exc)
+
+    result = cluster_wide_read(
+        cluster,
+        operation="tag_registry_read",
+        call=lambda client: client.cluster_options(),
+    )
+    if not result.complete:
+        error = "No Proxmox endpoint could read cluster tag options."
+        if result.attempted:
             error = public_exception_message(
-                exc,
+                ProxmoxAPIError(result.errors[-1]),
                 operation="tag_registry_read",
-                fallback="No Proxmox endpoint could read cluster tag options.",
+                fallback=error,
             )
-    return None, {}, error
+        return None, {}, error
+    return result.client, result.value, ""
 
 
 def cache_registered_tags(registered: dict[str, RegisteredTag]) -> None:

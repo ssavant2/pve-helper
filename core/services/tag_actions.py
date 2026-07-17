@@ -10,7 +10,6 @@ from core.services.current_guest_inventory import update_current_guest_config
 from core.services.proxmox import (
     ProxmoxAPIError,
     VerifiedGuestInventory,
-    configured_clients,
     fetch_verified_guest_inventory,
 )
 from core.services.tag_operation_confirmation import CHANGED_CONFIRMATION_ERROR, tag_membership_fingerprint
@@ -351,9 +350,24 @@ def _update_target(details: dict, target: dict, live_guest) -> tuple[str, str]:
     if live_guest is None:
         return "failed", "Guest was not found in live inventory."
     node = live_guest.node
+    # Asking every configured client "do you have this vmid on this node?" is a
+    # cross-cluster search: two clusters may each hold vm:500 on a node called
+    # pve1, and the first to answer would win. Candidates are bounded to the
+    # selected cluster, where an endpoint answering only proves transport.
+    from core.services.cluster_resolver import (
+        ClusterResolutionError,
+        cluster_clients,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    try:
+        candidates = cluster_clients(require_sole_enabled_cluster_for_legacy_caller())
+    except ClusterResolutionError as exc:
+        return "failed", str(exc)
+
     client = None
     config = None
-    for candidate in configured_clients():
+    for candidate in candidates:
         try:
             config = candidate.guest_config(node=node, object_type=target["object_type"], vmid=target["vmid"])
             client = candidate

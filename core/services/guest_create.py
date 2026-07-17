@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
-from core.services.proxmox import ProxmoxAPIError, configured_clients
+from core.services.proxmox import ProxmoxAPIError
 
 
 VM_OSTYPES = [
@@ -19,9 +19,32 @@ VM_OSTYPES = [
 ]
 
 
+def _creation_cluster():
+    """The cluster a guest is created in.
+
+    Creation has no existing guest to infer scope from, so it resolves the sole
+    enabled cluster explicitly rather than taking whichever endpoint happens to be
+    first in an ambient list.
+    """
+    from core.services.cluster_resolver import require_sole_enabled_cluster_for_legacy_caller
+
+    try:
+        return require_sole_enabled_cluster_for_legacy_caller()
+    except Exception:
+        return None
+
+
 def _first_client():
-    clients = configured_clients()
-    return clients[0] if clients else None
+    from core.services.cluster_resolver import pin_cluster_write_client
+
+    cluster = _creation_cluster()
+    if cluster is None:
+        return None
+    try:
+        _endpoint, client = pin_cluster_write_client(cluster)
+    except Exception:
+        return None
+    return client
 
 
 def _storages(client, node: str) -> list[dict]:
@@ -117,13 +140,30 @@ def create_options(object_type: str, node: str | None = None) -> dict[str, Any]:
 
 
 def _post_create(node: str, kind: str, body: dict):
-    err = "No Proxmox endpoint could create the guest."
-    for client in configured_clients():
-        try:
-            return client.post(f"nodes/{quote(node, safe='')}/{kind}", data=body), None
-        except ProxmoxAPIError as exc:
-            err = str(exc)
-    return None, err
+    """Create a guest inside the selected cluster, without replaying the create.
+
+    The previous fan-out retried the create on the next endpoint after any error.
+    A create whose response is lost may well have succeeded, so replaying it risks
+    a second guest or a confusing VMID conflict; only a request proven never to
+    have left may be sent elsewhere.
+    """
+    from core.services.cluster_resolver import cluster_write
+
+    cluster = _creation_cluster()
+    if cluster is None:
+        return None, "No Proxmox cluster is configured."
+    try:
+        result = cluster_write(
+            cluster,
+            operation="guest_create",
+            call=lambda client: client.post(f"nodes/{quote(node, safe='')}/{kind}", data=body),
+            error_message=str,
+        )
+    except Exception as exc:
+        return None, str(exc)
+    if not result.ok:
+        return None, result.error
+    return result.value, None
 
 
 def create_vm(node: str, params: dict):

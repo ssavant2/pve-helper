@@ -23,12 +23,7 @@ CONSOLE_PROMPT_PATH = Path("static/js/app/console.js")
 # from it once its callers pass an explicit cluster; never add one.
 LEGACY_CONFIGURED_CLIENTS_MODULES = frozenset(
     {
-        "core/services/console_sessions.py",
-        "core/services/guest_create.py",
         "core/services/proxmox.py",
-        "core/services/tag_actions.py",
-        "core/services/tag_registry.py",
-        "core/services/vm_register.py",
         "core/tasks.py",
         "core/template_clone_views.py",
         "core/views/common.py",
@@ -51,9 +46,17 @@ LEGACY_CONFIGURED_CLIENTS_MODULES = frozenset(
 LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset(
     {
         "core/services/cluster_resolver.py",  # the definition itself
-        # The authoritative cluster-wide read. Phase 2 moves it into the
-        # cluster-scoped read model, which carries its own scope.
+        # The authoritative cluster-wide read and the passive display reads.
+        # Phase 2 moves these into the cluster-scoped read model, which carries
+        # its own scope.
         "core/services/proxmox.py",
+        # Provider services with no caller-supplied scope yet. Each resolves once,
+        # at its own boundary, and passes the cluster down explicitly.
+        "core/services/console_sessions.py",
+        "core/services/guest_create.py",
+        "core/services/tag_actions.py",
+        "core/services/tag_registry.py",
+        "core/services/vm_register.py",
         # The single boundary where guest writes resolve scope. Phase 3 gives
         # `detail` a GuestRef and this call goes away with the adapter in Phase 4.
         "core/views/guests/operation_lifecycle.py",
