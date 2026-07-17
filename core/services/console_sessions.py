@@ -43,14 +43,15 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     last_error = "No Proxmox endpoint could create a console session."
     # A console must attach to the guest in its own cluster: a same-VMID guest on a
     # same-named node elsewhere would hand the operator a shell on the wrong
-    # machine. Endpoint selection is scoped here; resolving the cluster's own
-    # credentials and WSS trust at connect time is Phase 1e.
+    # machine. The cluster is pinned onto the session here; the gateway resolves
+    # that cluster's credential and WSS trust at connect time.
     from core.services.cluster_resolver import (
         ClusterResolutionError,
         cluster_clients,
         require_sole_enabled_cluster_for_legacy_caller,
     )
 
+    cluster = None
     try:
         cluster = require_sole_enabled_cluster_for_legacy_caller()
         candidates = cluster_clients(cluster)
@@ -78,7 +79,15 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     port = str(response.get("port") or "")
     ticket = str(response.get("ticket") or response.get("vncticket") or "")
     password = str(response.get("password") or "")
-    proxmox_user = str(response.get("user") or settings.PVE_API_TOKEN_ID.split("!", 1)[0])
+    # The xterm handshake user falls back to the cluster credential's own token id,
+    # not a global setting, so a multi-cluster deployment names the right identity.
+    fallback_user = ""
+    credential = getattr(selected_client, "_credential", None)
+    if credential is not None and credential.token_id:
+        fallback_user = credential.token_id.split("!", 1)[0]
+    elif settings.PVE_API_TOKEN_ID:
+        fallback_user = settings.PVE_API_TOKEN_ID.split("!", 1)[0]
+    proxmox_user = str(response.get("user") or fallback_user)
     if not port or not ticket:
         raise ProxmoxAPIError("Proxmox did not return a usable console ticket.")
 
@@ -89,6 +98,7 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     expires_at = timezone.now() + timezone.timedelta(seconds=max(settings.CONSOLE_SESSION_TTL_SECONDS, 5))
     session = ConsoleSession.objects.create(
         token_hash=console_token_hash(token),
+        cluster=cluster,
         target_type=detail.object_type,
         target_vmid=detail.vmid,
         target_node=detail.node,

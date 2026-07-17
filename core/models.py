@@ -317,6 +317,18 @@ class ConsoleSession(TimestampedModel):
         EXPIRED = "expired", "Expired"
 
     token_hash = models.CharField(max_length=64, unique=True)
+    # The cluster this console attaches to. The gateway resolves that cluster's
+    # current credential and WSS trust at connect time, so a same-VMID guest on a
+    # same-named node elsewhere can never hand the operator the wrong machine's
+    # shell. Nullable for the additive migration; legacy sessions have none and the
+    # gateway falls back to the global settings for them until they expire.
+    cluster = models.ForeignKey(
+        "ProxmoxCluster",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="console_sessions",
+    )
     target_type = models.CharField(max_length=20, choices=TargetType.choices)
     target_vmid = models.PositiveIntegerField()
     target_node = models.CharField(max_length=120, blank=True)

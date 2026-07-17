@@ -41,8 +41,8 @@ async def console_ws(websocket: WebSocket):
     marked_closed = False
     try:
         upstream_url = _upstream_url(session)
-        headers = _proxmox_headers()
-        ssl_context = _websocket_ssl_context(upstream_url)
+        headers = await _resolve_cluster_credential_header(session)
+        ssl_context = await _resolve_cluster_ssl_context(session, upstream_url)
         console_type = str((session.details or {}).get("console_type") or "novnc")
         connect_kwargs = {}
         if console_type == "xterm":
@@ -280,23 +280,62 @@ def _upstream_url(session: ConsoleSession) -> str:
     return f"{scheme}://{parsed.netloc}{path}"
 
 
-def _proxmox_headers() -> dict[str, str]:
-    if not settings.PVE_API_TOKEN_ID or not settings.PVE_API_TOKEN_SECRET:
+class _ConsoleAuthError(RuntimeError):
+    """The session's cluster could not supply a usable credential or trust."""
+
+
+@sync_to_async
+def _resolve_cluster_credential_header(session: ConsoleSession) -> dict[str, str]:
+    """The Authorization header for this session's cluster, at connect time.
+
+    Resolved now rather than stored, so a credential rotation during the short
+    session window takes effect and no API token is ever copied into a
+    browser-visible session payload. Fails closed if the cluster has none usable.
+
+    A legacy session with no cluster falls back to the global token until it
+    expires; a session that names a cluster must get that cluster's credential.
+    """
+    if session.cluster_id is None:
+        if settings.PVE_API_TOKEN_ID and settings.PVE_API_TOKEN_SECRET:
+            return {"Authorization": f"PVEAPIToken={settings.PVE_API_TOKEN_ID}={settings.PVE_API_TOKEN_SECRET}"}
         return {}
-    return {"Authorization": f"PVEAPIToken={settings.PVE_API_TOKEN_ID}={settings.PVE_API_TOKEN_SECRET}"}
+
+    from core.services.cluster_credentials import ClusterCredentialError, resolve_credential
+
+    try:
+        credential = resolve_credential(session.cluster)
+    except ClusterCredentialError as exc:
+        raise _ConsoleAuthError(str(exc)) from exc
+    return {"Authorization": credential.authorization_header()}
 
 
-def _websocket_ssl_context(url: str):
+@sync_to_async
+def _resolve_cluster_ssl_context(session: ConsoleSession, url: str):
+    """The WSS TLS context for this session's cluster.
+
+    Built from the cluster's own transport-trust profile so one cluster's WSS trust
+    is never another's or an ambient global fallback. A legacy session with no
+    cluster keeps the global behaviour until it expires.
+    """
     if not url.startswith("wss://"):
         return None
-    if not settings.PVE_VERIFY_TLS:
-        return ssl._create_unverified_context()
-    if settings.PVE_CA_BUNDLE:
-        return ssl.create_default_context(cafile=settings.PVE_CA_BUNDLE)
-    request_ca = os.getenv("REQUESTS_CA_BUNDLE", "")
-    if request_ca:
-        return ssl.create_default_context(cafile=request_ca)
-    return ssl.create_default_context()
+    if session.cluster_id is None:
+        if not settings.PVE_VERIFY_TLS:
+            return ssl._create_unverified_context()
+        if settings.PVE_CA_BUNDLE:
+            return ssl.create_default_context(cafile=settings.PVE_CA_BUNDLE)
+        return ssl.create_default_context()
+
+    from core.services.cluster_trust import (
+        TransportTrustError,
+        resolve_trust_profile,
+        ssl_context_for,
+    )
+
+    try:
+        return ssl_context_for(resolve_trust_profile(session.cluster))
+    except TransportTrustError as exc:
+        raise _ConsoleAuthError(str(exc)) from exc
 
 
 app = Starlette(

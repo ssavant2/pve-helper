@@ -80,6 +80,29 @@ class TrustProfile:
         raise TransportTrustError(f"Unknown transport trust mode {self.mode!r}.")
 
 
+def ssl_context_for(profile: TrustProfile) -> "ssl.SSLContext":
+    """An ssl.SSLContext for a trust profile, for the WebSocket console upstream.
+
+    The HTTP path hands `verify` to httpx; the console gateway speaks raw
+    websockets and needs a context object built the same way, so one cluster's WSS
+    trust can never be another's or an ambient global one.
+    """
+    if profile.mode == TRUST_INSECURE:
+        return ssl._create_unverified_context()
+    if profile.mode == TRUST_CA_PEM:
+        if not profile.ca_pem.strip():
+            raise TransportTrustError("A ca_pem trust profile needs a CA bundle.")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        try:
+            context.load_verify_locations(cadata=profile.ca_pem)
+        except ssl.SSLError as exc:
+            raise TransportTrustError(f"The configured CA bundle is not valid PEM: {exc}") from exc
+        return context
+    return ssl.create_default_context()
+
+
 def legacy_trust_profile() -> TrustProfile:
     """The compatibility profile from the global TLS settings.
 
