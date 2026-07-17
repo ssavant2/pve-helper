@@ -1294,6 +1294,36 @@ class ClusterActivationInvariantTests(TestCase):
 
         self.assertEqual(cluster.key, "lab")
 
+    def test_key_can_be_chosen_after_a_second_cluster_is_registered(self):
+        # The guard is contract version 0, not cluster count: version 0 is the
+        # statement that no durable cluster-qualified payload exists yet. Gating on
+        # "only one cluster" locked out a safe rename as soon as cluster two was
+        # registered, which is easy to do before choosing the first one's key.
+        ProxmoxCluster.objects.create(key="clusterb", display_name="B", enabled=False)
+
+        cluster = set_initial_cluster_key("clusterhq", current_key="default")
+
+        self.assertEqual(cluster.key, "clusterhq")
+        self.assertEqual(ProxmoxCluster.objects.get(pk=self.default.pk).key, "clusterhq")
+
+    def test_rekeying_several_clusters_requires_naming_one(self):
+        ProxmoxCluster.objects.create(key="clusterb", display_name="B", enabled=False)
+
+        with self.assertRaises(ClusterActivationError) as ctx:
+            set_initial_cluster_key("clusterhq")
+
+        self.assertIn("clusterb", str(ctx.exception))
+
+    def test_rekeying_an_unknown_cluster_is_refused(self):
+        with self.assertRaises(ClusterActivationError):
+            set_initial_cluster_key("clusterhq", current_key="nope")
+
+    def test_rekeying_cannot_collide_with_another_clusters_key(self):
+        ProxmoxCluster.objects.create(key="clusterb", display_name="B", enabled=False)
+
+        with self.assertRaises(ClusterActivationError):
+            set_initial_cluster_key("clusterb", current_key="default")
+
     def test_initial_cluster_key_is_immutable_once_contract_is_active(self):
         RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).update(
             identity_contract_version=1

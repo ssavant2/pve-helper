@@ -53,13 +53,25 @@ def enable_cluster(cluster: ProxmoxCluster) -> ProxmoxCluster:
     return cluster
 
 
-def set_initial_cluster_key(new_key: str) -> ProxmoxCluster:
-    """Change the auto-created bootstrap key, before cluster-qualified contracts activate.
+def set_initial_cluster_key(new_key: str, *, current_key: str | None = None) -> ProxmoxCluster:
+    """Choose a cluster's durable key, before cluster-qualified contracts activate.
 
     The key is immutable afterwards: it is durable identity that appears in URLs,
     queue payloads and audit rows, so a rename would mean maintaining aliases
-    indefinitely. This is the one pre-activation exception, and an installation that
-    chooses nothing simply keeps `default`.
+    indefinitely. An installation that chooses nothing simply keeps `default`.
+
+    The guard is identity contract version 0, not the number of configured clusters.
+    Version 0 *is* the statement that no durable cluster-qualified payload exists —
+    those arrive in Phase 3 — so a key is safe to change for exactly as long as the
+    version says so. Gating on "only one cluster" instead was a proxy for a pristine
+    bootstrap install, and it locks out a safe rename as soon as a second cluster is
+    registered, which is easy to do before choosing the first one's key. Nothing has
+    to be tightened later: activation to version 1 closes this permanently.
+
+    Historical audit rows keep the key they were written with. That drift is
+    accepted rather than repaired, on the same grounds the migration plan gives for
+    backfill: rewriting history to match a later decision asserts a provenance that
+    was never true.
     """
     normalized = (new_key or "").strip().lower()
     cluster_key_validator(normalized)
@@ -72,11 +84,22 @@ def set_initial_cluster_key(new_key: str) -> ProxmoxCluster:
                 "URLs, queued payloads and audit history. Change the display name instead."
             )
         clusters = list(ProxmoxCluster.objects.select_for_update().order_by("key"))
-        if len(clusters) != 1:
+        if not clusters:
+            raise ClusterActivationError("No cluster is configured.")
+
+        if current_key:
+            wanted = current_key.strip().lower()
+            cluster = next((item for item in clusters if item.key == wanted), None)
+            if cluster is None:
+                raise ClusterActivationError(f"No cluster with key '{wanted}'.")
+        elif len(clusters) == 1:
+            cluster = clusters[0]
+        else:
+            available = ", ".join(item.key for item in clusters)
             raise ClusterActivationError(
-                f"set_initial_cluster_key requires exactly one configured cluster, found {len(clusters)}."
+                f"Several clusters are configured ({available}); name which one to rekey."
             )
-        cluster = clusters[0]
+
         if cluster.key == normalized:
             return cluster
         if ProxmoxCluster.objects.filter(key__iexact=normalized).exclude(pk=cluster.pk).exists():
