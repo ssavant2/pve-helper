@@ -45,7 +45,6 @@ from .services.proxmox import (
     ProxmoxClient,
     ProxmoxTaskTimeout,
     clear_live_guest_caches,
-    configured_clients,
     fetch_live_guest_status,
     fetch_verified_guest_inventory,
 )
@@ -68,6 +67,29 @@ SPACE_SNAPSHOT_RETENTION_DAYS = 8
 logger = logging.getLogger(__name__)
 
 CURRENT_GUEST_REFRESH_LOCK_ID = 0x50564547554501
+
+
+
+def _cluster_clients():
+    """Provider clients for the sole enabled cluster, or none.
+
+    Workers carry no cluster scope of their own yet; Phase 3 gives their durable
+    payloads a GuestRef and this resolves from that instead.
+    """
+    from .services.cluster_resolver import (
+        ClusterResolutionError,
+        cluster_clients,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    try:
+        return cluster_clients(require_sole_enabled_cluster_for_legacy_caller())
+    except ClusterResolutionError:
+        return []
+
+
+def _first_cluster_client():
+    return next(iter(_cluster_clients()), None)
 
 
 def refresh_current_guest_inventory() -> dict[str, object]:
@@ -238,7 +260,7 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         endpoint = details.get("proxmox_endpoint") or ""
         status = None
         if upid and node:
-            client = ProxmoxClient(endpoint) if endpoint else next(iter(configured_clients()), None)
+            client = ProxmoxClient(endpoint) if endpoint else _first_cluster_client()
             if client is not None:
                 try:
                     status = client.get(f"nodes/{quote(str(node), safe='')}/tasks/{quote(str(upid), safe='')}/status")
@@ -778,7 +800,9 @@ def _refresh_import_target_inventory(
         numeric_vmid = None
 
     if node and numeric_vmid is not None:
-        for client in configured_clients():
+        # Bounded to one cluster: asking every endpoint whether it holds this
+        # node/vmid is a cross-cluster search, and two clusters may each answer.
+        for client in _cluster_clients():
             try:
                 config = client.guest_config(
                     node=node,
@@ -939,13 +963,17 @@ def _record_local_space_snapshots(recorded_at: datetime) -> int:
     created = 0
     seen: set[tuple[str, str]] = set()
     truthy = {"1", "true", "yes", "on"}
-    for client in configured_clients():
+    # `nodes` is cluster-wide, so one answering member covers the cluster and the
+    # per-node reads ride on the endpoint that proved reachable. The old loop asked
+    # every endpoint and deduped the overlap by hand.
+    client = _first_cluster_client()
+    if client is not None:
         try:
             nodes = client.get("nodes")
         except ProxmoxAPIError:
-            continue
+            nodes = []
         if not isinstance(nodes, list):
-            continue
+            nodes = []
         for node_entry in nodes:
             node = str((node_entry or {}).get("node") or "")
             if not node:

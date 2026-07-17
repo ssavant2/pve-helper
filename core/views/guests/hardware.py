@@ -386,7 +386,7 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
         return "Could not resolve the container's current node."
     client = None
     fresh: dict = {}
-    for candidate in common.configured_clients():
+    for candidate in common.cluster_scoped_clients():
         try:
             fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate
@@ -611,7 +611,7 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         return "Could not resolve the guest's current node."
     client = None
     fresh: dict = {}
-    for candidate in common.configured_clients():
+    for candidate in common.cluster_scoped_clients():
         try:
             fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate
@@ -946,7 +946,7 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
 
     client = None
     fresh: dict = {}
-    for candidate in common.configured_clients():
+    for candidate in common.cluster_scoped_clients():
         try:
             fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate

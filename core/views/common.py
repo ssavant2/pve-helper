@@ -63,7 +63,6 @@ from ..services.proxmox import (
     ProxmoxAPIError,
     ProxmoxTaskTimeout,
     clear_live_guest_caches,
-    configured_clients,
     fetch_live_guest_inventory,
     fetch_live_guest_lineage,
     fetch_live_guest_locks,
@@ -745,9 +744,36 @@ def enqueue_bulk_task(func, *args, **kwargs):
     return async_task(func, *args, q_options=q_options, **kwargs)
 
 
+def cluster_scoped_clients():
+    """Provider clients for the guest views, bounded to one cluster.
+
+    This replaces the global client fan-out these views used to share. That fan-out selected clients from settings with no cluster scope, so a
+    view looking for `vm:500` on `pve1` would accept whichever endpoint answered
+    first — including one belonging to a different cluster.
+
+    Scope is resolved here, at the guest views' shared boundary, and the returned
+    clients all belong to the same cluster. It is a bounded migration seam: views
+    still infer their cluster instead of carrying it, which Phase 3 fixes by giving
+    them a GuestRef, and Phase 4 removes the adapter behind this entirely.
+
+    Returns an empty list when no single cluster can be resolved, matching the old
+    behaviour of an unconfigured install rather than breaking passive reads.
+    """
+    from core.services.cluster_resolver import (
+        ClusterResolutionError,
+        cluster_clients,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    try:
+        return cluster_clients(require_sole_enabled_cluster_for_legacy_caller())
+    except ClusterResolutionError:
+        return []
+
+
 _PATCHABLE_TEST_DEPS = {
     'async_task',
-    'configured_clients',
+    'cluster_scoped_clients',
     'fetch_live_guest_inventory',
     'fetch_live_guest_lineage',
     'fetch_live_guest_locks',

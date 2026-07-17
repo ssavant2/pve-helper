@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (_backup_error,_delete_all_guest_snapshots,_guest_nic_bridges,_queue_guest_backup_restore,_restore_archive_from_key,_restore_options,_snapshot_error,_submit_guest_backup)
-from .operation_lifecycle import (_audit_guest,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_post_with_client,_parse_guest_target_value,_wants_task_json)
+from .operation_lifecycle import (_guest_write,_audit_guest,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_post_with_client,_parse_guest_target_value,_wants_task_json)
 from .read_model_support import _require_guest
 from core.services.public_errors import public_exception_message
 
@@ -159,20 +159,20 @@ def guest_backup_delete(request, object_type, vmid):
     storage = request.POST.get("storage", "").strip()
     if not volid or not storage:
         return result("Missing backup reference.")
-    response = None
-    client = None
-    err = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
-        try:
-            response = client.delete(f"nodes/{quote(detail.node, safe='')}/storage/{quote(storage, safe='')}/content/{quote(volid, safe='')}")
-            err = ""
-            break
-        except ProxmoxAPIError as exc:
-            err = public_exception_message(
-                exc,
-                operation="guest_backup_delete",
-                fallback="Proxmox could not delete the backup.",
-            )
+    # Deleting a backup volume must not be replayed on another endpoint: an
+    # ambiguous failure may already have removed it, and the retry would report a
+    # confusing error for work that succeeded.
+    result_write = _guest_write(
+        detail,
+        operation="guest_backup_delete",
+        fallback="Proxmox could not delete the backup.",
+        call=lambda client: client.delete(
+            f"nodes/{quote(detail.node, safe='')}/storage/{quote(storage, safe='')}/content/{quote(volid, safe='')}"
+        ),
+    )
+    response = result_write.value
+    client = result_write.client
+    err = result_write.error
     running_event = _audit_guest(request, detail, "guest.backup.delete", {"storage": storage, "volid": volid}, outcome="running")
     if err:
         _finish_guest_running_audit(running_event, detail, response, client, err=f"Delete backup failed: {err}")

@@ -100,7 +100,7 @@ def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[di
     if not detail.node:
         return [], [], "The guest's node could not be resolved."
     error = ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             # A cheap live request also proves this configured endpoint owns the
             # guest instead of accepting a same-named node on another endpoint.
@@ -153,7 +153,7 @@ def _guest_backup_storages(detail: SimpleNamespace) -> tuple[list[dict], str]:
     if not detail.node:
         return [], "The guest's node could not be resolved."
     error = ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
@@ -230,7 +230,7 @@ def _submit_guest_backup(request, detail: SimpleNamespace):
     if not detail.node:
         return None, "The guest's node could not be resolved.", None, audit_details
     last_error = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             # Resolve storage through the endpoint that currently owns the guest.
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
@@ -635,7 +635,7 @@ def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list
     nextid = ""
     seen_nodes: set[str] = set()
     seen_archives: set[tuple[str, str, str]] = set()
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         endpoint = str(getattr(client, "endpoint", ""))
         try:
             client_nodes = client.node_names(fallback="")
@@ -735,7 +735,7 @@ def _restore_archive_from_key(key: str, archives: list[dict]) -> dict | None:
 
 
 def _restore_client(endpoint: str):
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         if str(getattr(client, "endpoint", "")) == endpoint:
             return client
     return None

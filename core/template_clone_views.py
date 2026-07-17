@@ -39,7 +39,7 @@ def clone_guest_to_template(request, object_type: str, vmid: int):
 
     client = None
     try:
-        for candidate in common.configured_clients():
+        for candidate in common.cluster_scoped_clients():
             try:
                 fresh_config = candidate.guest_config(node=detail.node, object_type=object_type, vmid=vmid)
                 fresh_current = candidate.guest_current(node=detail.node, object_type=object_type, vmid=vmid)

@@ -342,7 +342,7 @@ def _live_guest_has_snapshot(row: SimpleNamespace, *, allow_fetch: bool = True) 
         return None
     kind = "qemu" if row.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
     path = f"nodes/{quote(row.node, safe='')}/{kind}/{row.vmid}/snapshot"
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             data = client.get(path, timeout=2)
         except ProxmoxAPIError:
@@ -618,7 +618,7 @@ def _guest_api_get(detail: SimpleNamespace, subpath: str, *, timeout_seconds: fl
     if not detail.node:
         return None, "The guest's node could not be resolved."
     err = "No Proxmox endpoint could reach this guest."
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             return client.get(
                 f"nodes/{quote(detail.node, safe='')}/{kind}/{detail.vmid}/{subpath}",
@@ -737,7 +737,7 @@ def _empty_guest_agent_summary(*, enabled: bool, running: bool) -> dict:
 def _guest_pool_label(detail: SimpleNamespace) -> str:
     if not detail.live_ok or not detail.node:
         return ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         if not hasattr(client, "get"):
             continue
         try:
@@ -779,7 +779,7 @@ def _guest_ha_summary(detail: SimpleNamespace) -> dict:
     if isinstance(cached, dict):
         return cached
 
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         if not hasattr(client, "get"):
             continue
         try:

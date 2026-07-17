@@ -577,10 +577,6 @@ class ProxmoxClient:
             return None
 
 
-def configured_clients() -> list[ProxmoxClient]:
-    return [ProxmoxClient(endpoint) for endpoint in settings.PVE_ENDPOINTS]
-
-
 def fetch_live_guest_status() -> dict[tuple[str, str, int], str]:
     cached = cache.get(LIVE_GUEST_STATUS_CACHE_KEY)
     if isinstance(cached, dict):

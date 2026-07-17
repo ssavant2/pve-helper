@@ -1,7 +1,7 @@
 """Guest replication tab + create/delete (extracted from _core)."""
 from ..common import *  # noqa: F401,F403
 from .. import common
-from .operation_lifecycle import _write_result
+from .operation_lifecycle import _guest_write, _write_result
 from .read_model_support import _guest_tab_context, _require_guest
 
 
@@ -11,7 +11,7 @@ def guest_replication(request, object_type: str, vmid: int):
     jobs = []
     error = ""
     try:
-        raw = common.configured_clients()[0].get("cluster/replication") if common.configured_clients() else []
+        raw = common.cluster_scoped_clients()[0].get("cluster/replication") if common.cluster_scoped_clients() else []
         for job in raw if isinstance(raw, list) else []:
             if str(job.get("guest", "")) == str(vmid) or str(job.get("id", "")).startswith(f"{vmid}-"):
                 jobs.append(
@@ -27,8 +27,8 @@ def guest_replication(request, object_type: str, vmid: int):
     except ProxmoxAPIError as exc:
         error = str(exc)
     target_nodes = []
-    if common.configured_clients():
-        target_nodes = [n for n in common.configured_clients()[0].node_names(fallback="") if n != detail.node]
+    if common.cluster_scoped_clients():
+        target_nodes = [n for n in common.cluster_scoped_clients()[0].node_names(fallback="") if n != detail.node]
     context = _guest_tab_context(detail, "replication")
     context.update({"replication_jobs": jobs, "replication_error": error, "target_nodes": target_nodes})
     return render(request, "core/guest_replication.html", context)
@@ -48,14 +48,14 @@ def guest_replication_create(request, object_type, vmid):
     schedule = request.POST.get("schedule", "").strip()
     if schedule:
         body["schedule"] = schedule
-    err = ""
-    for client in common.configured_clients():
-        try:
-            client.post("cluster/replication", data=body)
-            err = ""
-            break
-        except ProxmoxAPIError as exc:
-            err = str(exc)
+    # A replication job must not be created twice: a create whose response was
+    # lost may already have registered the job.
+    err = _guest_write(
+        detail,
+        operation="guest_replication_create",
+        fallback="Proxmox could not create the replication job.",
+        call=lambda client: client.post("cluster/replication", data=body),
+    ).error
     return _write_result(request, detail, "core:guest_replication", err, "guest.replication.create", {"target": target})
 
 
@@ -69,14 +69,12 @@ def guest_replication_delete(request, object_type, vmid):
     if not job_id:
         messages.error(request, "Missing job id.")
         return redirect("core:guest_replication", object_type=object_type, vmid=vmid)
-    err = ""
-    for client in common.configured_clients():
-        try:
-            client.delete(f"cluster/replication/{quote(job_id, safe='')}")
-            err = ""
-            break
-        except ProxmoxAPIError as exc:
-            err = str(exc)
+    err = _guest_write(
+        detail,
+        operation="guest_replication_delete",
+        fallback="Proxmox could not delete the replication job.",
+        call=lambda client: client.delete(f"cluster/replication/{quote(job_id, safe='')}"),
+    ).error
     return _write_result(request, detail, "core:guest_replication", err, "guest.replication.delete", {"job_id": job_id})
 
 

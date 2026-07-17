@@ -4,7 +4,7 @@ from django.db import transaction
 
 from .common import *  # noqa: F401,F403
 from . import common
-from ..services.proxmox import ProxmoxClient, configured_clients
+from ..services.proxmox import ProxmoxClient
 from ..services.public_errors import public_exception_message
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
 from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
@@ -332,9 +332,18 @@ def _cancel_scheduled_action_recent_task(request, run_id: int) -> None:
 
 
 def _cancel_proxmox_task(*, node: str, upid: str, endpoint_url: str = "") -> None:
+    """Stop a Proxmox task, preferring the endpoint that submitted it.
+
+    The recorded endpoint is tried first because it is the one that owns the task.
+    The remaining candidates are bounded to a single cluster: a UPID names a node,
+    and two clusters may each have a node called pve1, so an unscoped fallback
+    could stop the wrong cluster's task.
+    """
+    from ..views.common import cluster_scoped_clients
+
     errors: list[str] = []
     clients = [ProxmoxClient(endpoint_url)] if endpoint_url else []
-    clients.extend(configured_clients())
+    clients.extend(cluster_scoped_clients())
     seen: set[str] = set()
     for client in clients:
         endpoint = getattr(client, "endpoint", "")

@@ -126,7 +126,7 @@ def _api_storage_get(node: str, storage: str, subpath: str):
     node_q = quote(node, safe="")
     storage_q = quote(storage, safe="")
     error = ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             data = client.get(f"nodes/{node_q}/storage/{storage_q}/{subpath}")
         except ProxmoxAPIError as exc:
@@ -248,7 +248,7 @@ def api_storage_vms(request, node: str, storage: str):
 
 
 def _api_live_content_values(storage: str) -> list[str]:
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             config = client.storage_config(storage)
         except ProxmoxAPIError:
@@ -353,7 +353,7 @@ def update_api_storage_content(request, node: str, storage: str):
 
     updated = False
     err = ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             client.set_storage_content(storage, requested)
             updated = True
@@ -991,7 +991,7 @@ def update_storage_content(request, storage_id: str):
 
     updated = False
     err = ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             client.set_storage_content(storage.storage_id, requested_content)
             updated = True
@@ -1108,7 +1108,7 @@ def _storage_content_values(storage: StorageMount) -> list[str]:
 
 
 def _live_storage_content_values(storage: StorageMount) -> list[str]:
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             config = client.storage_config(storage.storage_id)
         except ProxmoxAPIError:

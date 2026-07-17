@@ -310,7 +310,7 @@ def _move_guest_to_pool_from_bulk_request(request, detail: SimpleNamespace) -> t
     client = None
     pools: list[str] = []
     memberships: list[str] = []
-    for candidate in common.configured_clients():
+    for candidate in common.cluster_scoped_clients():
         try:
             # Resolve both the guest and the pool list through the same endpoint.
             # Pools are cluster-local, not globally shared between configured PVE
@@ -455,7 +455,7 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_e
         audit["noop"] = True
         return "", audit, None, None
     endpoint = ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             endpoint = getattr(client, "endpoint", "")
@@ -502,7 +502,7 @@ def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str,
     client = None
     fresh_config: dict = {}
     current: dict = {}
-    for candidate in common.configured_clients():
+    for candidate in common.cluster_scoped_clients():
         try:
             fresh_config = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             current = candidate.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
@@ -641,7 +641,7 @@ def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tu
 
     client = None
     fresh: dict = {}
-    for candidate in common.configured_clients():
+    for candidate in common.cluster_scoped_clients():
         try:
             fresh = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate
@@ -716,7 +716,7 @@ def _set_guest_agent_from_bulk_request(
 
     client = None
     fresh: dict = {}
-    for candidate in common.configured_clients():
+    for candidate in common.cluster_scoped_clients():
         try:
             fresh = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate

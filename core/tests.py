@@ -2735,7 +2735,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, ">Nodes<")
         self.assertContains(response, "Expected Proxmox Nodes")
 
-        with patch("core.views.storage.common.configured_clients", return_value=[]):
+        with patch("core.views.storage.common.cluster_scoped_clients", return_value=[]):
             response = self.client.get(reverse("core:storage_content", args=["nfs-vm"]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Content Types")
@@ -2843,7 +2843,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with (
             patch("core.views.storage._run_storage_content_preflight_scan", return_value=scan),
-            patch("core.views.storage.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.storage.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:storage_content_update", args=["nfs-vm"]),
@@ -2878,7 +2878,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with (
             patch("core.views.storage._run_storage_content_preflight_scan", return_value=scan),
-            patch("core.views.storage.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.storage.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:storage_content_update", args=["nfs-vm"]),
@@ -2919,7 +2919,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             with (
                 patch("core.tasks.ensure_bootstrap"),
-                patch("core.views.storage.common.configured_clients", return_value=[fake_client]),
+                patch("core.views.storage.common.cluster_scoped_clients", return_value=[fake_client]),
             ):
                 response = self.client.post(
                     reverse("core:storage_content_update", args=["nfs-vm"]),
@@ -3117,7 +3117,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 raise ProxmoxAPIError(path)
 
         fake_client = self._patch_provider_client(FakeClient())
-        with patch("core.services.proxmox.configured_clients", return_value=[fake_client]):
+        with patch("core.services.cluster_resolver.client_for_endpoint", return_value=fake_client):
             statuses = _fetch_live_guest_status_uncached()
 
         self.assertEqual(
@@ -6264,7 +6264,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
             patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:vms_overview_snapshot_info"))
 
@@ -6286,7 +6286,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
             patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:vms_overview_snapshot_info"))
 
@@ -6317,7 +6317,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:guest_snapshots", args=["vm", 500]))
 
@@ -6373,7 +6373,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
             patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:vms_overview_agent_info"))
 
@@ -6414,7 +6414,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.fetch_live_guest_status", return_value={("ct", 601): "stopped"}),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:guest_summary", args=["ct", 601]))
 
@@ -6446,7 +6446,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
 
@@ -6485,7 +6485,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
-            patch("core.views.common.configured_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
             response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
 
@@ -6544,7 +6544,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_hardware_edit", args=["vm", 500]))
 
@@ -6580,7 +6580,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         fake_client = self._patch_provider_client(FakeClient())
         with (
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_create", args=["vm"]))
 
@@ -6623,7 +6623,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:guest_hardware_edit", args=["vm", 500]),
@@ -6704,7 +6704,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:guest_hardware_edit", args=["vm", 500]),
@@ -6777,7 +6777,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_hardware_edit", args=["ct", 601]))
 
@@ -6832,7 +6832,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="ct", vmid=601, name="ct-lab", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:guest_hardware_edit", args=["ct", 601]),
@@ -6973,7 +6973,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -7017,7 +7017,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -7086,7 +7086,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
             with (
                 patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-                patch("core.views.common.configured_clients", return_value=[fake_client]),
+                patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
             ):
                 response = self.client.post(
                     reverse("core:vms_bulk_action"),
@@ -7156,7 +7156,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
             with (
                 patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-                patch("core.views.common.configured_clients", return_value=[fake_client]),
+                patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
             ):
                 response = self.client.post(
                     reverse("core:vms_bulk_action"),
@@ -7208,7 +7208,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -7251,7 +7251,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="ct", vmid=601, name="Lab CT", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_pool_options", args=["ct", 601]))
 
@@ -7296,7 +7296,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -7347,7 +7347,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="running")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
             patch("core.views.common.async_task", return_value="poll-task-1") as poll_mock,
         ):
             response = self.client.post(reverse("core:guest_snapshot_delete", args=["vm", 500, "snap-a"]))
@@ -7388,7 +7388,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.get(reverse("core:guest_clone_options", args=["vm", 500]))
 
@@ -7421,7 +7421,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -7463,7 +7463,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             failed_response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -7524,7 +7524,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         ]
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=live_guests),
-            patch("core.views.common.configured_clients", return_value=[fake_client]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
@@ -8156,7 +8156,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             # No Proxmox endpoints -> only the mounted storage is sampled here;
             # local (API) capacity recording is covered separately.
-            with patch("core.tasks.configured_clients", return_value=[]):
+            with patch("core.tasks._cluster_clients", return_value=[]):
                 created = record_storage_space_snapshots(retention_days=8)
 
         self.assertEqual(created, 1)
@@ -8178,7 +8178,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     ]
                 raise AssertionError(path)
 
-        with patch("core.tasks.configured_clients", return_value=[FakeClient()]):
+        with patch("core.tasks._cluster_clients", return_value=[FakeClient()]):
             created = record_storage_space_snapshots()
 
         locals_ = StorageSpaceSnapshot.objects.filter(storage__isnull=True)
@@ -8389,7 +8389,7 @@ class GuestBackupRestoreTests(TestCase):
         fake = FakeClient()
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._guest()]),
-            patch("core.views.common.configured_clients", return_value=[fake]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake]),
             patch("core.views.common.async_task", return_value="poll-backup-1") as enqueue,
         ):
             response = self.client.post(
@@ -8431,7 +8431,7 @@ class GuestBackupRestoreTests(TestCase):
         fake = FakeClient()
         key = f"{fake.endpoint}|pve1|backup|{archive}"
         with (
-            patch("core.views.common.configured_clients", return_value=[fake]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake]),
             patch("core.views.common.fetch_live_guest_inventory", return_value=[]),
             patch("core.views.common.async_task", return_value="restore-worker-1") as enqueue,
         ):
@@ -8479,7 +8479,7 @@ class GuestBackupRestoreTests(TestCase):
                     return [{"volid": archive}, {"volid": other_archive}]
                 raise ProxmoxAPIError(path)
 
-        with patch("core.views.common.configured_clients", return_value=[FakeClient()]):
+        with patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]):
             response = self.client.get(
                 reverse("core:guest_backup_restore"),
                 {"source_type": "vm", "source_vmid": "500"},
@@ -8522,7 +8522,7 @@ class GuestBackupRestoreTests(TestCase):
         key = f"{fake.endpoint}|pve1|backup|{archive}"
         stale_guest = self._guest(status="stopped")
         with (
-            patch("core.views.common.configured_clients", return_value=[fake]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake]),
             patch("core.views.common.fetch_live_guest_inventory", return_value=[stale_guest]),
             patch("core.views.common.async_task", return_value="restore-worker-2") as enqueue,
         ):

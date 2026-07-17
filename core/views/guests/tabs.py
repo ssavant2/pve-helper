@@ -69,7 +69,7 @@ def guest_permissions(request, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid)
     acl = None
     error = ""
-    for client in common.configured_clients():
+    for client in common.cluster_scoped_clients():
         try:
             acl = client.get("access/acl")
             error = ""
@@ -160,7 +160,7 @@ def guest_cloudinit_edit(request, object_type, vmid):
     node = detail.node
     err = ""
     try:
-        client = common.configured_clients()[0]
+        client = common.cluster_scoped_clients()[0]
         fresh = client.guest_config(node=node, object_type=object_type, vmid=vmid)
         # only delete keys that currently exist
         delete = [k for k in delete if k in fresh]

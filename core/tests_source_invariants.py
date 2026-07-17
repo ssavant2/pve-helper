@@ -16,49 +16,31 @@ PROMPT_PATTERN = re.compile(r"\b(?:window\.)?prompt\s*\(")
 CONSOLE_PROMPT_PATH = Path("static/js/app/console.js")
 
 
-# The global `configured_clients()` fan-out is what Phase 1b replaces: it selects
-# clients from settings with no cluster scope, so a caller can reach another
-# cluster's guest by VMID. This list is a ratchet, not a permission: it records the
-# surface that still has to migrate, and it may only ever shrink. Prune a module
-# from it once its callers pass an explicit cluster; never add one.
-LEGACY_CONFIGURED_CLIENTS_MODULES = frozenset(
-    {
-        "core/services/proxmox.py",
-        "core/tasks.py",
-        "core/template_clone_views.py",
-        "core/views/common.py",
-        "core/views/guests/_core.py",
-        "core/views/guests/actions.py",
-        "core/views/guests/dialogs.py",
-        "core/views/guests/hardware.py",
-        "core/views/guests/mutations.py",
-        "core/views/guests/read_model_support.py",
-        "core/views/guests/replication.py",
-        "core/views/guests/tabs.py",
-        "core/views/scheduling.py",
-        "core/views/storage.py",
-    }
-)
+# Phase 1b removed the global client fan-out entirely: it selected clients from
+# settings with no cluster scope, so a caller could reach another cluster's guest
+# by VMID. Nothing may reintroduce it — provider access goes through
+# core.services.cluster_resolver with an explicit cluster.
+FORBIDDEN_GLOBAL_FAN_OUT = "configured_clients"
 
-# The legacy scope adapter may only be called at an entry point that has no
+# The legacy scope adapter may only be called at a boundary that has no
 # GuestRef/NodeRef/path scope yet, and Phase 4 deletes it before activation. An
-# empty allowlist is the exit condition, so this list may also only shrink.
+# empty allowlist is the exit condition, so this list may only shrink.
 LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset(
     {
         "core/services/cluster_resolver.py",  # the definition itself
         # The authoritative cluster-wide read and the passive display reads.
-        # Phase 2 moves these into the cluster-scoped read model, which carries
-        # its own scope.
+        # Phase 2 moves these into the cluster-scoped read model.
         "core/services/proxmox.py",
-        # Provider services with no caller-supplied scope yet. Each resolves once,
-        # at its own boundary, and passes the cluster down explicitly.
+        # Provider services and worker/view boundaries with no caller-supplied
+        # scope yet. Each resolves once, at its own boundary, and passes the
+        # cluster down explicitly.
         "core/services/console_sessions.py",
         "core/services/guest_create.py",
         "core/services/tag_actions.py",
         "core/services/tag_registry.py",
         "core/services/vm_register.py",
-        # The single boundary where guest writes resolve scope. Phase 3 gives
-        # `detail` a GuestRef and this call goes away with the adapter in Phase 4.
+        "core/tasks.py",
+        "core/views/common.py",
         "core/views/guests/operation_lifecycle.py",
     }
 )
@@ -87,26 +69,15 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
                 found.add(str(path.relative_to(root)))
         return found
 
-    def test_no_new_module_uses_the_global_client_fan_out(self):
-        offenders = sorted(self._modules_containing("configured_clients") - LEGACY_CONFIGURED_CLIENTS_MODULES)
+    def test_the_global_client_fan_out_is_not_reintroduced(self):
+        offenders = sorted(self._modules_containing(FORBIDDEN_GLOBAL_FAN_OUT))
 
         self.assertEqual(
             offenders,
             [],
-            "New code must resolve clients from an explicit cluster via "
-            "core.services.cluster_resolver, not the global configured_clients() "
-            f"fan-out: {', '.join(offenders)}",
-        )
-
-    def test_legacy_client_fan_out_list_has_no_stale_entries(self):
-        actual = self._modules_containing("configured_clients")
-        stale = sorted(LEGACY_CONFIGURED_CLIENTS_MODULES - actual)
-
-        self.assertEqual(
-            stale,
-            [],
-            "These modules no longer use configured_clients(); remove them from "
-            f"LEGACY_CONFIGURED_CLIENTS_MODULES so the ratchet cannot loosen: {', '.join(stale)}",
+            "Provider clients must be resolved from an explicit cluster via "
+            "core.services.cluster_resolver. The global fan-out was removed in "
+            f"Phase 1b and must not come back: {', '.join(offenders)}",
         )
 
     def test_legacy_scope_adapter_stays_on_its_allowlist(self):
