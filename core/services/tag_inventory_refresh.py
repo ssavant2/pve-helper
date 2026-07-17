@@ -177,10 +177,14 @@ def execute_tag_inventory_refresh(event_id: int) -> None:
         warnings = ([registry_error] if registry_error else []) + membership_errors
         any_success = not registry_error or membership_reconciled
         complete = not registry_error and inventory.complete
-        event.outcome = "success" if complete else ("warning" if any_success else "failed")
+        # A degraded endpoint is surfaced as a warning without making the cluster's
+        # coverage partial: membership is still fully reconciled from the
+        # authoritative answer, but the operator should see the degradation.
+        clean = complete and not warnings
+        event.outcome = "success" if clean else ("warning" if any_success else "failed")
         details = {
             **(event.details if isinstance(event.details, dict) else {}),
-            "stage": "completed" if complete else ("completed with warnings" if any_success else "failed"),
+            "stage": "completed" if clean else ("completed with warnings" if any_success else "failed"),
             "registry_count": len(registered),
             "registry_error": registry_error,
             "membership_reconciled": membership_reconciled,

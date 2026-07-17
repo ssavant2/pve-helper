@@ -116,8 +116,13 @@ class CurrentGuestInventoryTests(TestCase):
                 ),
             ),
             attempted_endpoints=(self.pve1.url, self.pve2.url),
-            successful_endpoints=(self.pve1.url,),
-            errors=("pve2 unavailable",),
+            # Incomplete now means no endpoint in the cluster answered
+            # authoritatively, rather than one of several failing:
+            # cluster/resources is a cluster-wide response, verified against the
+            # live cluster to list guests on every node regardless of which member
+            # answers. This drives the reconciler directly to prove its guard.
+            successful_endpoints=(),
+            errors=("pve1 unavailable", "pve2 unavailable"),
         )
 
         state = reconcile_live_guest_inventory(result)

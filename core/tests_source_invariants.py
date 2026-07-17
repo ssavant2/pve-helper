@@ -51,6 +51,9 @@ LEGACY_CONFIGURED_CLIENTS_MODULES = frozenset(
 LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset(
     {
         "core/services/cluster_resolver.py",  # the definition itself
+        # The authoritative cluster-wide read. Phase 2 moves it into the
+        # cluster-scoped read model, which carries its own scope.
+        "core/services/proxmox.py",
         # The single boundary where guest writes resolve scope. Phase 3 gives
         # `detail` a GuestRef and this call goes away with the adapter in Phase 4.
         "core/views/guests/operation_lifecycle.py",

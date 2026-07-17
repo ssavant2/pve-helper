@@ -12,7 +12,15 @@ from django.utils import timezone
 from django_q.models import OrmQ
 from django_q.signing import SignedPackage
 
-from core.models import AuditEvent, CurrentGuestInventory, CurrentGuestInventoryState, ProxmoxInventory, ScanRun
+from core.models import (
+    AuditEvent,
+    CurrentGuestInventory,
+    CurrentGuestInventoryState,
+    ProxmoxCluster,
+    ProxmoxEndpoint,
+    ProxmoxInventory,
+    ScanRun,
+)
 from core.services.tag_actions import (
     TagOperationRetryError,
     execute_tag_operation,
@@ -60,7 +68,56 @@ from core.views.guests.read_model_support import _decorate_guest_tag_chips, _gue
 from core.views.tags import _tag_type_label
 
 
-class TagServiceTests(TestCase):
+class FakeProviderClient:
+    """A provider double for one endpoint of the selected cluster."""
+
+    def __init__(self, endpoint, response=None, error=None):
+        self.endpoint = endpoint
+        self.response = response
+        self.error = error
+
+    def get(self, path):
+        self.test_path = path
+        if self.error:
+            raise self.error
+        return self.response
+
+
+class ClusterFixtureMixin:
+    """Give provider reads a real cluster to resolve.
+
+    fetch_verified_guest_inventory() selects endpoints from the cluster rather than
+    from settings, so tests inject their doubles by mapping the cluster's endpoints
+    to fakes instead of patching the global fan-out.
+    """
+
+    def _configure_cluster(self, *fakes):
+        cluster = ProxmoxCluster.objects.filter(enabled=True).first()
+        if cluster is None:
+            cluster = ProxmoxCluster.objects.create(
+                key="default", display_name="Default cluster", enabled=True
+            )
+        endpoints = []
+        for index, fake in enumerate(fakes):
+            endpoints.append(
+                ProxmoxEndpoint.objects.create(
+                    name=f"tagfix-{index}",
+                    url=getattr(fake, "endpoint", f"https://fake-{index}:8006"),
+                    cluster=cluster,
+                    enabled=True,
+                )
+            )
+        by_name = {endpoint.name: fake for endpoint, fake in zip(endpoints, fakes)}
+        mocked = patch(
+            "core.services.cluster_resolver.client_for_endpoint",
+            side_effect=lambda endpoint: by_name[endpoint.name],
+        )
+        mocked.start()
+        self.addCleanup(mocked.stop)
+        return cluster
+
+
+class TagServiceTests(ClusterFixtureMixin, TestCase):
     class FakeRegistryClient:
         def __init__(self, final_options=None, final_error=None):
             self.final_options = final_options or {}
@@ -280,43 +337,59 @@ class TagServiceTests(TestCase):
 
         self.assertEqual(_decorate_guest_tag_chips([selected_row]), ["prod", "qa"])
 
-    @patch("core.services.proxmox.configured_clients")
-    def test_verified_inventory_reports_partial_coverage_without_discarding_guests(self, clients):
-        class FakeClient:
-            def __init__(self, endpoint, response=None, error=None):
-                self.endpoint = endpoint
-                self.response = response
-                self.error = error
-
-            def get(self, path):
-                self.test_path = path
-                if self.error:
-                    raise self.error
-                return self.response
-
-        available = FakeClient(
+    def test_verified_inventory_is_complete_when_the_cluster_answers_once(self):
+        # cluster/resources is a cluster-wide response from any member, so a
+        # redundant endpoint failing first degrades that endpoint's health without
+        # making the cluster's answer partial.
+        unavailable = FakeProviderClient("https://pve2:8006", error=ProxmoxAPIError("unavailable"))
+        available = FakeProviderClient(
             "https://pve1:8006",
             [{"node": "pve1", "type": "qemu", "vmid": 100, "name": "one", "tags": "prod"}],
         )
-        unavailable = FakeClient("https://pve2:8006", error=ProxmoxAPIError("unavailable"))
-        clients.return_value = [available, unavailable]
+        self._configure_cluster(unavailable, available)
 
-        with self.assertLogs("core.services.proxmox", level="WARNING") as logs:
+        with self.assertLogs("core.services.cluster_resolver", level="WARNING") as logs:
             result = fetch_verified_guest_inventory()
 
-        self.assertFalse(result.complete)
+        self.assertTrue(result.complete)
         self.assertEqual(result.guests[0].tags, ("prod",))
-        self.assertEqual(result.successful_endpoints, ("https://pve1:8006",))
-        self.assertIn("https://pve2:8006", result.errors[0])
         self.assertEqual(available.test_path, "cluster/resources?type=vm")
         self.assertIn("operation=verified_guest_inventory", logs.output[0])
-        self.assertIn("endpoint=https://pve2:8006", logs.output[0])
 
-    @patch("core.services.proxmox.configured_clients")
-    def test_verified_inventory_does_not_hide_unexpected_errors(self, clients):
+    def test_verified_inventory_is_incomplete_when_no_endpoint_answers(self):
+        # Guests are then unknown, not absent: destructive callers must fail closed.
+        self._configure_cluster(
+            FakeProviderClient("https://pve1:8006", error=ProxmoxAPIError("unavailable")),
+            FakeProviderClient("https://pve2:8006", error=ProxmoxAPIError("unavailable")),
+        )
+
+        result = fetch_verified_guest_inventory()
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.guests, ())
+        self.assertEqual(len(result.errors), 2)
+
+    def test_verified_inventory_never_reads_another_cluster(self):
+        other = ProxmoxCluster.objects.create(key="other", display_name="Other", enabled=False)
+        stranger = FakeProviderClient(
+            "https://other:8006",
+            [{"node": "pve1", "type": "qemu", "vmid": 100, "name": "other-cluster", "tags": ""}],
+        )
+        ProxmoxEndpoint.objects.create(
+            name="other-1", url="https://other:8006", cluster=other, enabled=True
+        )
+        self._configure_cluster(FakeProviderClient("https://pve1:8006", error=ProxmoxAPIError("down")))
+
+        result = fetch_verified_guest_inventory()
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.guests, ())
+        self.assertIsNone(getattr(stranger, "test_path", None))
+
+    def test_verified_inventory_does_not_hide_unexpected_errors(self):
         client = SimpleNamespace(endpoint="https://pve1:8006")
         client.get = Mock(side_effect=RuntimeError("programming bug"))
-        clients.return_value = [client]
+        self._configure_cluster(client)
 
         with self.assertRaisesMessage(RuntimeError, "programming bug"):
             fetch_verified_guest_inventory()
@@ -578,7 +651,7 @@ class TagViewTests(TestCase):
         self.assertContains(response, 'name="guest" value="vm:100@pve1"')
 
 
-class TagInventoryRefreshTests(TestCase):
+class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):
     def setUp(self):
         self.event = AuditEvent.objects.create(
             username="admin",
@@ -618,17 +691,20 @@ class TagInventoryRefreshTests(TestCase):
     @patch("core.services.tag_inventory_refresh.fetch_verified_guest_inventory")
     @patch("core.services.tag_inventory_refresh.refresh_registered_tags", return_value=({}, ""))
     def test_partial_endpoint_coverage_is_warning_and_reconciles_successes(self, _registry, fetch, reconcile):
+        # The first endpoint failed and the second answered: the cluster's coverage
+        # is complete, but the degraded endpoint must still reach the operator.
         fetch.return_value = VerifiedGuestInventory(
             guests=(),
             attempted_endpoints=("https://pve1:8006", "https://pve2:8006"),
-            successful_endpoints=("https://pve1:8006",),
-            errors=("pve2 unavailable",),
+            successful_endpoints=("https://pve2:8006",),
+            errors=("pve1 unavailable",),
         )
         reconcile.return_value = SimpleNamespace(refreshed_at=timezone.now())
 
         execute_tag_inventory_refresh(self.event.id)
 
         self.event.refresh_from_db()
+        self.assertTrue(fetch.return_value.complete)
         self.assertEqual(self.event.outcome, "warning")
         self.assertEqual(self.event.details["stage"], "completed with warnings")
         reconcile.assert_called_once_with(fetch.return_value)
@@ -678,7 +754,7 @@ class TagInventoryRefreshTests(TestCase):
         self.assertEqual(self.event.outcome, "failed")
         self.assertIn("start a new refresh", self.event.details["error"])
 
-class TagFanoutTests(TestCase):
+class TagFanoutTests(ClusterFixtureMixin, TestCase):
     def setUp(self):
         self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         self.row = CurrentGuestInventory.objects.create(
@@ -1002,7 +1078,9 @@ class TagFanoutTests(TestCase):
     @staticmethod
     def inventory(*guests, complete=True, errors=()):
         attempted = ("https://pve1:8006", "https://pve2:8006")
-        successful = attempted if complete else attempted[:1]
+        # Coverage is the cluster's, not each endpoint's: one authoritative answer
+        # is complete, and incomplete means no endpoint in the cluster answered.
+        successful = attempted[:1] if complete else ()
         return VerifiedGuestInventory(
             guests=tuple(guests),
             attempted_endpoints=attempted,

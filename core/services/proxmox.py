@@ -120,9 +120,17 @@ class VerifiedGuestInventory:
 
     @property
     def complete(self) -> bool:
-        return bool(self.attempted_endpoints) and len(self.successful_endpoints) == len(
-            self.attempted_endpoints
-        )
+        """Whether the cluster answered authoritatively — not whether every
+        endpoint did.
+
+        This used to require every attempted endpoint to succeed, which conflated
+        transport health with logical coverage and punished redundancy: a
+        single-endpoint install already treated one answer as complete, while
+        adding a second endpoint made an unreachable one block retirement.
+        `cluster/resources` is a cluster-wide response from any member, so one
+        authoritative answer covers the cluster.
+        """
+        return bool(self.successful_endpoints)
 
 
 @dataclass(frozen=True)
@@ -595,60 +603,67 @@ def fetch_live_guest_inventory(*, use_cache: bool = True) -> list[ProxmoxGuestSu
     return result
 
 
-def fetch_verified_guest_inventory() -> VerifiedGuestInventory:
-    """Read cluster guest membership from every configured endpoint.
+def fetch_verified_guest_inventory(*, cluster=None) -> VerifiedGuestInventory:
+    """Read one cluster's guest membership authoritatively.
 
-    Unlike :func:`fetch_live_guest_inventory`, this has no display deadline,
-    cache or per-node fallback. A list response (including an empty list) is a
-    successful authoritative response; any failed or malformed response makes
-    the result incomplete so destructive callers can fail closed.
+    Unlike :func:`fetch_live_guest_inventory`, this has no display deadline, cache
+    or per-node fallback. A list response (including an empty list) is a successful
+    authoritative response; a failed or malformed response leaves the result
+    incomplete so destructive callers can fail closed.
+
+    `cluster/resources` is a cluster-wide response regardless of which member
+    answers, so one authoritative answer is complete coverage for the cluster and
+    the guests are stored once rather than merged per endpoint. A redundant
+    endpoint being unreachable degrades that endpoint's health without making the
+    cluster's answer partial.
     """
-    clients = configured_clients()
-    attempted = tuple(client.endpoint for client in clients)
-    successful: list[str] = []
-    errors: list[str] = []
-    guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
-    for client in clients:
+    # Imported lazily: cluster_resolver sits above this transport layer and imports
+    # from it, so a module-level import here would be circular. The cluster-aware
+    # read living in the transport module is the reason; Phase 2 moves this read
+    # into the cluster-scoped read model and the seam disappears.
+    from core.services.cluster_resolver import (
+        cluster_wide_read,
+        require_sole_enabled_cluster_for_legacy_caller,
+    )
+
+    if cluster is None:
         try:
-            resources = client.get("cluster/resources?type=vm")
-        except ProxmoxAPIError as exc:
-            logger.warning(
-                "Proxmox read failed: endpoint=%s operation=verified_guest_inventory error=%s",
-                client.endpoint,
-                exc,
-                extra={
-                    "proxmox_endpoint": client.endpoint,
-                    "proxmox_operation": "verified_guest_inventory",
-                },
+            cluster = require_sole_enabled_cluster_for_legacy_caller()
+        except Exception as exc:
+            return VerifiedGuestInventory(
+                guests=(),
+                attempted_endpoints=(),
+                successful_endpoints=(),
+                errors=(str(exc),),
             )
-            errors.append(f"{client.endpoint}: {exc}")
-            continue
+
+    def _read(client) -> list:
+        resources = client.get("cluster/resources?type=vm")
         if not isinstance(resources, list):
-            logger.warning(
-                "Proxmox response was invalid: endpoint=%s operation=verified_guest_inventory type=%s",
-                client.endpoint,
-                type(resources).__name__,
-                extra={
-                    "proxmox_endpoint": client.endpoint,
-                    "proxmox_operation": "verified_guest_inventory",
-                    "proxmox_response_type": type(resources).__name__,
-                },
-            )
-            errors.append(f"{client.endpoint}: cluster guest inventory returned an invalid response.")
-            continue
-        successful.append(client.endpoint)
-        for resource in resources:
-            _add_guest_summary(guests_by_key, resource)
+            raise ProxmoxAPIError("cluster guest inventory returned an invalid response.")
+        return resources
+
+    result = cluster_wide_read(cluster, operation="verified_guest_inventory", call=_read)
+
+    guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
+    for resource in result.value or ():
+        _add_guest_summary(guests_by_key, resource)
     guests = tuple(
         sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
     )
-    if not clients:
-        errors.append("No Proxmox endpoints are configured.")
+
+    attempted = tuple(attempt.endpoint_name for attempt in result.attempted)
+    errors = tuple(
+        f"{attempt.endpoint_name}: {attempt.error}" for attempt in result.attempted if not attempt.ok
+    )
+    if not attempted:
+        errors = errors + (f"Cluster '{result.cluster_key}' has no enabled Proxmox endpoint.",)
+
     return VerifiedGuestInventory(
         guests=guests,
         attempted_endpoints=attempted,
-        successful_endpoints=tuple(successful),
-        errors=tuple(errors),
+        successful_endpoints=(result.answering_endpoint,) if result.complete else (),
+        errors=errors,
     )
 
 
