@@ -125,6 +125,9 @@ class ProxmoxCluster(TimestampedModel):
     quarantine_reason = models.CharField(max_length=255, blank=True)
     quarantined_at = models.DateTimeField(null=True, blank=True)
     details = models.JSONField(default=dict, blank=True)
+    # Cache keys include this generation. Bumping it invalidates only this
+    # cluster's process-local cache entries across every web/worker process.
+    cache_generation = models.PositiveBigIntegerField(default=1)
 
     class Meta:
         ordering = ["key"]

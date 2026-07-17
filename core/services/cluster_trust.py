@@ -253,6 +253,9 @@ def approve_cluster_transport(cluster, *, mode: str, ca_pem: str = ""):
         },
     )
     reset_trust_pools()
+    from core.services.cluster_state_identity import invalidate_cluster_cache
+
+    invalidate_cluster_cache(cluster)
     return trust
 
 

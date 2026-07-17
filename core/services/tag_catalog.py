@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from django.db.models import Q
+
 from core.models import CurrentGuestInventory
 from core.services.current_guest_inventory import current_inventory_state
-from core.services.tag_registry import registered_tags
+from core.services.tag_registry import registered_tags, resolve_tag_registry_cluster
 from core.services.tags import RegisteredTag, TagChip, TagSummary, inventory_rows, parse_tags, tag_chip
 
 
@@ -23,6 +25,7 @@ def _inventory_errors(raw) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class TagCatalog:
+    cluster_key: str
     registered: dict[str, RegisteredTag]
     assigned: tuple[str, ...]
     available: tuple[str, ...]
@@ -62,9 +65,16 @@ class TagCatalog:
         }
 
 
-def load_tag_catalog() -> TagCatalog:
-    registered, registry_error = registered_tags()
-    guests = tuple(CurrentGuestInventory.objects.all().order_by("node", "vmid"))
+def load_tag_catalog(*, cluster=None) -> TagCatalog:
+    cluster, cluster_error = resolve_tag_registry_cluster(cluster)
+    registered, registry_error = registered_tags(cluster=cluster) if cluster else ({}, cluster_error)
+    guests = tuple(
+        CurrentGuestInventory.objects.filter(Q(cluster=cluster) | Q(cluster__isnull=True)).order_by(
+            "node", "vmid"
+        )
+        if cluster
+        else ()
+    )
     assigned = tuple(
         sorted(
             {
@@ -76,8 +86,9 @@ def load_tag_catalog() -> TagCatalog:
         )
     )
     available = tuple(sorted(set(registered) | set(assigned), key=str.casefold))
-    state = current_inventory_state()
+    state = current_inventory_state(cluster) if cluster else None
     return TagCatalog(
+        cluster_key=cluster.key if cluster else "",
         registered=registered,
         assigned=assigned,
         available=available,

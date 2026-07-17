@@ -4,7 +4,7 @@ from django.utils import timezone
 from django.db import transaction
 from django_q.tasks import async_task
 
-from core.models import AuditEvent, CurrentGuestInventory
+from core.models import AuditEvent, CurrentGuestInventory, ProxmoxCluster
 from core.services.audit_events import record_audit_event
 from core.services.current_guest_inventory import update_current_guest_config
 from core.services.proxmox import (
@@ -110,7 +110,7 @@ def retry_tag_operation(event_id: int) -> str:
     return enqueue_tag_operation(event)
 
 
-def register_tag(tag: str, color: str = "") -> tuple[dict[str, RegisteredTag], str]:
+def register_tag(tag: str, color: str = "", *, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
     try:
         tag = validate_tag(tag)
     except TagValidationError:
@@ -129,10 +129,11 @@ def register_tag(tag: str, color: str = "") -> tuple[dict[str, RegisteredTag], s
     return mutate_registered_tags(
         mutate,
         postcondition=lambda actual: tag in actual and (not color or actual[tag].background == color),
+        cluster=cluster,
     )
 
 
-def recolor_tag(tag: str, color: str) -> tuple[dict[str, RegisteredTag], str]:
+def recolor_tag(tag: str, color: str, *, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
     try:
         tag = validate_tag(tag)
     except TagValidationError:
@@ -151,12 +152,13 @@ def recolor_tag(tag: str, color: str) -> tuple[dict[str, RegisteredTag], str]:
         return mutate_registered_tags(
             mutate,
             postcondition=lambda actual: tag in actual and actual[tag].background == color,
+            cluster=cluster,
         )
     except TagValidationError:
         return {}, "Register the tag before assigning a color."
 
 
-def unregister_tag(tag: str) -> tuple[dict[str, RegisteredTag], str]:
+def unregister_tag(tag: str, *, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
     try:
         tag = validate_tag(tag)
     except TagValidationError:
@@ -166,25 +168,36 @@ def unregister_tag(tag: str) -> tuple[dict[str, RegisteredTag], str]:
         names[:] = [name for name in names if name != tag]
         colors.pop(tag, None)
 
-    return mutate_registered_tags(mutate, postcondition=lambda actual: tag not in actual)
+    return mutate_registered_tags(
+        mutate, postcondition=lambda actual: tag not in actual, cluster=cluster
+    )
 
 
-def _target_from_guest(row) -> dict:
-    return {"node": row.node, "object_type": row.object_type, "vmid": row.vmid, "name": row.name}
+def _target_from_guest(row, *, cluster=None) -> dict:
+    return {
+        "cluster_key": (
+            getattr(getattr(row, "cluster", None), "key", "")
+            or getattr(cluster, "key", "")
+        ),
+        "node": row.node,
+        "object_type": row.object_type,
+        "vmid": row.vmid,
+        "name": row.name,
+    }
 
 
-def latest_tag_targets(tag: str) -> tuple[list[dict], VerifiedGuestInventory]:
+def latest_tag_targets(tag: str, *, cluster) -> tuple[list[dict], VerifiedGuestInventory]:
     """Union retained membership with an explicitly covered live inventory."""
-    targets: dict[tuple[str, str, int], dict] = {}
-    for row in CurrentGuestInventory.objects.all():
+    targets: dict[tuple[str, str, str, int], dict] = {}
+    for row in CurrentGuestInventory.objects.filter(cluster=cluster):
         if tag in parse_tags(row.config):
-            target = _target_from_guest(row)
-            targets[(target["node"], target["object_type"], target["vmid"])] = target
-    live = fetch_verified_guest_inventory()
+            target = _target_from_guest(row, cluster=cluster)
+            targets[(target["cluster_key"], target["node"], target["object_type"], target["vmid"])] = target
+    live = fetch_verified_guest_inventory(cluster=cluster)
     for row in live.guests:
         if tag in parse_tags(row.tags):
-            target = _target_from_guest(row)
-            targets[(target["node"], target["object_type"], target["vmid"])] = target
+            target = _target_from_guest(row, cluster=cluster)
+            targets[(target["cluster_key"], target["node"], target["object_type"], target["vmid"])] = target
     return sorted(targets.values(), key=lambda item: (item["object_type"], item["vmid"], item["node"])), live
 
 
@@ -195,16 +208,20 @@ def prepare_tag_operation(
     source_tag: str,
     confirmed_membership_fingerprint: str,
     new_tag: str = "",
+    cluster_key: str = "",
 ) -> str:
     try:
         source_tag = validate_tag(source_tag)
         new_tag = validate_tag(new_tag) if new_tag else ""
     except TagValidationError:
         return TAG_NAME_ERROR
-    registered, error = registered_tags()
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        return "The selected Proxmox cluster no longer exists."
+    registered, error = registered_tags(cluster=cluster)
     if error:
         return error
-    targets, membership = latest_tag_targets(source_tag)
+    targets, membership = latest_tag_targets(source_tag, cluster=cluster)
     if tag_membership_fingerprint(targets) != confirmed_membership_fingerprint:
         return CHANGED_CONFIRMATION_ERROR
     if not targets and not membership.complete:
@@ -213,12 +230,13 @@ def prepare_tag_operation(
         if new_tag in registered:
             return "The destination tag is already registered."
         old = registered.get(source_tag)
-        _updated, error = register_tag(new_tag, old.background if old else "")
+        _updated, error = register_tag(new_tag, old.background if old else "", cluster=cluster)
         if error:
             return error
     username = event.username or str((event.details or {}).get("username") or "")
     event.details = {
         "operation": operation,
+        "cluster_key": cluster.key,
         "source_tag": source_tag,
         "new_tag": new_tag,
         "targets": targets,
@@ -233,9 +251,9 @@ def prepare_tag_operation(
     event.outcome = "queued"
     event.save(update_fields=["details", "outcome"])
     if not targets:
-        verification = fetch_verified_guest_inventory()
+        verification = fetch_verified_guest_inventory(cluster=cluster)
         remaining = [
-            _target_from_guest(item)
+            _target_from_guest(item, cluster=cluster)
             for item in verification.guests
             if source_tag in parse_tags(item.tags)
         ]
@@ -250,7 +268,7 @@ def prepare_tag_operation(
         elif remaining:
             error = f"The source tag is still assigned to {len(remaining)} guest(s)."
         else:
-            _updated, error = unregister_tag(source_tag)
+            _updated, error = unregister_tag(source_tag, cluster=cluster)
         if error:
             event.outcome = "failed"
             event.details = {**event.details, "error": error, "finished_at": timezone.now().isoformat()}
@@ -264,7 +282,10 @@ def prepare_tag_operation(
 
 
 def _target_key(target: dict) -> str:
-    return f"{target.get('object_type')}:{target.get('vmid')}@{target.get('node')}"
+    return (
+        f"{target.get('cluster_key')}:{target.get('object_type')}:"
+        f"{target.get('vmid')}@{target.get('node')}"
+    )
 
 
 def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> None:
@@ -285,7 +306,16 @@ def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> No
         for item in details.get(bucket, [])
     }
     details["failed"] = []
-    inventory = fetch_verified_guest_inventory()
+    cluster = ProxmoxCluster.objects.filter(key=str(details.get("cluster_key") or "")).first()
+    if cluster is None:
+        event.outcome = "failed"
+        details["stage"] = "failed"
+        details["error"] = "The selected Proxmox cluster no longer exists."
+        details["finished_at"] = timezone.now().isoformat()
+        event.details = details
+        event.save(update_fields=["details", "outcome"])
+        return
+    inventory = fetch_verified_guest_inventory(cluster=cluster)
     live_by_identity = {
         (item.node, item.object_type, item.vmid): item
         for item in inventory.guests
@@ -300,17 +330,17 @@ def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> No
         if live_guest is None:
             candidates = live_by_guest.get((target["object_type"], target["vmid"]), [])
             live_guest = candidates[0] if len(candidates) == 1 else None
-        outcome, message = _update_target(details, target, live_guest)
+        outcome, message = _update_target(details, target, live_guest, cluster=cluster)
         item = {**target, "reason": message} if message else dict(target)
         details.setdefault(outcome, []).append(item)
         details["heartbeat_at"] = timezone.now().isoformat()
         event.details = details
         event.save(update_fields=["details"])
-    verification = fetch_verified_guest_inventory()
+    verification = fetch_verified_guest_inventory(cluster=cluster)
     details["postcondition_complete"] = verification.complete
     details["postcondition_errors"] = list(verification.errors)
     remaining = [
-        _target_from_guest(item)
+        _target_from_guest(item, cluster=cluster)
         for item in verification.guests
         if details["source_tag"] in parse_tags(item.tags)
     ]
@@ -331,7 +361,7 @@ def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> No
         details["stage"] = "partial failure"
         details["retryable"] = True
     else:
-        _updated, error = unregister_tag(details["source_tag"])
+        _updated, error = unregister_tag(details["source_tag"], cluster=cluster)
         if error:
             event.outcome = "failed"
             details.setdefault("failed", []).append({"reason": error, "registry": True})
@@ -346,7 +376,10 @@ def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> No
         _record_summary_audit(event)
 
 
-def _update_target(details: dict, target: dict, live_guest) -> tuple[str, str]:
+def _update_target(details: dict, target: dict, live_guest, *, cluster) -> tuple[str, str]:
+    target_cluster_key = str(target.get("cluster_key") or "")
+    if target_cluster_key and target_cluster_key != cluster.key:
+        return "failed", "Target belongs to a different Proxmox cluster."
     if live_guest is None:
         return "failed", "Guest was not found in live inventory."
     node = live_guest.node
@@ -354,14 +387,10 @@ def _update_target(details: dict, target: dict, live_guest) -> tuple[str, str]:
     # cross-cluster search: two clusters may each hold vm:500 on a node called
     # pve1, and the first to answer would win. Candidates are bounded to the
     # selected cluster, where an endpoint answering only proves transport.
-    from core.services.cluster_resolver import (
-        ClusterResolutionError,
-        cluster_clients,
-        require_sole_enabled_cluster_for_legacy_caller,
-    )
+    from core.services.cluster_resolver import ClusterResolutionError, cluster_clients
 
     try:
-        candidates = cluster_clients(require_sole_enabled_cluster_for_legacy_caller())
+        candidates = cluster_clients(cluster)
     except ClusterResolutionError as exc:
         return "failed", str(exc)
 
@@ -403,6 +432,7 @@ def _update_target(details: dict, target: dict, live_guest) -> tuple[str, str]:
         node=node,
         updates={"tags": join_tags(next_tags)} if next_tags else {},
         delete=[] if next_tags else ["tags"],
+        cluster=cluster,
     )
     record_audit_event(
         username=event_username(details),

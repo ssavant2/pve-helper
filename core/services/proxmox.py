@@ -12,15 +12,16 @@ from django.conf import settings
 from django.core.cache import cache
 
 from .classification import extract_disk_references
+from .cluster_state_identity import cluster_cache_key, invalidate_cluster_cache
 
 
 logger = logging.getLogger(__name__)
 
 
-LIVE_GUEST_STATUS_CACHE_KEY = "pve-helper:live-guest-status:v1"
-LIVE_GUEST_INVENTORY_CACHE_KEY = "pve-helper:live-guest-inventory:v1"
-LIVE_GUEST_LOCKS_CACHE_KEY = "pve-helper:live-guest-locks:v1"
-LIVE_GUEST_LINEAGE_CACHE_KEY = "pve-helper:live-guest-lineage:v1"
+LIVE_GUEST_STATUS_CACHE_NAMESPACE = "live-guest-status:v2"
+LIVE_GUEST_INVENTORY_CACHE_NAMESPACE = "live-guest-inventory:v2"
+LIVE_GUEST_LOCKS_CACHE_NAMESPACE = "live-guest-locks:v2"
+LIVE_GUEST_LINEAGE_CACHE_NAMESPACE = "live-guest-lineage:v2"
 LIVE_GUEST_STATUS_CACHE_SECONDS = 2
 LIVE_GUEST_INVENTORY_CACHE_SECONDS = 30
 LIVE_GUEST_LOCKS_CACHE_SECONDS = 3
@@ -565,25 +566,33 @@ class ProxmoxClient:
             return None
 
 
-def fetch_live_guest_status() -> dict[tuple[str, str, int], str]:
-    cached = cache.get(LIVE_GUEST_STATUS_CACHE_KEY)
+def fetch_live_guest_status(*, cluster=None) -> dict[tuple[str, str, int], str]:
+    cluster = cluster or _display_cluster()
+    if cluster is None:
+        return {}
+    cache_key = cluster_cache_key(LIVE_GUEST_STATUS_CACHE_NAMESPACE, cluster)
+    cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached
 
-    result = _fetch_live_guest_status_uncached()
-    cache.set(LIVE_GUEST_STATUS_CACHE_KEY, result, LIVE_GUEST_STATUS_CACHE_SECONDS)
+    result = _fetch_live_guest_status_uncached(cluster=cluster)
+    cache.set(cache_key, result, LIVE_GUEST_STATUS_CACHE_SECONDS)
     return result
 
 
-def fetch_live_guest_inventory(*, use_cache: bool = True) -> list[ProxmoxGuestSummary]:
+def fetch_live_guest_inventory(*, use_cache: bool = True, cluster=None) -> list[ProxmoxGuestSummary]:
+    cluster = cluster or _display_cluster()
+    if cluster is None:
+        return []
+    cache_key = cluster_cache_key(LIVE_GUEST_INVENTORY_CACHE_NAMESPACE, cluster)
     if use_cache:
-        cached = cache.get(LIVE_GUEST_INVENTORY_CACHE_KEY)
+        cached = cache.get(cache_key)
         if isinstance(cached, list):
             return cached
 
-    result = _fetch_live_guest_inventory_uncached()
+    result = _fetch_live_guest_inventory_uncached(cluster=cluster)
     if use_cache:
-        cache.set(LIVE_GUEST_INVENTORY_CACHE_KEY, result, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
+        cache.set(cache_key, result, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
     return result
 
 
@@ -652,16 +661,20 @@ def fetch_verified_guest_inventory(*, cluster=None) -> VerifiedGuestInventory:
     )
 
 
-def fetch_live_guest_locks() -> dict[tuple[str, str, int], str]:
+def fetch_live_guest_locks(*, cluster=None) -> dict[tuple[str, str, int], str]:
     """Return {(node, object_type, vmid): lock} for guests that carry a Proxmox
     config lock (``backup``, ``migrate``, ``snapshot``, ``suspended``, ...). The
     lock rides on the per-node ``qemu``/``lxc`` listing (one call per node per
     type), so this is a cluster-wide health signal without any per-VM polling."""
-    cached = cache.get(LIVE_GUEST_LOCKS_CACHE_KEY)
+    cluster = cluster or _display_cluster()
+    if cluster is None:
+        return {}
+    cache_key = cluster_cache_key(LIVE_GUEST_LOCKS_CACHE_NAMESPACE, cluster)
+    cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached
-    result = _fetch_live_guest_locks_uncached()
-    cache.set(LIVE_GUEST_LOCKS_CACHE_KEY, result, LIVE_GUEST_LOCKS_CACHE_SECONDS)
+    result = _fetch_live_guest_locks_uncached(cluster=cluster)
+    cache.set(cache_key, result, LIVE_GUEST_LOCKS_CACHE_SECONDS)
     return result
 
 
@@ -756,16 +769,20 @@ def _fetch_live_guest_locks_uncached(*, cluster=None) -> dict[tuple[str, str, in
     return locks
 
 
-def fetch_live_guest_lineage() -> dict[int, int]:
+def fetch_live_guest_lineage(*, cluster=None) -> dict[int, int]:
     """Return {child VMID: parent-template VMID} for linked clones — a qcow2 whose
     storage-content ``parent`` points at a template's ``base-<N>-disk-`` volume.
     One content listing per images-storage (deduped across nodes); no per-file
     ``qemu-img`` probing. VM/qcow2/file-storage only; other backends yield nothing."""
-    cached = cache.get(LIVE_GUEST_LINEAGE_CACHE_KEY)
+    cluster = cluster or _display_cluster()
+    if cluster is None:
+        return {}
+    cache_key = cluster_cache_key(LIVE_GUEST_LINEAGE_CACHE_NAMESPACE, cluster)
+    cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached
-    result = _fetch_live_guest_lineage_uncached()
-    cache.set(LIVE_GUEST_LINEAGE_CACHE_KEY, result, LIVE_GUEST_LINEAGE_CACHE_SECONDS)
+    result = _fetch_live_guest_lineage_uncached(cluster=cluster)
+    cache.set(cache_key, result, LIVE_GUEST_LINEAGE_CACHE_SECONDS)
     return result
 
 
@@ -858,15 +875,15 @@ def _fetch_live_guest_lineage_uncached(*, cluster=None) -> dict[int, int]:
     return lineage
 
 
-def clear_live_guest_caches() -> None:
-    cache.delete_many(
-        [
-            LIVE_GUEST_STATUS_CACHE_KEY,
-            LIVE_GUEST_INVENTORY_CACHE_KEY,
-            LIVE_GUEST_LOCKS_CACHE_KEY,
-            LIVE_GUEST_LINEAGE_CACHE_KEY,
-        ]
-    )
+def clear_live_guest_caches(*, cluster=None) -> None:
+    """Invalidate every ephemeral read for exactly one cluster.
+
+    The generation also covers per-guest snapshot/agent/HA keys constructed by
+    the view read model, not only the four aggregate caches in this module.
+    """
+    cluster = cluster or _display_cluster()
+    if cluster is not None:
+        invalidate_cluster_cache(cluster)
 
 
 def _paused_vm_keys(unknown_vm_keys, deadline, *, cluster) -> set[tuple[str, str, int]]:
@@ -943,14 +960,14 @@ def _hibernated_vm_keys(stopped_vm_keys, deadline, *, cluster) -> set[tuple[str,
     return hibernated
 
 
-def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
+def _fetch_live_guest_status_uncached(*, cluster=None) -> dict[tuple[str, str, int], str]:
     """Return {(node, object_type, vmid): status} for all guests.
 
     This is the hot display path for power state. Keep it status-only and
     bounded; safety checks use direct guest APIs elsewhere.
     """
     statuses: dict[tuple[str, str, int], str] = {}
-    cluster = _display_cluster()
+    cluster = cluster or _display_cluster()
     if cluster is None:
         return statuses
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
@@ -972,10 +989,10 @@ def _fetch_live_guest_status_uncached() -> dict[tuple[str, str, int], str]:
     return statuses
 
 
-def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
+def _fetch_live_guest_inventory_uncached(*, cluster=None) -> list[ProxmoxGuestSummary]:
     """Return lightweight guest inventory across all configured endpoints."""
     guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
-    cluster = _display_cluster()
+    cluster = cluster or _display_cluster()
     if cluster is None:
         return []
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
@@ -1013,7 +1030,7 @@ def _fetch_live_guest_inventory_uncached() -> list[ProxmoxGuestSummary]:
     stopped_vm_keys = [key for key, guest in guests_by_key.items() if guest.status == "stopped" and key[1] == "vm"]
     for key in _hibernated_vm_keys(stopped_vm_keys, deadline, cluster=cluster):
         guests_by_key[key] = replace(guests_by_key[key], status="hibernated")
-    for key, lock in fetch_live_guest_locks().items():
+    for key, lock in fetch_live_guest_locks(cluster=cluster).items():
         if key in guests_by_key:
             guests_by_key[key] = replace(guests_by_key[key], lock=lock)
     return sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))

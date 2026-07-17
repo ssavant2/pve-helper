@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
 from core.services.classification import DISK_CONFIG_KEYS
+from core.services.cluster_state_identity import cluster_cache_key
 from core.services.current_guest_inventory import current_inventory_state
 from core.services.public_errors import public_exception_message
 from core.services.tag_catalog import load_tag_catalog
@@ -244,6 +245,8 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
     storage_ids = _config_storage_ids(config)
     identity = guest_identity(object_type, vmid, name or "")
     return SimpleNamespace(
+        cluster=getattr(current_obj, "cluster", None),
+        cluster_key=getattr(getattr(current_obj, "cluster", None), "key", ""),
         object_type=object_type,
         vmid=vmid,
         name=name or "",
@@ -332,9 +335,12 @@ def _live_guest_has_snapshot(row: SimpleNamespace, *, allow_fetch: bool = True) 
     guest), or None when unavailable so the caller can fall back to the scan
     value. When ``allow_fetch`` is False only the cache is consulted — used to
     keep serving cached probes after a request's live-call budget is spent."""
-    if not row.node or row.vmid is None:
+    cluster = getattr(row, "cluster", None)
+    if not row.node or row.vmid is None or not cluster:
         return None
-    cache_key = f"pve-helper:guest-snapshot-present:v1:{row.node}:{row.object_type}:{row.vmid}"
+    cache_key = cluster_cache_key(
+        "guest-snapshot-present:v2", cluster, row.node, row.object_type, row.vmid
+    )
     cached = cache.get(cache_key)
     if cached is not None:
         return bool(cached)
@@ -507,6 +513,8 @@ def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> Sim
     obj = current_query.first()
     if obj is None:
         return SimpleNamespace(
+            cluster=None,
+            cluster_key="",
             object_type=object_type,
             vmid=vmid,
             name="",
@@ -533,6 +541,8 @@ def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> Sim
     }
 
     return SimpleNamespace(
+        cluster=obj.cluster,
+        cluster_key=obj.cluster.key if obj.cluster_id else "",
         object_type=object_type,
         vmid=vmid,
         name=obj.name or "",
@@ -646,7 +656,12 @@ def _guest_agent_summary(detail: SimpleNamespace, *, allow_fetch: bool = True) -
     if detail.object_type != ProxmoxInventory.ObjectType.VM or not enabled or detail.status != "running":
         return _empty_guest_agent_summary(enabled=enabled, running=False)
 
-    cache_key = f"pve-helper:guest-agent-summary:v1:{detail.node}:{detail.object_type}:{detail.vmid}"
+    cluster = getattr(detail, "cluster", None)
+    if not cluster:
+        return _empty_guest_agent_summary(enabled=enabled, running=False)
+    cache_key = cluster_cache_key(
+        "guest-agent-summary:v2", cluster, detail.node, detail.object_type, detail.vmid
+    )
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached
@@ -774,7 +789,12 @@ def _guest_ha_summary(detail: SimpleNamespace) -> dict:
     if not detail.live_ok or not detail.node:
         return unavailable
 
-    cache_key = f"pve-helper:guest-ha-summary:v1:{detail.node}:{detail.object_type}:{detail.vmid}"
+    cluster = getattr(detail, "cluster", None)
+    if not cluster:
+        return unavailable
+    cache_key = cluster_cache_key(
+        "guest-ha-summary:v2", cluster, detail.node, detail.object_type, detail.vmid
+    )
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached

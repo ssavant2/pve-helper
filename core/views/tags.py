@@ -53,6 +53,7 @@ def _tag_context(*, selected: str = "") -> dict:
         "inventory_refreshed_at": catalog.inventory_refreshed_at,
         "tag_view_rendered_at_ms": int(timezone.now().timestamp() * 1000),
         "selected_tag": selected,
+        "cluster_key": catalog.cluster_key,
     }
 
 
@@ -84,10 +85,18 @@ def tag_detail(request):
         raise Http404("Tag not found")
     context["tag"] = summary
     context["tag_rename_confirmation"] = issue_tag_operation_confirmation(
-        operation="rename", tag=tag, summary=summary, user_id=request.user.pk
+        operation="rename",
+        tag=tag,
+        summary=summary,
+        user_id=request.user.pk,
+        cluster_key=context["cluster_key"],
     )
     context["tag_delete_confirmation"] = issue_tag_operation_confirmation(
-        operation="delete", tag=tag, summary=summary, user_id=request.user.pk
+        operation="delete",
+        tag=tag,
+        summary=summary,
+        user_id=request.user.pk,
+        cluster_key=context["cluster_key"],
     )
     if CurrentGuestInventory.objects.exists():
         try:
@@ -164,6 +173,7 @@ def tag_operation(request):
         tag=source,
         summary=summary,
         user_id=request.user.pk,
+        cluster_key=catalog.cluster_key,
     )
     if error:
         messages.error(request, error)
@@ -176,7 +186,10 @@ def tag_operation(request):
         object_type="tag",
         object_id=source,
         outcome="queued",
-        details={"username": request.user.get_username()},
+        details={
+            "username": request.user.get_username(),
+            "cluster_key": confirmation.cluster_key,
+        },
     )
     error = prepare_tag_operation(
         event,
@@ -184,6 +197,7 @@ def tag_operation(request):
         source_tag=source,
         new_tag=new_tag,
         confirmed_membership_fingerprint=confirmation.membership_fingerprint,
+        cluster_key=confirmation.cluster_key,
     )
     if error:
         event.outcome = "failed"

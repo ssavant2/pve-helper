@@ -27,6 +27,7 @@ from .models import (
     TrashItem,
 )
 from .services.classification import classify_entry, extract_disk_references
+from .services.cluster_state_identity import cluster_advisory_lock_id
 from .services.audit_events import record_audit_event
 from .services.console_session_cleanup import prune_console_sessions
 from .services.cluster_resolver import client_for_endpoint
@@ -93,28 +94,34 @@ def _first_cluster_client():
     return next(iter(_cluster_clients()), None)
 
 
-def refresh_current_guest_inventory() -> dict[str, object]:
+def refresh_current_guest_inventory(*, cluster=None) -> dict[str, object]:
     """Refresh the non-blocking guest read model outside HTTP requests."""
+    if cluster is None:
+        from .services.cluster_resolver import require_sole_enabled_cluster_for_legacy_caller
+
+        cluster = require_sole_enabled_cluster_for_legacy_caller()
+    lock_id = cluster_advisory_lock_id(CURRENT_GUEST_REFRESH_LOCK_ID, cluster)
     acquired = connection.vendor != "postgresql"
     if connection.vendor == "postgresql":
         with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(%s)", [CURRENT_GUEST_REFRESH_LOCK_ID])
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", [lock_id])
             acquired = bool(cursor.fetchone()[0])
     if not acquired:
         return {"skipped": True, "reason": "refresh already running"}
     try:
-        inventory = fetch_verified_guest_inventory()
+        inventory = fetch_verified_guest_inventory(cluster=cluster)
         state = reconcile_live_guest_inventory(inventory)
         return {
             "skipped": False,
             "complete": state.complete,
             "guests": len(inventory.guests),
+            "cluster_key": cluster.key,
             "errors": list(inventory.errors),
         }
     finally:
         if connection.vendor == "postgresql":
             with connection.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_unlock(%s)", [CURRENT_GUEST_REFRESH_LOCK_ID])
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
 
 
 def dispatch_scheduled_actions() -> dict[str, int | bool]:

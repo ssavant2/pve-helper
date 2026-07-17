@@ -93,6 +93,57 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
             f"and is deleted before activation: {', '.join(offenders)}",
         )
 
+    def test_cluster_derived_cache_calls_use_the_shared_namespace(self):
+        known_cluster_cache_modules = {
+            "core/services/local_datastores.py",
+            "core/services/proxmox.py",
+            "core/services/tag_registry.py",
+            "core/views/guests/read_model_support.py",
+        }
+        bare_cluster_key = re.compile(
+            r"pve-helper:(?:live-guest|guest-|tag-registry|nav-local)"
+        )
+        offenders = []
+        for path in self._python_sources():
+            source = path.read_text()
+            relative = str(path.relative_to(settings.BASE_DIR))
+            if relative in known_cluster_cache_modules and "cluster_cache_key(" not in source:
+                offenders.append(relative)
+            if bare_cluster_key.search(source):
+                offenders.append(relative)
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Cluster-derived cache state must use cluster_cache_key(); bare guest/node "
+            f"keys can collide across clusters: {', '.join(offenders)}",
+        )
+
+    def test_cluster_operation_locks_use_cluster_identity(self):
+        root = Path(settings.BASE_DIR)
+        lifecycle_lock_allowlist = {
+            "core/services/runtime_bootstrap.py",
+            "core/services/cluster_credentials.py",
+            "core/services/cluster_trust.py",
+        }
+        advisory_call = re.compile(r"pg_(?:try_)?advisory_(?:xact_)?lock")
+        offenders = []
+        for path in self._python_sources():
+            relative = str(path.relative_to(root))
+            source = path.read_text()
+            if (
+                advisory_call.search(source)
+                and relative not in lifecycle_lock_allowlist
+                and "cluster_advisory_lock_id(" not in source
+            ):
+                offenders.append(relative)
+        self.assertEqual(
+            offenders,
+            [],
+            "Cluster operations may not use one global overlap/advisory lock: "
+            f"{', '.join(offenders)}",
+        )
+
 
 class FrontendSourceInvariantTests(SimpleTestCase):
     def _frontend_sources(self) -> list[Path]:

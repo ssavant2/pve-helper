@@ -19,14 +19,19 @@ CHANGED_CONFIRMATION_ERROR = (
 )
 
 
-def _target_identity(target) -> tuple[str, str, int]:
+def _target_identity(target) -> tuple[str, str, str, int]:
     if isinstance(target, Mapping):
         return (
+            str(target.get("cluster_key") or ""),
             str(target.get("node") or ""),
             str(target.get("object_type") or ""),
             int(target.get("vmid") or 0),
         )
     return (
+        str(
+            getattr(target, "cluster_key", "")
+            or getattr(getattr(target, "cluster", None), "key", "")
+        ),
         str(getattr(target, "node", "") or ""),
         str(getattr(target, "object_type", "") or ""),
         int(getattr(target, "vmid", 0) or 0),
@@ -41,17 +46,21 @@ def tag_membership_fingerprint(targets: Iterable) -> str:
 
 @dataclass(frozen=True)
 class ConfirmedTagOperation:
+    cluster_key: str
     operation: str
     tag: str
     guest_count: int
     membership_fingerprint: str
 
 
-def issue_tag_operation_confirmation(*, operation: str, tag: str, summary, user_id) -> str:
+def issue_tag_operation_confirmation(
+    *, operation: str, tag: str, summary, user_id, cluster_key: str
+) -> str:
     if operation not in {"delete", "rename"}:
         raise ValueError("Unsupported tag operation confirmation")
     payload = {
-        "version": 1,
+        "version": 2,
+        "cluster_key": cluster_key,
         "operation": operation,
         "tag": tag,
         "user_id": str(user_id),
@@ -69,6 +78,7 @@ def validate_tag_operation_confirmation(
     tag: str,
     summary,
     user_id,
+    cluster_key: str,
 ) -> tuple[ConfirmedTagOperation | None, str]:
     try:
         payload = signing.loads(
@@ -81,7 +91,8 @@ def validate_tag_operation_confirmation(
 
     if not isinstance(payload, dict) or any(
         (
-            payload.get("version") != 1,
+            payload.get("version") != 2,
+            payload.get("cluster_key") != cluster_key,
             payload.get("operation") != operation,
             payload.get("tag") != tag,
             payload.get("user_id") != str(user_id),
@@ -104,6 +115,7 @@ def validate_tag_operation_confirmation(
 
     return (
         ConfirmedTagOperation(
+            cluster_key=cluster_key,
             operation=operation,
             tag=tag,
             guest_count=current_count,

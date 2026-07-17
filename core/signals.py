@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from django.contrib.auth.signals import user_logged_in, user_logged_out, user_login_failed
-from django.db.models.signals import post_migrate
+from django.db.models.signals import post_migrate, post_save, pre_delete
 from django.dispatch import receiver
 
 from .services.audit_events import record_audit_event
@@ -11,6 +11,19 @@ from .services.guest_task_reaper_schedule import ensure_guest_task_reaper_schedu
 from .services.guest_inventory_refresh_schedule import ensure_guest_inventory_refresh_schedule
 from .services.scheduled_actions import ensure_scheduled_action_dispatch_schedule
 from .services.space_snapshot_schedule import ensure_space_snapshot_schedule
+from .models import ProxmoxCluster
+from .services.cluster_state_identity import invalidate_cluster_cache
+
+
+@receiver(post_save, sender=ProxmoxCluster)
+def invalidate_disabled_cluster_cache(sender, instance, **kwargs):
+    if not instance.enabled:
+        invalidate_cluster_cache(instance)
+
+
+@receiver(pre_delete, sender=ProxmoxCluster)
+def invalidate_deleted_cluster_cache(sender, instance, **kwargs):
+    invalidate_cluster_cache(instance)
 
 
 @receiver(post_migrate)

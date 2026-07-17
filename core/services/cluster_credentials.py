@@ -19,6 +19,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.models import ClusterCredential, ProxmoxCluster, RuntimeConfigurationState
+from core.services.cluster_state_identity import invalidate_cluster_cache
 from core.services.secret_encryption import (
     MissingEncryptionKeyError,
     active_key_id,
@@ -78,6 +79,7 @@ def set_cluster_credential(cluster: ProxmoxCluster, *, token_id: str, token_secr
                 "rotated_at": timezone.now() if replacing else None,
             },
         )
+    invalidate_cluster_cache(cluster)
     return credential
 
 

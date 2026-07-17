@@ -32,6 +32,8 @@ def vms_overview_agent_info(request):
         if row.object_type != ProxmoxInventory.ObjectType.VM or not row.agent_enabled:
             continue
         detail = SimpleNamespace(
+            cluster=row.cluster,
+            cluster_key=row.cluster_key,
             object_type=row.object_type,
             vmid=row.vmid,
             name=row.name,

@@ -31,6 +31,8 @@ def _global_search_guests(tokens: list[str]) -> list[dict]:
     results = []
     for row in rows:
         detail = SimpleNamespace(
+            cluster=row.cluster,
+            cluster_key=row.cluster_key,
             object_type=row.object_type,
             vmid=row.vmid,
             name=row.name,

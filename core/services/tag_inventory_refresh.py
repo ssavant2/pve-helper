@@ -6,12 +6,13 @@ from django.db import connection, transaction
 from django.utils import timezone
 from django_q.tasks import async_task
 
-from core.models import AuditEvent
+from core.models import AuditEvent, ProxmoxCluster
 from core.services.audit_events import record_audit_event
+from core.services.cluster_state_identity import cluster_advisory_lock_id
 from core.services.current_guest_inventory import reconcile_live_guest_inventory
 from core.services.proxmox import fetch_verified_guest_inventory
 from core.services.public_errors import public_exception_message
-from core.services.tag_registry import refresh_registered_tags
+from core.services.tag_registry import refresh_registered_tags, resolve_tag_registry_cluster
 from core.services.task_queues import BULK_QUEUE_NAME
 
 
@@ -36,28 +37,35 @@ def _advisory_xact_lock(lock_id: int) -> None:
 
 
 @contextmanager
-def _worker_lock():
+def _worker_lock(cluster):
     if connection.vendor != "postgresql":
         yield True
         return
     acquired = False
+    lock_id = cluster_advisory_lock_id(_WORKER_LOCK_ID, cluster)
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(%s)", [_WORKER_LOCK_ID])
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", [lock_id])
             acquired = bool(cursor.fetchone()[0])
         yield acquired
     finally:
         if acquired:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_unlock(%s)", [_WORKER_LOCK_ID])
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
 
 
-def queue_tag_inventory_refresh(*, request=None, user=None, username: str = "") -> tuple[AuditEvent, str]:
+def queue_tag_inventory_refresh(
+    *, request=None, user=None, username: str = "", cluster=None
+) -> tuple[AuditEvent, str]:
+    cluster, cluster_error = resolve_tag_registry_cluster(cluster)
+    if cluster is None:
+        raise TagInventoryRefreshQueueError(cluster_error)
     with transaction.atomic():
-        _advisory_xact_lock(_QUEUE_LOCK_ID)
+        _advisory_xact_lock(cluster_advisory_lock_id(_QUEUE_LOCK_ID, cluster))
         active = AuditEvent.objects.filter(
             action=TAG_INVENTORY_REFRESH_ACTION,
             outcome__in=("queued", "running"),
+            details__cluster_key=cluster.key,
         ).order_by("-timestamp").first()
         if active is not None:
             raise TagInventoryRefreshAlreadyActive("A tag inventory refresh is already queued or running.")
@@ -68,9 +76,13 @@ def queue_tag_inventory_refresh(*, request=None, user=None, username: str = "") 
             system_username="system",
             action=TAG_INVENTORY_REFRESH_ACTION,
             object_type="tag_inventory",
-            object_id="cluster",
+            object_id=cluster.key,
             outcome="queued",
-            details={"stage": "queued", "queued_at": timezone.now().isoformat()},
+            details={
+                "cluster_key": cluster.key,
+                "stage": "queued",
+                "queued_at": timezone.now().isoformat(),
+            },
         )
         try:
             task_id = async_task(
@@ -113,7 +125,19 @@ def execute_tag_inventory_refresh(event_id: int) -> None:
     event = AuditEvent.objects.filter(pk=event_id, action=TAG_INVENTORY_REFRESH_ACTION).first()
     if event is None or event.outcome != "queued":
         return
-    with _worker_lock() as acquired:
+    cluster_key = str((event.details or {}).get("cluster_key") or "")
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        event.outcome = "failed"
+        event.details = {
+            **(event.details if isinstance(event.details, dict) else {}),
+            "stage": "failed",
+            "error": "The selected Proxmox cluster no longer exists.",
+            "finished_at": timezone.now().isoformat(),
+        }
+        event.save(update_fields=["outcome", "details"])
+        return
+    with _worker_lock(cluster) as acquired:
         if not acquired:
             event.outcome = "failed"
             event.details = {
@@ -138,7 +162,7 @@ def execute_tag_inventory_refresh(event_id: int) -> None:
             }
             event.save(update_fields=["outcome", "details"])
 
-        registered, registry_error = refresh_registered_tags()
+        registered, registry_error = refresh_registered_tags(cluster=cluster)
         if not _save_progress(
             event,
             stage="refreshing guest membership",
@@ -148,7 +172,7 @@ def execute_tag_inventory_refresh(event_id: int) -> None:
             return
 
         try:
-            inventory = fetch_verified_guest_inventory()
+            inventory = fetch_verified_guest_inventory(cluster=cluster)
         except Exception as exc:
             error = public_exception_message(
                 exc,

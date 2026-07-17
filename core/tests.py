@@ -60,6 +60,7 @@ from core.services.cluster_activation import (
     enable_cluster,
     set_initial_cluster_key,
 )
+from core.services.cluster_state_identity import cluster_cache_key
 from core.services import runtime_bootstrap
 from core.services.refs import NodeRef, RefParseError
 from core.services.runtime_bootstrap import ensure_bootstrap
@@ -1514,26 +1515,29 @@ class LocalDatastoreNavTests(TestCase):
         from core.services.local_datastores import local_datastore_nav
 
         cache.clear()
+        cluster = ProxmoxCluster.objects.create(
+            key="local-storage", display_name="Local storage", enabled=True
+        )
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
-            scan_run=scan, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            scan_run=scan, cluster=cluster, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
             name="local-lvm", config={"type": "lvmthin", "shared": 0, "total": 100, "used": 40, "avail": 60, "active": 1},
         )
         ProxmoxInventory.objects.create(
-            scan_run=scan, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            scan_run=scan, cluster=cluster, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
             name="local", config={"type": "dir", "shared": 0, "total": 200, "used": 50, "avail": 150},
         )
         ProxmoxInventory.objects.create(
-            scan_run=scan, node="pve2", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            scan_run=scan, cluster=cluster, node="pve2", object_type=ProxmoxInventory.ObjectType.STORAGE,
             name="local", config={"type": "dir", "shared": 0, "total": 0},
         )
         # Shared storage must NOT appear under Local Datastores.
         ProxmoxInventory.objects.create(
-            scan_run=scan, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
+            scan_run=scan, cluster=cluster, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
             name="TrueNAS-VM", config={"type": "nfs", "shared": 1},
         )
 
-        tree = local_datastore_nav(use_cache=False)
+        tree = local_datastore_nav(use_cache=False, cluster=cluster)
         nodes = {entry["node"]: entry["storages"] for entry in tree}
         self.assertEqual(sorted(nodes), ["pve1", "pve2"])
         pve1 = {s["storage_id"]: s for s in nodes["pve1"]}
@@ -2572,6 +2576,9 @@ class StartupCheckTests(SimpleTestCase):
 class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
     def setUp(self):
         super().setUp()
+        self.cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
         registry_patch = patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
         registry_patch.start()
         self.addCleanup(registry_patch.stop)
@@ -2581,6 +2588,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             object_type=object_type,
             vmid=vmid,
             defaults={
+                "cluster": self.cluster,
                 "node": node,
                 "name": name,
                 "status": status,
@@ -2649,7 +2657,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             status="online",
         )
         cache.set(
-            "pve-helper:guest-agent-summary:v1:pve1:vm:500",
+            cluster_cache_key(
+                "guest-agent-summary:v2", self.cluster, "pve1", "vm", 500
+            ),
             {
                 "enabled": True,
                 "running": True,

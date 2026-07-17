@@ -37,13 +37,8 @@ class TargetedGuestRefresh:
     error: str = ""
 
 
-def current_inventory_state(cluster=None) -> CurrentGuestInventoryState | None:
-    """The freshness/coverage record for one cluster.
-
-    Callers that have no explicit cluster yet resolve the sole enabled one, the same
-    bounded adapter the rest of Phase 1-2 uses until Phase 3 threads a cluster
-    through.
-    """
+def current_inventory_cluster(cluster=None):
+    """Resolve the cluster behind the current-state projection during migration."""
     if cluster is None:
         from core.services.cluster_resolver import (
             ClusterResolutionError,
@@ -54,6 +49,19 @@ def current_inventory_state(cluster=None) -> CurrentGuestInventoryState | None:
             cluster = require_sole_enabled_cluster_for_legacy_caller()
         except ClusterResolutionError:
             return None
+    return cluster
+
+
+def current_inventory_state(cluster=None) -> CurrentGuestInventoryState | None:
+    """The freshness/coverage record for one cluster.
+
+    Callers that have no explicit cluster yet resolve the sole enabled one, the same
+    bounded adapter the rest of Phase 1-2 uses until Phase 3 threads a cluster
+    through.
+    """
+    cluster = current_inventory_cluster(cluster)
+    if cluster is None:
+        return None
     return CurrentGuestInventoryState.objects.filter(cluster=cluster).first()
 
 

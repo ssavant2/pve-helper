@@ -45,9 +45,9 @@ from core.services.tag_operation_confirmation import (
     validate_tag_operation_confirmation,
 )
 from core.services.tag_registry import (
-    TAG_REGISTRY_CACHE_KEY,
     TAG_REGISTRY_CONFLICT_ERROR,
     refresh_registered_tags,
+    tag_registry_cache_key,
 )
 from core.services.proxmox import ProxmoxAPIError, VerifiedGuestInventory, fetch_verified_guest_inventory
 from core.services.recent_tasks import recent_task_page
@@ -136,6 +136,9 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
                 raise self.final_error
             return dict(self.final_options)
 
+    def setUp(self):
+        self.cluster = self._ensure_cluster()
+
     def test_parse_join_lowercase_and_dedupe(self):
         self.assertEqual(parse_tags("Prod; web,PROD  db"), ["prod", "web", "db"])
         self.assertEqual(join_tags(["prod", "web", "prod"]), "prod;web")
@@ -160,14 +163,15 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         return_value=(object(), {"registered-tags": "fresh"}, ""),
     )
     def test_explicit_registry_refresh_bypasses_and_replaces_display_cache(self, cluster_options):
-        cache.set(TAG_REGISTRY_CACHE_KEY, ({"stale": RegisteredTag("stale")}, ""), 60)
+        cache_key = tag_registry_cache_key(self.cluster)
+        cache.set(cache_key, ({"stale": RegisteredTag("stale")}, ""), 60)
 
         refreshed, error = refresh_registered_tags()
 
         self.assertEqual(error, "")
         self.assertEqual(list(refreshed), ["fresh"])
-        self.assertEqual(list(cache.get(TAG_REGISTRY_CACHE_KEY)[0]), ["fresh"])
-        cluster_options.assert_called_once_with()
+        self.assertEqual(list(cache.get(cache_key)[0]), ["fresh"])
+        cluster_options.assert_called_once_with(self.cluster)
 
     @patch("core.services.tag_registry.cluster_options")
     def test_registry_write_reloads_and_caches_actual_final_state(self, cluster_options):
@@ -184,11 +188,12 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         )
 
         actual, error = register_tag("prod", "#112233")
+        self.cluster.refresh_from_db()
 
         self.assertEqual(error, "")
         self.assertEqual(set(actual), {"existing", "external", "prod"})
         self.assertEqual(actual["prod"].background, "112233")
-        self.assertEqual(set(cache.get(TAG_REGISTRY_CACHE_KEY)[0]), set(actual))
+        self.assertEqual(set(cache.get(tag_registry_cache_key(self.cluster))[0]), set(actual))
         self.assertEqual(len(client.writes), 1)
         updates, delete = client.writes[0]
         self.assertEqual(updates["registered-tags"], "existing;prod")
@@ -201,25 +206,30 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         cluster_options.return_value = (client, {"registered-tags": "existing"}, "")
 
         actual, error = register_tag("prod")
+        self.cluster.refresh_from_db()
 
         self.assertEqual(error, TAG_REGISTRY_CONFLICT_ERROR)
         self.assertEqual(set(actual), {"existing", "external"})
-        self.assertEqual(set(cache.get(TAG_REGISTRY_CACHE_KEY)[0]), {"existing", "external"})
+        self.assertEqual(
+            set(cache.get(tag_registry_cache_key(self.cluster))[0]), {"existing", "external"}
+        )
         self.assertEqual(len(client.writes), 1)
-        cluster_options.assert_called_once_with()
+        cluster_options.assert_called_once_with(self.cluster)
 
     @patch("core.services.tag_registry.cluster_options")
     def test_unverifiable_registry_write_invalidates_display_cache(self, cluster_options):
         client = self.FakeRegistryClient(final_error=ProxmoxAPIError("verification unavailable"))
         cluster_options.return_value = (client, {"registered-tags": "existing"}, "")
-        cache.set(TAG_REGISTRY_CACHE_KEY, ({"stale": RegisteredTag("stale")}, ""), 60)
+        old_cache_key = tag_registry_cache_key(self.cluster)
+        cache.set(old_cache_key, ({"stale": RegisteredTag("stale")}, ""), 60)
 
         actual, error = register_tag("prod")
+        self.cluster.refresh_from_db()
 
         self.assertEqual(actual, {})
         self.assertIn("write was submitted", error)
         self.assertIn("could not be verified", error)
-        self.assertIsNone(cache.get(TAG_REGISTRY_CACHE_KEY))
+        self.assertNotEqual(old_cache_key, tag_registry_cache_key(self.cluster))
         self.assertEqual(len(client.writes), 1)
 
     @patch("core.services.tag_registry.cluster_options")
@@ -298,11 +308,19 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
     def test_tag_operation_confirmation_is_bound_to_user_and_expires(self):
         summary = SimpleNamespace(
             guest_count=1,
-            guests=[SimpleNamespace(node="pve1", object_type="vm", vmid=100)],
+            guests=[
+                SimpleNamespace(
+                    cluster_key=self.cluster.key, node="pve1", object_type="vm", vmid=100
+                )
+            ],
             registered=True,
         )
         token = issue_tag_operation_confirmation(
-            operation="delete", tag="prod", summary=summary, user_id=10
+            operation="delete",
+            tag="prod",
+            summary=summary,
+            user_id=10,
+            cluster_key=self.cluster.key,
         )
 
         confirmation, error = validate_tag_operation_confirmation(
@@ -311,6 +329,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
             tag="prod",
             summary=summary,
             user_id=11,
+            cluster_key=self.cluster.key,
         )
         self.assertIsNone(confirmation)
         self.assertEqual(error, INVALID_CONFIRMATION_ERROR)
@@ -325,6 +344,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
                 tag="prod",
                 summary=summary,
                 user_id=10,
+                cluster_key=self.cluster.key,
             )
         self.assertIsNone(confirmation)
         self.assertEqual(error, INVALID_CONFIRMATION_ERROR)
@@ -405,13 +425,18 @@ class TagViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("tag-admin")
         self.client.force_login(self.user)
+        self.cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
         self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             node="pve1", object_type="vm", vmid=100, name="vm-one", observed_at=timezone.now(),
             config={"tags": "prod"},
         )
-        cache.set(TAG_REGISTRY_CACHE_KEY, ({}, ""), 60)
-        self.addCleanup(cache.delete, TAG_REGISTRY_CACHE_KEY)
+        cache_key = tag_registry_cache_key(self.cluster)
+        cache.set(cache_key, ({}, ""), 60)
+        self.addCleanup(cache.delete, cache_key)
         lineage_patch = patch("core.views.tags.common.fetch_live_guest_lineage", return_value={})
         lineage_patch.start()
         self.addCleanup(lineage_patch.stop)
@@ -423,6 +448,7 @@ class TagViewTests(TestCase):
             tag=tag,
             summary=summary,
             user_id=self.user.pk,
+            cluster_key=self.cluster.key,
         )
 
     def test_tag_detail_type_labels_are_plain_object_types(self):
@@ -516,8 +542,9 @@ class TagViewTests(TestCase):
         AuditEvent.objects.create(
             action="tag.inventory.refresh",
             object_type="tag_inventory",
-            object_id="cluster",
+            object_id=self.cluster.key,
             outcome="running",
+            details={"cluster_key": self.cluster.key},
         )
 
         response = self.client.post(
@@ -659,13 +686,18 @@ class TagViewTests(TestCase):
 
 class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):
     def setUp(self):
+        self.cluster = self._ensure_cluster()
         self.event = AuditEvent.objects.create(
             username="admin",
             action="tag.inventory.refresh",
             object_type="tag_inventory",
-            object_id="cluster",
+            object_id=self.cluster.key,
             outcome="queued",
-            details={"stage": "queued", "queued_at": timezone.now().isoformat()},
+            details={
+                "cluster_key": self.cluster.key,
+                "stage": "queued",
+                "queued_at": timezone.now().isoformat(),
+            },
         )
 
     @patch("core.services.tag_inventory_refresh.reconcile_live_guest_inventory")
@@ -771,7 +803,12 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
             config={"tags": "old;keep"},
         )
         self.event = AuditEvent.objects.create(
-            username="admin", action="tag.bulk_operation", object_type="tag", object_id="old", outcome="queued"
+            username="admin",
+            action="tag.bulk_operation",
+            object_type="tag",
+            object_id="old",
+            outcome="queued",
+            details={"cluster_key": self.tag_cluster.key},
         )
 
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
@@ -784,6 +821,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
                 operation="delete",
                 source_tag="old",
                 confirmed_membership_fingerprint=tag_membership_fingerprint([self.row]),
+                cluster_key=self.tag_cluster.key,
             ),
             "",
         )
@@ -797,7 +835,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
         ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         live.return_value = self.inventory()
 
-        targets, membership = latest_tag_targets("old")
+        targets, membership = latest_tag_targets("old", cluster=self.tag_cluster)
 
         self.assertTrue(membership.complete)
         self.assertEqual([(target["object_type"], target["vmid"]) for target in targets], [("vm", 100)])
@@ -817,8 +855,17 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
                 operation="delete",
                 source_tag="old",
                 confirmed_membership_fingerprint=tag_membership_fingerprint(
-                    [self.row, {"node": "pve2", "object_type": "ct", "vmid": 200}]
+                    [
+                        self.row,
+                        {
+                            "cluster_key": self.tag_cluster.key,
+                            "node": "pve2",
+                            "object_type": "ct",
+                            "vmid": 200,
+                        },
+                    ]
                 ),
+                cluster_key=self.tag_cluster.key,
             ),
             "",
         )
@@ -843,6 +890,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
             operation="delete",
             source_tag="old",
             confirmed_membership_fingerprint=tag_membership_fingerprint([]),
+            cluster_key=self.tag_cluster.key,
         )
 
         self.assertIn("Could not verify", error)
@@ -861,11 +909,12 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
             operation="delete",
             source_tag="old",
             confirmed_membership_fingerprint=tag_membership_fingerprint([self.row]),
+            cluster_key=self.tag_cluster.key,
         )
 
         self.assertEqual(error, CHANGED_CONFIRMATION_ERROR)
         self.event.refresh_from_db()
-        self.assertEqual(self.event.details, {})
+        self.assertEqual(self.event.details, {"cluster_key": self.tag_cluster.key})
 
     @patch("core.services.tag_actions.unregister_tag", return_value=({}, ""))
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
@@ -890,8 +939,9 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
             ),
         ]
         self.event.details = {
+            "cluster_key": self.tag_cluster.key,
             "operation": "delete", "source_tag": "old", "new_tag": "",
-            "targets": [{"node": "old-node", "object_type": "vm", "vmid": 100, "name": "vm-one"}],
+            "targets": [{"cluster_key": self.tag_cluster.key, "node": "old-node", "object_type": "vm", "vmid": 100, "name": "vm-one"}],
             "succeeded": [], "skipped": [], "failed": [], "username": "admin",
         }
         self.event.save(update_fields=["details"])
@@ -934,16 +984,16 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
     @patch("core.services.tag_actions.fetch_verified_guest_inventory")
     @patch("core.services.cluster_resolver.client_for_endpoint")
     def test_execute_refuses_ambiguous_same_vmid_rediscovery(self, client_for_endpoint, live, unregister):
-        self._configure_cluster()
         duplicate_guests = (
             SimpleNamespace(object_type="vm", vmid=100, node="node-a", name="one", tags=("old",)),
             SimpleNamespace(object_type="vm", vmid=100, node="node-b", name="two", tags=("old",)),
         )
         live.side_effect = [self.inventory(*duplicate_guests), self.inventory(*duplicate_guests)]
         self.event.details = {
+            "cluster_key": self.tag_cluster.key,
             "operation": "delete",
             "source_tag": "old",
-            "targets": [{"node": "stale-node", "object_type": "vm", "vmid": 100, "name": "vm-one"}],
+            "targets": [{"cluster_key": self.tag_cluster.key, "node": "stale-node", "object_type": "vm", "vmid": 100, "name": "vm-one"}],
             "succeeded": [],
             "skipped": [],
             "failed": [],
@@ -972,6 +1022,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
             self.inventory(complete=False, errors=("pve2 unavailable",)),
         ]
         self.event.details = {
+            "cluster_key": self.tag_cluster.key,
             "operation": "delete", "source_tag": "old", "new_tag": "",
             "targets": [], "succeeded": [], "skipped": [], "failed": [], "username": "admin",
         }
@@ -991,6 +1042,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
         guest = SimpleNamespace(object_type="vm", vmid=100, node="old-node", name="vm-one", tags=("old",))
         live.side_effect = [self.inventory(guest), self.inventory(guest)]
         self.event.details = {
+            "cluster_key": self.tag_cluster.key,
             "operation": "delete", "source_tag": "old", "new_tag": "",
             "targets": [], "succeeded": [], "skipped": [], "failed": [], "username": "admin",
         }
@@ -1028,12 +1080,13 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
             tags=("old",),
         )
         self.event.details = {
+            "cluster_key": self.tag_cluster.key,
             "operation": "rename",
             "source_tag": "old",
             "new_tag": "new",
             "targets": [
-                {"node": self.row.node, "object_type": self.row.object_type, "vmid": self.row.vmid},
-                {"node": second.node, "object_type": second.object_type, "vmid": second.vmid},
+                {"cluster_key": self.tag_cluster.key, "node": self.row.node, "object_type": self.row.object_type, "vmid": self.row.vmid},
+                {"cluster_key": self.tag_cluster.key, "node": second.node, "object_type": second.object_type, "vmid": second.vmid},
             ],
             "succeeded": [],
             "skipped": [],
@@ -1043,7 +1096,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
         self.event.save(update_fields=["details"])
         registry = {"old", "new"}
 
-        def unregister(tag):
+        def unregister(tag, **_kwargs):
             registry.discard(tag)
             return {}, ""
 
@@ -1083,7 +1136,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
         self.assertEqual(self.event.outcome, "success")
         self.assertEqual(registry, {"new"})
         update.assert_called_once()
-        unregister_mock.assert_called_once_with("old")
+        unregister_mock.assert_called_once_with("old", cluster=self.tag_cluster)
 
     @staticmethod
     def inventory(*guests, complete=True, errors=()):
