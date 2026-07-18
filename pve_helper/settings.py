@@ -206,7 +206,6 @@ PVE_API_TOKEN_SECRET = env("PVE_API_TOKEN_SECRET", "")
 # into an immediate test failure instead of a real infrastructure call.
 PVE_TEST_NETWORK_DISABLED = env_bool("PVE_TEST_NETWORK_DISABLED", False)
 PVE_EXPECTED_CONSUMERS = env_list("PVE_EXPECTED_CONSUMERS", "pve-node-1")
-SCHEDULED_ACTIONS_ENABLED = env_bool("SCHEDULED_ACTIONS_ENABLED", True)
 SCHEDULED_ACTION_TIMEOUT_SECONDS = env_int("SCHEDULED_ACTION_TIMEOUT_SECONDS", 1800)
 # Backups and restores can legitimately run far longer than a power action.
 # Keep this independently configurable without weakening scheduled-action timeouts.

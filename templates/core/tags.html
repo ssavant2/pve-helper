@@ -4,7 +4,6 @@
   <div class="page-header" data-tag-inventory-view data-rendered-at-ms="{{ tag_view_rendered_at_ms }}">
     <div><h1>Tags</h1><p>Central Proxmox tag registry and guest membership for {{ selected_cluster.display_name }}.</p></div>
     <div class="page-header-actions">
-      <label><span class="sr-only">Cluster</span><select data-cluster-navigation>{% for cluster in cluster_choices %}<option value="{% url 'core:tags_overview' cluster.key %}"{% if cluster.key == cluster_key %} selected{% endif %}>{{ cluster.display_name }}</option>{% endfor %}</select></label>
       <form method="post" action="{% url 'core:tags_refresh' cluster_key %}" data-tag-refresh-form>
         {% csrf_token %}
         <button class="secondary-action" type="submit">Refresh tag inventory</button>

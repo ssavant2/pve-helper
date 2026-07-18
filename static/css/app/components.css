@@ -27,6 +27,102 @@
   justify-content: flex-end;
 }
 
+.create-cluster-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.create-cluster-select select,
+.restore-cluster-select select {
+  min-width: 160px;
+}
+
+/* Shared vSphere-style flat toolbar action (storage browser, page-header New/Add
+   actions). A quiet uppercase accent-text action rather than a filled button. */
+.vs-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.vs-toolbar-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.vs-toolbar-button:hover {
+  color: var(--accent);
+}
+
+.vs-toolbar-button.danger {
+  color: var(--red);
+}
+
+.vs-toolbar-button:disabled,
+.vs-toolbar-button.disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* Shared client-side cluster view switcher (VM/CT inventory + overview). */
+.cluster-hidden {
+  display: none !important;
+}
+
+.cluster-filter {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--tree-icon-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.cluster-filter-option {
+  appearance: none;
+  border: 0;
+  border-left: 1px solid var(--tree-icon-border);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cluster-filter-option:first-child {
+  border-left: 0;
+}
+
+.cluster-filter-option:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+.cluster-filter-option.is-active {
+  background: var(--accent);
+  color: var(--button-primary-text);
+}
+
 .primary-action {
   display: inline-flex;
   align-items: center;

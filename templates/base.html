@@ -222,11 +222,28 @@
             </div>
           </section>
 
-          <a class="tree-node module-node {% if active_nav == 'tags' %}active{% endif %}" href="{% if cluster_key %}{% url 'core:tags_overview' cluster_key %}{% else %}{% url 'core:legacy_tags_overview' %}{% endif %}">
-            <span class="tree-caret"></span>
-            <span class="tree-icon"><i data-lucide="tags" aria-hidden="true"></i></span>
-            <span class="tree-label">Tags</span>
-          </a>
+          {% if app_multiple_clusters %}
+            <section class="tree-module {% if active_nav == 'tags' %}expanded{% endif %}" data-tree-module="tags" aria-label="Tags module">
+              <button class="tree-node module-node {% if active_nav == 'tags' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="{% if active_nav == 'tags' %}true{% else %}false{% endif %}">
+                <span class="tree-caret" data-tree-caret>v</span>
+                <span class="tree-icon"><i data-lucide="tags" aria-hidden="true"></i></span>
+                <span class="tree-label">Tags</span>
+              </button>
+              <div class="tree-children">
+                {% for cluster in app_enabled_clusters %}
+                  <a class="tree-node tree-leaf {% if active_nav == 'tags' and cluster.key == cluster_key %}active{% endif %}" href="{% url 'core:tags_overview' cluster.key %}">
+                    <span class="tree-label">{{ cluster.display_name }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </section>
+          {% else %}
+            <a class="tree-node module-node {% if active_nav == 'tags' %}active{% endif %}" href="{% if cluster_key %}{% url 'core:tags_overview' cluster_key %}{% else %}{% url 'core:legacy_tags_overview' %}{% endif %}">
+              <span class="tree-caret"></span>
+              <span class="tree-icon"><i data-lucide="tags" aria-hidden="true"></i></span>
+              <span class="tree-label">Tags</span>
+            </a>
+          {% endif %}
 
           <a class="tree-node module-node {% if active_nav == 'scheduled_tasks' %}active{% endif %}" href="{% url 'core:scheduled_tasks' %}">
             <span class="tree-caret"></span>

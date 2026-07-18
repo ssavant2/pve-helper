@@ -51,6 +51,7 @@ from .services.proxmox import (
     ProxmoxAPIError,
     ProxmoxTaskTimeout,
     clear_live_guest_caches,
+    fetch_live_guest_lineage,
     fetch_live_guest_status,
     fetch_verified_guest_inventory,
 )
@@ -105,6 +106,15 @@ def _refresh_cluster_guest_inventory(cluster) -> dict[str, object]:
     try:
         inventory = fetch_verified_guest_inventory(cluster=cluster)
         state = reconcile_live_guest_inventory(inventory)
+        # Warm the linked-clone lineage cache while this cluster's transport is
+        # already live, so passive inventory/overview renders read it from cache
+        # (allow_fetch=False) instead of blocking on a broad Proxmox read. This is
+        # best-effort: a warming failure (unreachable cluster, missing credential)
+        # must never fail the guest-inventory refresh it rides along with.
+        try:
+            fetch_live_guest_lineage(cluster=cluster)
+        except Exception:
+            logger.warning("Lineage cache warm failed for cluster=%s", cluster.key, exc_info=True)
         return {
             "skipped": False,
             "complete": state.complete,
@@ -138,7 +148,6 @@ def dispatch_scheduled_actions() -> dict[str, int | bool]:
         "queued": result.queued,
         "missed": result.missed,
         "skipped": result.skipped,
-        "disabled": result.disabled,
     }
 
 
@@ -1428,6 +1437,7 @@ def _run_scan(scan: ScanRun) -> None:
             proxmox_objects.append(
                 ProxmoxInventory(
                     scan_run=scan,
+                    cluster=endpoint.cluster,
                     node=obj.node,
                     object_type=obj.object_type,
                     vmid=obj.vmid,

@@ -25,14 +25,15 @@
               <details class="actions-menu create-menu">
                 <summary>+ New</summary>
                 <div class="actions-menu-panel">
-                  {% for cluster in cluster_choices %}
-                    <strong>{{ cluster.display_name }}</strong>
-                    <a href="{% url 'core:guest_create' cluster.key 'vm' %}">New VM</a>
-                    <a href="{% url 'core:guest_create' cluster.key 'ct' %}">New Container</a>
-                    <a href="{% url 'core:guest_backup_restore' cluster.key %}">Restore Backup</a>
-                  {% empty %}
-                    <span class="muted">No enabled clusters</span>
-                  {% endfor %}
+                  {% with default_cluster=cluster_choices.0 %}
+                    {% if default_cluster %}
+                      <a href="{% url 'core:guest_create' default_cluster.key 'vm' %}">New VM</a>
+                      <a href="{% url 'core:guest_create' default_cluster.key 'ct' %}">New Container</a>
+                      <a href="{% url 'core:guest_backup_restore' default_cluster.key %}">Restore Backup</a>
+                    {% else %}
+                      <span class="muted">No enabled clusters</span>
+                    {% endif %}
+                  {% endwith %}
                 </div>
               </details>
 
@@ -43,6 +44,12 @@
           <span class="sr-only">Search guests</span>
           <input type="search" placeholder="Search" data-guest-filter autocomplete="off">
         </label>
+        {% if app_multiple_clusters %}
+          <div class="cluster-filter" data-cluster-filter-control role="group" aria-label="Filter by cluster">
+            <button type="button" class="cluster-filter-option is-active" data-cluster-filter="" aria-pressed="true">All</button>
+            {% for cluster in app_enabled_clusters %}<button type="button" class="cluster-filter-option" data-cluster-filter="{{ cluster.key }}" aria-pressed="false">{{ cluster.display_name }}</button>{% endfor %}
+          </div>
+        {% endif %}
       </div>
       <div class="guest-list" data-guest-list>
         {% for g in guest_list %}

@@ -6,7 +6,7 @@ from datetime import timedelta
 from django.db.models import Q
 from django.utils import timezone
 
-from core.models import FileInventory, ProxmoxInventory, ScanRun, StorageMount
+from core.models import FileInventory, ProxmoxCluster, ProxmoxInventory, ScanRun, StorageMount
 
 
 SCAN_METADATA_RETENTION_DAYS = 7
@@ -36,6 +36,12 @@ def prune_scan_history(*, now=None, metadata_retention_days: int = SCAN_METADATA
     now = now or timezone.now()
     kept_file_pairs = _current_file_inventory_pairs()
     kept_scan_ids = {scan_id for scan_id, _storage_id in kept_file_pairs}
+    # ProxmoxInventory (cluster guests + local/shared storages) has a different
+    # lifecycle from mounted-storage FileInventory: a full scan that observed a
+    # cluster must survive retention even when it backs no mounted storage, or the
+    # Datastores nav and storage tabs lose their local storages. Keep the latest
+    # completed scan per cluster in addition to the file-backing scans.
+    kept_scan_ids |= _current_proxmox_inventory_scan_ids()
 
     deleted_files, _ = _stale_file_inventory(kept_file_pairs).delete()
     deleted_proxmox, _ = (
@@ -65,6 +71,30 @@ def prune_scan_history(*, now=None, metadata_retention_days: int = SCAN_METADATA
         deleted_proxmox_objects=deleted_proxmox,
         deleted_scan_runs=deleted_scan_runs,
     )
+
+
+def _current_proxmox_inventory_scan_ids() -> set[int]:
+    """Scans whose ProxmoxInventory backs the current per-cluster read model.
+
+    Matches how the cluster/local-datastore reads pick the authoritative scan:
+    the most recent completed scan that produced inventory for each cluster,
+    ordered by ``-finished_at, -created_at`` so retention never prunes the scan a
+    read is about to select. Legacy null-cluster inventory keeps its own latest.
+    """
+    ids: set[int] = set()
+    scoped_clusters = list(ProxmoxCluster.objects.all())
+    filters = [{"proxmox_objects__cluster": cluster} for cluster in scoped_clusters]
+    filters.append({"proxmox_objects__cluster__isnull": True})
+    for scan_filter in filters:
+        scan = (
+            ScanRun.objects.filter(status=ScanRun.Status.COMPLETED, **scan_filter)
+            .order_by("-finished_at", "-created_at")
+            .distinct()
+            .first()
+        )
+        if scan is not None:
+            ids.add(scan.id)
+    return ids
 
 
 def _current_file_inventory_pairs() -> set[tuple[int, int]]:

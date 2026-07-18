@@ -17,7 +17,7 @@
       {% if target_filter %}
         <a class="secondary-action" href="{% url 'core:scheduled_tasks' %}">Clear Filter</a>
       {% endif %}
-      <a class="primary-action" href="{% url 'core:scheduled_task_create' %}{% if scheduled_task_create_query %}?{{ scheduled_task_create_query }}{% endif %}">New Scheduled Task</a>
+      <a class="vs-toolbar-button" href="{% url 'core:scheduled_task_create' %}{% if scheduled_task_create_query %}?{{ scheduled_task_create_query }}{% endif %}"><i data-lucide="plus" aria-hidden="true"></i> New Scheduled Task</a>
     </div>
   </section>
 
@@ -28,11 +28,7 @@
         Missed tasks are skipped unless their schedule explicitly allows a late retry window.
       </p>
       <p class="muted">
-        Power actions are currently
-        <span class="badge {% if scheduled_actions_enabled %}completed{% else %}failed{% endif %}">
-          {% if scheduled_actions_enabled %}enabled{% else %}disabled{% endif %}
-        </span>
-        via <code>SCHEDULED_ACTIONS_ENABLED</code>. Default timezone: <code>{{ schedule_timezone }}</code>.
+        Default timezone: <code>{{ schedule_timezone }}</code>.
         Run history retention: {{ run_retention_days }} days.
       </p>
     </div>
@@ -80,18 +76,12 @@
             <td><span class="badge {{ action.display_status_class }}">{{ action.get_last_status_display }}</span></td>
             <td>{{ action.display_creator }}</td>
             <td class="row-actions">
-              {% if scheduled_actions_enabled %}
-                <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_run_now' action.id %}" data-confirm="Run {{ action.name }} now?" data-confirm-title="Run scheduled task" data-confirm-label="Run now">
-                  {% csrf_token %}
-                  <button class="icon-button" type="submit" title="Run Now" aria-label="Run {{ action.name }} now">
-                    <i data-lucide="play" aria-hidden="true"></i>
-                  </button>
-                </form>
-              {% else %}
-                <button class="icon-button" type="button" title="Run Now" aria-label="Run {{ action.name }} now" disabled>
+              <form class="inline-action-form" method="post" action="{% url 'core:scheduled_task_run_now' action.id %}" data-confirm="Run {{ action.name }} now?" data-confirm-title="Run scheduled task" data-confirm-label="Run now">
+                {% csrf_token %}
+                <button class="icon-button" type="submit" title="Run Now" aria-label="Run {{ action.name }} now">
                   <i data-lucide="play" aria-hidden="true"></i>
                 </button>
-              {% endif %}
+              </form>
               <a class="icon-link" href="{% url 'core:scheduled_task_edit' action.id %}" title="Edit" aria-label="Edit {{ action.name }}">
                 <i data-lucide="pencil" aria-hidden="true"></i>
               </a>

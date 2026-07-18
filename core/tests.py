@@ -459,7 +459,7 @@ class GuestLineageTests(SimpleTestCase):
             self._row(501, "b-vm-2", cluster=cluster_b),
         ]
 
-        def lineage(*, cluster=None):
+        def lineage(*, cluster=None, allow_fetch=True):
             return {501: 500} if cluster is cluster_a else {}
 
         with patch("core.views.common.fetch_live_guest_lineage", side_effect=lineage):
@@ -1743,17 +1743,6 @@ class ProxmoxClientTests(SimpleTestCase):
                     with self.assertRaises(ProxmoxAPIError):
                         client.get("version")
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
-    def test_power_action_refuses_when_disabled(self):
-        client = ProxmoxClient("https://pve.example.com:8006")
-
-        mock_http = Mock()
-        with patch("core.services.cluster_trust.http_client_for", return_value=mock_http):
-            with self.assertRaisesMessage(ProxmoxAPIError, "disabled"):
-                client.power_action(node="pve1", object_type="vm", vmid=100, action="start")
-
-        mock_http.request.assert_not_called()
-
     @override_settings(STORAGE_WRITE_ENABLED=False)
     def test_set_storage_content_refuses_when_storage_writes_are_disabled(self):
         client = ProxmoxClient("https://pve.example.com:8006")
@@ -1766,7 +1755,6 @@ class ProxmoxClientTests(SimpleTestCase):
         mock_http.request.assert_not_called()
 
     @override_settings(
-        SCHEDULED_ACTIONS_ENABLED=True,
         PVE_VERIFY_TLS=True,
         PVE_CA_BUNDLE="",
         PVE_API_TOKEN_ID="pve-helper@pve!pve-helper",
@@ -1789,7 +1777,6 @@ class ProxmoxClientTests(SimpleTestCase):
         self.assertEqual(kwargs["data"], {})
         self.assertEqual(kwargs["headers"]["Authorization"], "PVEAPIToken=pve-helper@pve!pve-helper=secret")
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_power_action_rejects_unsupported_action(self):
         client = ProxmoxClient("https://pve.example.com:8006")
 
@@ -1989,21 +1976,6 @@ class ScheduledActionDispatchTests(TestCase):
             max_lateness_minutes=max_lateness_minutes,
         )
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
-    def test_dispatch_noops_when_scheduled_actions_are_disabled(self):
-        action = self._action()
-        enqueue = Mock()
-
-        result = dispatch_due_scheduled_actions(enqueue_func=enqueue)
-
-        self.assertTrue(result.disabled)
-        self.assertEqual(result.queued, 0)
-        self.assertFalse(ScheduledActionRun.objects.exists())
-        action.refresh_from_db()
-        self.assertTrue(action.enabled)
-        enqueue.assert_not_called()
-
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_dispatch_queues_due_one_time_action_and_disables_future_runs(self):
         now = timezone.now()
         action = self._action(next_run_at=now)
@@ -2021,7 +1993,6 @@ class ScheduledActionDispatchTests(TestCase):
         self.assertEqual(action.last_status, ScheduledAction.LastStatus.QUEUED)
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.run_queued").exists())
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_dispatch_marks_old_due_action_missed_without_catchup(self):
         now = timezone.now()
         action = self._action(next_run_at=now - timedelta(minutes=10))
@@ -2038,7 +2009,6 @@ class ScheduledActionDispatchTests(TestCase):
         self.assertEqual(action.last_status, ScheduledAction.LastStatus.MISSED)
         enqueue.assert_not_called()
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_dispatch_does_not_queue_when_previous_run_is_in_flight(self):
         now = timezone.now()
         action = self._action(next_run_at=now)
@@ -2058,7 +2028,6 @@ class ScheduledActionDispatchTests(TestCase):
         self.assertTrue(action.enabled)
         enqueue.assert_not_called()
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_dispatch_recurring_action_advances_next_run(self):
         now = datetime(2026, 7, 1, 21, 0, tzinfo=timezone.UTC)
         action = ScheduledAction.objects.create(
@@ -2085,12 +2054,11 @@ class ScheduledActionDispatchTests(TestCase):
         self.assertEqual(run.planned_for, now)
         enqueue.assert_called_once_with("core.tasks.run_scheduled_action", run.id)
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
     def test_dispatch_task_returns_serializable_result(self):
         result = dispatch_scheduled_actions()
 
         self.assertEqual(result["queued"], 0)
-        self.assertTrue(result["disabled"])
+        self.assertNotIn("disabled", result)
 
     @override_settings(SCHEDULED_ACTION_TIMEOUT_SECONDS=30)
     def test_stale_reaper_marks_old_in_flight_runs(self):
@@ -2218,7 +2186,6 @@ class ScheduledActionExecutionTests(TestCase):
         )
         return action, run
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_execute_run_submits_power_action_and_records_success(self):
         action, run = self._queued_run()
         fake_client = self.FakeProxmoxClient(status="stopped")
@@ -2237,7 +2204,6 @@ class ScheduledActionExecutionTests(TestCase):
         self.assertEqual(CurrentGuestInventory.objects.get(object_type="vm", vmid=500).status, "running")
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.run_completed").exists())
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_execute_run_completes_noop_when_guest_already_in_desired_state(self):
         action, run = self._queued_run()
         fake_client = self.FakeProxmoxClient(status="running")
@@ -2253,7 +2219,6 @@ class ScheduledActionExecutionTests(TestCase):
         self.assertEqual(fake_client.power_calls, [])
         self.assertEqual(action.last_status, ScheduledAction.LastStatus.COMPLETED)
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_execute_run_skips_locked_guest(self):
         action, run = self._queued_run(action_type=ScheduledAction.ActionType.SHUTDOWN)
         fake_client = self.FakeProxmoxClient(status="running", config={"name": "Test VM", "lock": "backup"})
@@ -2265,20 +2230,6 @@ class ScheduledActionExecutionTests(TestCase):
         self.assertEqual(run.status, ScheduledActionRun.Status.SKIPPED)
         self.assertEqual(run.outcome, ScheduledActionRun.Outcome.SKIPPED)
         self.assertIn("locked", run.error)
-        self.assertEqual(fake_client.power_calls, [])
-        self.assertEqual(action.last_status, ScheduledAction.LastStatus.SKIPPED)
-
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=False)
-    def test_execute_run_skips_when_scheduled_actions_are_disabled(self):
-        action, run = self._queued_run()
-        fake_client = self.FakeProxmoxClient(status="stopped")
-
-        execute_scheduled_action_run(run.id, client_factory=lambda _url: fake_client)
-
-        run.refresh_from_db()
-        action.refresh_from_db()
-        self.assertEqual(run.status, ScheduledActionRun.Status.SKIPPED)
-        self.assertEqual(run.outcome, ScheduledActionRun.Outcome.SKIPPED)
         self.assertEqual(fake_client.power_calls, [])
         self.assertEqual(action.last_status, ScheduledAction.LastStatus.SKIPPED)
 
@@ -2438,14 +2389,37 @@ class ScanRetentionTests(TestCase):
             classification=FileInventory.Classification.UNKNOWN,
         )
 
-    def _proxmox_object(self, scan: ScanRun, name: str) -> ProxmoxInventory:
+    def _proxmox_object(
+        self, scan: ScanRun, name: str, *, cluster=None, object_type=ProxmoxInventory.ObjectType.VM
+    ) -> ProxmoxInventory:
         return ProxmoxInventory.objects.create(
             scan_run=scan,
+            cluster=cluster,
             node="pve-node-1",
-            object_type=ProxmoxInventory.ObjectType.VM,
-            vmid=100,
+            object_type=object_type,
+            vmid=100 if object_type == ProxmoxInventory.ObjectType.VM else None,
             name=name,
         )
+
+    def test_keeps_latest_cluster_proxmox_inventory_without_file_backing(self):
+        # Regression: ProxmoxInventory (cluster guests + local/API-only storages)
+        # has a different lifecycle from mounted-storage FileInventory. The latest
+        # completed scan of a cluster must survive retention even when it backs no
+        # FileInventory, or the Datastores nav loses its local storages the moment
+        # a scan finishes.
+        now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.get_current_timezone())
+        cluster = ProxmoxCluster.objects.create(key="hq", display_name="HQ", enabled=True)
+        superseded = self._completed_scan(now - timedelta(hours=6))
+        latest = self._completed_scan(now - timedelta(hours=1))
+        self._proxmox_object(superseded, "old-local", cluster=cluster, object_type=ProxmoxInventory.ObjectType.STORAGE)
+        self._proxmox_object(latest, "current-local", cluster=cluster, object_type=ProxmoxInventory.ObjectType.STORAGE)
+
+        prune_scan_history(now=now)
+
+        self.assertTrue(ProxmoxInventory.objects.filter(scan_run=latest, cluster=cluster).exists())
+        self.assertTrue(ScanRun.objects.filter(pk=latest.pk).exists())
+        # The superseded scan's inventory is still pruned; only the current one stays.
+        self.assertFalse(ProxmoxInventory.objects.filter(scan_run=superseded).exists())
 
 
 class ScanTaskTests(TestCase):
@@ -7761,7 +7735,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
         self.assertEqual(AuditEvent.objects.filter(action="guest.tags.updated").count(), 2)
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_scheduled_tasks_page_lists_definitions_and_runs(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
@@ -8229,7 +8202,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertIsNone(action.deleted_at)
         self.assertContains(response, "run in progress and cannot be deleted")
 
-    @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
     def test_scheduled_task_run_now_queues_manual_run(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)

@@ -49,7 +49,6 @@ def scheduled_tasks(request):
         **navigation_context("scheduled_tasks"),
         "scheduled_actions": actions,
         "latest_runs": latest_runs,
-        "scheduled_actions_enabled": settings.SCHEDULED_ACTIONS_ENABLED,
         "schedule_timezone": settings.TIME_ZONE,
         "run_retention_days": settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS,
         "target_filter": target_filter_value,
@@ -517,7 +516,6 @@ def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict
         "weekday_choices": SCHEDULED_ACTION_WEEKDAYS,
         "ordinal_choices": SCHEDULED_ACTION_ORDINALS,
         "month_choices": SCHEDULED_ACTION_MONTHS,
-        "scheduled_actions_enabled": settings.SCHEDULED_ACTIONS_ENABLED,
         "schedule_timezone": settings.TIME_ZONE,
     }
 

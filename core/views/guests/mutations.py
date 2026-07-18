@@ -253,6 +253,9 @@ def guest_backup_restore(request, cluster_key: str):
         "source_type": source_type,
         "source_vmid": source_vmid or "",
         "cluster_key": cluster.key,
+        "cluster_choices": list(
+            ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
+        ),
         "form_values": request.POST
         if request.method == "POST"
         else {"node": nodes[0]["key"] if nodes else "", "vmid": nextid},

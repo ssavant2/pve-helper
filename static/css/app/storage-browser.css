@@ -386,35 +386,7 @@
   margin: 0;
 }
 
-.vs-toolbar-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent-strong);
-  font-size: 12px;
-  font-weight: 650;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.vs-toolbar-button:hover {
-  color: var(--accent);
-}
-
-.vs-toolbar-button.danger {
-  color: var(--red);
-}
-
-.vs-toolbar-button:disabled,
-.vs-toolbar-button.disabled {
-  color: var(--muted);
-  cursor: default;
-  opacity: 0.55;
-}
+/* .vs-toolbar-button is defined as a shared component in components.css. */
 
 .datastore-search {
   display: flex;

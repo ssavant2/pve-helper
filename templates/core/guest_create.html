@@ -5,6 +5,14 @@
     <div>
       <h1>New {% if is_vm %}Virtual Machine{% else %}Container{% endif %}</h1>
       <p>Creates a Proxmox {% if is_vm %}QEMU VM{% else %}LXC container{% endif %} on node <strong>{{ options.node }}</strong>.</p>
+      {% if cluster_choices|length > 1 %}
+        <label class="create-cluster-select">
+          <span>Cluster</span>
+          <select data-cluster-navigation aria-label="Create in cluster">
+            {% for cluster in cluster_choices %}<option value="{% url 'core:guest_create' cluster.key object_type %}"{% if cluster.key == cluster_key %} selected{% endif %}>{{ cluster.display_name }}</option>{% endfor %}
+          </select>
+        </label>
+      {% endif %}
     </div>
     <div class="page-header-actions">
       <a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a>

@@ -72,6 +72,12 @@
           <span class="sr-only">Quick filter</span>
           <input type="search" placeholder="Quick Filter" data-table-filter="#vm-overview-table" autocomplete="off">
         </label>
+        {% if app_multiple_clusters %}
+          <div class="cluster-filter" data-cluster-filter-control role="group" aria-label="Filter by cluster">
+            <button type="button" class="cluster-filter-option is-active" data-cluster-filter="" aria-pressed="true">All</button>
+            {% for cluster in app_enabled_clusters %}<button type="button" class="cluster-filter-option" data-cluster-filter="{{ cluster.key }}" aria-pressed="false">{{ cluster.display_name }}</button>{% endfor %}
+          </div>
+        {% endif %}
         <span class="vm-selection-status" data-vm-selection-status>0 selected</span>
       </div>
 

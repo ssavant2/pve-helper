@@ -37,8 +37,13 @@ def _mark_linked_clones(
         only_key = next(iter(clusters), "")
         lineage_by_cluster = {only_key: lineage}
     else:
+        # Passive render: read the per-cluster lineage cache the periodic worker
+        # keeps warm, but never trigger a live provider fetch here. A cold cache
+        # (worker not yet run, or every endpoint of a cluster down) yields an empty
+        # map — clones render unnested until the worker warms it — instead of
+        # blocking the whole inventory on a broad multi-cluster Proxmox read.
         lineage_by_cluster = {
-            cluster_key: common.fetch_live_guest_lineage(cluster=cluster)
+            cluster_key: common.fetch_live_guest_lineage(cluster=cluster, allow_fetch=False)
             if cluster is not None
             else {}
             for cluster_key, cluster in clusters.items()

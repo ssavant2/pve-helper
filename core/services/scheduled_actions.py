@@ -41,7 +41,6 @@ class DispatchResult:
     queued: int = 0
     missed: int = 0
     skipped: int = 0
-    disabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,9 +98,6 @@ def dispatch_due_scheduled_actions(
 ) -> DispatchResult:
     reap_stale_scheduled_action_runs(now=now)
     prune_scheduled_action_runs(retention_days=settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS, now=now)
-
-    if not settings.SCHEDULED_ACTIONS_ENABLED:
-        return DispatchResult(disabled=True)
 
     now = now or timezone.now()
     queued_runs: list[ScheduledActionRun] = []
@@ -190,9 +186,6 @@ def queue_manual_scheduled_action_run(
     now=None,
     enqueue_func: Callable[..., Any] | None = None,
 ) -> ScheduledActionRun:
-    if not settings.SCHEDULED_ACTIONS_ENABLED:
-        raise ScheduledActionQueueError("Scheduled Proxmox actions are disabled.")
-
     now = now or timezone.now()
     with transaction.atomic():
         action = ScheduledAction.objects.select_for_update().get(pk=action.pk)
@@ -280,16 +273,6 @@ def execute_scheduled_action_run(
 ) -> None:
     run = _start_run(run_id)
     if run is None:
-        return
-
-    if not settings.SCHEDULED_ACTIONS_ENABLED:
-        _finish_run(
-            run,
-            status=ScheduledActionRun.Status.SKIPPED,
-            outcome=ScheduledActionRun.Outcome.SKIPPED,
-            action_status=ScheduledAction.LastStatus.SKIPPED,
-            error="Scheduled Proxmox actions are disabled.",
-        )
         return
 
     action = run.scheduled_action
