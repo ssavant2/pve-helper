@@ -28,17 +28,26 @@
 }
 
 .create-cluster-select {
-  display: inline-flex;
-  align-items: center;
+  display: grid;
   gap: 8px;
-  margin-top: 8px;
-  color: var(--muted);
+  width: min(370px, 100%);
+  margin-top: 14px;
+  color: var(--text);
   font-size: 13px;
 }
 
 .create-cluster-select select,
 .restore-cluster-select select {
   min-width: 160px;
+}
+
+.create-cluster-select select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text);
 }
 
 /* Shared vSphere-style flat toolbar action (storage browser, page-header New/Add
@@ -88,6 +97,10 @@
 
 .cluster-filter {
   display: inline-flex;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  flex: 0 0 auto;
   align-items: stretch;
   border: 1px solid var(--tree-icon-border);
   border-radius: 6px;

@@ -139,6 +139,7 @@
     <div class="panel summary-card" data-card-key="related" data-card-size="half">
       <div class="panel-heading"><h2>Related Objects</h2><div class="card-heading-actions"><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
       <dl class="details-list">
+        <div><dt>Cluster</dt><dd>{{ guest.cluster.display_name|default:guest.cluster_key }}</dd></div>
         <div><dt>Node</dt><dd>{{ guest.node|default:"-" }}</dd></div>
         {% if guest_lineage.parent %}
           <div><dt>Linked clone of</dt><dd><a href="{% url 'core:guest_summary' guest.cluster_key 'vm' guest_lineage.parent.vmid %}">{{ guest_lineage.parent.name }}</a> <span class="muted">({{ guest_lineage.parent.vmid }})</span></dd></div>

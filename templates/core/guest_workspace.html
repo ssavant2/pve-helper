@@ -56,7 +56,7 @@
           {% if app_multiple_clusters %}{% ifchanged g.cluster_key %}<div class="guest-list-cluster" data-guest-cluster-group="{{ g.cluster_key }}">{{ g.cluster.display_name }}</div>{% endifchanged %}{% endif %}
           {% url 'core:guest_summary' g.cluster_key g.object_type g.vmid as guest_summary_url %}
           {% sticky_object_url guest_summary_url as guest_sticky_url %}
-          <a class="guest-list-item{% if g.object_type == active_object_type and g.vmid == active_vmid %} active{% endif %}"
+          <a class="guest-list-item{% if g.cluster_key == cluster_key and g.object_type == active_object_type and g.vmid == active_vmid %} active{% endif %}"
              href="{{ guest_sticky_url }}"
              data-vm-overview-row
              data-lineage-depth="{{ g.depth }}"
@@ -91,7 +91,7 @@
             <span class="guest-list-icon{% if g.status == 'running' %} running-icon{% elif g.status == 'paused' %} paused-icon{% elif g.status == 'hibernated' %} hibernated-icon{% endif %}" data-guest-status-icon title="{{ g.status|default:'unknown' }}">
               <i data-vicon="{% if g.object_type == 'ct' %}container{% elif g.is_template %}template{% else %}vm{% endif %}" aria-hidden="true"></i>
             </span>
-            <span class="guest-list-label">{% guest_label g %} <span class="muted">· {{ g.cluster.display_name }}</span></span>
+            <span class="guest-list-label">{% guest_label g %}</span>
             {% if g.deeper_chain %}<span class="guest-lineage-deeper" title="Deeper in the linked-clone chain">⋯</span>{% endif %}
             <span class="guest-lock-badge" data-guest-lock-badge title="{% if g.lock %}Locked: {{ g.lock }}{% endif %}"{% if not g.lock %} hidden{% endif %}><i data-lucide="lock" aria-hidden="true"></i></span>
           </a>

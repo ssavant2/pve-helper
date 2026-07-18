@@ -9,7 +9,7 @@
     {% for s in host.storages %}
       {% url 'core:api_storage_summary' host.cluster_key host.node s.storage_id as api_summary_url %}
       <a class="tree-node tree-leaf storage-leaf {% if active_api_node == host.node and active_api_storage == s.storage_id %}active{% endif %}" href="{% sticky_object_url api_summary_url %}" title="{{ s.storage_id }}{% if s.type %} ({{ s.type }}){% endif %}">
-        <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
+        <span class="tree-icon"><i data-lucide="hard-drive" aria-hidden="true"></i></span>
         <span class="tree-label">{{ s.storage_id }}</span>
       </a>
     {% endfor %}

@@ -1727,7 +1727,7 @@ def _storage_gate_status(
             else:
                 missing_names.append(consumer.expected_node_name)
                 missing_refs.append(label)
-                consumer.last_gate_status = "blocked"
+                consumer.last_gate_status = "unavailable"
             consumer.save(
                 update_fields=["last_gate_status", "last_successful_inventory_scan", "updated_at"]
             )
@@ -1737,7 +1737,10 @@ def _storage_gate_status(
         missing_names.extend(unqualified)
         missing_refs.extend(unqualified)
 
-        status = "ok" if not missing_names else "blocked"
+        # This is an evidence gate for orphan classification and destructive
+        # file operations, not a health verdict for the storage itself. Browsing
+        # remains available through the mounted path when one PVE node is down.
+        status = "complete" if not missing_names else "inventory incomplete"
         result[storage.storage_id] = {
             "ok": not missing_names,
             "status": status,

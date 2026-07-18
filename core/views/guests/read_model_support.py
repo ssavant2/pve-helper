@@ -699,16 +699,19 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         detail.vmid,
         detail.node,
     )
+    # A detail page is still part of the aggregated VM/CT workspace. Reuse the
+    # same complete read model as Inventory so selecting one guest never narrows
+    # the sidebar to that guest's cluster.
+    workspace_context = _vms_workspace_context("vms")
     tag_catalog = load_tag_catalog(cluster=detail.cluster)
-    rows, live_available, scan_at = _guest_rows(current_guests=tag_catalog.guests)
-    available_user_tags = _decorate_guest_tag_chips(rows, catalog=tag_catalog)
-    # The sidebar list on every detail/Summary page is the same workspace tree,
-    # so it must render the lineage indentation too (not a flat list).
-    guest_list = _apply_workspace_lineage(rows)
+    available_user_tags = sorted(
+        set(workspace_context["available_user_tags"]) | set(tag_catalog.available),
+        key=str.casefold,
+    )
     tag_row = SimpleNamespace(tags=parse_guest_tags(detail.config))
     _decorate_guest_tag_chips([tag_row], catalog=tag_catalog)
     return {
-        **navigation_context("vms"),
+        **workspace_context,
         "guest": detail,
         "cluster_key": detail.cluster_key,
         "guest_identity": guest_identity(
@@ -723,10 +726,6 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         "guest_tag_chips": tag_row.tag_chips,
         "guest_tabs": _guest_tabs(detail, active_tab),
         "active_guest_tab": active_tab,
-        "guest_list": guest_list,
-        "live_available": live_available,
-        "runtime_inventory_stale": _runtime_inventory_is_stale(scan_at, rows=rows),
-        "inventory_scan_at": scan_at,
         "active_object_type": detail.object_type,
         "active_vmid": detail.vmid,
         "active_guest_target_id": active_target,
@@ -889,15 +888,25 @@ def _empty_guest_agent_summary(*, enabled: bool, running: bool) -> dict:
 
 
 def _guest_pool_label(detail: SimpleNamespace) -> str:
-    if not detail.live_ok or not detail.node:
+    if not detail.live_ok:
         return ""
+    cluster = getattr(detail, "cluster", None)
+    if cluster is None:
+        return ""
+    cache_key = cluster_cache_key(
+        "guest-pool-label:v2", cluster, detail.object_type, detail.vmid
+    )
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and "label" in cached:
+        return str(cached["label"] or "")
     for client in common.cluster_scoped_clients(detail.cluster):
         if not hasattr(client, "get"):
             continue
         try:
-            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             _pools, memberships = _guest_pool_memberships(client, detail)
-            return memberships[0] if len(memberships) == 1 else ""
+            label = memberships[0] if len(memberships) == 1 else ""
+            cache.set(cache_key, {"label": label}, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
+            return label
         except ProxmoxAPIError:
             continue
     return ""
@@ -906,10 +915,10 @@ def _guest_pool_label(detail: SimpleNamespace) -> str:
 def _guest_ha_summary(detail: SimpleNamespace) -> dict:
     """Return a small, read-only HA view for the Summary card.
 
-    HA resources are cluster scoped, but a pve-helper installation can point at
-    several unrelated endpoints. Resolve the guest against an endpoint first,
-    then only read that endpoint's cluster data. This is deliberately a read
-    model; Module 5 owns HA writes and placement rules.
+    HA resources are cluster scoped. The caller has already resolved an explicit
+    cluster identity, so query that cluster directly instead of first probing the
+    guest's last observed node (which may legitimately be offline). This is
+    deliberately a read model; Module 5 owns HA writes and placement rules.
     """
     unavailable = {
         "available": False,
@@ -942,8 +951,6 @@ def _guest_ha_summary(detail: SimpleNamespace) -> dict:
         if not hasattr(client, "get"):
             continue
         try:
-            # Confirms this endpoint owns the guest before querying its cluster.
-            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             cluster_status = client.get("cluster/status", timeout=2)
             resources = client.get("cluster/ha/resources", timeout=2)
         except (AttributeError, ProxmoxAPIError):

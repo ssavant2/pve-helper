@@ -133,7 +133,9 @@ def recent_task_page(
     tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
     tasks.extend(_guest_task(event) for event in _visible_guest_tasks())
     if cluster_key:
-        tasks = [task for task in tasks if task.get("cluster_key") == cluster_key]
+        # Cluster-neutral operations (currently the global storage scan) apply
+        # to every enabled cluster and remain relevant in a scoped task view.
+        tasks = [task for task in tasks if task.get("cluster_key") in {"", cluster_key}]
     tasks.sort(key=_task_timeline_sort_at, reverse=True)
     # Pin unanswered "needs a decision" tasks (e.g. a force-stop offer) to the top
     # of page 0 so a short visible window can't push them off before they are

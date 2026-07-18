@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from core.models import FileInventory, ProxmoxCluster, ProxmoxInventory, ScanRun, StorageMount
@@ -121,6 +121,13 @@ def _latest_storage_result_scan(storage: StorageMount) -> ScanRun | None:
     return (
         ScanRun.objects.filter(status=ScanRun.Status.COMPLETED)
         .filter(Q(target_storage=storage) | Q(target_storage__isnull=True))
-        .order_by("-filesystem_scan_at", "-finished_at", "-created_at")
+        # PostgreSQL puts NULL first for DESC unless told otherwise. Legacy or
+        # metadata-only rows without completion timestamps must never displace
+        # the current filesystem result and make retention delete its files.
+        .order_by(
+            F("filesystem_scan_at").desc(nulls_last=True),
+            F("finished_at").desc(nulls_last=True),
+            "-created_at",
+        )
         .first()
     )

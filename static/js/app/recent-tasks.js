@@ -41,6 +41,7 @@ const initRecentTasks = () => {
   const renderedAtMs = Number.isFinite(parsedRenderedAtMs) ? parsedRenderedAtMs : Date.now();
   let taskPage = Number.parseInt(recentTasks.dataset.taskPage || "0", 10);
   let loadingTasks = false;
+  let pendingLoadPage = null;
   let storageReloadPending = false;
   let pendingTasks = [];
   let lastLoadedTasks = [];
@@ -53,6 +54,10 @@ const initRecentTasks = () => {
     end_index: 0,
     has_previous: false,
     has_next: false,
+  };
+  const pendingTasksForSelectedCluster = () => {
+    const selectedCluster = clusterFilter?.value || "";
+    return pendingTasks.filter((task) => !selectedCluster || !task.cluster_key || task.cluster_key === selectedCluster);
   };
 
   const taskSeenKey = (task) =>
@@ -526,11 +531,19 @@ const initRecentTasks = () => {
       return;
     }
 
+    const selectedCluster = clusterFilter?.value || "";
+    const matchesSelectedCluster = (task) =>
+      !selectedCluster || !task.cluster_key || task.cluster_key === selectedCluster;
+    const visiblePendingTasks = pendingTasksForSelectedCluster();
     const visibleTasks =
       taskPage === 0
-        ? tasks.filter((task) => !pendingTasks.some((pendingTask) => pendingTaskMatchesLoadedTask(pendingTask, task)))
+        ? tasks.filter(
+            (task) =>
+              matchesSelectedCluster(task) &&
+              !visiblePendingTasks.some((pendingTask) => pendingTaskMatchesLoadedTask(pendingTask, task))
+          )
         : tasks;
-    const mergedTasks = taskPage === 0 ? [...pendingTasks, ...visibleTasks] : visibleTasks;
+    const mergedTasks = taskPage === 0 ? [...visiblePendingTasks, ...visibleTasks] : visibleTasks;
     const nextSignature = `${taskPage}:${taskRenderSignature(mergedTasks)}`;
     if (nextSignature === renderedTaskSignature) {
       return;
@@ -541,7 +554,7 @@ const initRecentTasks = () => {
         renderTaskBody(mergedTasks);
         return;
       }
-      rows.innerHTML = '<tr><td colspan="9" class="empty-state">No recent tasks.</td></tr>';
+      rows.innerHTML = '<tr><td colspan="10" class="empty-state">No recent tasks.</td></tr>';
       return;
     }
 
@@ -559,7 +572,7 @@ const initRecentTasks = () => {
       nextButton.disabled = !data.has_next;
     }
     if (pageLabel) {
-      const pendingCount = taskPage === 0 ? pendingTasks.length : 0;
+      const pendingCount = taskPage === 0 ? pendingTasksForSelectedCluster().length : 0;
       const total = (data.total || 0) + pendingCount;
       const startIndex = data.start_index || (total ? 1 : 0);
       const endIndex = Math.min(total, (data.end_index || 0) + pendingCount);
@@ -604,11 +617,15 @@ const initRecentTasks = () => {
   }
 
   const loadTaskPage = async (page) => {
-    if (!tasksUrl || loadingTasks) {
+    if (!tasksUrl) {
       return;
     }
 
     const normalizedPage = Math.max(0, page);
+    if (loadingTasks) {
+      pendingLoadPage = normalizedPage;
+      return;
+    }
     loadingTasks = true;
     try {
       const url = new URL(tasksUrl, window.location.origin);
@@ -670,6 +687,11 @@ const initRecentTasks = () => {
       // Recent task refresh is best effort; the server-rendered rows remain usable.
     } finally {
       loadingTasks = false;
+      if (pendingLoadPage !== null) {
+        const nextPage = pendingLoadPage;
+        pendingLoadPage = null;
+        loadTaskPage(nextPage);
+      }
     }
   };
 

@@ -128,7 +128,10 @@ and relevant failure is recorded. Use the two views for different questions:
   progress, completion, failures, selected task cancellation, and force-stop
   follow-up where a graceful shutdown timed out. In a multi-cluster installation
   its cluster selector filters the five task rows without changing operation
-  scope elsewhere.
+  scope elsewhere. Cluster-neutral operations, such as a global storage scan,
+  remain visible in every cluster filter because they apply to every cluster.
+  Drag a column heading to keep a browser-local column order, just as in VM/CT
+  Overview.
 - **Audit** answers “what happened and who did it?” It is the durable event log
   for logins, changes, scans, and file actions, with an optional cluster filter.
 
@@ -294,6 +297,11 @@ The remaining datastore tabs answer different operational questions:
 
 Use these tabs before changing a storage definition or treating an apparently
 unused file as safe to remove.
+
+If an expected Proxmox node is offline, a shared datastore reports **inventory
+incomplete**. You can still browse it through pve-helper and operate guests on
+healthy cluster members; orphan classification and risky file changes remain
+restricted until the missing node has been inventoried.
 
 ## Orphan Finder
 

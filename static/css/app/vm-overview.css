@@ -332,13 +332,11 @@
   margin-left: auto;
 }
 
-/* Summary "Show cards" picker: sits on its own line under the Schedule Task
-   button, with simple checkbox rows (no drag grip like the overview columns). */
+/* Summary actions share one row; DOM order keeps Schedule Task left of the
+   card picker. The picker uses simple checkbox rows (no overview drag grip). */
 .page-header-actions .card-picker {
-  flex-basis: 100%;
   margin-left: 0;
   display: flex;
-  justify-content: flex-end;
 }
 .column-picker summary {
   cursor: pointer;
@@ -399,5 +397,4 @@
 .column-picker-panel label input {
   margin: 0;
 }
-
 

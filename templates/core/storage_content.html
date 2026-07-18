@@ -27,7 +27,7 @@
 
       <div class="storage-content-list">
         {% for option in content_options %}
-          <label class="storage-content-row{% if option.usage_count %} has-usage{% endif %}">
+          <label class="storage-content-row">
             <span class="storage-content-main">
               <input type="checkbox" name="content" value="{{ option.key }}" {% if option.selected %}checked{% endif %} {% if not storage_write_enabled %}disabled{% endif %}>
               <span>
@@ -37,14 +37,7 @@
             </span>
             <span class="storage-content-description">{{ option.description }}</span>
             <span class="storage-content-usage">
-              {% if option.usage_count %}
-                <span class="badge">In use: {{ option.usage_count }}</span>
-                {% if option.usage_examples %}
-                  <span class="muted">{{ option.usage_examples|join:", " }}</span>
-                {% endif %}
-              {% else %}
-                <span class="muted">No current usage found in the latest scan.</span>
-              {% endif %}
+              <span class="badge">In use: {{ option.usage_count }}</span>
             </span>
           </label>
         {% endfor %}

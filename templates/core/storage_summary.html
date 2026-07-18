@@ -126,14 +126,14 @@
         </table>
       </div>
 
-      <div class="panel">
+      <div class="panel storage-gate-panel">
         <div class="panel-heading">Storage Gate</div>
         {% include "core/partials/storage_gate_help.html" %}
         <dl class="details-list">
           <dt>Status</dt>
           <dd>
             {% if gate_status.status %}
-              <span class="badge {% if gate_status.ok %}completed{% else %}failed{% endif %}">{{ gate_status.status }}</span>
+              <span class="badge {% if gate_status.ok %}completed{% else %}warning{% endif %}">{{ gate_status.status }}</span>
             {% else %}
               <span class="muted">No scan data</span>
             {% endif %}

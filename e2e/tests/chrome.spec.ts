@@ -52,6 +52,23 @@ test("taskbar collapse toggle flips aria-expanded", async ({ page }) => {
   await expect.poll(() => toggle.getAttribute("aria-expanded")).not.toBe(before);
 });
 
+test("recent task columns can be reordered and keep their order after refresh", async ({ page }) => {
+  const table = page.locator('[data-column-table="recent-tasks"]');
+  const columnOrder = () =>
+    table
+      .locator("thead th[data-column]")
+      .evaluateAll((headers) => headers.map((header) => (header as HTMLElement).dataset.column));
+
+  await table.locator('th[data-column="target"]').dragTo(table.locator('th[data-column="status"]'));
+  const reordered = await columnOrder();
+  expect(reordered.indexOf("target")).toBeGreaterThan(reordered.indexOf("cluster"));
+
+  await page.evaluate(() =>
+    (window as Window & { pveHelperRefreshRecentTasks: () => void }).pveHelperRefreshRecentTasks(),
+  );
+  await expect.poll(columnOrder).toEqual(reordered);
+});
+
 test("retryable tag failure retries in place and refreshes its task row", async ({ page }) => {
   const row = page.locator('[data-task-retryable="true"]');
   await expect(row).toBeVisible();

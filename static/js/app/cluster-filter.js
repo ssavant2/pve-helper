@@ -50,6 +50,7 @@ const applyClusterFilter = (key) => {
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
   });
+  document.dispatchEvent(new CustomEvent("pve-helper:cluster-filter-changed", { detail: { clusterKey: key || "" } }));
 };
 
 const initClusterFilter = (root = document) => {

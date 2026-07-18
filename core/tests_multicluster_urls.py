@@ -11,6 +11,7 @@ from core.models import (
     CurrentGuestInventory,
     ProxmoxCluster,
     RuntimeConfigurationState,
+    ScanRun,
     ScheduledAction,
 )
 from core.services.cluster_activation import (
@@ -143,10 +144,31 @@ class LegacyClusterUrlTests(TestCase):
         tasks = response.json()["tasks"]
         self.assertEqual([task["cluster_key"] for task in tasks], ["b"])
 
+    def test_recent_tasks_cluster_filter_keeps_global_tasks(self):
+        ScanRun.objects.create(status=ScanRun.Status.COMPLETED, target_label="All storages")
+
+        response = self.client.get(reverse("core:recent_tasks"), {"cluster": "b"})
+
+        self.assertEqual(response.status_code, 200)
+        tasks = response.json()["tasks"]
+        self.assertEqual([task["cluster_key"] for task in tasks], [""])
+
     def test_recent_tasks_reject_unknown_cluster_filter(self):
         response = self.client.get(reverse("core:recent_tasks"), {"cluster": "missing"})
 
         self.assertEqual(response.status_code, 400)
+
+    def test_guest_detail_sidebar_keeps_guests_from_every_cluster(self):
+        self._guest(self.cluster_b, vmid=500, node="pve1", name="b-500")
+
+        response = self.client.get(
+            reverse("core:guest_summary", args=[self.cluster_a.key, "vm", 500])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "a-500")
+        self.assertContains(response, "b-500")
+        self.assertContains(response, 'class="guest-list-item active"', count=1)
 
 
 class MulticlusterActivationTests(TestCase):

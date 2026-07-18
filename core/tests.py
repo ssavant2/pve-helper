@@ -1459,12 +1459,12 @@ class StorageGateClusterIdentityTests(TestCase):
         status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
 
         self.assertFalse(status["ok"])
-        self.assertEqual(status["status"], "blocked")
+        self.assertEqual(status["status"], "inventory incomplete")
         self.assertIn("nr1:b:pve1", status["missing_node_refs"])
         self.assertNotIn("nr1:a:pve1", status["missing_node_refs"])
 
         consumer_b.refresh_from_db()
-        self.assertEqual(consumer_b.last_gate_status, "blocked")
+        self.assertEqual(consumer_b.last_gate_status, "unavailable")
         self.assertIsNone(consumer_b.last_successful_inventory_scan)
 
     def test_file_operations_stay_blocked_when_another_cluster_is_uncovered(self):
@@ -1489,7 +1489,7 @@ class StorageGateClusterIdentityTests(TestCase):
         status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
 
         self.assertTrue(status["ok"])
-        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["status"], "complete")
         self.assertEqual(status["inventoried_consumers"], ["pve1"])
         self.assertEqual(status["expected_node_refs"], ["nr1:a:pve1"])
 
@@ -2421,6 +2421,22 @@ class ScanRetentionTests(TestCase):
         # The superseded scan's inventory is still pruned; only the current one stays.
         self.assertFalse(ProxmoxInventory.objects.filter(scan_run=superseded).exists())
 
+    def test_null_timestamp_scan_does_not_displace_file_inventory(self):
+        """PostgreSQL DESC must not sort legacy NULL timestamps first."""
+        now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.get_current_timezone())
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm", display_name="nfs-vm", path="/vm"
+        )
+        file_scan = self._completed_scan(now - timedelta(hours=1))
+        legacy_metadata = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        current_file = self._file(file_scan, storage, "images/500/vm-500-disk-0.qcow2")
+
+        result = prune_scan_history(now=now)
+
+        self.assertIn((file_scan.pk, storage.pk), result.kept_file_pairs)
+        self.assertTrue(FileInventory.objects.filter(pk=current_file.pk).exists())
+        self.assertTrue(ScanRun.objects.filter(pk=legacy_metadata.pk).exists())
+
 
 class ScanTaskTests(TestCase):
     def test_run_scan_uses_inventory_result_ok_and_audits_completion(self):
@@ -2794,7 +2810,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             storage_gate_status={
                 "nfs-vm": {
                     "ok": False,
-                    "status": "blocked",
+                    "status": "inventory incomplete",
                     "expected_consumers": ["pve-node-1"],
                     "missing_consumers": ["pve-node-1"],
                 }
@@ -2847,7 +2863,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "data-global-search")
         self.assertContains(response, "Classification legend")
         self.assertContains(response, "Storage gate")
-        self.assertContains(response, "blocks orphan classification")
+        self.assertContains(response, "protects orphan classification")
 
         response = self.client.get(reverse("core:orphan_finder"))
         self.assertEqual(response.status_code, 200)
@@ -6422,7 +6438,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertLess(html.index('data-guest-name="pve3-veeam-worker"'), html.index('data-guest-name="SophosTest"'))
         self.assertLess(html.index('data-guest-name="SophosTest"'), html.index('data-guest-name="ubuntu-test"'))
 
-    def test_vms_overview_snapshot_info_reports_live_snapshot_state(self):
+    def test_vms_overview_snapshot_info_uses_cache_without_live_provider_read(self):
+        cache.clear()
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
@@ -6436,20 +6453,24 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             config={},
         )
 
-        class FakeClient:
-            def get(self, path, *, timeout=None):
-                if path == "nodes/pve1/qemu/500/snapshot":
-                    return [{"name": "current"}, {"name": "before-upgrade"}]
-                raise ProxmoxAPIError(path)
+        cache.set(
+            cluster_cache_key(
+                "guest-snapshot-present:v2", self.cluster, "pve1", "vm", 500
+            ),
+            True,
+            60,
+        )
+        clients = Mock(return_value=[])
 
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
             patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
-            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", clients),
         ):
             response = self.client.get(reverse("core:vms_overview_snapshot_info"))
 
         self.assertEqual(response.status_code, 200)
+        clients.assert_not_called()
         self.assertEqual(
             response.json()["guests"],
             [
@@ -6515,7 +6536,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertLess(content.index("manual_2"), content.index("NOW"))
         self.assertContains(response, "Delete all")
 
-    def test_vms_overview_agent_info_enriches_rows_from_guest_agent(self):
+    def test_vms_overview_agent_info_uses_cache_without_live_provider_read(self):
         cache.clear()
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -6541,37 +6562,45 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             observed_at=timezone.now(),
         )
 
-        class FakeClient:
-            def get(self, path, *, timeout=None):
-                if path == "nodes/pve1/qemu/500/agent/get-osinfo":
-                    return {
-                        "result": {
-                            "name": "Ubuntu",
-                            "pretty-name": "Ubuntu 24.04.4 LTS",
-                            "version": "24.04.4 LTS (Noble Numbat)",
-                            "version-id": "24.04",
-                            "machine": "x86_64",
-                        }
-                    }
-                if path == "nodes/pve1/qemu/500/agent/get-host-name":
-                    return {"result": {"host-name": "lab-vm"}}
-                if path == "nodes/pve1/qemu/500/agent/network-get-interfaces":
-                    return {"result": [{"name": "ens18", "ip-addresses": [{"ip-address": "192.0.2.50"}]}]}
-                raise ProxmoxAPIError(path)
+        cache.set(
+            cluster_cache_key(
+                "guest-agent-summary:v2", self.cluster, "pve1", "vm", 500
+            ),
+            {
+                "enabled": True,
+                "running": True,
+                "os_pretty_name": "Ubuntu 24.04.4 LTS",
+                "ips": ["192.0.2.50"],
+            },
+            60,
+        )
+        clients = Mock(return_value=[])
 
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
             patch("core.views.common.fetch_live_guest_status", return_value={("vm", 500): "running"}),
-            patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
+            patch("core.views.common.cluster_scoped_clients", clients),
         ):
             response = self.client.get(reverse("core:vms_overview_agent_info"))
 
         self.assertEqual(response.status_code, 200)
+        clients.assert_not_called()
         payload = response.json()["guests"][0]
         self.assertEqual(payload["target"], "gr1:default:vm:500@pve1")
         self.assertEqual(payload["guest_os"], "Ubuntu 24.04.4 LTS")
         self.assertEqual(payload["ip_label"], "192.0.2.50")
         self.assertEqual(payload["agent"], "Running")
+
+    def test_vms_status_uses_cluster_qualified_current_inventory(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+        self._live_guest(status="running")
+
+        response = self.client.get(reverse("core:vms_status"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["guests"][0]["guest_ref"], "gr1:default:vm:500@pve1")
+        self.assertEqual(response.json()["guests"][0]["target"], "gr1:default:vm:500@pve1")
 
     def test_ct_summary_uses_container_labels_and_cpu_topology_card(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

@@ -1,9 +1,10 @@
 <section class="help-panel" aria-label="Shared storage gate help">
   <div class="help-panel-title">Shared storage gate</div>
   <p>
-    Shared storages are gated until every expected Proxmox node that can consume
-    that storage has been inventoried. If a consumer is missing, pve-helper
-    blocks orphan classification instead of guessing from incomplete data.
-    Local/API-only storages are not part of this shared-storage gate.
+    This gate protects orphan classification and destructive file operations; it
+    is not the storage's availability status. If an expected Proxmox consumer is
+    offline, browsing through PVE-helper and guest operations on healthy nodes
+    remain available, while risky file changes stay disabled until inventory is
+    complete. Local/API-only storages are not part of this gate.
   </p>
 </section>

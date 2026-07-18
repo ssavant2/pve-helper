@@ -308,7 +308,7 @@ const initResizableColumns = (root) => {
     table.dataset.resizableColumnsInitialized = "true";
 
     const tableName = table.dataset.columnTable || table.id || "table";
-    const allowColumnReorder = tableName !== "recent-tasks";
+    const allowColumnReorder = true;
     const storageKey = `pve-helper-column-widths-${tableName}`;
     const orderStorageKey = `pve-helper-columns-${tableName}-order`;
     let storedWidths = {};
@@ -812,20 +812,27 @@ const initGuestListFilter = (root = document) => {
         const text = item.dataset.filterText || "";
         const hidden = query !== "" && !text.includes(query);
         item.hidden = hidden;
-        if (!hidden) {
+        if (!hidden && !item.classList.contains("cluster-hidden")) {
           visibleCount += 1;
         }
       });
       list.querySelectorAll("[data-guest-cluster-group]").forEach((header) => {
         const clusterKey = header.dataset.guestClusterGroup || "";
-        header.hidden = !items.some((item) => (item.dataset.guestCluster || "") === clusterKey && !item.hidden);
+        header.hidden = !items.some(
+          (item) =>
+            (item.dataset.guestCluster || "") === clusterKey &&
+            !item.hidden &&
+            !item.classList.contains("cluster-hidden")
+        );
       });
       const empty = list.querySelector("[data-guest-filter-empty]");
       if (empty) {
-        empty.hidden = query === "" || visibleCount > 0;
+        empty.hidden = visibleCount > 0;
       }
     };
     input.addEventListener("input", apply);
+    document.addEventListener("pve-helper:cluster-filter-changed", apply);
+    registerPageCleanup(() => document.removeEventListener("pve-helper:cluster-filter-changed", apply));
     apply();
   });
 };

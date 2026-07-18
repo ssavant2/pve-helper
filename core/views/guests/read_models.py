@@ -26,7 +26,6 @@ def vms_overview(request):
 @app_login_required
 def vms_overview_agent_info(request):
     rows, _live_available, _scan_at = _guest_rows()
-    deadline = monotonic() + OVERVIEW_ENRICH_BUDGET_SECONDS
     payload = []
     for row in rows:
         if row.object_type != ProxmoxInventory.ObjectType.VM or not row.agent_enabled:
@@ -41,9 +40,9 @@ def vms_overview_agent_info(request):
             status=row.status,
             config={"agent": 1},
         )
-        # Cached summaries stay cheap; once the per-request budget is spent we
-        # stop issuing new agent calls and serve only what is already cached.
-        summary = _guest_agent_summary(detail, allow_fetch=monotonic() < deadline)
+        # Overview enrichment is a passive read. Never occupy a web worker with
+        # guest-agent calls; serve only already-cached detail-page observations.
+        summary = _guest_agent_summary(detail, allow_fetch=False)
         if not summary.get("running"):
             continue
         payload.append(
@@ -63,12 +62,11 @@ def vms_overview_agent_info(request):
 @app_login_required
 def vms_overview_snapshot_info(request):
     rows, _live_available, _scan_at = _guest_rows()
-    deadline = monotonic() + OVERVIEW_ENRICH_BUDGET_SECONDS
     payload = []
     for row in rows:
-        has_snapshot = _live_guest_has_snapshot(row, allow_fetch=monotonic() < deadline)
-        # None = probe unavailable/budget spent; keep it unknown ("-") rather
-        # than reporting a misleading "No".
+        # As above, the overview must not fan out live provider reads from a web
+        # request. Unknown stays "-" until a cached observation exists.
+        has_snapshot = _live_guest_has_snapshot(row, allow_fetch=False)
         payload.append(
             {
                 "target": row.target_id,
@@ -84,7 +82,7 @@ def vms_overview_snapshot_info(request):
 
 @app_login_required
 def vms_status(request):
-    current = list(CurrentGuestInventory.objects.all())
+    current = list(CurrentGuestInventory.objects.select_related("cluster").all())
     refreshed_at = max(
         (guest.runtime_observed_at for guest in current if guest.runtime_observed_at),
         default=None,
@@ -92,7 +90,7 @@ def vms_status(request):
     guests = [
         {
             "target": _guest_target_value(
-                guest.cluster_key,
+                guest.cluster.key,
                 guest.object_type,
                 guest.vmid,
                 guest.node,
@@ -102,7 +100,10 @@ def vms_status(request):
             "state_label": _guest_state_label(guest.status),
             "lock": _display_lock(guest.runtime_lock),
         }
-        for guest in sorted(current, key=lambda item: (item.object_type, item.vmid, item.node))
+        for guest in sorted(
+            current,
+            key=lambda item: (item.cluster.key, item.object_type, item.vmid, item.node),
+        )
     ]
     return JsonResponse(
         {

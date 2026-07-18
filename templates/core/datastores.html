@@ -68,7 +68,7 @@
             <td>{{ storage.expected_consumers|join:", " }}</td>
             <td>
               {% if storage.latest_gate_status %}
-                <span class="badge {% if storage.latest_gate_status.ok %}completed{% else %}failed{% endif %}">
+                <span class="badge {% if storage.latest_gate_status.ok %}completed{% else %}warning{% endif %}">
                   {{ storage.latest_gate_status.status }}
                 </span>
               {% else %}

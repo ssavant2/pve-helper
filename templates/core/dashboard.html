@@ -129,7 +129,7 @@
               <td>{{ storage.details.server|default:"-" }}</td>
               <td>
                 {% if gate %}
-                  <span class="badge {% if gate.ok %}completed{% else %}failed{% endif %}">{{ gate.status }}</span>
+                  <span class="badge {% if gate.ok %}completed{% else %}warning{% endif %}">{{ gate.status }}</span>
                 {% else %}
                   -
                 {% endif %}

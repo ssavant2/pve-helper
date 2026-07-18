@@ -82,6 +82,29 @@
   overflow: visible;
 }
 
+.cluster-wizard-panel > .panel-heading > div {
+  width: 100%;
+  text-align: left;
+}
+
+.cluster-wizard-panel > .panel-heading {
+  min-height: 0;
+  margin-bottom: 10px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.cluster-wizard-panel > .panel-heading h2 {
+  line-height: 1.15;
+}
+
+.cluster-wizard-panel > .panel-heading .panel-meta {
+  padding: 2px 0 0;
+  border-bottom: 0;
+  line-height: 1.2;
+  text-align: left;
+}
+
 .cluster-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

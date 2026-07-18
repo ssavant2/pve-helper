@@ -569,6 +569,11 @@ matching storage's expected consumers. The orphan classifier must see every expe
 consumer in the same scan-run, otherwise files are marked `unknown` / `classification_blocked`
 instead of `likely_orphan`.
 
+An offline expected consumer therefore reports **inventory incomplete**; it does
+not make the shared datastore unavailable. File browsing and guest operations on
+healthy cluster members continue normally. Only orphan conclusions and risky
+file mutations remain conservative until every expected consumer is observed.
+
 Initial single-node value:
 
 ```yaml
