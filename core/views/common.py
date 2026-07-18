@@ -475,7 +475,11 @@ def _audit_action_label(event: AuditEvent) -> str:
     if event.action in tag_action_labels:
         return tag_action_labels[event.action]
     cluster_action_labels = {
+        "cluster.add": "Add cluster",
         "cluster.added": "Add cluster",
+        "cluster.initial_key.set": "Set initial cluster key",
+        "cluster.transport.approve": "Approve cluster transport",
+        "cluster.trust.cutover": "Import legacy cluster trust",
         "cluster.display_name_changed": "Change cluster display name",
         "cluster.disabled": "Disable cluster",
         "cluster.enabled": "Enable cluster",

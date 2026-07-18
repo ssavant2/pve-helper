@@ -34,7 +34,6 @@
       <form class="search-control" method="get" role="search">
         <span class="sr-only">Search audit log</span>
         <input type="hidden" name="filter" value="{{ audit_filter }}">
-        <select name="cluster" aria-label="Cluster"><option value="">All clusters</option>{% for cluster in audit_clusters %}<option value="{{ cluster.key }}"{% if cluster.key == audit_cluster %} selected{% endif %}>{{ cluster.display_name }}</option>{% endfor %}</select>
         <input type="search" name="q" value="{{ audit_query }}" placeholder="Search for anything" autocomplete="off">
         <button class="secondary-action" type="submit">Filter</button>
       </form>

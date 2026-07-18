@@ -7,18 +7,30 @@ from core.services.cluster_trust import TRUST_CA_PEM, TRUST_PUBLIC
 
 
 class ClusterInspectForm(forms.Form):
-    display_name = forms.CharField(max_length=160, label="Display name")
+    display_name = forms.CharField(
+        max_length=160,
+        label="Display name",
+        widget=forms.TextInput(attrs={"placeholder": "e.g. Production HQ"}),
+        help_text="Friendly name shown in the UI. Can be changed later.",
+    )
     cluster_key = forms.CharField(
         max_length=63,
         label="Cluster key",
         validators=[cluster_key_validator],
-        help_text="Permanent lowercase identity used in URLs; it cannot be renamed later.",
+        widget=forms.TextInput(attrs={"placeholder": "e.g. hq-prod"}),
+        help_text=(
+            "A short slug you invent to permanently identify this cluster in URLs, "
+            "Audit and links — lowercase letters, digits and hyphens (e.g. hq-prod, "
+            "datacenter-1, clusterb). Not a Proxmox value; you choose it, and it "
+            "cannot be renamed later."
+        ),
     )
     endpoint_url = forms.URLField(
         max_length=500,
         label="First endpoint URL",
         assume_scheme="https",
-        help_text="HTTPS Proxmox API root, normally https://host.example:8006.",
+        widget=forms.URLInput(attrs={"placeholder": "https://pve1.example.com:8006"}),
+        help_text="HTTPS Proxmox API root of one node, normally https://host.example:8006.",
     )
     endpoint_name = forms.RegexField(
         regex=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$",

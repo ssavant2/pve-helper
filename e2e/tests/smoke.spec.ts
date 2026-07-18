@@ -49,7 +49,7 @@ test("cluster connection UI separates immutable identity from write-only credent
 
   await expect(page.getByRole("heading", { name: "Add Proxmox cluster" })).toBeVisible();
   await expect(page.getByLabel("Cluster key")).toBeVisible();
-  await expect(page.getByText("Permanent lowercase identity used in URLs")).toBeVisible();
+  await expect(page.getByText("cannot be renamed later")).toBeVisible();
   await expect(page.locator('input[name="token_secret"]')).toHaveCount(0);
 
   await page.goto("/clusters/e2e/connection/");

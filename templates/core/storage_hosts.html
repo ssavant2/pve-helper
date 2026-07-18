@@ -35,7 +35,14 @@
     {% if proxmox_storage_entries %}
       <div class="panel panel-spaced">
         <div class="panel-heading">Proxmox Storage by Node</div>
-        <table class="data-table compact">
+        <table class="data-table compact table-fixed">
+          <colgroup>
+            <col style="width: 22%">
+            <col style="width: 12%">
+            <col style="width: 14%">
+            <col style="width: 40%">
+            <col style="width: 12%">
+          </colgroup>
           <thead>
             <tr>
               <th>Node</th>

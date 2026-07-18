@@ -15,13 +15,13 @@
   {% if step == "identity" %}
     <section class="panel cluster-wizard-panel">
       <div class="panel-heading"><div><h2>Connection identity</h2><p class="panel-meta">The cluster key becomes durable identity in URLs, Audit and queued operations.</p></div></div>
-      <form method="post" class="cluster-form-grid cluster-form-stack">
+      <form method="post" class="cluster-form-grid">
         {% csrf_token %}<input type="hidden" name="action" value="inspect">
         {% include "core/partials/cluster_form_errors.html" with form=inspect_form %}
-        <label><span>Display name</span>{{ inspect_form.display_name }}{% for error in inspect_form.display_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label><span>Display name</span>{{ inspect_form.display_name }}<small>{{ inspect_form.display_name.help_text }}</small>{% for error in inspect_form.display_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
         <label><span>Cluster key</span>{{ inspect_form.cluster_key }}<small>{{ inspect_form.cluster_key.help_text }}</small>{% for error in inspect_form.cluster_key.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
         <label class="cluster-field-wide"><span>First endpoint URL</span>{{ inspect_form.endpoint_url }}<small>{{ inspect_form.endpoint_url.help_text }}</small>{% for error in inspect_form.endpoint_url.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
-        <label><span>Endpoint name</span>{{ inspect_form.endpoint_name }}<small>{{ inspect_form.endpoint_name.help_text }}</small>{% for error in inspect_form.endpoint_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label class="cluster-field-wide"><span>Endpoint name</span>{{ inspect_form.endpoint_name }}<small>{{ inspect_form.endpoint_name.help_text }}</small>{% for error in inspect_form.endpoint_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
         <div class="cluster-form-actions cluster-field-wide"><button class="primary-action" type="submit">Inspect certificate</button></div>
       </form>
     </section>

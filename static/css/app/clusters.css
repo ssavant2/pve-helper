@@ -126,13 +126,6 @@
   grid-column: 1 / -1;
 }
 
-/* Identity step: only a few fields, so stack them full-width and left-aligned
-   instead of the two-column grid that leaves a ragged half-empty row. */
-.cluster-form-stack {
-  grid-template-columns: minmax(0, 1fr);
-  max-width: 560px;
-}
-
 .cluster-form-error-summary,
 .cluster-operation-error,
 .cluster-quarantine {

@@ -215,6 +215,15 @@
   background: var(--surface);
 }
 
+/* Pin column widths (via a <colgroup>) so they don't shift with cell content. */
+.data-table.table-fixed {
+  table-layout: fixed;
+}
+
+.data-table.table-fixed td {
+  overflow-wrap: anywhere;
+}
+
 .data-table th,
 .data-table td {
   padding: 8px 10px;
