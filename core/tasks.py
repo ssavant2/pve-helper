@@ -38,6 +38,7 @@ from .services.current_guest_inventory import (
     reconcile_live_guest_inventory,
     reconcile_scan_guest_inventory,
     refresh_current_guest_from_client,
+    store_guest_lineage,
     upsert_current_guest,
 )
 from .services.durable_guest_operations import (
@@ -106,15 +107,15 @@ def _refresh_cluster_guest_inventory(cluster) -> dict[str, object]:
     try:
         inventory = fetch_verified_guest_inventory(cluster=cluster)
         state = reconcile_live_guest_inventory(inventory)
-        # Warm the linked-clone lineage cache while this cluster's transport is
-        # already live, so passive inventory/overview renders read it from cache
-        # (allow_fetch=False) instead of blocking on a broad Proxmox read. This is
-        # best-effort: a warming failure (unreachable cluster, missing credential)
-        # must never fail the guest-inventory refresh it rides along with.
+        # Persist the linked-clone lineage on the cluster's inventory-state row
+        # while its transport is already live, so passive inventory/overview/detail
+        # renders read it from the DB (cross-process) instead of blocking on a broad
+        # Proxmox read. Best-effort: a failure (unreachable cluster, missing
+        # credential) must never fail the guest-inventory refresh it rides along with.
         try:
-            fetch_live_guest_lineage(cluster=cluster)
+            store_guest_lineage(cluster, fetch_live_guest_lineage(cluster=cluster))
         except Exception:
-            logger.warning("Lineage cache warm failed for cluster=%s", cluster.key, exc_info=True)
+            logger.warning("Lineage refresh failed for cluster=%s", cluster.key, exc_info=True)
         return {
             "skipped": False,
             "complete": state.complete,

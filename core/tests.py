@@ -389,7 +389,7 @@ class GuestLineageTests(SimpleTestCase):
         from core.views.guests import _apply_workspace_lineage
 
         rows = [self._row(100, "template"), self._row(101), self._row(102), self._row(200, ct=True)]
-        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100, 102: 100}):
+        with patch("core.views.common.stored_guest_lineage", return_value={101: 100, 102: 100}):
             ordered = _apply_workspace_lineage(rows)
         self.assertEqual([(r.vmid, r.depth) for r in ordered], [(100, 0), (101, 1), (102, 1), (200, 0)])
         clone = next(r for r in ordered if r.vmid == 101)
@@ -402,7 +402,7 @@ class GuestLineageTests(SimpleTestCase):
         from core.views.guests import _apply_workspace_lineage
 
         rows = [self._row(100), self._row(101), self._row(200, ct=True)]
-        with patch("core.views.common.fetch_live_guest_lineage", return_value={}):
+        with patch("core.views.common.stored_guest_lineage", return_value={}):
             ordered = _apply_workspace_lineage(rows)
         self.assertEqual([r.vmid for r in ordered], [100, 101, 200])
         self.assertTrue(all(r.depth == 0 and r.parent_vmid is None for r in ordered))
@@ -413,7 +413,7 @@ class GuestLineageTests(SimpleTestCase):
         from core.views.guests import _apply_workspace_lineage
 
         rows = [self._row(100), self._row(101), self._row(102), self._row(103)]  # 100→101→102→103
-        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100, 102: 101, 103: 102}):
+        with patch("core.views.common.stored_guest_lineage", return_value={101: 100, 102: 101, 103: 102}):
             ordered = _apply_workspace_lineage(rows)
         by = {r.vmid: r for r in ordered}
         self.assertEqual([by[v].depth for v in (100, 101, 102, 103)], [0, 1, 2, 2])
@@ -427,7 +427,7 @@ class GuestLineageTests(SimpleTestCase):
 
         # 101 is a linked clone; its parent template (100) is NOT in this view.
         rows = [self._row(101), self._row(102), self._row(200, ct=True)]
-        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100}):
+        with patch("core.views.common.stored_guest_lineage", return_value={101: 100}):
             _mark_linked_clones(rows)
         flags = {r.vmid: r.is_linked_clone for r in rows}
         self.assertEqual(flags, {101: True, 102: False, 200: False})
@@ -438,7 +438,7 @@ class GuestLineageTests(SimpleTestCase):
         from core.views.guests import _apply_workspace_lineage
 
         rows = [self._row(100, "template"), self._row(101), self._row(102)]
-        with patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100}):
+        with patch("core.views.common.stored_guest_lineage", return_value={101: 100}):
             ordered = _apply_workspace_lineage(rows)
         by = {r.vmid: r for r in ordered}
         self.assertTrue(by[101].is_linked_clone)
@@ -459,10 +459,10 @@ class GuestLineageTests(SimpleTestCase):
             self._row(501, "b-vm-2", cluster=cluster_b),
         ]
 
-        def lineage(*, cluster=None, allow_fetch=True):
+        def lineage(cluster=None):
             return {501: 500} if cluster is cluster_a else {}
 
-        with patch("core.views.common.fetch_live_guest_lineage", side_effect=lineage):
+        with patch("core.views.common.stored_guest_lineage", side_effect=lineage):
             ordered = _apply_workspace_lineage(rows)
 
         self.assertEqual(len(ordered), 4)
@@ -536,7 +536,7 @@ class LinkedCloneBaseProtectionTests(TestCase):
 
         ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
         entry = self._entry("images/505/base-505-disk-0.qcow2")
-        with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505, 103: 505}):
+        with patch("core.views.common.stored_guest_lineage", return_value={102: 505, 103: 505}):
             with self.assertRaises(StorageActionError) as ctx:
                 _require_linked_clone_base_unblocked([entry])
         self.assertIn("2 linked clones", str(ctx.exception))

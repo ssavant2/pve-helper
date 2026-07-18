@@ -15,7 +15,7 @@
   {% if step == "identity" %}
     <section class="panel cluster-wizard-panel">
       <div class="panel-heading"><div><h2>Connection identity</h2><p class="panel-meta">The cluster key becomes durable identity in URLs, Audit and queued operations.</p></div></div>
-      <form method="post" class="cluster-form-grid">
+      <form method="post" class="cluster-form-grid cluster-form-stack">
         {% csrf_token %}<input type="hidden" name="action" value="inspect">
         {% include "core/partials/cluster_form_errors.html" with form=inspect_form %}
         <label><span>Display name</span>{{ inspect_form.display_name }}{% for error in inspect_form.display_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>

@@ -43,15 +43,28 @@
 }
 
 .search-control {
-  display: block;
-  flex: 1 1 220px;
-  min-width: 160px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 360px;
+  min-width: 240px;
 }
 
-.search-control input {
-  width: 100%;
+.search-control input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 120px;
   min-height: 32px;
   padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.search-control select {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--surface);

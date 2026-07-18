@@ -25,7 +25,7 @@ class ClusterInspectForm(forms.Form):
         max_length=120,
         required=False,
         label="Endpoint name",
-        help_text="Optional; defaults to the first hostname component.",
+        help_text="Label for this single node/endpoint (not the cluster). Optional; defaults to the first hostname component of the URL.",
     )
 
     def clean_cluster_key(self):

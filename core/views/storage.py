@@ -60,7 +60,7 @@ def _storage_clusters(storage: StorageMount):
 
 def _lineage_by_cluster() -> dict[str, dict[int, int]]:
     return {
-        cluster.key: common.fetch_live_guest_lineage(cluster=cluster)
+        cluster.key: common.stored_guest_lineage(cluster)
         for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key")
     }
 
@@ -275,7 +275,7 @@ def api_storage_vms(request, cluster_key: str, node: str, storage: str):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
     guests = []
     prefix = f"{storage}:"
-    lineage = common.fetch_live_guest_lineage(cluster=cluster)
+    lineage = common.stored_guest_lineage(cluster)
     for obj in CurrentGuestInventory.objects.filter(cluster=cluster, node=node).order_by(
         "object_type", "vmid"
     ):

@@ -490,3 +490,39 @@ def refresh_current_guest_from_client(
         },
     )
     return TargetedGuestRefresh(found=True, node=resolved_node)
+
+
+def store_guest_lineage(cluster, lineage: dict[int, int]) -> None:
+    """Persist a cluster's linked-clone lineage on its inventory-state row.
+
+    Called by the periodic worker while the cluster's transport is live. Stored as
+    ``{str(child_vmid): parent_vmid}`` because JSON keys are strings.
+    """
+    if cluster is None:
+        return
+    CurrentGuestInventoryState.objects.update_or_create(
+        cluster=cluster,
+        defaults={"linked_clone_lineage": {str(child): parent for child, parent in lineage.items()}},
+    )
+
+
+def stored_guest_lineage(cluster) -> dict[int, int]:
+    """Return the worker-persisted linked-clone lineage for passive rendering.
+
+    A pure DB read of ``{child_vmid: parent_vmid}`` — no provider I/O — so request
+    rendering never blocks on a broad live Proxmox read (and works across the
+    web/worker process boundary that a per-process LocMem cache cannot cross).
+    """
+    if cluster is None:
+        return {}
+    state = CurrentGuestInventoryState.objects.filter(cluster=cluster).first()
+    raw = getattr(state, "linked_clone_lineage", None) if state is not None else None
+    if not isinstance(raw, dict):
+        return {}
+    lineage: dict[int, int] = {}
+    for child, parent in raw.items():
+        try:
+            lineage[int(child)] = int(parent)
+        except (TypeError, ValueError):
+            continue
+    return lineage

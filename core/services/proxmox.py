@@ -726,21 +726,19 @@ def _fetch_live_guest_locks_uncached(*, cluster) -> dict[tuple[str, str, int], s
     return locks
 
 
-def fetch_live_guest_lineage(*, cluster, allow_fetch: bool = True) -> dict[int, int]:
+def fetch_live_guest_lineage(*, cluster) -> dict[int, int]:
     """Return {child VMID: parent-template VMID} for linked clones — a qcow2 whose
     storage-content ``parent`` points at a template's ``base-<N>-disk-`` volume.
     One content listing per images-storage (deduped across nodes); no per-file
     ``qemu-img`` probing. VM/qcow2/file-storage only; other backends yield nothing.
 
-    ``allow_fetch=False`` makes this a pure cache read for passive request
-    rendering: a miss returns an empty map rather than issuing the broad live
-    provider read, which the periodic worker owns and keeps warm."""
+    This performs live provider I/O and is for the periodic worker and destructive-
+    operation preflight guards. Passive request rendering must instead read the
+    worker-persisted lineage via ``stored_guest_lineage`` (a pure DB read)."""
     cache_key = cluster_cache_key(LIVE_GUEST_LINEAGE_CACHE_NAMESPACE, cluster)
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached
-    if not allow_fetch:
-        return {}
     result = _fetch_live_guest_lineage_uncached(cluster=cluster)
     cache.set(cache_key, result, LIVE_GUEST_LINEAGE_CACHE_SECONDS)
     return result

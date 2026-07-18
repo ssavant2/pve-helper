@@ -68,6 +68,7 @@ from ..services.proxmox import (
     fetch_live_guest_locks,
     fetch_live_guest_status,
 )
+from ..services.current_guest_inventory import stored_guest_lineage
 from ..services.recent_tasks import recent_task_page, serialize_task_page
 from ..services.request_metadata import client_ip
 from ..services.task_queues import BULK_QUEUE_NAME

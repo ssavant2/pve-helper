@@ -166,24 +166,27 @@
                     <span class="tree-label">Local Datastores</span>
                   </button>
                   <div class="tree-children">
-                    {% for host in app_nav_local_datastores %}
-                      <section class="tree-module tree-group expanded" data-tree-module="local-node-{{ host.node }}" aria-label="{{ host.node }} local datastores">
-                        <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
-                          <span class="tree-caret" data-tree-caret>v</span>
-                          <span class="tree-icon"><i data-vicon="host" aria-hidden="true"></i></span>
-                          <span class="tree-label">{% if app_multiple_clusters %}{{ host.cluster_name }} · {% endif %}{{ host.node }}</span>
-                        </button>
-                        <div class="tree-children">
-                          {% for s in host.storages %}
-                            {% url 'core:api_storage_summary' host.cluster_key host.node s.storage_id as api_summary_url %}
-                            <a class="tree-node tree-leaf storage-leaf {% if active_api_node == host.node and active_api_storage == s.storage_id %}active{% endif %}" href="{% sticky_object_url api_summary_url %}" title="{{ s.storage_id }}{% if s.type %} ({{ s.type }}){% endif %}">
-                              <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
-                              <span class="tree-label">{{ s.storage_id }}</span>
-                            </a>
-                          {% endfor %}
-                        </div>
-                      </section>
-                    {% endfor %}
+                    {% if app_multiple_clusters %}
+                      {% regroup app_nav_local_datastores by cluster_key as local_by_cluster %}
+                      {% for cluster_group in local_by_cluster %}
+                        <section class="tree-module tree-group expanded" data-tree-module="local-cluster-{{ cluster_group.grouper }}" aria-label="{{ cluster_group.list.0.cluster_name }} local datastores">
+                          <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
+                            <span class="tree-caret" data-tree-caret>v</span>
+                            <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
+                            <span class="tree-label">{{ cluster_group.list.0.cluster_name }}</span>
+                          </button>
+                          <div class="tree-children">
+                            {% for host in cluster_group.list %}
+                              {% include "core/partials/nav_local_node.html" with host=host %}
+                            {% endfor %}
+                          </div>
+                        </section>
+                      {% endfor %}
+                    {% else %}
+                      {% for host in app_nav_local_datastores %}
+                        {% include "core/partials/nav_local_node.html" with host=host %}
+                      {% endfor %}
+                    {% endif %}
                   </div>
                 </section>
               {% endif %}
@@ -232,6 +235,7 @@
               <div class="tree-children">
                 {% for cluster in app_enabled_clusters %}
                   <a class="tree-node tree-leaf {% if active_nav == 'tags' and cluster.key == cluster_key %}active{% endif %}" href="{% url 'core:tags_overview' cluster.key %}">
+                    <span class="tree-icon"><i data-lucide="tag" aria-hidden="true"></i></span>
                     <span class="tree-label">{{ cluster.display_name }}</span>
                   </a>
                 {% endfor %}

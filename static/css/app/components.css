@@ -102,9 +102,9 @@
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
-  padding: 6px 12px;
+  padding: 5px 10px;
   cursor: pointer;
   white-space: nowrap;
 }

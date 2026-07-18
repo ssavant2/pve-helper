@@ -652,6 +652,11 @@ class CurrentGuestInventoryState(TimestampedModel):
     endpoints_attempted = models.JSONField(default=list, blank=True)
     endpoints_succeeded = models.JSONField(default=list, blank=True)
     errors = models.JSONField(default=dict, blank=True)
+    # Linked-clone lineage for this cluster as {str(child_vmid): parent_vmid},
+    # refreshed by the periodic worker. Passive request rendering reads this
+    # instead of issuing a broad live Proxmox lineage read: the cache is per
+    # process (LocMem), so a worker-warmed cache never reaches the web process.
+    linked_clone_lineage = models.JSONField(default=dict, blank=True)
 
     class Meta:
         constraints = [
