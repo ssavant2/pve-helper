@@ -1,5 +1,6 @@
 """Guest create + configure tab + agent-summary enrichment API (from _core)."""
 from __future__ import annotations
+from core.models import ProxmoxCluster
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import _create_guest
@@ -8,19 +9,22 @@ from .read_model_support import (_guest_agent_summary,_guest_os_label,_guest_tab
 
 
 @app_login_required
-def guest_create(request, object_type: str):
+def guest_create(request, cluster_key: str, object_type: str):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
 
     is_vm = object_type == ProxmoxInventory.ObjectType.VM
     node_param = request.POST.get("node") if request.method == "POST" else request.GET.get("node")
-    options = create_options(object_type, node_param)
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    options = create_options(object_type, node_param, cluster=cluster)
     if not options.get("available"):
         messages.error(request, "Could not load creation options from Proxmox (no reachable node).")
         return redirect("core:vms")
 
     if request.method == "POST":
-        error = _create_guest(request, object_type, options)
+        error = _create_guest(request, object_type, options, cluster=cluster)
         if error is None:
             return redirect("core:vms")
         messages.error(request, error)
@@ -39,6 +43,7 @@ def guest_create(request, object_type: str):
     context = {
         **navigation_context("vms"),
         "object_type": object_type,
+        "cluster_key": cluster.key,
         "is_vm": is_vm,
         "options": options,
         "form_values": form_values,
@@ -49,11 +54,12 @@ def guest_create(request, object_type: str):
 
 
 @app_login_required
-def guest_configure(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_configure(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     agent_summary = _guest_agent_summary(detail, allow_fetch=True)
     actions = list(
         ScheduledAction.objects.filter(
+            cluster=detail.cluster,
             target_type=object_type,
             target_vmid=vmid,
             deleted_at__isnull=True,
@@ -66,7 +72,7 @@ def guest_configure(request, object_type: str, vmid: int):
     context["config_sections"] = _guest_config_sections(detail.config, agent_summary=agent_summary)
     context["scheduled_actions"] = actions
     context["scheduled_task_create_url"] = (
-        f"{reverse('core:scheduled_task_create')}?{urlencode({'target': f'{object_type}:{vmid}'})}"
+        f"{reverse('core:scheduled_task_create')}?{urlencode({'target': detail.guest_ref.without_node().serialize()})}"
     )
     return render(request, "core/guest_configure.html", context)
 
@@ -74,8 +80,8 @@ def guest_configure(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_agent_summary_api(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_agent_summary_api(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     summary = _guest_agent_summary(detail, allow_fetch=True)
     rows = []
     if summary.get("os_name"):
@@ -104,5 +110,3 @@ def guest_agent_summary_api(request, object_type: str, vmid: int):
             "status_label": "Running" if summary.get("running") else "Not running",
         }
     )
-
-

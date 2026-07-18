@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Cluster scope required{% endblock %}
+{% block content %}
+  <section class="panel narrow-panel">
+    <div class="panel-heading"><h1>{{ title }}</h1></div>
+    <div class="panel-body">
+      <p class="muted">This legacy address is ambiguous. Choose the cluster explicitly.</p>
+      <div class="button-row">
+        {% for cluster in cluster_choices %}
+          <a class="secondary-action" href="{{ cluster.url }}">{{ cluster.label }} <span class="muted">({{ cluster.key }})</span></a>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+{% endblock %}

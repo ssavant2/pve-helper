@@ -13,8 +13,8 @@
           <td>{{ b.notes|default:"-" }}</td>
 
             <td class="row-actions">
-              <a class="icon-button" title="Restore this backup" href="{% url 'core:guest_backup_restore' %}?archive={{ b.source_endpoint|urlencode }}%7C{{ b.source_node }}%7C{{ b.storage }}%7C{{ b.volid|urlencode }}"><i data-lucide="rotate-ccw" aria-hidden="true"></i></a>
-              <form class="inline-action-form" method="post" action="{% url 'core:guest_backup_delete' guest.object_type guest.vmid %}" data-guest-action-form data-action="backup_delete" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete this backup archive?" data-skip-soft-refresh="true">
+              <a class="icon-button" title="Restore this backup" href="{% url 'core:guest_backup_restore' guest.cluster_key %}?archive={{ b.source_endpoint|urlencode }}%7C{{ b.source_node }}%7C{{ b.storage }}%7C{{ b.volid|urlencode }}"><i data-lucide="rotate-ccw" aria-hidden="true"></i></a>
+              <form class="inline-action-form" method="post" action="{% url 'core:guest_backup_delete' guest.cluster_key guest.object_type guest.vmid %}" data-guest-action-form data-action="backup_delete" data-guest-target="{{ guest.guest_ref.serialize }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete this backup archive?" data-skip-soft-refresh="true">
                 {% csrf_token %}
                 <input type="hidden" name="volid" value="{{ b.volid }}">
                 <input type="hidden" name="storage" value="{{ b.storage }}">

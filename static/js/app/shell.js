@@ -20,6 +20,19 @@ const activeUploads = new Map();
 
 const ipVersion = (value) => (String(value || "").includes(":") ? "6" : "4");
 
+const parseGuestRef = (value) => {
+  const raw = String(value || "").trim();
+  const [identity, node = ""] = raw.split("@", 2);
+  const parts = identity.split(":");
+  if (parts.length === 4 && parts[0] === "gr1") {
+    return { cluster: parts[1], type: parts[2], vmid: parts[3], node };
+  }
+  if (parts.length === 2) {
+    return { cluster: "", type: parts[0], vmid: parts[1], node };
+  }
+  return { cluster: "", type: "", vmid: "", node: "" };
+};
+
 const preferredIpVersionStyle = () => {
   try {
     return localStorage.getItem(ipVersionStyleKey) === "ipv4-only" ? "ipv4-only" : "all";
@@ -389,18 +402,19 @@ const groupRowsBySubtree = (rows) => {
   rows.forEach((row) => {
     const vmid = parseInt(row.dataset.guestVmid || "", 10);
     if (!Number.isNaN(vmid)) {
-      byVmid.set(vmid, row);
+      byVmid.set(`${row.dataset.guestCluster || ""}:${vmid}`, row);
     }
   });
   const childrenByParent = new Map();
   const roots = [];
   rows.forEach((row) => {
     const parent = parseInt(row.dataset.guestParentVmid || "", 10);
-    if (!Number.isNaN(parent) && byVmid.has(parent)) {
-      if (!childrenByParent.has(parent)) {
-        childrenByParent.set(parent, []);
+    const parentKey = `${row.dataset.guestCluster || ""}:${parent}`;
+    if (!Number.isNaN(parent) && byVmid.has(parentKey)) {
+      if (!childrenByParent.has(parentKey)) {
+        childrenByParent.set(parentKey, []);
       }
-      childrenByParent.get(parent).push(row);
+      childrenByParent.get(parentKey).push(row);
     } else {
       roots.push(row);
     }
@@ -409,7 +423,8 @@ const groupRowsBySubtree = (rows) => {
   const emit = (row) => {
     ordered.push(row);
     const vmid = parseInt(row.dataset.guestVmid || "", 10);
-    (childrenByParent.get(vmid) || []).forEach(emit);
+    const rowKey = `${row.dataset.guestCluster || ""}:${vmid}`;
+    (childrenByParent.get(rowKey) || []).forEach(emit);
   };
   roots.forEach(emit);
   return ordered;
@@ -417,6 +432,10 @@ const groupRowsBySubtree = (rows) => {
 
 const sortGuestList = (showingIds) => {
   const compare = (a, b) => {
+    const clusterOrder = (a.dataset.guestCluster || "").localeCompare(b.dataset.guestCluster || "", undefined, {
+      sensitivity: "base",
+    });
+    if (clusterOrder !== 0) return clusterOrder;
     if (showingIds) {
       const av = parseInt(a.dataset.guestVmid || "", 10);
       const bv = parseInt(b.dataset.guestVmid || "", 10);
@@ -436,7 +455,21 @@ const sortGuestList = (showingIds) => {
     }
     // Sort flat by the chosen key, then pull each clone back under its parent.
     items.sort(compare);
-    groupRowsBySubtree(items).forEach((item) => {
+    const orderedItems = groupRowsBySubtree(items);
+    const clusterHeaders = new Map(
+      Array.from(list.querySelectorAll("[data-guest-cluster-group]")).map((header) => [
+        header.dataset.guestClusterGroup || "",
+        header,
+      ])
+    );
+    const emittedClusters = new Set();
+    orderedItems.forEach((item) => {
+      const clusterKey = item.dataset.guestCluster || "";
+      if (!emittedClusters.has(clusterKey)) {
+        const header = clusterHeaders.get(clusterKey);
+        if (header) list.appendChild(header);
+        emittedClusters.add(clusterKey);
+      }
       list.appendChild(item);
     });
   });
@@ -851,6 +884,7 @@ export {
   ipVersionStyleKey,
   measureSidebarExpandedWidth,
   measureSidebarMinimumWidth,
+  parseGuestRef,
   preferredGuestNameStyle,
   preferredIpVersionStyle,
   preferredTheme,

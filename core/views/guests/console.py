@@ -8,10 +8,10 @@ from .read_model_support import _guest_tab_context, _resolve_guest_detail
 
 
 @app_login_required
-def guest_console(request, object_type: str, vmid: int):
+def guest_console(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    detail = _resolve_guest_detail(object_type, vmid)
+    detail = _resolve_guest_detail(object_type, vmid, cluster_key=cluster_key)
     if not detail.found:
         raise Http404("Guest not found")
 
@@ -20,7 +20,9 @@ def guest_console(request, object_type: str, vmid: int):
         {
             "console_enabled": settings.CONSOLE_ENABLED,
             "console_supported": detail.object_type in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT},
-            "console_session_url": reverse("core:guest_console_session", args=[object_type, vmid]),
+            "console_session_url": reverse(
+                "core:guest_console_session", args=[cluster_key, object_type, vmid]
+            ),
             # Locally vendored (no CDN). Pinned versions + update steps:
             # static/vendor/README.md.
             "console_novnc_url": static("vendor/novnc/rfb.esm.js"),
@@ -37,10 +39,10 @@ def guest_console(request, object_type: str, vmid: int):
 
 @require_POST
 @app_login_required
-def guest_console_session(request, object_type: str, vmid: int):
+def guest_console_session(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         return JsonResponse({"error": "Unknown guest type."}, status=404)
-    detail = _resolve_guest_detail(object_type, vmid)
+    detail = _resolve_guest_detail(object_type, vmid, cluster_key=cluster_key)
     if not detail.found:
         return JsonResponse({"error": "Guest not found."}, status=404)
 

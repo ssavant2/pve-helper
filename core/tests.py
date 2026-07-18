@@ -191,7 +191,7 @@ class LiveGuestDisplayReadTests(TestCase):
             name="inv-pve", url="https://pve.test.invalid:8006", cluster=cluster, enabled=True
         )
         with patch("core.services.cluster_resolver.client_for_endpoint", return_value=client):
-            guests = _fetch_live_guest_inventory_uncached()
+            guests = _fetch_live_guest_inventory_uncached(cluster=cluster)
 
         self.assertEqual([(guest.object_type, guest.vmid, guest.name, guest.node) for guest in guests], [
             ("ct", 101, "Lab CT", "pve2"),
@@ -373,6 +373,7 @@ class GuestLineageTests(SimpleTestCase):
 
         from core.models import ProxmoxInventory
 
+        cluster = cluster or SimpleNamespace(key="default")
         ot = ProxmoxInventory.ObjectType.CT if ct else ProxmoxInventory.ObjectType.VM
         return SimpleNamespace(
             cluster=cluster,
@@ -502,7 +503,7 @@ class LinkedCloneTemplateGuardTests(TestCase):
         ), patch("core.views.guests.actions._guest_post_with_client") as post:
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
-                {"bulk_action": "template", "guest": "vm:101@pve3"},
+                {"bulk_action": "template", "guest": ref.serialize()},
                 HTTP_X_REQUESTED_WITH="fetch",
             )
         # The clone → template POST must never be issued.
@@ -533,6 +534,7 @@ class LinkedCloneBaseProtectionTests(TestCase):
         from core.services.storage_actions import StorageActionError
         from core.views.storage import _require_linked_clone_base_unblocked
 
+        ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
         entry = self._entry("images/505/base-505-disk-0.qcow2")
         with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505, 103: 505}):
             with self.assertRaises(StorageActionError) as ctx:
@@ -552,6 +554,7 @@ class LinkedCloneBaseProtectionTests(TestCase):
     def test_storage_gate_allows_base_volume_without_clones(self):
         from core.views.storage import _require_linked_clone_base_unblocked
 
+        ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
         entry = self._entry("images/505/base-505-disk-0.qcow2")
         with patch("core.views.common.fetch_live_guest_lineage", return_value={}):
             _require_linked_clone_base_unblocked([entry])  # no raise
@@ -562,8 +565,20 @@ class LinkedCloneBaseProtectionTests(TestCase):
         from core.models import ProxmoxInventory
         from core.views.guests.actions import _destroy_guest_from_bulk_request
 
+        cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default", enabled=True
+        )
+        ref = GuestRef(cluster.key, "vm", 505, "pve3")
         detail = SimpleNamespace(
-            object_type=ProxmoxInventory.ObjectType.VM, vmid=505, name="tmpl", node="pve3", status="stopped"
+            cluster=cluster,
+            cluster_key=cluster.key,
+            guest_ref=ref,
+            node_ref=ref.node_ref,
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=505,
+            name="tmpl",
+            node="pve3",
+            status="stopped",
         )
         request = RequestFactory().post("/", {"destroy_confirm_vmid": "505"})
         with patch("core.views.common.fetch_live_guest_lineage", return_value={102: 505, 103: 505}):
@@ -612,7 +627,13 @@ class LinkedCloneParentEditGuardTests(SimpleTestCase):
 
         from core.models import ProxmoxInventory
 
-        return SimpleNamespace(object_type=ProxmoxInventory.ObjectType.VM, vmid=505)
+        cluster = SimpleNamespace(key="default")
+        return SimpleNamespace(
+            cluster=cluster,
+            cluster_key=cluster.key,
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=505,
+        )
 
     def test_blocks_disk_delete_with_children(self):
         from core.views.guests import _linked_clone_disk_edit_block
@@ -782,6 +803,11 @@ class ShutdownForceStopOfferTests(TestCase):
 
 
 class GuestTaskReaperTests(TestCase):
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
+
     def _running_event(self, age_seconds: int):
         from datetime import timedelta
 
@@ -825,9 +851,11 @@ class GuestTaskReaperTests(TestCase):
     def test_reaper_resolves_force_stop_question_when_guest_is_already_stopped(self):
         now = timezone.now()
         event = AuditEvent.objects.create(
+            cluster=self.cluster,
             action="guest.power.shutdown",
             outcome="failed",
             details={
+                "guest_ref": GuestRef(self.cluster.key, "vm", 100, "pve1").serialize(),
                 "target_type": "vm",
                 "vmid": 100,
                 "node": "pve1",
@@ -1302,11 +1330,15 @@ class ClusterActivationInvariantTests(TestCase):
         second.refresh_from_db()
         self.assertFalse(second.enabled)
 
-    def test_database_refuses_a_second_enabled_cluster_without_the_service(self):
-        # The invariant is not merely service-level: no lower-level path may flip
-        # `enabled` for cluster two while the contract is at version 0.
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            ProxmoxCluster.objects.create(key="lab", display_name="Lab", enabled=True)
+    def test_database_allows_multiple_enabled_clusters_after_url_activation_migration(self):
+        # Phase 4 removes the old partial unique constraint. The service still
+        # refuses this at contract version zero; after activation the database must
+        # be able to persist several enabled clusters.
+        RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).update(
+            identity_contract_version=1
+        )
+        second = ProxmoxCluster.objects.create(key="lab", display_name="Lab", enabled=True)
+        self.assertTrue(second.enabled)
 
     def test_enabling_the_sole_cluster_is_allowed(self):
         self.default.enabled = False
@@ -1450,17 +1482,11 @@ class StorageGateClusterIdentityTests(TestCase):
         self.assertEqual(consumer_a.last_gate_status, "ok")
         self.assertEqual(consumer_a.last_successful_inventory_scan, self.now)
 
-    def test_unattributed_consumer_fails_closed(self):
-        # A consumer with no cluster cannot be shown to have been covered by the
-        # right cluster, so it must not be matched by bare node name.
-        ProxmoxStorageConsumer.objects.create(
-            storage=self.storage, cluster=None, expected_node_name="pve1"
-        )
-
-        status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
-
-        self.assertFalse(status["ok"])
-        self.assertEqual(status["missing_consumers"], ["pve1"])
+    def test_unattributed_consumer_is_rejected_by_the_database(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ProxmoxStorageConsumer.objects.create(
+                storage=self.storage, cluster=None, expected_node_name="pve1"
+            )
 
     def test_expectation_without_a_consumer_row_is_missing(self):
         status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
@@ -2409,7 +2435,12 @@ class ScanRetentionTests(TestCase):
 
 class ScanTaskTests(TestCase):
     def test_run_scan_uses_inventory_result_ok_and_audits_completion(self):
-        ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.test:8006")
+        cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
+        ProxmoxEndpoint.objects.create(
+            name="pve1", url="https://pve1.example.test:8006", cluster=cluster
+        )
         StorageMount.objects.create(storage_id="nfs-fs", display_name="nfs-fs", path="/storage")
         scan = ScanRun.objects.create(progress_message="Queued")
 
@@ -2434,6 +2465,7 @@ class ScanTaskTests(TestCase):
 
         with (
             patch("core.tasks.client_for_endpoint", lambda ep: FakeProxmoxClient(ep.url)),
+            patch("core.tasks._verify_scan_cluster_identities", return_value=set()),
             patch("core.tasks.StorageScanner", EmptyScanner),
             patch("core.tasks.ensure_bootstrap"),
             patch("core.tasks._prune_scan_history_after_success"),
@@ -2665,6 +2697,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         guest.name = name
         guest.node = node
         guest.status = status
+        guest.cluster = self.cluster
+        guest.cluster_key = self.cluster.key
         return guest
 
     def _folder_node_tag(self, response, path: str) -> str:
@@ -2927,8 +2961,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             display_name="nfs-vm",
             path="/storages/truenas-vm",
         )
+        ProxmoxStorageConsumer.objects.create(
+            storage=storage,
+            cluster=self.cluster,
+            expected_node_name="pve1",
+        )
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         ProxmoxInventory.objects.create(
+            cluster=self.cluster,
             scan_run=scan,
             node="pve1",
             object_type=ProxmoxInventory.ObjectType.STORAGE,
@@ -2951,7 +2991,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         ):
             response = self.client.post(
                 reverse("core:storage_content_update", args=["nfs-vm"]),
-                {"content": ["iso"]},
+                {"cluster": self.cluster.key, "content": ["iso"]},
                 follow=True,
             )
 
@@ -2969,8 +3009,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             display_name="nfs-vm",
             path="/storages/truenas-vm",
         )
+        ProxmoxStorageConsumer.objects.create(
+            storage=storage,
+            cluster=self.cluster,
+            expected_node_name="pve1",
+        )
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         storage_inventory = ProxmoxInventory.objects.create(
+            cluster=self.cluster,
             scan_run=scan,
             node="pve1",
             object_type=ProxmoxInventory.ObjectType.STORAGE,
@@ -2986,7 +3032,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         ):
             response = self.client.post(
                 reverse("core:storage_content_update", args=["nfs-vm"]),
-                {"content": ["images", "iso"]},
+                {"cluster": self.cluster.key, "content": ["images", "iso"]},
             )
 
         self.assertEqual(response.status_code, 302)
@@ -3011,8 +3057,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 display_name="nfs-vm",
                 path=tmp,
             )
+            ProxmoxStorageConsumer.objects.create(
+                storage=storage,
+                cluster=self.cluster,
+                expected_node_name="pve1",
+            )
             old_scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
             ProxmoxInventory.objects.create(
+                cluster=self.cluster,
                 scan_run=old_scan,
                 node="pve1",
                 object_type=ProxmoxInventory.ObjectType.STORAGE,
@@ -3027,7 +3079,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             ):
                 response = self.client.post(
                     reverse("core:storage_content_update", args=["nfs-vm"]),
-                    {"content": ["images"]},
+                    {"cluster": self.cluster.key, "content": ["images"]},
                     follow=True,
                 )
 
@@ -3225,7 +3277,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         fake_client = self._patch_provider_client(FakeClient())
         with patch("core.services.cluster_resolver.client_for_endpoint", return_value=fake_client):
-            statuses = _fetch_live_guest_status_uncached()
+            statuses = _fetch_live_guest_status_uncached(cluster=self.cluster)
 
         self.assertEqual(
             statuses,
@@ -3505,6 +3557,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
                 name="pve-node-1",
                 url="https://pve-node-1.example.com:8006",
                 enabled=True,
@@ -3632,6 +3685,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
                 name="pve-node-1",
                 url="https://pve-node-1.example.com:8006",
                 enabled=True,
@@ -3693,6 +3747,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
                 name="pve-node-1",
                 url="https://pve-node-1.example.com:8006",
                 enabled=True,
@@ -3789,6 +3844,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
                 name="pve-node-1",
                 url="https://pve-node-1.example.com:8006",
                 enabled=True,
@@ -3896,6 +3952,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
                 name="pve-node-1",
                 url="https://pve-node-1.example.com:8006",
                 enabled=True,
@@ -4031,6 +4088,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
                 name="pve-node-1",
                 url="https://pve-node-1.example.com:8006",
                 enabled=True,
@@ -5618,6 +5676,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
                 name="pve-node-1",
                 url="https://pve-node-1.example.com:8006",
                 enabled=True,
@@ -6381,7 +6440,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             response.json()["guests"],
             [
                 {
-                    "target": "vm:500@pve1",
+                    "target": "gr1:default:vm:500@pve1",
                     "guest_ref": "gr1:default:vm:500@pve1",
                     "has_snapshot": True,
                     "has_snapshot_label": "Yes",
@@ -6434,7 +6493,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
-            response = self.client.get(reverse("core:guest_snapshots", args=["vm", 500]))
+            response = self.client.get(reverse("core:guest_snapshots", args=[self.cluster.key, "vm", 500]))
 
         self.assertEqual(response.status_code, 200)
         content = response.content.decode()
@@ -6494,7 +6553,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()["guests"][0]
-        self.assertEqual(payload["target"], "vm:500@pve1")
+        self.assertEqual(payload["target"], "gr1:default:vm:500@pve1")
         self.assertEqual(payload["guest_os"], "Ubuntu 24.04.4 LTS")
         self.assertEqual(payload["ip_label"], "192.0.2.50")
         self.assertEqual(payload["agent"], "Running")
@@ -6531,7 +6590,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_status", return_value={("ct", 601): "stopped"}),
             patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
-            response = self.client.get(reverse("core:guest_summary", args=["ct", 601]))
+            response = self.client.get(reverse("core:guest_summary", args=[self.cluster.key, "ct", 601]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Container Details")
@@ -6563,7 +6622,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
             patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
-            response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
+            response = self.client.get(reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "High Availability")
@@ -6602,7 +6661,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest(status="running")]),
             patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]),
         ):
-            response = self.client.get(reverse("core:guest_summary", args=["vm", 500]))
+            response = self.client.get(reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Managed")
@@ -6661,7 +6720,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
-            response = self.client.get(reverse("core:guest_hardware_edit", args=["vm", 500]))
+            response = self.client.get(reverse("core:guest_hardware_edit", args=[self.cluster.key, "vm", 500]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Virtual Hardware")
@@ -6697,7 +6756,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with (
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
-            response = self.client.get(reverse("core:guest_create", args=["vm"]))
+            response = self.client.get(reverse("core:guest_create", args=[self.cluster.key, "vm"]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '<option value="win11">Windows 11/2022/2025</option>', html=True)
@@ -6741,7 +6800,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
-                reverse("core:guest_hardware_edit", args=["vm", 500]),
+                reverse("core:guest_hardware_edit", args=[self.cluster.key, "vm", 500]),
                 {
                     "vm_name": "Renamed VM",
                     "vm_description": "Lab notes",
@@ -6769,7 +6828,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:guest_summary", args=["vm", 500]), fetch_redirect_response=False)
+        self.assertRedirects(response, reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False)
         self.assertEqual(fake_client.digest, "abc123")
         self.assertEqual(fake_client.delete, [])
         self.assertEqual(
@@ -6822,7 +6881,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
-                reverse("core:guest_hardware_edit", args=["vm", 500]),
+                reverse("core:guest_hardware_edit", args=[self.cluster.key, "vm", 500]),
                 {
                     "vm_name": "Lab VM",
                     "vm_tablet": "on",
@@ -6839,7 +6898,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:guest_summary", args=["vm", 500]), fetch_redirect_response=False)
+        self.assertRedirects(response, reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False)
         self.assertEqual(
             fake_client.updates,
             {
@@ -6894,7 +6953,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
-            response = self.client.get(reverse("core:guest_hardware_edit", args=["ct", 601]))
+            response = self.client.get(reverse("core:guest_hardware_edit", args=[self.cluster.key, "ct", 601]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Container Hardware")
@@ -6950,7 +7009,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
-                reverse("core:guest_hardware_edit", args=["ct", 601]),
+                reverse("core:guest_hardware_edit", args=[self.cluster.key, "ct", 601]),
                 {
                     "ct_hostname": "ct-renamed",
                     "ct_onboot": "on",
@@ -6996,7 +7055,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:guest_summary", args=["ct", 601]), fetch_redirect_response=False)
+        self.assertRedirects(response, reverse("core:guest_summary", args=[self.cluster.key, "ct", 601]), fetch_redirect_response=False)
         self.assertEqual(fake_client.digest, "ctdigest")
         self.assertEqual(fake_client.delete, [])
         self.assertEqual(fake_client.updates["hostname"], "ct-renamed")
@@ -7047,7 +7106,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         fake_client = self._patch_provider_client(FakeClient())
         response = self.client.post(
-            reverse("core:guest_create", args=["vm"]),
+            reverse("core:guest_create", args=[self.cluster.key, "vm"]),
             {
                 "node": "pve1",
                 "vmid": "500",
@@ -7092,7 +7151,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
-                {"bulk_action": "start", "guest": ["vm:500"]},
+                {"bulk_action": "start", "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()]},
             )
 
         self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
@@ -7138,7 +7197,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:vms_bulk_action"),
                 {
                     "bulk_action": "clone",
-                    "guest": ["vm:500"],
+                    "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()],
                     "clone_newid": "600",
                     "clone_name": "Lab Clone",
                     "clone_full": "1",
@@ -7207,7 +7266,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     reverse("core:vms_bulk_action"),
                     {
                         "bulk_action": "untemplate",
-                        "guest": ["vm:500"],
+                        "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()],
                         "untemplate_confirm_vmid": "500",
                         "untemplate_acknowledge": "convert",
                     },
@@ -7277,7 +7336,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     reverse("core:vms_bulk_action"),
                     {
                         "bulk_action": "untemplate",
-                        "guest": ["vm:500"],
+                        "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()],
                         "untemplate_confirm_vmid": "500",
                         "untemplate_acknowledge": "convert",
                     },
@@ -7327,7 +7386,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
-                {"bulk_action": "pool", "guest": ["vm:500"], "pool_id": "new-pool"},
+                {"bulk_action": "pool", "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()], "pool_id": "new-pool"},
             )
 
         self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
@@ -7368,7 +7427,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
-            response = self.client.get(reverse("core:guest_pool_options", args=["ct", 601]))
+            response = self.client.get(reverse("core:guest_pool_options", args=[self.cluster.key, "ct", 601]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -7415,7 +7474,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
-                {"bulk_action": "delete_snapshots", "guest": ["vm:500"]},
+                {"bulk_action": "delete_snapshots", "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()]},
             )
 
         self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
@@ -7465,9 +7524,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
             patch("core.views.common.async_task", return_value="poll-task-1") as poll_mock,
         ):
-            response = self.client.post(reverse("core:guest_snapshot_delete", args=["vm", 500, "snap-a"]))
+            response = self.client.post(reverse("core:guest_snapshot_delete", args=[self.cluster.key, "vm", 500, "snap-a"]))
 
-        self.assertRedirects(response, reverse("core:guest_snapshots", args=["vm", 500]), fetch_redirect_response=False)
+        self.assertRedirects(response, reverse("core:guest_snapshots", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False)
         self.assertEqual(fake_client.deletes, ["nodes/pve1/qemu/500/snapshot/snap-a"])
         # The delete returns a UPID; the task is polled in the background (async
         # audit), not by blocking the request on wait_for_task.
@@ -7505,7 +7564,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
-            response = self.client.get(reverse("core:guest_clone_options", args=["vm", 500]))
+            response = self.client.get(reverse("core:guest_clone_options", args=[self.cluster.key, "vm", 500]))
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -7542,7 +7601,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:vms_bulk_action"),
                 {
                     "bulk_action": "clone",
-                    "guest": ["vm:500"],
+                    "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()],
                     "clone_newid": "600",
                     "clone_name": "",
                     "clone_full": "1",
@@ -7584,7 +7643,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:vms_bulk_action"),
                 {
                     "bulk_action": "destroy",
-                    "guest": ["vm:500"],
+                    "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()],
                     "destroy_confirm_vmid": "501",
                     "destroy_purge": "1",
                     "destroy_unreferenced_disks": "1",
@@ -7594,7 +7653,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:vms_bulk_action"),
                 {
                     "bulk_action": "destroy",
-                    "guest": ["vm:500"],
+                    "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()],
                     "destroy_confirm_vmid": "500",
                     "destroy_purge": "1",
                     "destroy_unreferenced_disks": "1",
@@ -7645,7 +7704,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:vms_bulk_action"),
                 {
                     "bulk_action": "tags",
-                    "guest": ["vm:500", "vm:501"],
+                    "guest": [GuestRef(self.cluster.key, "vm", 500).serialize(), GuestRef(self.cluster.key, "vm", 501).serialize()],
                     "tags_mode": "add",
                     "tags_value": "new old",
                 },
@@ -7735,7 +7794,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Success")
 
         with patch("core.views.common.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
-            response = self.client.get(reverse("core:scheduled_tasks"), {"target": "vm:500"})
+            response = self.client.get(reverse("core:scheduled_tasks"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "filtered to VM 500 (Lab VM)")
@@ -7747,6 +7806,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
         vm_action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -7756,6 +7816,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             created_by=user,
         )
         ct_action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Container reboot",
             action_type=ScheduledAction.ActionType.REBOOT,
             target_type=ScheduledAction.TargetType.CT,
@@ -7781,7 +7842,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             status=ScheduledActionRun.Status.QUEUED,
         )
 
-        response = self.client.get(reverse("core:scheduled_task_runs"), {"target": "vm:500"})
+        response = self.client.get(reverse("core:scheduled_task_runs"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()})
 
         self.assertEqual(response.status_code, 200)
         runs = response.json()["runs"]
@@ -7912,7 +7973,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 {
                     "name": "Night shutdown",
                     "enabled": "on",
-                    "target": "vm:500",
+                    "target": GuestRef(self.cluster.key, "vm", 500).serialize(),
                     "action_type": ScheduledAction.ActionType.SHUTDOWN,
                     "action_timeout_seconds": "900",
                     "recurrence_kind": "once",
@@ -7963,7 +8024,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 {
                     "name": "One-time reboot",
                     "enabled": "on",
-                    "target": "vm:500",
+                    "target": GuestRef(self.cluster.key, "vm", 500).serialize(),
                     "action_type": ScheduledAction.ActionType.REBOOT,
                     "action_timeout_seconds": "900",
                     "recurrence_kind": "once",
@@ -8002,7 +8063,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 {
                     "name": "Night shutdown",
                     "enabled": "on",
-                    "target": "vm:501",
+                    "target": GuestRef(self.cluster.key, "vm", 501).serialize(),
                     "action_type": ScheduledAction.ActionType.START,
                     "action_timeout_seconds": "900",
                     "recurrence_kind": "once",
@@ -8044,7 +8105,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 {
                     "name": "Morning start",
                     "enabled": "on",
-                    "target": "vm:500",
+                    "target": GuestRef(self.cluster.key, "vm", 500).serialize(),
                     "action_type": ScheduledAction.ActionType.START,
                     "action_timeout_seconds": "1800",
                     "recurrence_kind": ScheduledAction.RecurrenceKind.DAILY,
@@ -8132,6 +8193,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Manual start",
             action_type=ScheduledAction.ActionType.START,
             target_type=ScheduledAction.TargetType.VM,
@@ -8276,7 +8338,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             # No Proxmox endpoints -> only the mounted storage is sampled here;
             # local (API) capacity recording is covered separately.
-            with patch("core.tasks._cluster_clients", return_value=[]):
+            with patch("core.tasks.cluster_clients", return_value=[]):
                 created = record_storage_space_snapshots(retention_days=8)
 
         self.assertEqual(created, 1)
@@ -8298,7 +8360,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     ]
                 raise AssertionError(path)
 
-        with patch("core.tasks._cluster_clients", return_value=[FakeClient()]):
+        with patch("core.tasks.cluster_clients", return_value=[FakeClient()]):
             created = record_storage_space_snapshots()
 
         locals_ = StorageSpaceSnapshot.objects.filter(storage__isnull=True)
@@ -8418,6 +8480,9 @@ class VmRegisterViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("vmreg-tester", is_staff=True, is_superuser=True)
         self.client.force_login(self.user)
+        self.cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
 
     _OPTS = {
         "available": True,
@@ -8432,7 +8497,8 @@ class VmRegisterViewTests(TestCase):
     def test_get_import_shows_target_storage(self, mock_opts):
         mock_opts.return_value = dict(self._OPTS)
         resp = self.client.get(
-            "/vms/register/?mode=import&storage=TrueNAS-FS&path=disk.qcow2", SERVER_NAME="localhost"
+            "/vms/default/register/?mode=import&storage=TrueNAS-FS&path=disk.qcow2",
+            SERVER_NAME="localhost",
         )
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'name="target_storage"')
@@ -8442,7 +8508,8 @@ class VmRegisterViewTests(TestCase):
     def test_get_adopt_hides_target_storage(self, mock_opts):
         mock_opts.return_value = dict(self._OPTS)
         resp = self.client.get(
-            "/vms/register/?mode=adopt&volid=TrueNAS-VM:9/vm-9-disk-0.qcow2", SERVER_NAME="localhost"
+            "/vms/default/register/?mode=adopt&volid=TrueNAS-VM:9/vm-9-disk-0.qcow2",
+            SERVER_NAME="localhost",
         )
         self.assertEqual(resp.status_code, 200)
         self.assertNotContains(resp, 'name="target_storage"')
@@ -8452,7 +8519,7 @@ class VmRegisterViewTests(TestCase):
     def test_post_rejects_bad_vmid(self, mock_opts):
         mock_opts.return_value = dict(self._OPTS)
         resp = self.client.post(
-            "/vms/register/",
+            "/vms/default/register/",
             {"mode": "adopt", "node": "pve3", "volid": "TrueNAS-VM:9/vm-9-disk-0.qcow2", "vmid": "abc", "name": "n"},
             SERVER_NAME="localhost",
         )
@@ -8517,7 +8584,7 @@ class GuestBackupRestoreTests(TestCase):
             patch("core.views.common.async_task", return_value="poll-backup-1") as enqueue,
         ):
             response = self.client.post(
-                reverse("core:guest_backup_now", args=["vm", 500]),
+                reverse("core:guest_backup_now", args=[self.cluster.key, "vm", 500]),
                 {"storage": "backup", "mode": "snapshot", "compress": "zstd", "protected": "on"},
                 HTTP_X_REQUESTED_WITH="fetch",
             )
@@ -8560,7 +8627,7 @@ class GuestBackupRestoreTests(TestCase):
             patch("core.views.common.async_task", return_value="restore-worker-1") as enqueue,
         ):
             response = self.client.post(
-                reverse("core:guest_backup_restore"),
+                reverse("core:guest_backup_restore", args=[self.cluster.key]),
                 {
                     "archive_key": key,
                     "node": f"{fake.endpoint}|pve1",
@@ -8605,7 +8672,7 @@ class GuestBackupRestoreTests(TestCase):
 
         with patch("core.views.common.cluster_scoped_clients", return_value=[FakeClient()]):
             response = self.client.get(
-                reverse("core:guest_backup_restore"),
+                reverse("core:guest_backup_restore", args=[self.cluster.key]),
                 {"source_type": "vm", "source_vmid": "500"},
             )
 
@@ -8651,7 +8718,7 @@ class GuestBackupRestoreTests(TestCase):
             patch("core.views.common.async_task", return_value="restore-worker-2") as enqueue,
         ):
             response = self.client.post(
-                reverse("core:guest_backup_restore"),
+                reverse("core:guest_backup_restore", args=[self.cluster.key]),
                 {
                     "archive_key": key,
                     "node": f"{fake.endpoint}|pve1",

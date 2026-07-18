@@ -51,6 +51,7 @@ from core.services.tag_registry import (
 )
 from core.services.proxmox import ProxmoxAPIError, VerifiedGuestInventory, fetch_verified_guest_inventory
 from core.services.recent_tasks import recent_task_page
+from core.services.refs import GuestRef
 from core.services.task_queues import BULK_QUEUE_NAME
 from core.tasks import reap_stale_guest_tasks
 from core.services.tags import (
@@ -86,7 +87,7 @@ class FakeProviderClient:
 class ClusterFixtureMixin:
     """Give provider reads a real cluster to resolve.
 
-    fetch_verified_guest_inventory() selects endpoints from the cluster rather than
+    fetch_verified_guest_inventory(cluster=self.cluster) selects endpoints from the cluster rather than
     from settings, so tests inject their doubles by mapping the cluster's endpoints
     to fakes instead of patching the global fan-out.
     """
@@ -166,7 +167,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         cache_key = tag_registry_cache_key(self.cluster)
         cache.set(cache_key, ({"stale": RegisteredTag("stale")}, ""), 60)
 
-        refreshed, error = refresh_registered_tags()
+        refreshed, error = refresh_registered_tags(cluster=self.cluster)
 
         self.assertEqual(error, "")
         self.assertEqual(list(refreshed), ["fresh"])
@@ -187,7 +188,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
             "",
         )
 
-        actual, error = register_tag("prod", "#112233")
+        actual, error = register_tag("prod", "#112233", cluster=self.cluster)
         self.cluster.refresh_from_db()
 
         self.assertEqual(error, "")
@@ -205,7 +206,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         client = self.FakeRegistryClient(final_options={"registered-tags": "existing;external"})
         cluster_options.return_value = (client, {"registered-tags": "existing"}, "")
 
-        actual, error = register_tag("prod")
+        actual, error = register_tag("prod", cluster=self.cluster)
         self.cluster.refresh_from_db()
 
         self.assertEqual(error, TAG_REGISTRY_CONFLICT_ERROR)
@@ -223,7 +224,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         old_cache_key = tag_registry_cache_key(self.cluster)
         cache.set(old_cache_key, ({"stale": RegisteredTag("stale")}, ""), 60)
 
-        actual, error = register_tag("prod")
+        actual, error = register_tag("prod", cluster=self.cluster)
         self.cluster.refresh_from_db()
 
         self.assertEqual(actual, {})
@@ -247,8 +248,8 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
             (unregister_client, {"registered-tags": "other;prod"}, ""),
         ]
 
-        recolored, recolor_error = recolor_tag("prod", "#abcdef")
-        remaining, unregister_error = unregister_tag("prod")
+        recolored, recolor_error = recolor_tag("prod", "#abcdef", cluster=self.cluster)
+        remaining, unregister_error = unregister_tag("prod", cluster=self.cluster)
 
         self.assertEqual(recolor_error, "")
         self.assertEqual(recolored["prod"].background, "abcdef")
@@ -257,6 +258,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
 
     def test_inventory_includes_registered_unused_and_assigned_tags(self):
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             node="pve1", object_type="vm", vmid=100, name="one", observed_at=timezone.now(),
             config={"tags": "prod"},
         )
@@ -290,7 +292,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
             errors={"live_inventory": ["pve2 unavailable"]},
         )
 
-        catalog = load_tag_catalog()
+        catalog = load_tag_catalog(cluster=self.cluster)
 
         self.assertEqual(catalog.assigned, ("prod",))
         self.assertEqual(catalog.available, ("prod", "unused"))
@@ -303,7 +305,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
     @patch("core.services.tag_catalog.registered_tags", side_effect=RuntimeError("programming bug"))
     def test_catalog_does_not_hide_unexpected_registry_errors(self, _registered):
         with self.assertRaisesMessage(RuntimeError, "programming bug"):
-            load_tag_catalog()
+            load_tag_catalog(cluster=self.cluster)
 
     def test_tag_operation_confirmation_is_bound_to_user_and_expires(self):
         summary = SimpleNamespace(
@@ -352,16 +354,22 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
     @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
     def test_guest_tag_choices_include_tags_from_the_full_latest_scan(self, _registered):
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             node="pve1", object_type="vm", vmid=100, name="selected", observed_at=timezone.now(),
             config={"tags": "prod"},
         )
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             node="pve2", object_type="vm", vmid=200, name="other", observed_at=timezone.now(),
             config={"tags": "qa"},
         )
         selected_row = SimpleNamespace(tags=["prod"])
 
-        self.assertEqual(_decorate_guest_tag_chips([selected_row]), ["prod", "qa"])
+        catalog = load_tag_catalog(cluster=self.cluster)
+        self.assertEqual(
+            _decorate_guest_tag_chips([selected_row], catalog=catalog),
+            ["prod", "qa"],
+        )
 
     def test_verified_inventory_is_complete_when_the_cluster_answers_once(self):
         # cluster/resources is a cluster-wide response from any member, so a
@@ -375,7 +383,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         self._configure_cluster(unavailable, available)
 
         with self.assertLogs("core.services.cluster_resolver", level="WARNING") as logs:
-            result = fetch_verified_guest_inventory()
+            result = fetch_verified_guest_inventory(cluster=self.cluster)
 
         self.assertTrue(result.complete)
         self.assertEqual(result.guests[0].tags, ("prod",))
@@ -389,7 +397,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
             FakeProviderClient("https://pve2:8006", error=ProxmoxAPIError("unavailable")),
         )
 
-        result = fetch_verified_guest_inventory()
+        result = fetch_verified_guest_inventory(cluster=self.cluster)
 
         self.assertFalse(result.complete)
         self.assertEqual(result.guests, ())
@@ -406,7 +414,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         )
         self._configure_cluster(FakeProviderClient("https://pve1:8006", error=ProxmoxAPIError("down")))
 
-        result = fetch_verified_guest_inventory()
+        result = fetch_verified_guest_inventory(cluster=self.cluster)
 
         self.assertFalse(result.complete)
         self.assertEqual(result.guests, ())
@@ -418,7 +426,7 @@ class TagServiceTests(ClusterFixtureMixin, TestCase):
         self._configure_cluster(client)
 
         with self.assertRaisesMessage(RuntimeError, "programming bug"):
-            fetch_verified_guest_inventory()
+            fetch_verified_guest_inventory(cluster=self.cluster)
 
 
 class TagViewTests(TestCase):
@@ -442,7 +450,7 @@ class TagViewTests(TestCase):
         self.addCleanup(lineage_patch.stop)
 
     def _confirmation(self, operation: str, tag: str = "prod") -> str:
-        summary = next(row for row in load_tag_catalog().summaries if row.name == tag)
+        summary = next(row for row in load_tag_catalog(cluster=self.cluster).summaries if row.name == tag)
         return issue_tag_operation_confirmation(
             operation=operation,
             tag=tag,
@@ -464,9 +472,9 @@ class TagViewTests(TestCase):
 
     @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
     def test_overview_and_detail_render(self, _registered):
-        response = self.client.get(reverse("core:tags_overview"))
+        response = self.client.get(reverse("core:tags_overview", args=[self.cluster.key]))
         self.assertContains(response, "prod")
-        response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
+        response = self.client.get(reverse("core:tag_detail", args=[self.cluster.key]), {"tag": "prod"})
         self.assertContains(response, "vm-one")
         self.assertContains(response, 'name="confirmation"', count=2)
 
@@ -476,7 +484,7 @@ class TagViewTests(TestCase):
     )
     def test_tag_detail_labels_expected_lineage_degradation(self, _lineage):
         with self.assertLogs("core.views.tags", level="WARNING") as logs:
-            response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
+            response = self.client.get(reverse("core:tag_detail", args=[self.cluster.key]), {"tag": "prod"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Guest type classification is partial")
@@ -489,13 +497,13 @@ class TagViewTests(TestCase):
     )
     def test_tag_detail_does_not_hide_unexpected_lineage_errors(self, _lineage):
         with self.assertRaisesMessage(RuntimeError, "programming bug"):
-            self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
+            self.client.get(reverse("core:tag_detail", args=[self.cluster.key]), {"tag": "prod"})
 
     @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
     def test_overview_ignores_newer_completed_scans_without_guest_inventory(self, _registered):
         ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
 
-        response = self.client.get(reverse("core:tags_overview"))
+        response = self.client.get(reverse("core:tags_overview", args=[self.cluster.key]))
 
         self.assertContains(response, "prod")
         prod = next(row for row in response.context["tag_rows"] if row.name == "prod")
@@ -509,6 +517,9 @@ class TagViewTests(TestCase):
     )
     def test_guest_tab_context_includes_registered_unused_tags(self, _registered, _guest_rows, _lineage):
         detail = SimpleNamespace(
+            cluster=self.cluster,
+            cluster_key=self.cluster.key,
+            guest_ref=GuestRef(self.cluster.key, "vm", 100, "pve1"),
             object_type="vm", vmid=100, node="pve1", name="vm-one", status="stopped", config={"tags": "prod"}
         )
 
@@ -518,14 +529,14 @@ class TagViewTests(TestCase):
 
     @patch("core.views.tags.register_tag", return_value=({}, ""))
     def test_create_audits(self, _register):
-        response = self.client.post(reverse("core:tag_create"), {"tag": "new-tag", "color": "#112233"})
-        self.assertRedirects(response, reverse("core:tags_overview"), fetch_redirect_response=False)
+        response = self.client.post(reverse("core:tag_create", args=[self.cluster.key]), {"tag": "new-tag", "color": "#112233"})
+        self.assertRedirects(response, reverse("core:tags_overview", args=[self.cluster.key]), fetch_redirect_response=False)
         self.assertTrue(self.user.pve_helper_audit_events.filter(action="tag.registered").exists())
 
     @patch("core.services.tag_inventory_refresh.async_task", return_value="refresh-task-1")
     def test_refresh_fetch_queues_control_plane_operation_without_redirect(self, enqueue):
         response = self.client.post(
-            reverse("core:tags_refresh"),
+            reverse("core:tags_refresh", args=[self.cluster.key]),
             HTTP_ACCEPT="application/json",
             HTTP_X_REQUESTED_WITH="fetch",
         )
@@ -548,7 +559,7 @@ class TagViewTests(TestCase):
         )
 
         response = self.client.post(
-            reverse("core:tags_refresh"),
+            reverse("core:tags_refresh", args=[self.cluster.key]),
             HTTP_ACCEPT="application/json",
             HTTP_X_REQUESTED_WITH="fetch",
         )
@@ -560,11 +571,11 @@ class TagViewTests(TestCase):
     @patch("core.views.tags.prepare_tag_operation", return_value="")
     def test_bulk_operation_enqueue_failure_is_immediately_retryable(self, _prepare, _enqueue):
         response = self.client.post(
-            reverse("core:tag_operation"),
+            reverse("core:tag_operation", args=[self.cluster.key]),
             {"operation": "delete", "tag": "prod", "confirmation": self._confirmation("delete")},
         )
 
-        self.assertRedirects(response, reverse("core:tags_overview"), fetch_redirect_response=False)
+        self.assertRedirects(response, reverse("core:tags_overview", args=[self.cluster.key]), fetch_redirect_response=False)
         event = AuditEvent.objects.filter(action="tag.bulk_operation").latest("id")
         self.assertEqual(event.outcome, "failed")
         self.assertEqual(event.details["stage"], "enqueue failed")
@@ -574,7 +585,7 @@ class TagViewTests(TestCase):
     @patch("core.views.tags.prepare_tag_operation", return_value="")
     def test_bulk_operation_persists_queue_identity_and_timestamp(self, _prepare, _enqueue):
         self.client.post(
-            reverse("core:tag_operation"),
+            reverse("core:tag_operation", args=[self.cluster.key]),
             {"operation": "delete", "tag": "prod", "confirmation": self._confirmation("delete")},
         )
 
@@ -586,7 +597,7 @@ class TagViewTests(TestCase):
     @patch("core.views.tags.prepare_tag_operation")
     def test_bulk_operation_rejects_missing_confirmation_before_audit_or_prepare(self, prepare):
         response = self.client.post(
-            reverse("core:tag_operation"),
+            reverse("core:tag_operation", args=[self.cluster.key]),
             {"operation": "delete", "tag": "prod"},
             follow=True,
         )
@@ -598,7 +609,7 @@ class TagViewTests(TestCase):
     @patch("core.views.tags.prepare_tag_operation")
     def test_bulk_operation_rejects_confirmation_for_another_operation(self, prepare):
         response = self.client.post(
-            reverse("core:tag_operation"),
+            reverse("core:tag_operation", args=[self.cluster.key]),
             {
                 "operation": "delete",
                 "tag": "prod",
@@ -615,6 +626,7 @@ class TagViewTests(TestCase):
     def test_bulk_operation_rejects_changed_membership_before_audit_or_prepare(self, prepare):
         confirmation = self._confirmation("delete")
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             node="pve2",
             object_type="ct",
             vmid=200,
@@ -624,7 +636,7 @@ class TagViewTests(TestCase):
         )
 
         response = self.client.post(
-            reverse("core:tag_operation"),
+            reverse("core:tag_operation", args=[self.cluster.key]),
             {"operation": "delete", "tag": "prod", "confirmation": confirmation},
             follow=True,
         )
@@ -635,21 +647,23 @@ class TagViewTests(TestCase):
 
     @patch("core.views.guests.hardware._available_user_tags", return_value=["prod", "qa"])
     def test_guest_tag_options_uses_current_guest_config(self, _available):
-        detail = SimpleNamespace(found=True, config={"tags": "prod"})
+        detail = SimpleNamespace(found=True, cluster=self.cluster, config={"tags": "prod"})
         with patch("core.views.guests.hardware._resolve_guest_detail", return_value=detail) as resolve:
             response = self.client.get(
-                reverse("core:guest_tag_options", args=["vm", 100]),
+                reverse("core:guest_tag_options", args=[self.cluster.key, "vm", 100]),
                 {"node": "pve1"},
             )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"available_tags": ["prod", "qa"], "assigned_tags": ["prod"]})
-        resolve.assert_called_once_with("vm", 100, node="pve1")
+        resolve.assert_called_once_with(
+            "vm", 100, cluster_key=self.cluster.key, node="pve1"
+        )
 
     @patch("core.views.tags.register_tag", return_value=({}, ""))
     def test_create_fetch_has_no_message_and_appears_in_recent_tasks(self, _register):
         response = self.client.post(
-            reverse("core:tag_create"),
+            reverse("core:tag_create", args=[self.cluster.key]),
             {"tag": "quiet-tag", "color": "#112233"},
             HTTP_ACCEPT="application/json",
             HTTP_X_REQUESTED_WITH="fetch",
@@ -672,13 +686,13 @@ class TagViewTests(TestCase):
             node="pve1", object_type="ct", vmid=101, name="ct-two", observed_at=timezone.now(),
             config={},
         )
-        response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
+        response = self.client.get(reverse("core:tag_detail", args=[self.cluster.key]), {"tag": "prod"})
         self.assertContains(response, "Assign objects")
         self.assertContains(response, other.name)
 
     @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
     def test_detail_offers_per_guest_tag_removal_for_user_tags(self, _registered):
-        response = self.client.get(reverse("core:tag_detail"), {"tag": "prod"})
+        response = self.client.get(reverse("core:tag_detail", args=[self.cluster.key]), {"tag": "prod"})
 
         self.assertContains(response, 'data-tag-unassign-form')
         self.assertContains(response, 'name="tags_mode" value="remove"')
@@ -708,6 +722,7 @@ class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):
         refreshed_at = timezone.now()
         registry.return_value = ({"prod": RegisteredTag("prod")}, "")
         fetch.return_value = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
             guests=(),
             attempted_endpoints=("https://pve1:8006",),
             successful_endpoints=("https://pve1:8006",),
@@ -733,6 +748,7 @@ class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):
         # The first endpoint failed and the second answered: the cluster's coverage
         # is complete, but the degraded endpoint must still reach the operator.
         fetch.return_value = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
             guests=(),
             attempted_endpoints=("https://pve1:8006", "https://pve2:8006"),
             successful_endpoints=("https://pve2:8006",),
@@ -758,6 +774,7 @@ class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):
     )
     def test_total_failure_does_not_advance_membership_timestamp(self, _registry, fetch, reconcile):
         fetch.return_value = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
             guests=(),
             attempted_endpoints=("https://pve1:8006",),
             successful_endpoints=(),
@@ -774,7 +791,7 @@ class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):
     @patch("core.services.tag_inventory_refresh.async_task")
     def test_queue_service_rejects_existing_active_refresh(self, enqueue):
         with self.assertRaises(TagInventoryRefreshAlreadyActive):
-            queue_tag_inventory_refresh(username="admin")
+            queue_tag_inventory_refresh(cluster=self.cluster, username="admin")
         enqueue.assert_not_called()
 
     def test_stale_refresh_is_failed_by_control_plane_reaper(self):
@@ -1058,6 +1075,7 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
 
     def test_partial_rename_retry_preserves_both_registry_names_until_verified_success(self):
         second = CurrentGuestInventory.objects.create(
+            cluster=self.tag_cluster,
             source_scan=self.scan,
             node="old-node",
             object_type="ct",
@@ -1139,13 +1157,13 @@ class TagFanoutTests(ClusterFixtureMixin, TestCase):
         update.assert_called_once()
         unregister_mock.assert_called_once_with("old", cluster=self.tag_cluster)
 
-    @staticmethod
-    def inventory(*guests, complete=True, errors=()):
+    def inventory(self, *guests, complete=True, errors=()):
         attempted = ("https://pve1:8006", "https://pve2:8006")
         # Coverage is the cluster's, not each endpoint's: one authoritative answer
         # is complete, and incomplete means no endpoint in the cluster answered.
         successful = attempted[:1] if complete else ()
         return VerifiedGuestInventory(
+            cluster_key=self.tag_cluster.key,
             guests=tuple(guests),
             attempted_endpoints=attempted,
             successful_endpoints=successful,

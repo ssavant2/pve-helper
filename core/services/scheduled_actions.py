@@ -14,7 +14,6 @@ from django_q.tasks import async_task
 from core.models import AuditEvent, ProxmoxCluster, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
 from core.services.audit_events import record_audit_event
 from core.services.cluster_resolver import cluster_clients
-from core.services.guest_scope import guest_ref_from_legacy_identity
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.proxmox import clear_live_guest_caches, ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
@@ -470,15 +469,13 @@ def _find_guest(
 
 
 def _scheduled_action_cluster(action: ScheduledAction):
-    """Resolve nullable pre-Phase-3 rows only while contract version 0 permits it."""
+    """Return the durable cluster relation; executable rows must be qualified."""
     if action.cluster_id is not None:
         return action.cluster
-    ref = guest_ref_from_legacy_identity(
-        action.target_type,
-        action.target_vmid,
-        node=action.target_node,
+    raise ScheduledActionExecutionError(
+        "Scheduled action has no cluster identity and cannot run safely.",
+        preflight={"target_type": action.target_type, "target_vmid": action.target_vmid},
     )
-    return ProxmoxCluster.objects.get(key=ref.cluster_key)
 
 
 def _preflight_snapshot(action: ScheduledAction, target: GuestTarget) -> dict[str, Any]:

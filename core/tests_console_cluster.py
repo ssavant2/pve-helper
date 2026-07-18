@@ -122,8 +122,8 @@ class ConsoleGatewayClusterTests(TestCase):
 
         self.assertIsNone(context)
 
-    def test_legacy_session_without_cluster_uses_global_fallback(self):
-        from console_app.main import _resolve_cluster_credential_header
+    def test_legacy_session_without_cluster_fails_closed(self):
+        from console_app.main import _ConsoleAuthError, _resolve_cluster_credential_header
 
         legacy = ConsoleSession.objects.create(
             token_hash="legacy",
@@ -134,6 +134,5 @@ class ConsoleGatewayClusterTests(TestCase):
             expires_at=timezone.now() + timezone.timedelta(seconds=30),
         )
 
-        header = async_to_sync(_resolve_cluster_credential_header)(legacy)
-
-        self.assertEqual(header["Authorization"], "PVEAPIToken=legacy@pve!legacy=legacy-secret")
+        with self.assertRaises(_ConsoleAuthError):
+            async_to_sync(_resolve_cluster_credential_header)(legacy)

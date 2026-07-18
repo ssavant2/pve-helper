@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from core.models import ProxmoxCluster, ProxmoxEndpoint, RuntimeConfigurationState
+from core.models import ProxmoxCluster, ProxmoxEndpoint
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTransportError
 
 
@@ -27,10 +27,6 @@ logger = logging.getLogger(__name__)
 
 class ClusterResolutionError(RuntimeError):
     """No usable cluster could be selected for an operation."""
-
-
-class LegacyClusterScopeError(ClusterResolutionError):
-    """A legacy caller could not be given an unambiguous cluster."""
 
 
 class ClusterDisabledError(ClusterResolutionError):
@@ -285,36 +281,3 @@ def cluster_write(
         error=error or "No Proxmox endpoint in this cluster could reach the guest.",
         attempted=tuple(attempts),
     )
-
-
-def require_sole_enabled_cluster_for_legacy_caller() -> ProxmoxCluster:
-    """Resolve the cluster for a caller that does not yet carry explicit scope.
-
-    Deliberately awkward to name and to call: it exists only to migrate Phase 1b
-    callers that have no GuestRef, NodeRef or path scope yet, and it is removed in
-    Phase 4 before activation. Entry points resolve at their boundary and pass the
-    cluster explicitly down the call chain; the resolver itself never calls this.
-
-    It fails closed rather than guessing: at identity contract version 1 there may
-    be several clusters and no caller may silently get one.
-    """
-    state = RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).first()
-    version = state.identity_contract_version if state is not None else 0
-    if version >= 1:
-        raise LegacyClusterScopeError(
-            "A legacy caller requested an implicit cluster at identity contract version "
-            f"{version}. Every read, write, URL and payload must carry explicit cluster "
-            "scope once multi-cluster identity is active."
-        )
-
-    clusters = list(ProxmoxCluster.objects.filter(enabled=True).order_by("key")[:2])
-    if not clusters:
-        raise LegacyClusterScopeError(
-            "No enabled Proxmox cluster is configured. Configure one before using this feature."
-        )
-    if len(clusters) > 1:
-        raise LegacyClusterScopeError(
-            "More than one cluster is enabled, so an implicit cluster would be a guess. "
-            "This caller must pass an explicit cluster."
-        )
-    return clusters[0]

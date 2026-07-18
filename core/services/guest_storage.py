@@ -22,16 +22,29 @@ def _mounted_storage_ids() -> set[str]:
     return set(StorageMount.objects.filter(enabled=True).values_list("storage_id", flat=True))
 
 
-def _storage_link(storage_id: str, node: str, vmid: int, mounted_ids: set[str]) -> tuple[bool, str, str]:
+def _storage_link(
+    storage_id: str,
+    node: str,
+    vmid: int,
+    mounted_ids: set[str],
+    *,
+    cluster_key: str,
+) -> tuple[bool, str, str]:
     if storage_id in mounted_ids:
         return True, reverse("core:storage_browser", args=[storage_id]), "Browse files"
     if node:
-        base = reverse("core:storage_api_inventory", args=[node, storage_id])
+        base = reverse("core:storage_api_inventory", args=[cluster_key, node, storage_id])
         return False, f"{base}?{urlencode({'vmid': vmid})}", "Storage inventory"
     return False, "", ""
 
 
-def guest_disks(config: dict, node: str, vmid: int) -> tuple[list[dict], list[dict]]:
+def guest_disks(
+    config: dict,
+    node: str,
+    vmid: int,
+    *,
+    cluster_key: str,
+) -> tuple[list[dict], list[dict]]:
     """Return (disks, cdroms) parsed from the guest config, each disk carrying a
     storage link (mounted browser vs read-only API inventory)."""
     mounted_ids = _mounted_storage_ids()
@@ -53,7 +66,13 @@ def guest_disks(config: dict, node: str, vmid: int) -> tuple[list[dict], list[di
         if not sep or not storage_id:
             continue
         fmt = "qcow2" if volume.endswith(".qcow2") else "raw" if volume.endswith(".raw") else params.get("format", "")
-        mounted, url, link_label = _storage_link(storage_id, node, vmid, mounted_ids)
+        mounted, url, link_label = _storage_link(
+            storage_id,
+            node,
+            vmid,
+            mounted_ids,
+            cluster_key=cluster_key,
+        )
         if mounted and url and "/" in volume:
             # Land in the folder that holds the disk, e.g. images/<vmid>/.
             disk_dir = volume.split("/", 1)[0]
@@ -117,7 +136,13 @@ class GuestVolumeLink:
     link_label: str
 
 
-def guest_volume_links(config: dict, node: str, vmid: int) -> list[GuestVolumeLink]:
+def guest_volume_links(
+    config: dict,
+    node: str,
+    vmid: int,
+    *,
+    cluster_key: str,
+) -> list[GuestVolumeLink]:
     mounted_ids = set(
         StorageMount.objects.filter(enabled=True).values_list("storage_id", flat=True)
     )
@@ -142,7 +167,7 @@ def guest_volume_links(config: dict, node: str, vmid: int) -> list[GuestVolumeLi
                 )
             )
         elif node:
-            base = reverse("core:storage_api_inventory", args=[node, storage_id])
+            base = reverse("core:storage_api_inventory", args=[cluster_key, node, storage_id])
             links.append(
                 GuestVolumeLink(
                     volid=volid,

@@ -43,11 +43,14 @@ def _catalog_cluster(catalog):
     return ProxmoxCluster.objects.filter(key=catalog.cluster_key).first()
 
 
-def _tag_context(*, selected: str = "") -> dict:
-    catalog = load_tag_catalog()
+def _tag_context(*, cluster, selected: str = "") -> dict:
+    catalog = load_tag_catalog(cluster=cluster)
     rows = list(catalog.summaries)
     for row in rows:
-        row.detail_url = f"{reverse('core:tag_detail')}?{urlencode({'tag': row.name})}"
+        row.detail_url = (
+            f"{reverse('core:tag_detail', kwargs={'cluster_key': cluster.key})}"
+            f"?{urlencode({'tag': row.name})}"
+        )
     return {
         **navigation_context("tags"),
         "tag_rows": rows,
@@ -58,32 +61,49 @@ def _tag_context(*, selected: str = "") -> dict:
         "tag_view_rendered_at_ms": int(timezone.now().timestamp() * 1000),
         "selected_tag": selected,
         "cluster_key": catalog.cluster_key,
+        "selected_cluster": cluster,
+        "cluster_choices": ProxmoxCluster.objects.filter(enabled=True).order_by(
+            "display_name", "key"
+        ),
     }
 
 
 @app_login_required
-def tags_overview(request):
-    return render(request, "core/tags.html", _tag_context())
+def tags_overview(request, cluster_key: str):
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    return render(request, "core/tags.html", _tag_context(cluster=cluster))
 
 
 def _wants_json(request) -> bool:
     return request.headers.get("X-Requested-With") == "fetch" or "application/json" in request.headers.get("Accept", "")
 
 
-def _tag_form_response(request, *, ok: bool, error: str = "", redirect_name: str = "core:tags_overview"):
+def _tag_form_response(
+    request,
+    *,
+    cluster_key: str,
+    ok: bool,
+    error: str = "",
+    redirect_name: str = "core:tags_overview",
+):
     if _wants_json(request):
         return JsonResponse({"ok": ok, "error": error}, status=200 if ok else 400)
     if error:
         messages.error(request, error)
-    return redirect(redirect_name)
+    return redirect(redirect_name, cluster_key=cluster_key)
 
 
 @app_login_required
-def tag_detail(request):
+def tag_detail(request, cluster_key: str):
     tag = request.GET.get("tag", "").strip().lower()
     if not tag:
         raise Http404("Tag not specified")
-    context = _tag_context(selected=tag)
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    context = _tag_context(cluster=cluster, selected=tag)
     summary = next((row for row in context["tag_rows"] if row.name == tag), None)
     if summary is None:
         raise Http404("Tag not found")
@@ -146,14 +166,17 @@ def tag_detail(request):
 
 @require_POST
 @app_login_required
-def tag_create(request):
-    catalog = load_tag_catalog()
+def tag_create(request, cluster_key: str):
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    catalog = load_tag_catalog(cluster=cluster)
     cluster = _catalog_cluster(catalog)
     _tags, error = register_tag(
         request.POST.get("tag", ""), request.POST.get("color", ""), cluster=cluster
     )
     if error:
-        return _tag_form_response(request, ok=False, error=error)
+        return _tag_form_response(request, cluster_key=cluster.key, ok=False, error=error)
     else:
         name = request.POST.get("tag", "").strip().lower()
         record_audit_event(
@@ -164,18 +187,21 @@ def tag_create(request):
             cluster=cluster,
             details={"tag": name},
         )
-    return _tag_form_response(request, ok=True)
+    return _tag_form_response(request, cluster_key=cluster.key, ok=True)
 
 
 @require_POST
 @app_login_required
-def tag_recolor(request):
+def tag_recolor(request, cluster_key: str):
     name = request.POST.get("tag", "").strip().lower()
-    catalog = load_tag_catalog()
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    catalog = load_tag_catalog(cluster=cluster)
     cluster = _catalog_cluster(catalog)
     _tags, error = recolor_tag(name, request.POST.get("color", ""), cluster=cluster)
     if error:
-        return _tag_form_response(request, ok=False, error=error)
+        return _tag_form_response(request, cluster_key=cluster.key, ok=False, error=error)
     else:
         record_audit_event(
             request,
@@ -187,18 +213,25 @@ def tag_recolor(request):
         )
     if _wants_json(request):
         return JsonResponse({"ok": True, "error": ""})
-    return redirect(reverse("core:tag_detail") + "?" + urlencode({"tag": name}))
+    return redirect(
+        reverse("core:tag_detail", kwargs={"cluster_key": cluster.key})
+        + "?"
+        + urlencode({"tag": name})
+    )
 
 
 @require_POST
 @app_login_required
-def tag_operation(request):
+def tag_operation(request, cluster_key: str):
     operation = request.POST.get("operation", "")
     source = request.POST.get("tag", "").strip().lower()
     new_tag = request.POST.get("new_tag", "").strip().lower()
     if operation not in {"delete", "rename"}:
         raise Http404("Unknown tag operation")
-    catalog = load_tag_catalog()
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    catalog = load_tag_catalog(cluster=cluster)
     cluster = _catalog_cluster(catalog)
     summary = next((row for row in catalog.summaries if row.name == source), None)
     confirmation, error = validate_tag_operation_confirmation(
@@ -212,8 +245,12 @@ def tag_operation(request):
     if error:
         messages.error(request, error)
         if summary is not None:
-            return redirect(reverse("core:tag_detail") + "?" + urlencode({"tag": source}))
-        return redirect("core:tags_overview")
+            return redirect(
+                reverse("core:tag_detail", kwargs={"cluster_key": cluster.key})
+                + "?"
+                + urlencode({"tag": source})
+            )
+        return redirect("core:tags_overview", cluster_key=cluster.key)
     event = record_audit_event(
         request,
         action="tag.bulk_operation",
@@ -244,13 +281,16 @@ def tag_operation(request):
             enqueue_tag_operation(event)
         except TagOperationQueueError:
             messages.error(request, "The tag operation could not be queued; retry is safe.")
-    return redirect("core:tags_overview")
+    return redirect("core:tags_overview", cluster_key=cluster.key)
 
 
 @require_POST
 @app_login_required
-def tags_refresh(request):
-    catalog = load_tag_catalog()
+def tags_refresh(request, cluster_key: str):
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    catalog = load_tag_catalog(cluster=cluster)
     try:
         event, task_id = queue_tag_inventory_refresh(
             request=request,
@@ -272,7 +312,7 @@ def tags_refresh(request):
                 {"ok": True, "task_id": f"guest:{event.id}", "queued_task_id": task_id},
                 status=202,
             )
-    return redirect("core:tags_overview")
+    return redirect("core:tags_overview", cluster_key=cluster.key)
 
 
 def _tag_type_label(guest, linked_clones: set[int]) -> str:

@@ -88,6 +88,13 @@
   padding: 0 10px;
 }
 
+.taskbar-cluster-filter select {
+  min-width: 9rem;
+  height: 2rem;
+  padding: 0 1.75rem 0 0.55rem;
+  font-size: 0.85rem;
+}
+
 .taskbar-page-button {
   min-height: 26px;
   padding: 0 10px;

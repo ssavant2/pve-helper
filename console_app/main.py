@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import ssl
 from urllib.parse import quote, urlparse
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "pve_helper.settings")
@@ -292,13 +291,11 @@ def _resolve_cluster_credential_header(session: ConsoleSession) -> dict[str, str
     session window takes effect and no API token is ever copied into a
     browser-visible session payload. Fails closed if the cluster has none usable.
 
-    A legacy session with no cluster falls back to the global token until it
-    expires; a session that names a cluster must get that cluster's credential.
+    Contract version 1 forbids ambient credentials. A session without cluster
+    identity is invalid and must fail before any upstream connection is opened.
     """
     if session.cluster_id is None:
-        if settings.PVE_API_TOKEN_ID and settings.PVE_API_TOKEN_SECRET:
-            return {"Authorization": f"PVEAPIToken={settings.PVE_API_TOKEN_ID}={settings.PVE_API_TOKEN_SECRET}"}
-        return {}
+        raise _ConsoleAuthError("Console session has no cluster identity.")
 
     from core.services.cluster_credentials import ClusterCredentialError, resolve_credential
 
@@ -314,17 +311,12 @@ def _resolve_cluster_ssl_context(session: ConsoleSession, url: str):
     """The WSS TLS context for this session's cluster.
 
     Built from the cluster's own transport-trust profile so one cluster's WSS trust
-    is never another's or an ambient global fallback. A legacy session with no
-    cluster keeps the global behaviour until it expires.
+    is never another's or an ambient global fallback.
     """
     if not url.startswith("wss://"):
         return None
     if session.cluster_id is None:
-        if not settings.PVE_VERIFY_TLS:
-            return ssl._create_unverified_context()
-        if settings.PVE_CA_BUNDLE:
-            return ssl.create_default_context(cafile=settings.PVE_CA_BUNDLE)
-        return ssl.create_default_context()
+        raise _ConsoleAuthError("Console session has no cluster identity.")
 
     from core.services.cluster_trust import (
         TransportTrustError,

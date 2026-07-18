@@ -37,29 +37,8 @@ class TargetedGuestRefresh:
     error: str = ""
 
 
-def current_inventory_cluster(cluster=None):
-    """Resolve the cluster behind the current-state projection during migration."""
-    if cluster is None:
-        from core.services.cluster_resolver import (
-            ClusterResolutionError,
-            require_sole_enabled_cluster_for_legacy_caller,
-        )
-
-        try:
-            cluster = require_sole_enabled_cluster_for_legacy_caller()
-        except ClusterResolutionError:
-            return None
-    return cluster
-
-
-def current_inventory_state(cluster=None) -> CurrentGuestInventoryState | None:
-    """The freshness/coverage record for one cluster.
-
-    Callers that have no explicit cluster yet resolve the sole enabled one, the same
-    bounded adapter the rest of Phase 1-2 uses until Phase 3 threads a cluster
-    through.
-    """
-    cluster = current_inventory_cluster(cluster)
+def current_inventory_state(cluster) -> CurrentGuestInventoryState | None:
+    """Return the freshness/coverage record for one explicit cluster."""
     if cluster is None:
         return None
     return CurrentGuestInventoryState.objects.filter(cluster=cluster).first()
@@ -193,9 +172,8 @@ def reconcile_scan_guest_inventory(
             )
         )
 
-    # The scan orchestrator historically expected one state back; return the first
-    # so existing single-cluster callers keep working while the projection is
-    # per-cluster underneath.
+    # The scan orchestrator only uses this as a completion marker. Per-cluster
+    # callers read their own state through current_inventory_state().
     return states[0] if states else None
 
 
@@ -250,15 +228,7 @@ def reconcile_live_guest_inventory(
 
     cluster = ProxmoxCluster.objects.filter(key=inventory.cluster_key).first() if inventory.cluster_key else None
     if cluster is None:
-        from core.services.cluster_resolver import (
-            ClusterResolutionError,
-            require_sole_enabled_cluster_for_legacy_caller,
-        )
-
-        try:
-            cluster = require_sole_enabled_cluster_for_legacy_caller()
-        except ClusterResolutionError:
-            return None
+        raise ValueError("Verified guest inventory must carry a valid cluster key.")
 
     observed = {(guest.object_type, guest.vmid) for guest in inventory.guests}
     endpoints = list(ProxmoxEndpoint.objects.filter(cluster=cluster, enabled=True))
@@ -321,19 +291,11 @@ def _target_cluster(cluster=None, *, endpoint=None):
         return cluster
     if endpoint is not None and endpoint.cluster_id is not None:
         return endpoint.cluster
-    from core.services.cluster_resolver import (
-        ClusterResolutionError,
-        require_sole_enabled_cluster_for_legacy_caller,
-    )
-
-    try:
-        return require_sole_enabled_cluster_for_legacy_caller()
-    except ClusterResolutionError:
-        return None
+    raise ValueError("Current guest writes require an explicit cluster or cluster-bound endpoint.")
 
 
 @transaction.atomic
-def update_current_guest_config(*, object_type: str, vmid: int, node: str = "", updates=None, delete=None, cluster=None) -> None:
+def update_current_guest_config(*, object_type: str, vmid: int, cluster, node: str = "", updates=None, delete=None) -> None:
     observed_at = timezone.now()
     guest, _created = CurrentGuestInventory.objects.select_for_update().get_or_create(
         cluster=_target_cluster(cluster),
@@ -373,7 +335,7 @@ def upsert_current_guest(
     disk_max_bytes: int = 0,
     uptime_seconds: int = 0,
     runtime_lock: str = "",
-    cluster=None,
+    cluster,
 ) -> CurrentGuestInventory:
     observed_at = timezone.now()
     return CurrentGuestInventory.objects.update_or_create(
@@ -401,7 +363,7 @@ def upsert_current_guest(
     )[0]
 
 
-def delete_current_guest(*, object_type: str, vmid: int, cluster=None) -> None:
+def delete_current_guest(*, object_type: str, vmid: int, cluster) -> None:
     CurrentGuestInventory.objects.filter(
         cluster=_target_cluster(cluster), object_type=object_type, vmid=vmid
     ).delete()
@@ -413,7 +375,7 @@ def refresh_current_guest_from_client(
     node: str,
     object_type: str,
     vmid: int,
-    cluster=None,
+    cluster,
     allow_relocation: bool = False,
     delete_if_authoritatively_absent: bool = False,
 ) -> TargetedGuestRefresh:

@@ -816,6 +816,10 @@ const initGuestListFilter = (root = document) => {
           visibleCount += 1;
         }
       });
+      list.querySelectorAll("[data-guest-cluster-group]").forEach((header) => {
+        const clusterKey = header.dataset.guestClusterGroup || "";
+        header.hidden = !items.some((item) => (item.dataset.guestCluster || "") === clusterKey && !item.hidden);
+      });
       const empty = list.querySelector("[data-guest-filter-empty]");
       if (empty) {
         empty.hidden = query === "" || visibleCount > 0;

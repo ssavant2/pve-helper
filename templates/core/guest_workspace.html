@@ -25,9 +25,14 @@
               <details class="actions-menu create-menu">
                 <summary>+ New</summary>
                 <div class="actions-menu-panel">
-                  <a href="{% url 'core:guest_create' 'vm' %}">New VM</a>
-                  <a href="{% url 'core:guest_create' 'ct' %}">New Container</a>
-                  <a href="{% url 'core:guest_backup_restore' %}">Restore Backup</a>
+                  {% for cluster in cluster_choices %}
+                    <strong>{{ cluster.display_name }}</strong>
+                    <a href="{% url 'core:guest_create' cluster.key 'vm' %}">New VM</a>
+                    <a href="{% url 'core:guest_create' cluster.key 'ct' %}">New Container</a>
+                    <a href="{% url 'core:guest_backup_restore' cluster.key %}">Restore Backup</a>
+                  {% empty %}
+                    <span class="muted">No enabled clusters</span>
+                  {% endfor %}
                 </div>
               </details>
 
@@ -41,7 +46,8 @@
       </div>
       <div class="guest-list" data-guest-list>
         {% for g in guest_list %}
-          {% url 'core:guest_summary' g.object_type g.vmid as guest_summary_url %}
+          {% if app_multiple_clusters %}{% ifchanged g.cluster_key %}<div class="guest-list-cluster" data-guest-cluster-group="{{ g.cluster_key }}">{{ g.cluster.display_name }}</div>{% endifchanged %}{% endif %}
+          {% url 'core:guest_summary' g.cluster_key g.object_type g.vmid as guest_summary_url %}
           {% sticky_object_url guest_summary_url as guest_sticky_url %}
           <a class="guest-list-item{% if g.object_type == active_object_type and g.vmid == active_vmid %} active{% endif %}"
              href="{{ guest_sticky_url }}"
@@ -50,6 +56,7 @@
              {% if g.parent_vmid %}title="Linked clone of {{ g.lineage_parent_name }} ({{ g.parent_vmid }})"{% endif %}
              data-guest-target="{{ g.target_id }}"
              data-guest-ref="{{ g.guest_ref_id }}"
+             data-guest-cluster="{{ g.cluster_key }}"
              data-guest-vmid="{{ g.vmid }}"
              data-guest-parent-vmid="{{ g.parent_vmid|default:'' }}"
              data-guest-type="{{ g.object_type }}"
@@ -62,22 +69,22 @@
              data-guest-name="{{ g.name }}"
              data-guest-tags="{{ g.tags|join:';' }}"
              data-detail-url="{{ guest_sticky_url }}"
-             data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
-             data-backup-options-url="{% url 'core:guest_backup_options' g.object_type g.vmid %}"
-             data-backup-url="{% url 'core:guest_backup' g.object_type g.vmid %}"
-             data-clone-options-url="{% url 'core:guest_clone_options' g.object_type g.vmid %}"
-             data-pool-options-url="{% url 'core:guest_pool_options' g.object_type g.vmid %}"
-             data-tag-options-url="{% url 'core:guest_tag_options' g.object_type g.vmid %}?node={{ g.node|urlencode }}"
-             data-migrate-options-url="{% url 'core:guest_migrate_options' g.object_type g.vmid %}"
-             data-edit-tags-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=tags"
-             data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.object_type g.vmid %}"
-             data-edit-options-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=options"
-             data-filter-text="{{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }}">
+             data-snapshots-url="{% url 'core:guest_snapshots' g.cluster_key g.object_type g.vmid %}"
+             data-backup-options-url="{% url 'core:guest_backup_options' g.cluster_key g.object_type g.vmid %}"
+             data-backup-url="{% url 'core:guest_backup' g.cluster_key g.object_type g.vmid %}"
+             data-clone-options-url="{% url 'core:guest_clone_options' g.cluster_key g.object_type g.vmid %}"
+             data-pool-options-url="{% url 'core:guest_pool_options' g.cluster_key g.object_type g.vmid %}"
+             data-tag-options-url="{% url 'core:guest_tag_options' g.cluster_key g.object_type g.vmid %}?node={{ g.node|urlencode }}"
+             data-migrate-options-url="{% url 'core:guest_migrate_options' g.cluster_key g.object_type g.vmid %}"
+             data-edit-tags-url="{% url 'core:guest_edit' g.cluster_key g.object_type g.vmid %}?section=tags"
+             data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.cluster_key g.object_type g.vmid %}"
+             data-edit-options-url="{% url 'core:guest_edit' g.cluster_key g.object_type g.vmid %}?section=options"
+             data-filter-text="{{ g.cluster.display_name|lower }} {{ g.cluster_key|lower }} {{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }}">
             {% if g.parent_vmid %}<span class="guest-lineage-connector" aria-hidden="true">└</span>{% endif %}
             <span class="guest-list-icon{% if g.status == 'running' %} running-icon{% elif g.status == 'paused' %} paused-icon{% elif g.status == 'hibernated' %} hibernated-icon{% endif %}" data-guest-status-icon title="{{ g.status|default:'unknown' }}">
               <i data-vicon="{% if g.object_type == 'ct' %}container{% elif g.is_template %}template{% else %}vm{% endif %}" aria-hidden="true"></i>
             </span>
-            <span class="guest-list-label">{% guest_label g %}</span>
+            <span class="guest-list-label">{% guest_label g %} <span class="muted">· {{ g.cluster.display_name }}</span></span>
             {% if g.deeper_chain %}<span class="guest-lineage-deeper" title="Deeper in the linked-clone chain">⋯</span>{% endif %}
             <span class="guest-lock-badge" data-guest-lock-badge title="{% if g.lock %}Locked: {{ g.lock }}{% endif %}"{% if not g.lock %} hidden{% endif %}><i data-lucide="lock" aria-hidden="true"></i></span>
           </a>

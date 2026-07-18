@@ -58,24 +58,24 @@
           <span class="file-icon"><i data-lucide="file" aria-hidden="true"></i></span>
           <span class="browser-entry-name">{{ entry.name }}</span>
           {% if entry.content_category == "backup" %}
-            <a class="browser-import-action" href="{% url 'core:guest_backup_restore' %}?storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Restore this backup archive" aria-label="Restore {{ entry.name }}">
+            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:guest_backup_restore' cluster.key %}?storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Restore this backup archive in {{ cluster.display_name }}" aria-label="Restore {{ entry.name }} in {{ cluster.display_name }}">
               <i data-lucide="rotate-ccw" aria-hidden="true"></i>
-            </a>
+            </a>{% endfor %}
           {% endif %}
           {% if entry.name|is_disk_image and entry.classification != "referenced" %}
             {% if entry.derived_volid and "-disk-" in entry.derived_volid %}
-              <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ entry.derived_volid|urlencode }}" title="Register as a new VM (use this disk in place, no copy)" aria-label="Register {{ entry.name }} as a new VM">
+              {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:register_vm' cluster.key %}?mode=adopt&amp;volid={{ entry.derived_volid|urlencode }}" title="Register as a new VM in {{ cluster.display_name }} (use this disk in place, no copy)" aria-label="Register {{ entry.name }} as a new VM in {{ cluster.display_name }}">
                 <i data-lucide="box" aria-hidden="true"></i>
-              </a>
+              </a>{% endfor %}
             {% endif %}
-            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=import&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM (copies the disk to a target storage)" aria-label="Import {{ entry.name }} as a new VM">
+            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:register_vm' cluster.key %}?mode=import&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM in {{ cluster.display_name }} (copies the disk to a target storage)" aria-label="Import {{ entry.name }} as a new VM in {{ cluster.display_name }}">
               <i data-lucide="package-plus" aria-hidden="true"></i>
-            </a>
+            </a>{% endfor %}
           {% endif %}
           {% if entry.name|is_ovf_package %}
-            <a class="browser-import-action" href="{% url 'core:register_vm' %}?mode=ovf&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import OVA/OVF package as a new VM" aria-label="Import {{ entry.name }} as a new VM">
+            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:register_vm' cluster.key %}?mode=ovf&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import OVA/OVF package as a new VM in {{ cluster.display_name }}" aria-label="Import {{ entry.name }} as a new VM in {{ cluster.display_name }}">
               <i data-lucide="package-plus" aria-hidden="true"></i>
-            </a>
+            </a>{% endfor %}
           {% endif %}
         </span>
       {% endif %}

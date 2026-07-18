@@ -53,10 +53,27 @@ class ClusterIdentityMismatch(RuntimeError):
         self.pinned_uuid = pinned_uuid
 
 
+class ClusterIdentityCollision(ClusterIdentityError):
+    """The observed physical cluster is already registered under another key."""
+
+
 @dataclass(frozen=True)
 class ObservedClusterIdentity:
     ca_uuid: str
     ca_fingerprint: str
+
+
+def _assert_ca_uuid_is_unclaimed(cluster, observed: ObservedClusterIdentity) -> None:
+    from core.models import ProxmoxCluster
+
+    owner = ProxmoxCluster.objects.filter(
+        discovered_ca_uuid=observed.ca_uuid,
+    ).exclude(pk=cluster.pk).first()
+    if owner is not None:
+        raise ClusterIdentityCollision(
+            f"Cluster CA {observed.ca_uuid} is already registered as '{owner.key}'. "
+            "One physical Proxmox cluster cannot be registered under two keys."
+        )
 
 
 def _extract_root_ca(entries) -> dict:
@@ -122,6 +139,7 @@ def verify_or_bind_identity(cluster, observed: ObservedClusterIdentity) -> str:
     which the read model and health checks expose and which halts ingestion until an
     explicit re-approval.
     """
+    _assert_ca_uuid_is_unclaimed(cluster, observed)
     if not cluster.discovered_ca_uuid:
         cluster.discovered_ca_uuid = observed.ca_uuid
         cluster.discovered_ca_fingerprint = observed.ca_fingerprint
@@ -167,6 +185,7 @@ def reapprove_identity(cluster, observed: ObservedClusterIdentity) -> None:
     The explicit human confirmation that a CA rotation or an intended re-point
     happened — not a re-point to the wrong cluster.
     """
+    _assert_ca_uuid_is_unclaimed(cluster, observed)
     cluster.discovered_ca_uuid = observed.ca_uuid
     cluster.discovered_ca_fingerprint = observed.ca_fingerprint
     cluster.ingestion_quarantined = False

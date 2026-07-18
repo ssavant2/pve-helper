@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from django.conf import settings
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 
@@ -19,13 +18,13 @@ def _json_result(ok: bool, error: str = "") -> JsonResponse:
 
 
 @require_POST
-def clone_guest_to_template(request, object_type: str, vmid: int):
+def clone_guest_to_template(request, cluster_key: str, object_type: str, vmid: int):
     if not request.user.is_authenticated:
         return _json_result(False, "Authentication required.")
     if object_type != ProxmoxInventory.ObjectType.VM:
         return _json_result(False, "Only VMs can be cloned to a template.")
 
-    detail = _require_guest(object_type, vmid)
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     newid_text = request.POST.get("clone_newid", "").strip()
     clone_name = request.POST.get("clone_name", "").strip()
     storage = request.POST.get("clone_storage", "").strip()
@@ -39,7 +38,7 @@ def clone_guest_to_template(request, object_type: str, vmid: int):
 
     client = None
     try:
-        for candidate in common.cluster_scoped_clients():
+        for candidate in common.cluster_scoped_clients(detail.cluster):
             try:
                 fresh_config = candidate.guest_config(node=detail.node, object_type=object_type, vmid=vmid)
                 fresh_current = candidate.guest_current(node=detail.node, object_type=object_type, vmid=vmid)
@@ -55,7 +54,10 @@ def clone_guest_to_template(request, object_type: str, vmid: int):
             return _json_result(False, "The template must be stopped before cloning it to a template.")
         used_vmids = {
             guest.vmid
-            for guest in common.fetch_live_guest_inventory(use_cache=False)
+            for guest in common.fetch_live_guest_inventory(
+                use_cache=False,
+                cluster=detail.cluster,
+            )
             if guest.vmid is not None
         }
         if newid in used_vmids:
@@ -117,11 +119,6 @@ def clone_guest_to_template(request, object_type: str, vmid: int):
     task_id = common.enqueue_bulk_task(
         "core.template_clone_tasks.clone_guest_to_template_task",
         event.id,
-        getattr(client, "endpoint", ""),
-        detail.node,
-        newid,
-        response,
-        settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
     )
     event.details = {**event.details, "worker_task_id": task_id}
     event.save(update_fields=["details"])

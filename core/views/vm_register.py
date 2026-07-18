@@ -15,11 +15,12 @@ import os
 
 from django.conf import settings
 from django.contrib import messages
+from django.http import Http404
 from django.shortcuts import redirect, render
 
 from core.models import ProxmoxCluster, StorageMount
 from core.services.guest_create import create_options
-from core.services.guest_scope import guest_ref_from_legacy_identity
+from core.services.refs import GuestRef
 from core.services.ovf_import import OvfImportError, parse_ovf_package
 from core.services.proxmox import clear_live_guest_caches
 from core.services import vm_register as reg
@@ -27,8 +28,8 @@ from core.services import vm_register as reg
 from .common import app_login_required, enqueue_bulk_task, navigation_context, record_audit_event
 
 
-def _register_options(node: str | None = None) -> dict:
-    options = create_options("vm", node)
+def _register_options(node: str | None = None, *, cluster) -> dict:
+    options = create_options("vm", node, cluster=cluster)
     options.update(
         {
             "disk_buses": reg.DISK_BUSES,
@@ -94,7 +95,7 @@ def _params_from_post(post, node: str) -> dict:
 
 
 @app_login_required
-def register_vm(request):
+def register_vm(request, cluster_key: str):
 
     src = request.POST if request.method == "POST" else request.GET
     mode = src.get("mode", "")
@@ -102,14 +103,17 @@ def register_vm(request):
         messages.error(request, "Unknown register mode.")
         return redirect("core:vms")
 
-    options = _register_options(src.get("node") or None)
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    options = _register_options(src.get("node") or None, cluster=cluster)
     if not options.get("available"):
         messages.error(request, "Could not load creation options from Proxmox.")
         return redirect("core:vms")
 
     default_bridge = (options.get("bridges") or [""])[0]
     if request.method == "POST":
-        error = _register_submit(request, mode, options)
+        error = _register_submit(request, mode, options, cluster=cluster)
         if error is None:
             return redirect("core:vms")
         messages.error(request, error)
@@ -188,11 +192,12 @@ def register_vm(request):
         "form_values": form_values,
         "nic_rows": nic_rows,
         "default_bridge": default_bridge,
+        "cluster_key": cluster.key,
     }
     return render(request, "core/vm_register.html", context)
 
 
-def _register_submit(request, mode: str, options: dict) -> str | None:
+def _register_submit(request, mode: str, options: dict, *, cluster) -> str | None:
     post = request.POST
     node = post.get("node", "").strip() or options.get("node", "")
     params = _params_from_post(post, node)
@@ -200,8 +205,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         return "VMID must be a whole number."
     if not params["name"]:
         return "Name is required."
-    ref = guest_ref_from_legacy_identity("vm", params["vmid"], node=node)
-    cluster = ProxmoxCluster.objects.get(key=ref.cluster_key)
+    ref = GuestRef(cluster.key, "vm", int(params["vmid"]), node=node)
     if params["bios"] == "ovmf":
         params["efidisk_storage"] = (
             post.get("efidisk_storage", "").strip() or post.get("target_storage", "").strip()

@@ -108,7 +108,12 @@ class RecentTaskPage:
         return min((self.page + 1) * self.limit, self.total)
 
 
-def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTaskPage:
+def recent_task_page(
+    page: int = 0,
+    limit: int = DEFAULT_TASK_LIMIT,
+    *,
+    cluster_key: str = "",
+) -> RecentTaskPage:
     page = max(0, page)
     limit = max(1, limit)
     offset = page * limit
@@ -127,6 +132,8 @@ def recent_task_page(page: int = 0, limit: int = DEFAULT_TASK_LIMIT) -> RecentTa
     tasks.extend(_file_task(event) for event in _visible_file_tasks())
     tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
     tasks.extend(_guest_task(event) for event in _visible_guest_tasks())
+    if cluster_key:
+        tasks = [task for task in tasks if task.get("cluster_key") == cluster_key]
     tasks.sort(key=_task_timeline_sort_at, reverse=True)
     # Pin unanswered "needs a decision" tasks (e.g. a force-stop offer) to the top
     # of page 0 so a short visible window can't push them off before they are
@@ -157,7 +164,7 @@ def _visible_file_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
     events = list(
         AuditEvent.objects.filter(action__in=FILE_TASK_ACTIONS, timestamp__gte=cutoff)
-        .select_related("user")
+        .select_related("user", "cluster")
         .order_by("-timestamp")
     )
     terminal_events = [event for event in events if event.action in INFLATE_TERMINAL_ACTIONS]
@@ -180,7 +187,7 @@ def _visible_scheduled_action_tasks():
         ScheduledActionRun.Status.CANCELLED,
     ]
     return (
-        ScheduledActionRun.objects.select_related("scheduled_action")
+        ScheduledActionRun.objects.select_related("scheduled_action", "scheduled_action__cluster")
         .exclude(Q(status__in=terminal_statuses) & Q(finished_at__lte=cutoff))
         .order_by("-created_at")
     )
@@ -224,6 +231,8 @@ def serialize_task(task: dict[str, object]) -> dict[str, object]:
         "name": str(task["name"]),
         "target": str(task["target"]),
         "target_guest": task.get("target_guest") or None,
+        "cluster_key": str(task.get("cluster_key") or ""),
+        "cluster": str(task.get("cluster") or "-"),
         "status": str(task["status"]),
         "status_class": str(task["status_class"]),
         "details": str(task["details"]),
@@ -258,6 +267,8 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
         "action": "scan",
         "name": "Storage scan",
         "target": scan.target_label or (scan.target_storage.display_name if scan.target_storage else "All storages"),
+        "cluster_key": "",
+        "cluster": "All clusters",
         "status": status_label,
         "status_class": status_class,
         "details": _scan_details(scan),
@@ -275,7 +286,7 @@ def _visible_guest_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
     return list(
         AuditEvent.objects.filter(Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS), timestamp__gte=cutoff)
-        .select_related("user")
+        .select_related("user", "cluster")
         .order_by("-timestamp")
     )
 
@@ -392,6 +403,8 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         "name": GUEST_TASK_NAMES.get(event.action, event.action),
         "target": event.object_id if event.action in TAG_TASK_ACTIONS else identity.full_label_with_type,
         "target_guest": None if event.action in TAG_TASK_ACTIONS else identity.as_dict(),
+        "cluster_key": event.cluster.key if event.cluster_id else event.cluster_key_snapshot or "",
+        "cluster": event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-",
         "status": status,
         "status_class": status_class,
         "details": extra or "-",
@@ -461,6 +474,8 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
         "action": event.action,
         "name": name,
         "target": details.get("storage_name") or storage_id or "-",
+        "cluster_key": event.cluster.key if event.cluster_id else event.cluster_key_snapshot or "",
+        "cluster": event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-",
         "status": status,
         "status_class": status_class,
         "details": path or event.object_id or "-",
@@ -508,6 +523,8 @@ def _scheduled_action_task(run: ScheduledActionRun) -> dict[str, object]:
         "name": f"Scheduled {action.get_action_type_display().lower()}",
         "target": identity.full_label_with_type,
         "target_guest": identity.as_dict(),
+        "cluster_key": action.cluster.key if action.cluster_id else "",
+        "cluster": action.cluster.display_name if action.cluster_id else "-",
         "status": status,
         "status_class": status_class,
         "details": run.error or _scheduled_action_details(run),

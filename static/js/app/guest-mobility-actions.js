@@ -1,5 +1,5 @@
 import { guestRowIdentity, openVmFormDialog, submitVmBulkAction } from "./guest-actions.js";
-import { createIcons, escapeHtml } from "./shell.js";
+import { createIcons, escapeHtml, parseGuestRef } from "./shell.js";
 
 const formatMigrateBytes = (bytes) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
@@ -736,9 +736,8 @@ const openCloneDialog = (overview, rows, { toTemplate = false } = {}) => {
 const openDestroyDialog = (overview, rows) => {
   const row = rows[0];
   const label = row?.dataset.guestLabel || "guest";
-  const target = row?.dataset.guestTarget || "";
-  // target is like "vm:986@pve3" — confirm on the numeric VMID only.
-  const vmid = (target.split(":")[1] || "").split("@")[0];
+  const target = row?.dataset.guestRef || row?.dataset.guestTarget || "";
+  const vmid = row?.dataset.guestVmid || parseGuestRef(target).vmid;
   openVmFormDialog({
     title: "Remove VM/CT",
     summary: label,
@@ -789,8 +788,8 @@ const openDestroyDialog = (overview, rows) => {
 const openUnTemplateDialog = (overview, rows) => {
   const row = rows[0];
   const label = row?.dataset.guestLabel || row?.dataset.guestName || "Template";
-  const target = row?.dataset.guestTarget || "";
-  const vmid = (target.split(":")[1] || "").split("@")[0];
+  const target = row?.dataset.guestRef || row?.dataset.guestTarget || "";
+  const vmid = row?.dataset.guestVmid || parseGuestRef(target).vmid;
   openVmFormDialog({
     title: "Convert Template Back to VM",
     summary: label,

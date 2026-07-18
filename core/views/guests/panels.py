@@ -6,9 +6,14 @@ from .read_model_support import (_guest_agent_summary,_guest_api_get,_guest_tab_
 
 
 @app_login_required
-def guest_datastores(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
-    disks, _cdroms = guest_disks(detail.config, detail.node, detail.vmid)
+def guest_datastores(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
+    disks, _cdroms = guest_disks(
+        detail.config,
+        detail.node,
+        detail.vmid,
+        cluster_key=detail.cluster_key,
+    )
     mounts = {m.storage_id: m for m in StorageMount.objects.all()}
     by_storage: dict[str, dict] = {}
     for disk in disks:
@@ -31,8 +36,8 @@ def guest_datastores(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_networks_view(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_networks_view(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     agent_summary = _guest_agent_summary(detail, allow_fetch=True)
     context = _guest_tab_context(detail, "networks")
     context["nets"] = _with_network_ip_addresses(guest_networks(detail.config), _config_ip_addresses(detail.config), agent_summary)
@@ -43,8 +48,8 @@ def guest_networks_view(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_agent_view(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_agent_view(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     agent_enabled = bool(detail.config.get("agent"))
     osinfo = None
     interfaces = []
@@ -112,5 +117,3 @@ def guest_agent_view(request, object_type: str, vmid: int):
         }
     )
     return render(request, "core/guest_agent.html", context)
-
-

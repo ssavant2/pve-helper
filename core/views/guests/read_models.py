@@ -91,7 +91,12 @@ def vms_status(request):
     )
     guests = [
         {
-            "target": _guest_target_value(guest.object_type, guest.vmid, guest.node),
+            "target": _guest_target_value(
+                guest.cluster_key,
+                guest.object_type,
+                guest.vmid,
+                guest.node,
+            ),
             "guest_ref": guest.guest_ref().serialize() if guest.guest_ref() else "",
             "status": guest.status,
             "state_label": _guest_state_label(guest.status),
@@ -112,16 +117,18 @@ def vms_status(request):
 
 
 @app_login_required
-def guest_summary(request, object_type: str, vmid: int):
+def guest_summary(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    detail = _resolve_guest_detail(object_type, vmid)
+    detail = _resolve_guest_detail(object_type, vmid, cluster_key=cluster_key)
     if not detail.found:
         raise Http404("Guest not found")
 
     config = detail.config
     current = detail.current
-    disks, cdroms = guest_disks(config, detail.node, detail.vmid)
+    disks, cdroms = guest_disks(
+        config, detail.node, detail.vmid, cluster_key=detail.cluster_key
+    )
     nets = guest_networks(config)
 
     related_storages = []

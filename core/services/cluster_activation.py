@@ -6,22 +6,85 @@ feature flag: for the whole of Phases 1-4 the codebase still contains global
 selectors alongside cluster-aware ones, and a half-migrated system does not fail
 loudly — it silently accepts the wrong cluster's evidence.
 
-Enforcement is layered. `ProxmoxCluster` carries a partial unique constraint that
-lets the database refuse a second enabled cluster outright; this module is the path
-that reports the refusal usefully. UI forms, management commands, workers and import
-services all call `enable_cluster()`; none of them flips `enabled` directly.
+Before contract activation the shared enable service refuses a second enabled
+cluster. Phase 4 removes the temporary database uniqueness constraint so version 1
+can admit several clusters; UI forms, management commands, workers and import
+services must still call `enable_cluster()` rather than flipping `enabled` directly.
 """
 
 from __future__ import annotations
 
-from django.db import transaction
+from django.db import connection, transaction
+from django.utils import timezone
 
-from core.models import ProxmoxCluster, RuntimeConfigurationState, cluster_key_validator
+from core.models import (
+    AuditEvent,
+    ConsoleSession,
+    ProxmoxCluster,
+    ProxmoxEndpoint,
+    ProxmoxStorageConsumer,
+    RuntimeConfigurationState,
+    ScheduledAction,
+    cluster_key_validator,
+)
 from core.services.runtime_bootstrap import ensure_bootstrap
 
 
 class ClusterActivationError(RuntimeError):
     """A cluster enable/key change was refused because an identity contract forbids it."""
+
+
+_ACTIVATION_LOCK_ID = 0x5056454D554C01
+
+
+def _activation_data_errors() -> list[str]:
+    errors = []
+    if ProxmoxEndpoint.objects.filter(cluster__isnull=True).exists():
+        errors.append("one or more Proxmox endpoints have no cluster")
+    if ProxmoxStorageConsumer.objects.filter(cluster__isnull=True).exists():
+        errors.append("one or more storage consumers have no cluster")
+    if ScheduledAction.objects.filter(enabled=True, cluster__isnull=True).exists():
+        errors.append("one or more enabled scheduled actions have no cluster")
+    if ConsoleSession.objects.filter(
+        cluster__isnull=True,
+        expires_at__gt=timezone.now(),
+        status__in=(
+            ConsoleSession.Status.PENDING,
+            ConsoleSession.Status.CONNECTING,
+            ConsoleSession.Status.CONNECTED,
+        ),
+    ).exists():
+        errors.append("one or more active console sessions have no cluster")
+    if AuditEvent.objects.filter(
+        action__startswith="guest.",
+        outcome__in=("queued", "running"),
+        cluster__isnull=True,
+    ).exists():
+        errors.append("one or more active guest operations have no cluster")
+    return errors
+
+
+@transaction.atomic
+def activate_multicluster_identity() -> RuntimeConfigurationState:
+    """Permanently activate explicit multi-cluster identity after a fail-closed audit."""
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", [_ACTIVATION_LOCK_ID])
+    state = ensure_bootstrap()
+    state = RuntimeConfigurationState.objects.select_for_update().get(pk=state.pk)
+    if state.identity_contract_version >= 1:
+        return state
+    errors = _activation_data_errors()
+    if errors:
+        raise ClusterActivationError(
+            "Multi-cluster identity activation was refused: " + "; ".join(errors) + "."
+        )
+    state.identity_contract_version = 1
+    details = dict(state.details or {})
+    details["multicluster_identity_activated_at"] = timezone.now().isoformat()
+    state.details = details
+    state.save(update_fields=["identity_contract_version", "details", "updated_at"])
+    return state
 
 
 def identity_contract_version() -> int:

@@ -2,7 +2,7 @@
   <div class="panel-heading">
     <h2>Snapshots <span class="muted">({{ snapshot_count }})</span></h2>
     {% if snapshot_count %}
-      <form method="post" action="{% url 'core:guest_snapshot_delete_all' guest.object_type guest.vmid %}" data-guest-action-form data-action="delete_snapshots" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete all {{ snapshot_count }} snapshots for this guest? This cannot be undone.">
+      <form method="post" action="{% url 'core:guest_snapshot_delete_all' guest.cluster_key guest.object_type guest.vmid %}" data-guest-action-form data-action="delete_snapshots" data-guest-target="{{ guest.guest_ref.serialize }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete all {{ snapshot_count }} snapshots for this guest? This cannot be undone.">
         {% csrf_token %}
         <button class="secondary-action danger" type="submit">Delete all</button>
       </form>
@@ -37,11 +37,11 @@
 
             <td class="row-actions">
               {% if not snap.is_current %}
-                <form class="inline-action-form" method="post" action="{% url 'core:guest_snapshot_rollback' guest.object_type guest.vmid snap.name %}" data-guest-action-form data-action="snapshot_rollback" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Roll back to snapshot {{ snap.name }}? Current state will be lost.">
+                <form class="inline-action-form" method="post" action="{% url 'core:guest_snapshot_rollback' guest.cluster_key guest.object_type guest.vmid snap.name %}" data-guest-action-form data-action="snapshot_rollback" data-guest-target="{{ guest.guest_ref.serialize }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Roll back to snapshot {{ snap.name }}? Current state will be lost.">
                   {% csrf_token %}
                   <button class="icon-button" type="submit" title="Rollback" aria-label="Rollback to {{ snap.name }}"><i data-lucide="rotate-ccw" aria-hidden="true"></i></button>
                 </form>
-                <form class="inline-action-form" method="post" action="{% url 'core:guest_snapshot_delete' guest.object_type guest.vmid snap.name %}" data-guest-action-form data-action="snapshot_delete" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete snapshot {{ snap.name }}?">
+                <form class="inline-action-form" method="post" action="{% url 'core:guest_snapshot_delete' guest.cluster_key guest.object_type guest.vmid snap.name %}" data-guest-action-form data-action="snapshot_delete" data-guest-target="{{ guest.guest_ref.serialize }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-confirm="Delete snapshot {{ snap.name }}?">
                   {% csrf_token %}
                   <button class="icon-button danger" type="submit" title="Delete" aria-label="Delete {{ snap.name }}"><i data-lucide="trash-2" aria-hidden="true"></i></button>
                 </form>

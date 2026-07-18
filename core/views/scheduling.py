@@ -8,7 +8,6 @@ from ..models import ProxmoxCluster
 from ..services.proxmox import ProxmoxClient
 from ..services.public_errors import public_exception_message
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
-from ..services.guest_scope import guest_ref_from_legacy_identity
 from ..services.refs import GuestRef, RefParseError
 from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
 
@@ -24,7 +23,7 @@ def scheduled_tasks(request):
     actions_query = ScheduledAction.objects.select_related("created_by", "cluster").filter(deleted_at__isnull=True)
     if target_filter_value:
         actions_query = actions_query.filter(
-            Q(cluster__key=target_ref.cluster_key) | Q(cluster__isnull=True),
+            cluster__key=target_ref.cluster_key,
             target_type=target_type,
             target_vmid=target_vmid,
         )
@@ -187,7 +186,13 @@ def recent_tasks(request):
     except ValueError:
         page = 0
 
-    return JsonResponse(serialize_task_page(recent_task_page(page=page)))
+    cluster_key = request.GET.get("cluster", "").strip()
+    if cluster_key and not ProxmoxCluster.objects.filter(key=cluster_key, enabled=True).exists():
+        return JsonResponse({"error": "Unknown or disabled cluster."}, status=400)
+
+    return JsonResponse(
+        serialize_task_page(recent_task_page(page=page, cluster_key=cluster_key))
+    )
 
 
 @require_POST
@@ -736,18 +741,7 @@ def _parse_scheduled_target_ref(value: str) -> GuestRef | None:
         except RefParseError:
             return None
         return ref if ProxmoxCluster.objects.filter(key=ref.cluster_key).exists() else None
-    if ":" not in value:
-        return None
-    target_type, raw_vmid = value.split(":", 1)
-    if target_type not in ScheduledAction.TargetType.values:
-        return None
-    try:
-        vmid = int(raw_vmid)
-    except ValueError:
-        return None
-    if vmid <= 0:
-        return None
-    return guest_ref_from_legacy_identity(target_type, vmid)
+    return None
 
 
 def _apply_target_snapshot(action: ScheduledAction) -> None:
@@ -1038,8 +1032,7 @@ def _latest_scheduled_runs(
     runs_query = ScheduledActionRun.objects.select_related("scheduled_action", "scheduled_action__cluster")
     if target_type and target_vmid is not None:
         runs_query = runs_query.filter(
-            Q(scheduled_action__cluster__key=cluster_key)
-            | Q(scheduled_action__cluster__isnull=True),
+            scheduled_action__cluster__key=cluster_key,
             scheduled_action__target_type=target_type,
             scheduled_action__target_vmid=target_vmid,
         )

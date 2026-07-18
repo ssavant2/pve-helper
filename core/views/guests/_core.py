@@ -8,8 +8,8 @@ from pathlib import Path, PurePosixPath
 from ..common import *  # noqa: F401,F403
 from .. import common
 from core.models import ProxmoxCluster, StorageMount
-from core.services.guest_scope import guest_ref_from_legacy_identity
 from core.services.public_errors import public_exception_message
+from core.services.refs import GuestRef
 from core.services.current_guest_inventory import (
     delete_current_guest,
     update_current_guest_config,
@@ -537,14 +537,13 @@ def _snapshot_error(err: str) -> str:
     return f"Snapshot operation failed: {err}"
 
 
-def _create_guest(request, object_type: str, options: dict):
+def _create_guest(request, object_type: str, options: dict, *, cluster):
     post = request.POST
     node = post.get("node", "").strip() or options.get("node", "")
     vmid = post.get("vmid", "").strip()
     if not vmid.isdigit():
         return "VMID must be a whole number."
-    ref = guest_ref_from_legacy_identity(object_type, int(vmid), node=node)
-    cluster = ProxmoxCluster.objects.get(key=ref.cluster_key)
+    ref = GuestRef(cluster.key, object_type, int(vmid), node=node)
     disk_storage = post.get("disk_storage", "").strip()
     if not disk_storage:
         return "Select a storage for the disk."
@@ -628,7 +627,7 @@ def _backup_archive_vmid(volid: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list[str]]], str]:
+def _restore_options(cluster) -> tuple[list[dict], list[dict], dict[str, dict[str, list[str]]], str]:
     """Discover restoreable archives and compatible target storages live.
 
     Archive visibility is deliberately evaluated per node. A local backup on
@@ -641,7 +640,7 @@ def _restore_options() -> tuple[list[dict], list[dict], dict[str, dict[str, list
     nextid = ""
     seen_nodes: set[str] = set()
     seen_archives: set[tuple[str, str, str]] = set()
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(cluster):
         endpoint = str(getattr(client, "endpoint", ""))
         try:
             client_nodes = client.node_names(fallback="")
@@ -740,14 +739,14 @@ def _restore_archive_from_key(key: str, archives: list[dict]) -> dict | None:
     return None
 
 
-def _restore_client(endpoint: str):
-    for client in common.cluster_scoped_clients():
+def _restore_client(endpoint: str, *, cluster):
+    for client in common.cluster_scoped_clients(cluster):
         if str(getattr(client, "endpoint", "")) == endpoint:
             return client
     return None
 
 
-def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
+def _queue_guest_backup_restore(request, archives: list[dict], *, cluster) -> str:
     archive = _restore_archive_from_key(request.POST.get("archive_key", ""), archives)
     if archive is None:
         return "Select a backup archive that is still available."
@@ -765,7 +764,10 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
     if overwrite and request.POST.get("overwrite_confirm", "").strip() != vmid_text:
         return f"Enter {vmid} to confirm replacement of the existing guest."
 
-    client = _restore_client(str(archive.get("key", "")).split("|", 1)[0])
+    client = _restore_client(
+        str(archive.get("key", "")).split("|", 1)[0],
+        cluster=cluster,
+    )
     if client is None:
         return "The Proxmox endpoint that exposes this archive is unavailable."
     if target_endpoint != str(getattr(client, "endpoint", "")):
@@ -791,7 +793,11 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
             fallback="Restore preflight could not be completed against Proxmox.",
         )
 
-    live_guests = [guest for guest in common.fetch_live_guest_inventory(use_cache=False) if guest.vmid == vmid]
+    live_guests = [
+        guest
+        for guest in common.fetch_live_guest_inventory(use_cache=False, cluster=cluster)
+        if guest.vmid == vmid
+    ]
     existing = next((guest for guest in live_guests if guest.object_type == archive["object_type"] and guest.node == target_node), None)
     if live_guests and not overwrite:
         return f"VMID {vmid} is already in use. Enable overwrite only when replacing the existing {archive['type_label']}."
@@ -818,12 +824,7 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
         return "Could not confirm the existing guest's current power state. Restore was not queued."
 
     target_name = getattr(existing, "name", "") or f"Restored {archive['type_label']} {vmid}"
-    ref = guest_ref_from_legacy_identity(
-        archive["object_type"],
-        vmid,
-        node=target_node,
-    )
-    cluster = ProxmoxCluster.objects.get(key=ref.cluster_key)
+    ref = GuestRef(cluster.key, archive["object_type"], vmid, node=target_node)
     detail = SimpleNamespace(
         cluster=cluster,
         cluster_key=cluster.key,

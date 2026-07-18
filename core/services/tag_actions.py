@@ -111,7 +111,7 @@ def retry_tag_operation(event_id: int) -> str:
     return enqueue_tag_operation(event)
 
 
-def register_tag(tag: str, color: str = "", *, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
+def register_tag(tag: str, color: str = "", *, cluster) -> tuple[dict[str, RegisteredTag], str]:
     try:
         tag = validate_tag(tag)
     except TagValidationError:
@@ -134,7 +134,7 @@ def register_tag(tag: str, color: str = "", *, cluster=None) -> tuple[dict[str, 
     )
 
 
-def recolor_tag(tag: str, color: str, *, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
+def recolor_tag(tag: str, color: str, *, cluster) -> tuple[dict[str, RegisteredTag], str]:
     try:
         tag = validate_tag(tag)
     except TagValidationError:
@@ -159,7 +159,7 @@ def recolor_tag(tag: str, color: str, *, cluster=None) -> tuple[dict[str, Regist
         return {}, "Register the tag before assigning a color."
 
 
-def unregister_tag(tag: str, *, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
+def unregister_tag(tag: str, *, cluster) -> tuple[dict[str, RegisteredTag], str]:
     try:
         tag = validate_tag(tag)
     except TagValidationError:
@@ -174,7 +174,7 @@ def unregister_tag(tag: str, *, cluster=None) -> tuple[dict[str, RegisteredTag],
     )
 
 
-def _target_from_guest(row, *, cluster=None) -> dict:
+def _target_from_guest(row, *, cluster) -> dict:
     cluster_key = (
         getattr(getattr(row, "cluster", None), "key", "")
         or getattr(cluster, "key", "")

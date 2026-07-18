@@ -2,7 +2,14 @@ import { ensureVmActionDialog, openConfirmDialog, openInputDialog } from "./dial
 import { clearLocalError, showLocalError } from "./feedback.js";
 import { loadSoftNavigation } from "./navigation.js";
 import { selectedVmOverviewRows } from "./scheduling.js";
-import { addPendingRecentTask, escapeHtml, renderVIcons, taskDateLabel, updatePendingRecentTask } from "./shell.js";
+import {
+  addPendingRecentTask,
+  escapeHtml,
+  parseGuestRef,
+  renderVIcons,
+  taskDateLabel,
+  updatePendingRecentTask,
+} from "./shell.js";
 import { pendingVmTaskDetails, pendingVmTaskTarget, vmActionAuditAction, vmActionTaskName } from "./vm-overview.js";
 
 const updateVmRowsAgentState = (rows, enabled) => {
@@ -84,8 +91,7 @@ const createPendingGuestFormTask = (form) => {
   const now = Date.now();
   const action = form.dataset.action || "";
   const target = form.dataset.guestTarget || "";
-  const [targetText, server = ""] = target.split("@");
-  const [type = "", vmid = ""] = targetText.split(":");
+  const { type, vmid, node: server } = parseGuestRef(target);
   return {
     id: `pending-guest-${now}-${Math.random().toString(36).slice(2)}`,
     kind: "guest",
@@ -456,11 +462,10 @@ const defaultSnapshotName = () => {
 const selectedGuestSummary = (rows) => `${rows.length} selected guest${rows.length === 1 ? "" : "s"}`;
 
 const guestRowIdentity = (row) => {
-  const [target = ""] = String(row?.dataset.guestTarget || "").split("@");
-  const [targetType = "", targetVmid = ""] = target.split(":");
+  const target = parseGuestRef(row?.dataset.guestRef || row?.dataset.guestTarget || "");
   return {
-    type: row?.dataset.guestType || targetType,
-    vmid: row?.dataset.guestVmid || targetVmid,
+    type: row?.dataset.guestType || target.type,
+    vmid: row?.dataset.guestVmid || target.vmid,
   };
 };
 
@@ -521,8 +526,7 @@ const forceStopGuest = async (target, label) => {
   // reconciles with (and is replaced by) the real "Power off" server task
   // instead of lingering as a duplicate.
   const now = Date.now();
-  const [targetText, server = ""] = target.split("@");
-  const [type = "", vmid = ""] = targetText.split(":");
+  const { type, vmid, node: server } = parseGuestRef(target);
   const pending = {
     id: `pending-forcestop-${now}-${Math.random().toString(36).slice(2)}`,
     kind: "guest",

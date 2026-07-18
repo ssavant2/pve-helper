@@ -34,9 +34,9 @@
             <td>{{ file.classification_reason|default:"-" }}</td>
             <td class="row-actions">
               {% if file.derived_volid and "-disk-" in file.derived_volid %}
-                <a class="icon-button" href="{% url 'core:register_vm' %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}" title="Register as a new VM" aria-label="Register {{ file.path }} as a new VM">
+                {% for cluster in app_enabled_clusters %}<a class="icon-button" href="{% url 'core:register_vm' cluster.key %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}" title="Register as a new VM in {{ cluster.display_name }}" aria-label="Register {{ file.path }} as a new VM in {{ cluster.display_name }}">{% if app_multiple_clusters %}{{ cluster.display_name }}{% endif %}
                   <i data-lucide="package-plus" aria-hidden="true"></i>
-                </a>
+                </a>{% endfor %}
               {% endif %}
               {% if file.storage.storage_actions_enabled and file.can_trash %}
                 <form

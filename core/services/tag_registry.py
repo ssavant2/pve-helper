@@ -60,25 +60,17 @@ def _registry_mutation_lock(cluster):
                     cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
 
 
-def resolve_tag_registry_cluster(cluster=None):
+def resolve_tag_registry_cluster(cluster):
     if cluster is not None:
         return cluster, ""
-    from core.services.cluster_resolver import (
-        ClusterResolutionError,
-        require_sole_enabled_cluster_for_legacy_caller,
-    )
-
-    try:
-        return require_sole_enabled_cluster_for_legacy_caller(), ""
-    except ClusterResolutionError as exc:
-        return None, str(exc)
+    return None, "Tag registry operations require an explicit cluster."
 
 
 def tag_registry_cache_key(cluster) -> str:
     return cluster_cache_key(TAG_REGISTRY_CACHE_NAMESPACE, cluster)
 
 
-def cluster_options(cluster=None) -> tuple[object | None, dict, str]:
+def cluster_options(cluster) -> tuple[object | None, dict, str]:
     """Read one cluster's tag registry options.
 
     `/cluster/options` is a cluster-wide response, and tag registries are
@@ -117,7 +109,7 @@ def cache_registered_tags(registered: dict[str, RegisteredTag], *, cluster) -> N
     )
 
 
-def registered_tags(*, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
+def registered_tags(*, cluster) -> tuple[dict[str, RegisteredTag], str]:
     cluster, error = resolve_tag_registry_cluster(cluster)
     if cluster is None:
         return {}, error
@@ -132,7 +124,7 @@ def registered_tags(*, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
     return result
 
 
-def refresh_registered_tags(*, cluster=None) -> tuple[dict[str, RegisteredTag], str]:
+def refresh_registered_tags(*, cluster) -> tuple[dict[str, RegisteredTag], str]:
     """Bypass the display cache and replace it only after a verified read."""
     cluster, error = resolve_tag_registry_cluster(cluster)
     if cluster is None:
@@ -148,7 +140,7 @@ def mutate_registered_tags(
     mutator: Callable[[list[str], dict[str, tuple[str, str]]], None],
     *,
     postcondition: Callable[[dict[str, RegisteredTag]], bool],
-    cluster=None,
+    cluster,
 ) -> tuple[dict[str, RegisteredTag], str]:
     """Serialize one registry mutation and verify its actual Proxmox result.
 

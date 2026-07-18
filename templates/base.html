@@ -164,11 +164,11 @@
                         <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
                           <span class="tree-caret" data-tree-caret>v</span>
                           <span class="tree-icon"><i data-vicon="host" aria-hidden="true"></i></span>
-                          <span class="tree-label">{{ host.node }}</span>
+                          <span class="tree-label">{% if app_multiple_clusters %}{{ host.cluster_name }} · {% endif %}{{ host.node }}</span>
                         </button>
                         <div class="tree-children">
                           {% for s in host.storages %}
-                            {% url 'core:api_storage_summary' host.node s.storage_id as api_summary_url %}
+                            {% url 'core:api_storage_summary' host.cluster_key host.node s.storage_id as api_summary_url %}
                             <a class="tree-node tree-leaf storage-leaf {% if active_api_node == host.node and active_api_storage == s.storage_id %}active{% endif %}" href="{% sticky_object_url api_summary_url %}" title="{{ s.storage_id }}{% if s.type %} ({{ s.type }}){% endif %}">
                               <span class="tree-icon"><i data-vicon="storage" aria-hidden="true"></i></span>
                               <span class="tree-label">{{ s.storage_id }}</span>
@@ -215,7 +215,7 @@
             </div>
           </section>
 
-          <a class="tree-node module-node {% if active_nav == 'tags' %}active{% endif %}" href="{% url 'core:tags_overview' %}">
+          <a class="tree-node module-node {% if active_nav == 'tags' %}active{% endif %}" href="{% if cluster_key %}{% url 'core:tags_overview' cluster_key %}{% else %}{% url 'core:legacy_tags_overview' %}{% endif %}">
             <span class="tree-caret"></span>
             <span class="tree-icon"><i data-lucide="tags" aria-hidden="true"></i></span>
             <span class="tree-label">Tags</span>
@@ -269,6 +269,15 @@
             <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
           </div>
           <div class="taskbar-controls">
+            {% if app_multiple_clusters %}
+              <label class="taskbar-cluster-filter">
+                <span class="sr-only">Filter recent tasks by cluster</span>
+                <select data-task-cluster-filter aria-label="Filter recent tasks by cluster">
+                  <option value="">All clusters</option>
+                  {% for cluster in app_enabled_clusters %}<option value="{{ cluster.key }}">{{ cluster.display_name }}</option>{% endfor %}
+                </select>
+              </label>
+            {% endif %}
             <button class="taskbar-page-button" type="button" data-task-prev {% if not app_recent_tasks_page.has_previous %}disabled{% endif %}>Previous 5</button>
             <span class="taskbar-page-label" data-task-page-label>
               {% if app_recent_tasks_page.total %}
@@ -286,6 +295,7 @@
               <tr>
                 <th data-column="task-name">Task Name</th>
                 <th data-column="target">Target</th>
+                <th data-column="cluster">Cluster</th>
                 <th data-column="status">Status</th>
                 <th data-column="details">Details</th>
                 <th data-column="initiator">Initiator</th>
@@ -300,6 +310,7 @@
                 <tr data-task-row-key="{{ task.id }}" data-task-id="{{ task.id }}" data-task-cancelable="{{ task.cancelable|yesno:'true,false' }}" data-task-retryable="{{ task.retryable|yesno:'true,false' }}">
                   <td data-column="task-name" data-sort-value="{{ task.name }}">{{ task.name }}</td>
                   <td data-column="target" data-sort-value="{% if task.target_guest %}{{ task.target_guest.name|default:task.target_guest.vmid }}{% else %}{{ task.target }}{% endif %}">{% if task.target_guest %}{% guest_label task.target_guest %}{% else %}{{ task.target }}{% endif %}</td>
+                  <td data-column="cluster" data-sort-value="{{ task.cluster|default:'-' }}">{{ task.cluster|default:"-" }}</td>
                   <td data-column="status" data-sort-value="{{ task.status }}">
                     <span class="badge {{ task.status_class }}"{% if task.retryable %} title="{{ task.retry_label }}; right-click for actions"{% endif %}>{{ task.status }}</span>
                   </td>
@@ -312,7 +323,7 @@
                 </tr>
               {% empty %}
                 <tr>
-                  <td colspan="9" class="empty-state">No recent tasks.</td>
+                  <td colspan="10" class="empty-state">No recent tasks.</td>
                 </tr>
               {% endfor %}
             </tbody>

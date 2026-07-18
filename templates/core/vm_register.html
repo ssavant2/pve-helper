@@ -11,7 +11,7 @@
       <a class="hardware-editor-close" href="{% url 'core:vms' %}" aria-label="Close">x</a>
     </div>
 
-    <form class="hardware-editor-form" method="post" action="{% url 'core:register_vm' %}">
+    <form class="hardware-editor-form" method="post" action="{% url 'core:register_vm' cluster_key %}">
       {% csrf_token %}
       <input type="hidden" name="mode" value="{{ mode }}">
       <input type="hidden" name="node" value="{{ form_values.node }}">

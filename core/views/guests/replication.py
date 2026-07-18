@@ -6,8 +6,8 @@ from .read_model_support import _guest_tab_context, _require_guest
 
 
 @app_login_required
-def guest_replication(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_replication(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     jobs = []
     error = ""
     clients = common.cluster_scoped_clients(detail.cluster)
@@ -39,12 +39,17 @@ def guest_replication(request, object_type: str, vmid: int):
 
 @require_POST
 @app_login_required
-def guest_replication_create(request, object_type, vmid):
-    detail = _require_guest(object_type, vmid)
+def guest_replication_create(request, cluster_key, object_type, vmid):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     target = request.POST.get("target", "").strip()
     if not target:
         messages.error(request, "Select a target node.")
-        return redirect("core:guest_replication", object_type=object_type, vmid=vmid)
+        return redirect(
+            "core:guest_replication",
+            cluster_key=cluster_key,
+            object_type=object_type,
+            vmid=vmid,
+        )
     body = {"id": f"{vmid}-0", "type": "local", "target": target}
     schedule = request.POST.get("schedule", "").strip()
     if schedule:
@@ -64,12 +69,17 @@ def guest_replication_create(request, object_type, vmid):
 
 @require_POST
 @app_login_required
-def guest_replication_delete(request, object_type, vmid):
-    detail = _require_guest(object_type, vmid)
+def guest_replication_delete(request, cluster_key, object_type, vmid):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     job_id = request.POST.get("job_id", "").strip()
     if not job_id:
         messages.error(request, "Missing job id.")
-        return redirect("core:guest_replication", object_type=object_type, vmid=vmid)
+        return redirect(
+            "core:guest_replication",
+            cluster_key=cluster_key,
+            object_type=object_type,
+            vmid=vmid,
+        )
     err = _guest_write(
         detail,
         operation="guest_replication_delete",
@@ -77,4 +87,3 @@ def guest_replication_delete(request, object_type, vmid):
         call=lambda client: client.delete(f"cluster/replication/{quote(job_id, safe='')}"),
     ).error
     return _write_result(request, detail, "core:guest_replication", err, "guest.replication.delete", {"job_id": job_id})
-

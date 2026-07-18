@@ -6,7 +6,7 @@
 
         <div class="panel panel-spaced guest-edit-panel">
           <div class="panel-heading"><h2>Edit Cloud-Init</h2></div>
-          <form method="post" action="{% url 'core:guest_cloudinit_edit' guest.object_type guest.vmid %}">
+          <form method="post" action="{% url 'core:guest_cloudinit_edit' guest.cluster_key guest.object_type guest.vmid %}">
             {% csrf_token %}
             <div class="form-grid">
               <div class="form-field"><label>User</label><input type="text" name="ciuser" value="{{ ci_values.ciuser }}" autocomplete="off"></div>

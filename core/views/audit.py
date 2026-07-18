@@ -10,6 +10,8 @@ from xml.sax.saxutils import escape as xml_escape
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
+from core.models import ProxmoxCluster
+
 from .common import *  # noqa: F401,F403
 from . import common
 
@@ -24,7 +26,7 @@ AUDIT_MODULE_FILTERS = [
     {"key": "system", "label": "System"},
 ]
 AUDIT_VALID_MODULES = {item["key"] for item in AUDIT_MODULE_FILTERS}
-AUDIT_EXPORT_COLUMNS = ["Time", "Module", "User", "Source IP", "Action", "Object", "Outcome"]
+AUDIT_EXPORT_COLUMNS = ["Time", "Cluster", "Module", "User", "Source IP", "Action", "Object", "Outcome"]
 AUDIT_EXPORT_TECH_COLUMNS = ["Raw Action", "Object Type", "Object ID", "Details"]
 # XLSX must be assembled as a ZIP archive in the web worker. CSV/JSON are
 # streamed instead, so keep the only in-memory format deliberately bounded.
@@ -41,7 +43,12 @@ def audit_log(request):
 
     module_filter = _audit_module_filter(request.GET.get("filter", "all"))
     query = _audit_query(request.GET.get("q", ""))
-    events_qs = _audit_events_queryset(module_filter=module_filter, query=query)
+    cluster_filter = _audit_cluster_filter(request.GET.get("cluster", ""))
+    events_qs = _audit_events_queryset(
+        module_filter=module_filter,
+        query=query,
+        cluster_key=cluster_filter,
+    )
 
     event_total = events_qs.count()
     max_page = (event_total - 1) // AUDIT_PAGE_SIZE if event_total else 0
@@ -60,6 +67,8 @@ def audit_log(request):
         "audit_total": event_total,
         "audit_filter": module_filter,
         "audit_query": query,
+        "audit_cluster": cluster_filter,
+        "audit_clusters": ProxmoxCluster.objects.order_by("display_name", "key"),
         "audit_retention_schedule": audit_retention_schedule_state(),
         "audit_filters": AUDIT_MODULE_FILTERS,
         "audit_xlsx_max_rows": AUDIT_XLSX_MAX_ROWS,
@@ -71,6 +80,7 @@ def audit_log(request):
 def audit_export(request):
     module_filter = _audit_module_filter(request.GET.get("filter", "all"))
     query = _audit_query(request.GET.get("q", ""))
+    cluster_filter = _audit_cluster_filter(request.GET.get("cluster", ""))
     scope = request.GET.get("scope", "matching")
     export_format = request.GET.get("format", "xlsx").lower()
     include_technical = request.GET.get("include_technical") == "on"
@@ -80,7 +90,13 @@ def audit_export(request):
     if export_format not in {"csv", "json", "xlsx"}:
         export_format = "xlsx"
 
-    events_qs = _audit_events_queryset(module_filter=module_filter, query=query, started_at=started_at, ended_at=ended_at)
+    events_qs = _audit_events_queryset(
+        module_filter=module_filter,
+        query=query,
+        cluster_key=cluster_filter,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
     if scope == "page":
         try:
             audit_page = max(0, int(request.GET.get("page", "0")))
@@ -145,8 +161,13 @@ def _audit_query(value: str) -> str:
     return str(value or "").strip()[:200]
 
 
-def _audit_events_queryset(*, module_filter: str, query: str, started_at=None, ended_at=None):
-    events_qs = AuditEvent.objects.all()
+def _audit_cluster_filter(value: str) -> str:
+    key = str(value or "").strip().lower()
+    return key if key and ProxmoxCluster.objects.filter(key=key).exists() else ""
+
+
+def _audit_events_queryset(*, module_filter: str, query: str, cluster_key: str = "", started_at=None, ended_at=None):
+    events_qs = AuditEvent.objects.select_related("cluster")
     if module_filter != "all":
         events_qs = events_qs.filter(module=module_filter)
     if query:
@@ -158,6 +179,8 @@ def _audit_events_queryset(*, module_filter: str, query: str, started_at=None, e
             | Q(source_ip__icontains=query)
             | Q(path__icontains=query)
         )
+    if cluster_key:
+        events_qs = events_qs.filter(cluster_key_snapshot=cluster_key)
     if started_at:
         events_qs = events_qs.filter(timestamp__gte=started_at)
     if ended_at:
@@ -185,6 +208,7 @@ def _audit_export_datetime(value: str, *, is_end: bool):
 def _audit_export_row(event: AuditEvent, *, include_technical: bool) -> dict[str, str]:
     row = {
         "Time": timezone.localtime(event.timestamp).strftime("%Y-%m-%d %H:%M:%S"),
+        "Cluster": event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-",
         "Module": event.display_module,
         "User": event.username or "-",
         "Source IP": str(event.source_ip or "-"),

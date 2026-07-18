@@ -12,7 +12,6 @@ from django.core.cache import cache
 
 from ..models import ProxmoxInventory, ScanRun
 from .cluster_state_identity import cluster_cache_key
-from .current_guest_inventory import current_inventory_cluster
 
 _CACHE_NAMESPACE = "nav-local-datastores:v2"
 _CACHE_SECONDS = 60
@@ -34,11 +33,10 @@ def _is_truthy(value) -> bool:
     return str(value or "").strip().lower() in _TRUTHY
 
 
-def local_datastore_nav(*, use_cache: bool = True, cluster=None):
+def local_datastore_nav(*, cluster, use_cache: bool = True):
     """Return [{node, storages: [{storage_id, type, total, used, avail,
     used_pct, active}]}] for local (non-shared) storages from the latest
     completed scan, grouped and sorted by node. Empty list if no scan yet."""
-    cluster = current_inventory_cluster(cluster)
     if cluster is None:
         return []
     cache_key = cluster_cache_key(_CACHE_NAMESPACE, cluster)

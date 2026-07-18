@@ -9,7 +9,6 @@ from core.services.cluster_state_identity import cluster_cache_key
 from core.services.current_guest_inventory import current_inventory_state
 from core.services.public_errors import public_exception_message
 from core.services.refs import GuestRef
-from core.services.guest_scope import guest_ref_from_legacy_identity
 from core.models import ProxmoxCluster
 from core.services.tag_catalog import load_tag_catalog
 from .presenters import (
@@ -41,7 +40,7 @@ def _mark_linked_clones(
         lineage_by_cluster = {
             cluster_key: common.fetch_live_guest_lineage(cluster=cluster)
             if cluster is not None
-            else common.fetch_live_guest_lineage()
+            else {}
             for cluster_key, cluster in clusters.items()
         }
     vm_rows = {
@@ -76,11 +75,7 @@ def _linked_clone_children(detail: SimpleNamespace) -> list[int]:
     if detail.vmid is None:
         return []
     cluster = getattr(detail, "cluster", None)
-    lineage = (
-        common.fetch_live_guest_lineage(cluster=cluster)
-        if cluster is not None
-        else common.fetch_live_guest_lineage()
-    )
+    lineage = common.fetch_live_guest_lineage(cluster=cluster) if cluster is not None else {}
     return sorted(clone for clone, parent in lineage.items() if parent == detail.vmid)
 
 
@@ -110,6 +105,23 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
     for row in rows:
         row.depth = 0
         row.deeper_chain = False
+    # Preserve the caller's established name/ID order inside each cluster while
+    # making clusters contiguous for the sidebar headings. Re-sorting the rows by
+    # name here would also change the linked-clone root/sibling order.
+    rows = [
+        row
+        for _position, row in sorted(
+            enumerate(rows),
+            key=lambda item: (
+                (
+                    getattr(getattr(item[1], "cluster", None), "display_name", "")
+                    or ""
+                ).casefold(),
+                str(getattr(item[1], "cluster_key", "")),
+                item[0],
+            ),
+        )
+    ]
     lineage_by_cluster = _mark_linked_clones(rows)  # sets is_linked_clone / parent_vmid / name
     if not any(lineage_by_cluster.values()):
         return rows
@@ -153,9 +165,30 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
 
 
 def _vms_workspace_context(active_nav: str) -> dict:
-    tag_catalog = load_tag_catalog()
-    rows, live_available, scan_at = _guest_rows(current_guests=tag_catalog.guests)
-    available_user_tags = _decorate_guest_tag_chips(rows, catalog=tag_catalog)
+    rows, live_available, scan_at = _guest_rows()
+    cluster_choices = list(
+        ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
+    )
+    clusters = {
+        row.cluster_key: row.cluster
+        for row in rows
+        if row.cluster is not None and row.cluster_key
+    }
+    catalogs = {
+        cluster_key: load_tag_catalog(cluster=cluster)
+        for cluster_key, cluster in clusters.items()
+    }
+    available_user_tags = sorted(
+        {
+            tag
+            for catalog in catalogs.values()
+            for tag in catalog.available
+        },
+        key=str.casefold,
+    )
+    for row in rows:
+        catalog = catalogs.get(row.cluster_key)
+        row.tag_chips = catalog.chips(row.tags) if catalog is not None else []
     # The workspace Inventory list renders the full lineage tree; the overview
     # stays flat but still flags linked clones so the toolbar can gate 'Convert
     # to Template'. Both share the same cached lineage fetch.
@@ -178,11 +211,11 @@ def _vms_workspace_context(active_nav: str) -> dict:
         "active_object_type": "",
         "active_vmid": None,
         "available_user_tags": available_user_tags,
+        "cluster_choices": cluster_choices,
     }
 
 
-def _decorate_guest_tag_chips(rows, *, catalog=None) -> list[str]:
-    catalog = catalog or load_tag_catalog()
+def _decorate_guest_tag_chips(rows, *, catalog) -> list[str]:
     for row in rows:
         row.tag_chips = catalog.chips(row.tags)
     return list(catalog.available)
@@ -205,7 +238,6 @@ def _guest_rows(*, current_guests=None):
 
     rows.sort(key=lambda row: ((row.name or "").casefold(), row.type_sort, row.vmid or 0, row.node))
     _decorate_guests_with_scheduled_actions(rows)
-    state = current_inventory_state()
     latest_runtime_at = max(
         (guest.runtime_observed_at for guest in current if guest.runtime_observed_at),
         default=None,
@@ -225,25 +257,17 @@ def _runtime_inventory_is_stale(refreshed_at, *, rows=None) -> bool:
     return refreshed_at < tz.now() - max_age
 
 
-def _current_obj_for_live_guest(
-    current_by_key: dict[tuple[str, str, int], CurrentGuestInventory],
-    current_by_identity: dict[tuple[str, int], list[CurrentGuestInventory]],
-    node: str,
+def _guest_target_value(
+    cluster_key: str,
     object_type: str,
-    vmid: int,
-) -> CurrentGuestInventory | None:
-    exact = current_by_key.get((node or "", object_type, vmid))
-    if exact is not None:
-        return exact
-    legacy_matches = current_by_identity.get((object_type, vmid), [])
-    if len(legacy_matches) == 1:
-        return legacy_matches[0]
-    return None
-
-
-def _guest_target_value(object_type: str, vmid: int | str | None, node: str = "") -> str:
-    base = f"{object_type}:{vmid}"
-    return f"{base}@{node}" if node else base
+    vmid: int | str | None,
+    node: str = "",
+) -> str:
+    try:
+        parsed_vmid = int(vmid) if vmid is not None else 0
+        return GuestRef(cluster_key, object_type, parsed_vmid, node).serialize()
+    except (TypeError, ValueError, RefParseError):
+        return ""
 
 
 def _display_lock(value: object) -> str:
@@ -300,10 +324,14 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
         type_label=type_label,
         type_filter=type_filter,
         type_sort=type_sort,
-        target_id=_guest_target_value(object_type, vmid, node),
+        target_id=_guest_target_value(getattr(cluster, "key", ""), object_type, vmid, node),
         tags=parse_guest_tags(config),
         in_current_inventory=current_obj is not None,
-        detail_url=reverse("core:guest_summary", args=[object_type, vmid]) if vmid is not None else "",
+        detail_url=(
+            reverse("core:guest_summary", args=[cluster.key, object_type, vmid])
+            if cluster is not None and vmid is not None
+            else ""
+        ),
         provisioned_bytes=provisioned_disk,
         provisioned_label=provisioned_disk and _fmt_bytes(provisioned_disk) or "-",
         used_bytes=used_disk,
@@ -539,22 +567,11 @@ def _guest_lineage(detail: SimpleNamespace) -> dict:
     return {"parent": parent, "children": children}
 
 
-def _legacy_route_guest_ref(object_type: str, vmid: int, *, node: str = "") -> GuestRef:
-    """Translate a Phase-3 legacy URL into the one durable guest identity.
-
-    URLs gain an explicit cluster segment in Phase 4. Until then activation keeps
-    exactly one cluster enabled, so the route boundary can make that temporary
-    source explicit without allowing a database lookup to guess by VMID.
-    """
-    if object_type not in GUEST_OBJECT_TYPES:
-        raise Http404("Unknown guest type")
-    return guest_ref_from_legacy_identity(object_type, vmid, node=node)
-
-
 def _coerce_guest_ref(
     object_type_or_ref: str | GuestRef,
     vmid: int | None = None,
     *,
+    cluster_key: str = "",
     node: str = "",
 ) -> GuestRef:
     if isinstance(object_type_or_ref, GuestRef):
@@ -571,17 +588,20 @@ def _coerce_guest_ref(
             )
         return object_type_or_ref
     if vmid is None:
-        raise ValueError("VMID is required for a legacy guest route.")
-    return _legacy_route_guest_ref(str(object_type_or_ref), vmid, node=node)
+        raise ValueError("VMID is required with an object type.")
+    if not cluster_key:
+        raise ValueError("Cluster key is required for guest identity.")
+    return GuestRef(cluster_key, str(object_type_or_ref), vmid, node=node)
 
 
 def _require_guest(
     object_type_or_ref: str | GuestRef,
     vmid: int | None = None,
     *,
+    cluster_key: str = "",
     node: str = "",
 ) -> SimpleNamespace:
-    ref = _coerce_guest_ref(object_type_or_ref, vmid, node=node)
+    ref = _coerce_guest_ref(object_type_or_ref, vmid, cluster_key=cluster_key, node=node)
     if ref.object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
     detail = _resolve_guest_detail(ref)
@@ -594,20 +614,19 @@ def _resolve_guest_detail(
     object_type_or_ref: str | GuestRef,
     vmid: int | None = None,
     *,
+    cluster_key: str = "",
     node: str = "",
 ) -> SimpleNamespace:
     """Resolve one cluster-qualified guest without provider I/O in the request."""
-    ref = _coerce_guest_ref(object_type_or_ref, vmid, node=node)
+    ref = _coerce_guest_ref(object_type_or_ref, vmid, cluster_key=cluster_key, node=node)
     current_query = CurrentGuestInventory.objects.filter(
-        Q(cluster__key=ref.cluster_key) | Q(cluster__isnull=True),
+        cluster__key=ref.cluster_key,
         object_type=ref.object_type,
         vmid=ref.vmid,
     )
     if ref.node:
         current_query = current_query.filter(node=ref.node)
-    # Prefer the qualified writer. A null row is a bounded mixed-version reader
-    # for pre-Phase-3 data and becomes impossible at contract activation.
-    obj = current_query.order_by(F("cluster_id").desc(nulls_last=True)).first()
+    obj = current_query.first()
     if obj is None:
         return SimpleNamespace(
             cluster=None,
@@ -672,8 +691,13 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         if detail_ref is not None
         else f"{detail.object_type}:{detail.vmid}"
     )
-    active_target = _guest_target_value(detail.object_type, detail.vmid, detail.node)
-    tag_catalog = load_tag_catalog()
+    active_target = _guest_target_value(
+        detail.cluster_key,
+        detail.object_type,
+        detail.vmid,
+        detail.node,
+    )
+    tag_catalog = load_tag_catalog(cluster=detail.cluster)
     rows, live_available, scan_at = _guest_rows(current_guests=tag_catalog.guests)
     available_user_tags = _decorate_guest_tag_chips(rows, catalog=tag_catalog)
     # The sidebar list on every detail/Summary page is the same workspace tree,
@@ -684,6 +708,7 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
     return {
         **navigation_context("vms"),
         "guest": detail,
+        "cluster_key": detail.cluster_key,
         "guest_identity": guest_identity(
             detail.object_type,
             detail.vmid,
@@ -711,7 +736,7 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
 
 
 def _guest_tabs(detail: SimpleNamespace, active_tab: str) -> list[dict]:
-    args = [detail.object_type, detail.vmid]
+    args = [detail.cluster_key, detail.object_type, detail.vmid]
     tabs = [
         {"key": "summary", "label": "Summary", "url": reverse("core:guest_summary", args=args)},
         {"key": "console", "label": "Console", "url": reverse("core:guest_console", args=args)},

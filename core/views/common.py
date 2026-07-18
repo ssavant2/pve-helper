@@ -776,29 +776,25 @@ def enqueue_bulk_task(func, *args, **kwargs):
     return async_task(func, *args, q_options=q_options, **kwargs)
 
 
-def cluster_scoped_clients(cluster=None):
+def cluster_scoped_clients(cluster):
     """Provider clients for the guest views, bounded to one cluster.
 
     This replaces the global client fan-out these views used to share. That fan-out selected clients from settings with no cluster scope, so a
     view looking for `vm:500` on `pve1` would accept whichever endpoint answered
     first — including one belonging to a different cluster.
 
-    Explicit callers carry the cluster resolved from GuestRef and all returned
-    clients belong to it. The omitted-cluster branch is a bounded migration seam
-    for the two global restore entry points; Phase 4 qualifies those routes and
-    removes the adapter entirely.
+    Callers carry the cluster resolved from a canonical path or GuestRef and all
+    returned clients belong to it. A missing/disabled/quarantined scope fails
+    closed as an empty passive-read result; mutation callers validate that no
+    client was available before submitting work.
 
-    Returns an empty list when no single cluster can be resolved, matching the old
-    behaviour of an unconfigured install rather than breaking passive reads.
+    Returns an empty list when the explicit cluster cannot be acquired, preserving
+    passive last-known reads without selecting a different cluster.
     """
-    from core.services.cluster_resolver import (
-        ClusterResolutionError,
-        cluster_clients,
-        require_sole_enabled_cluster_for_legacy_caller,
-    )
+    from core.services.cluster_resolver import ClusterResolutionError, cluster_clients
 
     try:
-        return cluster_clients(cluster or require_sole_enabled_cluster_for_legacy_caller())
+        return cluster_clients(cluster)
     except ClusterResolutionError:
         return []
 

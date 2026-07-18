@@ -8,8 +8,8 @@ from .read_model_support import (_config_disk_bytes,_config_storage_ids,_guest_p
 
 
 @app_login_required
-def guest_snapshots(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_snapshots(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     entries, error = _guest_snapshot_entries(detail)
     ordered = _ordered_snapshot_entries(entries)
     context = _guest_tab_context(detail, "snapshots")
@@ -34,8 +34,8 @@ def guest_snapshots(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_backup(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_backup(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     backups, backup_storages, error = _guest_backup_archives(detail)
 
     jobs = []
@@ -71,8 +71,8 @@ def guest_backup(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_backup_options(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_backup_options(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     storages, error = _guest_backup_storages(detail)
     return JsonResponse(
         {
@@ -86,8 +86,8 @@ def guest_backup_options(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_migrate_options(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     is_vm = detail.object_type == ProxmoxInventory.ObjectType.VM
     content = "images" if is_vm else "rootdir"
     active = str(detail.status or "").strip() in _MIGRATE_ACTIVE_STATES
@@ -227,8 +227,8 @@ def guest_migrate_options(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_clone_options(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_clone_options(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     nextid = ""
     storages: list[str] = []
     content = "rootdir" if object_type == ProxmoxInventory.ObjectType.CT else "images"
@@ -282,8 +282,8 @@ def guest_clone_options(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_pool_options(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_pool_options(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     for client in common.cluster_scoped_clients(detail.cluster):
         try:
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)

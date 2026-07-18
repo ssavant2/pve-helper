@@ -10,7 +10,7 @@ import {
 import { openPoolDialog, openTagsDialog } from "./guest-tag-pool-actions.js";
 import { loadSoftNavigation } from "./navigation.js";
 import { selectedVmOverviewRows } from "./scheduling.js";
-import { createIcons, escapeHtml, taskDateLabel } from "./shell.js";
+import { createIcons, escapeHtml, parseGuestRef, taskDateLabel } from "./shell.js";
 
 let activeLabel = "";
 let activeVmOverview = null;
@@ -351,12 +351,11 @@ const initContextMenu = () => {
         return;
       }
       if (action === "restore-backup") {
-        const restoreUrl = new URL("/vms/restore/", window.location.origin);
-        const targetParts = String(firstRow.dataset.guestTarget || "")
-          .split("@")[0]
-          .split(":");
-        restoreUrl.searchParams.set("source_type", firstRow.dataset.guestType || targetParts[0] || "");
-        restoreUrl.searchParams.set("source_vmid", firstRow.dataset.guestVmid || targetParts[1] || "");
+        const target = parseGuestRef(firstRow.dataset.guestRef || firstRow.dataset.guestTarget || "");
+        if (!target.cluster) return;
+        const restoreUrl = new URL(`/vms/${encodeURIComponent(target.cluster)}/restore/`, window.location.origin);
+        restoreUrl.searchParams.set("source_type", firstRow.dataset.guestType || target.type);
+        restoreUrl.searchParams.set("source_vmid", firstRow.dataset.guestVmid || target.vmid);
         loadSoftNavigation(restoreUrl);
         return;
       }

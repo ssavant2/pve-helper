@@ -148,15 +148,10 @@ class ProxmoxCluster(TimestampedModel):
                 Lower("key"),
                 name="unique_cluster_key_case_insensitive",
             ),
-            # The multi-cluster activation invariant, enforced in the database and
-            # not only in the enable service: among rows where enabled is true,
-            # `enabled` itself must be unique, so at most one cluster is enabled.
-            # The activation migration drops this once every read, write, URL and
-            # payload boundary is cluster-qualified (identity contract version 1).
             models.UniqueConstraint(
-                fields=["enabled"],
-                condition=models.Q(enabled=True),
-                name="single_enabled_cluster_until_activation",
+                fields=["discovered_ca_uuid"],
+                condition=~models.Q(discovered_ca_uuid=""),
+                name="unique_nonblank_cluster_ca_uuid",
             ),
         ]
 
@@ -273,13 +268,8 @@ class RuntimeConfigurationState(TimestampedModel):
 class ProxmoxEndpoint(TimestampedModel):
     name = models.CharField(max_length=120)
     url = models.URLField()
-    # Nullable for the additive Phase 1a deploy: old code must tolerate the new
-    # column and new code must tolerate rows not yet backfilled. Made non-null by a
-    # follow-up migration once the env writers are gone.
     cluster = models.ForeignKey(
         ProxmoxCluster,
-        null=True,
-        blank=True,
         on_delete=models.PROTECT,
         related_name="endpoints",
     )
@@ -695,13 +685,8 @@ class ProxmoxStorageConsumer(TimestampedModel):
         on_delete=models.CASCADE,
         related_name="consumer_statuses",
     )
-    # Nullable for the additive deploy only; the backfill attaches every existing
-    # row to the sole cluster. The gate fails closed on an unattributed consumer
-    # rather than matching it by bare name.
     cluster = models.ForeignKey(
         ProxmoxCluster,
-        null=True,
-        blank=True,
         on_delete=models.PROTECT,
         related_name="storage_consumers",
     )
@@ -1000,6 +985,13 @@ class StorageSpaceSnapshot(TimestampedModel):
     storage = models.ForeignKey(
         StorageMount, on_delete=models.CASCADE, related_name="space_snapshots", null=True, blank=True
     )
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="storage_space_snapshots",
+    )
     node = models.CharField(max_length=120, blank=True)
     api_storage_id = models.CharField(max_length=120, blank=True)
     scan_run = models.ForeignKey(
@@ -1018,7 +1010,10 @@ class StorageSpaceSnapshot(TimestampedModel):
         ordering = ["-recorded_at"]
         indexes = [
             models.Index(fields=["storage", "recorded_at"]),
-            models.Index(fields=["node", "api_storage_id", "recorded_at"]),
+            models.Index(
+                fields=["cluster", "node", "api_storage_id", "recorded_at"],
+                name="core_space_cl_api_time_idx",
+            ),
         ]
 
     def __str__(self) -> str:

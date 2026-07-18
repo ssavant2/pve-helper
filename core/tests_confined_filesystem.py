@@ -8,8 +8,10 @@ from django.test import SimpleTestCase
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     ConfinedPathExistsError,
+    hardlink_open_file_to_new_directory,
     normalized_relative_path,
     open_regular_file,
+    remove_confined_directory,
     rename_regular_file_noreplace,
 )
 
@@ -67,3 +69,44 @@ class ConfinedFilesystemTests(SimpleTestCase):
             with self.assertRaises(ConfinedFilesystemError):
                 rename_regular_file_noreplace(root, "nested/linked.txt", "escaped.txt")
             self.assertEqual(outside_file.read_bytes(), b"outside")
+
+    def test_hardlink_staging_uses_confined_open_file_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "source.img").write_bytes(b"disk image")
+
+            with open_regular_file(root, "source.img") as source:
+                staged = hardlink_open_file_to_new_directory(
+                    root,
+                    source,
+                    parent_relative_path="images",
+                    directory_name="import-123",
+                    file_name="source.img",
+                )
+
+            self.assertEqual(staged, "images/import-123/source.img")
+            self.assertEqual((root / staged).read_bytes(), b"disk image")
+            self.assertEqual((root / staged).stat().st_ino, (root / "source.img").stat().st_ino)
+
+            remove_confined_directory(root, "images/import-123")
+            self.assertFalse((root / "images" / "import-123").exists())
+            self.assertEqual((root / "source.img").read_bytes(), b"disk image")
+
+    def test_hardlink_staging_rejects_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            outside_root = Path(outside)
+            (root / "source.img").write_bytes(b"disk image")
+            (root / "images").symlink_to(outside_root, target_is_directory=True)
+
+            with open_regular_file(root, "source.img") as source:
+                with self.assertRaises(ConfinedFilesystemError):
+                    hardlink_open_file_to_new_directory(
+                        root,
+                        source,
+                        parent_relative_path="images",
+                        directory_name="import-123",
+                        file_name="source.img",
+                    )
+
+            self.assertFalse((outside_root / "import-123").exists())

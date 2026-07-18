@@ -47,11 +47,6 @@ class Command(BaseCommand):
                     f"Endpoint {normalized} is already registered as '{owner.name}' ({owning}). "
                     "An endpoint may belong to only one cluster."
                 )
-            if ProxmoxEndpoint.objects.filter(name=name).exists():
-                raise CommandError(
-                    f"An endpoint named '{name}' already exists. Pass --endpoint-name to choose another."
-                )
-
             cluster = ProxmoxCluster.objects.create(
                 key=key, display_name=options["display_name"].strip(), enabled=False
             )

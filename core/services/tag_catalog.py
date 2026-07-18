@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from django.db.models import Q
-
 from core.models import CurrentGuestInventory
 from core.services.current_guest_inventory import current_inventory_state
 from core.services.tag_registry import registered_tags, resolve_tag_registry_cluster
@@ -65,11 +63,11 @@ class TagCatalog:
         }
 
 
-def load_tag_catalog(*, cluster=None) -> TagCatalog:
+def load_tag_catalog(*, cluster) -> TagCatalog:
     cluster, cluster_error = resolve_tag_registry_cluster(cluster)
     registered, registry_error = registered_tags(cluster=cluster) if cluster else ({}, cluster_error)
     guests = tuple(
-        CurrentGuestInventory.objects.filter(Q(cluster=cluster) | Q(cluster__isnull=True)).order_by(
+        CurrentGuestInventory.objects.filter(cluster=cluster).order_by(
             "node", "vmid"
         )
         if cluster

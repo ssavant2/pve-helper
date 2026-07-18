@@ -19,6 +19,7 @@ from django_q.tasks import async_task
 from .models import (
     AuditEvent,
     FileInventory,
+    ProxmoxCluster,
     ProxmoxEndpoint,
     ProxmoxInventory,
     ScanClusterObservation,
@@ -122,34 +123,7 @@ def _durable_or_legacy_guest_operation(
 
 
 
-def _cluster_clients():
-    """Provider clients for the sole enabled cluster, or none.
-
-    Workers carry no cluster scope of their own yet; Phase 3 gives their durable
-    payloads a GuestRef and this resolves from that instead.
-    """
-    from .services.cluster_resolver import (
-        ClusterResolutionError,
-        cluster_clients,
-        require_sole_enabled_cluster_for_legacy_caller,
-    )
-
-    try:
-        return cluster_clients(require_sole_enabled_cluster_for_legacy_caller())
-    except ClusterResolutionError:
-        return []
-
-
-def _first_cluster_client():
-    return next(iter(_cluster_clients()), None)
-
-
-def refresh_current_guest_inventory(*, cluster=None) -> dict[str, object]:
-    """Refresh the non-blocking guest read model outside HTTP requests."""
-    if cluster is None:
-        from .services.cluster_resolver import require_sole_enabled_cluster_for_legacy_caller
-
-        cluster = require_sole_enabled_cluster_for_legacy_caller()
+def _refresh_cluster_guest_inventory(cluster) -> dict[str, object]:
     lock_id = cluster_advisory_lock_id(CURRENT_GUEST_REFRESH_LOCK_ID, cluster)
     acquired = connection.vendor != "postgresql"
     if connection.vendor == "postgresql":
@@ -172,6 +146,20 @@ def refresh_current_guest_inventory(*, cluster=None) -> dict[str, object]:
         if connection.vendor == "postgresql":
             with connection.cursor() as cursor:
                 cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
+
+
+def refresh_current_guest_inventory() -> dict[str, object]:
+    """Refresh every enabled cluster without an ambient active-cluster fallback."""
+    results = [
+        _refresh_cluster_guest_inventory(cluster)
+        for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key")
+    ]
+    return {
+        "clusters": results,
+        "guests": sum(int(item.get("guests") or 0) for item in results),
+        "complete": all(bool(item.get("complete")) for item in results) if results else False,
+        "skipped": bool(results) and all(bool(item.get("skipped")) for item in results),
+    }
 
 
 def dispatch_scheduled_actions() -> dict[str, int | bool]:
@@ -338,6 +326,7 @@ def reap_stale_guest_tasks() -> dict[str, int]:
     resolved = 0
     reaped = 0
     changed = False
+    changed_clusters = set()
     for event in stale:
         details = dict(event.details) if isinstance(event.details, dict) else {}
         upid = details.get("proxmox_task_upid")
@@ -345,7 +334,12 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         endpoint = details.get("proxmox_endpoint") or ""
         status = None
         if upid and node:
-            client = ProxmoxClient(endpoint) if endpoint else _first_cluster_client()
+            client = None
+            if endpoint:
+                client = ProxmoxClient(endpoint)
+            elif event.cluster_id is not None:
+                clients = cluster_clients(event.cluster)
+                client = clients[0] if clients else None
             if client is not None:
                 try:
                     status = client.get(f"nodes/{quote(str(node), safe='')}/tasks/{quote(str(upid), safe='')}/status")
@@ -370,8 +364,11 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         event.details = details
         event.save(update_fields=["outcome", "details"])
         changed = True
+        if event.cluster_id is not None:
+            changed_clusters.add(event.cluster)
     if changed:
-        clear_live_guest_caches()
+        for cluster in changed_clusters:
+            clear_live_guest_caches(cluster=cluster)
     resolved_force_stop_questions = _resolve_force_stop_questions(now=timezone.now())
     interrupted_tag_operations = _reap_stale_tag_operations(now=timezone.now())
     interrupted_tag_inventory_refreshes = _reap_stale_tag_inventory_refreshes(now=timezone.now())
@@ -491,13 +488,18 @@ def _resolve_force_stop_questions(*, now) -> int:
     if not candidates:
         return 0
 
-    try:
-        statuses = fetch_live_guest_status()
-    except Exception:  # best-effort control-plane reconciliation
-        return 0
+    statuses_by_cluster = {}
+    for cluster in {event.cluster for event in candidates if event.cluster_id is not None}:
+        try:
+            statuses_by_cluster[cluster.pk] = fetch_live_guest_status(cluster=cluster)
+        except Exception:  # best-effort control-plane reconciliation
+            statuses_by_cluster[cluster.pk] = {}
 
     resolved = 0
     for event in candidates:
+        if event.cluster_id is None:
+            continue
+        statuses = statuses_by_cluster.get(event.cluster_id, {})
         details = dict(event.details) if isinstance(event.details, dict) else {}
         target_type = str(details.get("target_type") or "")
         try:
@@ -953,7 +955,7 @@ def _refresh_import_target_inventory(
     vmid: str,
     *,
     node: str = "",
-    cluster=None,
+    cluster,
 ) -> None:
     """Refresh an imported VM's disk rows using its current PVE config.
 
@@ -986,7 +988,7 @@ def _refresh_import_target_inventory(
     if node and numeric_vmid is not None:
         # Bounded to one cluster: asking every endpoint whether it holds this
         # node/vmid is a cross-cluster search, and two clusters may each answer.
-        clients = cluster_clients(cluster) if cluster is not None else _cluster_clients()
+        clients = cluster_clients(cluster)
         for client in clients:
             try:
                 config = client.guest_config(
@@ -1147,13 +1149,16 @@ def _record_local_space_snapshots(recorded_at: datetime) -> int:
     the local-storage Monitor tab gets the same 2x/day time series as the
     mounted ones. Cheap: a couple of calls per node, deduped across endpoints."""
     created = 0
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     truthy = {"1", "true", "yes", "on"}
     # `nodes` is cluster-wide, so one answering member covers the cluster and the
     # per-node reads ride on the endpoint that proved reachable. The old loop asked
     # every endpoint and deduped the overlap by hand.
-    client = _first_cluster_client()
-    if client is not None:
+    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
+        clients = cluster_clients(cluster)
+        client = clients[0] if clients else None
+        if client is None:
+            continue
         try:
             nodes = client.get("nodes")
         except ProxmoxAPIError:
@@ -1174,7 +1179,7 @@ def _record_local_space_snapshots(recorded_at: datetime) -> int:
                 sid = str(entry.get("storage") or "")
                 if not sid or str(entry.get("shared") or "0").lower() in truthy:
                     continue
-                key = (node, sid)
+                key = (cluster.key, node, sid)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -1187,6 +1192,7 @@ def _record_local_space_snapshots(recorded_at: datetime) -> int:
                     used = total - avail
                 StorageSpaceSnapshot.objects.create(
                     storage=None,
+                    cluster=cluster,
                     node=node,
                     api_storage_id=sid,
                     scan_run=None,

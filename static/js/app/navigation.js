@@ -147,6 +147,14 @@ const initSoftNavigation = () => {
     loadSoftNavigation(new URL(anchor.href, window.location.href));
   });
 
+  document.addEventListener("change", (event) => {
+    const selector = event.target.closest("[data-cluster-navigation]");
+    if (!selector?.value) {
+      return;
+    }
+    loadSoftNavigation(new URL(selector.value, window.location.href));
+  });
+
   window.addEventListener("popstate", () => {
     loadSoftNavigation(new URL(window.location.href), { push: false });
   });

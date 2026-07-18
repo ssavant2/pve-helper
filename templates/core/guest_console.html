@@ -6,7 +6,7 @@
     data-console-page
     data-guest-type="{{ guest.object_type }}"
     data-session-url="{{ console_session_url }}"
-    data-power-url="{% url 'core:guest_power' guest.object_type guest.vmid %}"
+    data-power-url="{% url 'core:guest_power' guest.cluster_key guest.object_type guest.vmid %}"
     data-novnc-url="{{ console_novnc_url }}"
     data-xterm-js-url="{{ console_xterm_js_url }}"
     data-xterm-fit-url="{{ console_xterm_fit_url }}"

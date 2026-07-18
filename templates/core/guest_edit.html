@@ -8,12 +8,12 @@
       <p>Editing writes to the Proxmox guest configuration.</p>
     </div>
     <div class="page-header-actions">
-      <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+      <a class="secondary-action" href="{% url 'core:guest_summary' guest.cluster_key guest.object_type guest.vmid %}">Cancel</a>
     </div>
   </section>
 
   <section class="panel panel-spaced guest-edit-panel">
-    <form method="post" action="{% url 'core:guest_edit' guest.object_type guest.vmid %}">
+    <form method="post" action="{% url 'core:guest_edit' guest.cluster_key guest.object_type guest.vmid %}">
       {% csrf_token %}
       <input type="hidden" name="section" value="{{ section }}">
 
@@ -88,7 +88,7 @@
       {% if form_error %}<p class="form-error guest-edit-error">{{ form_error }}</p>{% endif %}
       <div class="form-actions">
         <button class="primary-action" type="submit">Save changes</button>
-        <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+        <a class="secondary-action" href="{% url 'core:guest_summary' guest.cluster_key guest.object_type guest.vmid %}">Cancel</a>
       </div>
     </form>
   </section>

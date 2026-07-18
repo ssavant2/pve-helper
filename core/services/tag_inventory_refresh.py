@@ -55,7 +55,7 @@ def _worker_lock(cluster):
 
 
 def queue_tag_inventory_refresh(
-    *, request=None, user=None, username: str = "", cluster=None
+    *, cluster, request=None, user=None, username: str = ""
 ) -> tuple[AuditEvent, str]:
     cluster, cluster_error = resolve_tag_registry_cluster(cluster)
     if cluster is None:

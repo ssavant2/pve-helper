@@ -5,6 +5,7 @@ import {
   applyGuestStatusHintsFromTasks,
   createIcons,
   escapeHtml,
+  parseGuestRef,
   recentTasksRefreshEvent,
   refreshGuestStateAfterTaskTransitions,
   renderGuestLabel,
@@ -33,6 +34,7 @@ const initRecentTasks = () => {
   const previousButton = recentTasks.querySelector("[data-task-prev]");
   const nextButton = recentTasks.querySelector("[data-task-next]");
   const pageLabel = recentTasks.querySelector("[data-task-page-label]");
+  const clusterFilter = recentTasks.querySelector("[data-task-cluster-filter]");
   const tasksUrl = recentTasks.dataset.tasksUrl;
   const pollMs = Number.parseInt(recentTasks.dataset.taskPollMs || "10000", 10);
   const parsedRenderedAtMs = Date.parse(recentTasks.dataset.taskRenderedAt || "");
@@ -314,8 +316,8 @@ const initRecentTasks = () => {
       return false;
     }
     // Match on type:vmid (node-agnostic) — a host migration changes the node.
-    const activeBare = String(badge.dataset.guestTarget || "").split("@")[0];
-    if (!activeBare) {
+    const active = parseGuestRef(badge.dataset.guestRef || badge.dataset.guestTarget || "");
+    if (!active.type || !active.vmid) {
       return false;
     }
     const completedMigrate = tasks.find((task) => {
@@ -323,7 +325,7 @@ const initRecentTasks = () => {
         return false;
       }
       const target = task.target_guest || {};
-      if (`${target.type || ""}:${target.vmid || ""}` !== activeBare) {
+      if (String(target.type || "") !== active.type || String(target.vmid || "") !== active.vmid) {
         return false;
       }
       return Number(task.finished_at_ms || 0) >= renderedAtMs - 300000;
@@ -434,6 +436,7 @@ const initRecentTasks = () => {
       >
         <td data-column="task-name" data-sort-value="${escapeHtml(task.name)}">${escapeHtml(task.name)}</td>
         <td data-column="target" data-sort-value="${escapeHtml(taskTargetSortValue(task))}">${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
+        <td data-column="cluster" data-sort-value="${escapeHtml(task.cluster || "-")}">${escapeHtml(task.cluster || "-")}</td>
         <td data-column="status" data-sort-value="${escapeHtml(task.status)}">${
           task.offer_force_stop
             ? `<button type="button" class="task-question-badge" data-force-stop-target="${escapeHtml(task.force_stop_target)}" data-force-stop-label="${escapeHtml(task.target)}" data-force-stop-task-id="${escapeHtml(task.id || "")}">A question — click to answer</button>`
@@ -610,6 +613,9 @@ const initRecentTasks = () => {
     try {
       const url = new URL(tasksUrl, window.location.origin);
       url.searchParams.set("page", String(normalizedPage));
+      if (clusterFilter?.value) {
+        url.searchParams.set("cluster", clusterFilter.value);
+      }
       if (normalizedPage === 0) {
         window.dispatchEvent(new CustomEvent(recentTasksRefreshEvent));
       }
@@ -678,6 +684,11 @@ const initRecentTasks = () => {
       loadTaskPage(taskPage - 1);
     });
   }
+
+  clusterFilter?.addEventListener("change", () => {
+    taskPage = 0;
+    loadTaskPage(0);
+  });
 
   if (nextButton) {
     nextButton.addEventListener("click", () => {

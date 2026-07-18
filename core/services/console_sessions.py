@@ -86,8 +86,6 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     credential = getattr(selected_client, "_credential", None)
     if credential is not None and credential.token_id:
         fallback_user = credential.token_id.split("!", 1)[0]
-    elif settings.PVE_API_TOKEN_ID:
-        fallback_user = settings.PVE_API_TOKEN_ID.split("!", 1)[0]
     proxmox_user = str(response.get("user") or fallback_user)
     if not port or not ticket:
         raise ProxmoxAPIError("Proxmox did not return a usable console ticket.")

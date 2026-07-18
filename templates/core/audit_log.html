@@ -26,7 +26,7 @@
     <div class="audit-toolbar">
       <div class="segmented-control" aria-label="Audit module filter">
         {% for filter in audit_filters %}
-          <a class="segmented-button {% if filter.key == audit_filter %}active{% endif %}" href="?filter={{ filter.key }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}" aria-pressed="{% if filter.key == audit_filter %}true{% else %}false{% endif %}">
+          <a class="segmented-button {% if filter.key == audit_filter %}active{% endif %}" href="?filter={{ filter.key }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}{% if audit_cluster %}&cluster={{ audit_cluster|urlencode }}{% endif %}" aria-pressed="{% if filter.key == audit_filter %}true{% else %}false{% endif %}">
             {{ filter.label }}
           </a>
         {% endfor %}
@@ -34,19 +34,22 @@
       <form class="search-control" method="get" role="search">
         <span class="sr-only">Search audit log</span>
         <input type="hidden" name="filter" value="{{ audit_filter }}">
+        <select name="cluster" aria-label="Cluster"><option value="">All clusters</option>{% for cluster in audit_clusters %}<option value="{{ cluster.key }}"{% if cluster.key == audit_cluster %} selected{% endif %}>{{ cluster.display_name }}</option>{% endfor %}</select>
         <input type="search" name="q" value="{{ audit_query }}" placeholder="Search for anything" autocomplete="off">
+        <button class="secondary-action" type="submit">Filter</button>
       </form>
       <span class="audit-count">{{ audit_total }} event{{ audit_total|pluralize }}</span>
       <span class="panel-heading-controls">
-        <a class="page-button{% if not audit_has_prev %} disabled{% endif %}" href="?page={{ audit_page|add:"-1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Previous 200</a>
+        <a class="page-button{% if not audit_has_prev %} disabled{% endif %}" href="?page={{ audit_page|add:"-1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}{% if audit_cluster %}&cluster={{ audit_cluster|urlencode }}{% endif %}">Previous 200</a>
         <span class="page-label">{{ audit_start }}-{{ audit_end }} of {{ audit_total }}</span>
-        <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}">Next 200</a>
+        <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}{% if audit_cluster %}&cluster={{ audit_cluster|urlencode }}{% endif %}">Next 200</a>
       </span>
     </div>
     <table class="data-table audit-table" data-sortable-table data-resizable-columns data-column-table="audit-log">
       <thead>
         <tr>
           <th data-column="time" data-sort="number">Time</th>
+          <th data-column="cluster" data-sort="text">Cluster</th>
           <th data-column="module" data-sort="text">Module</th>
           <th data-column="user" data-sort="text">User</th>
           <th data-column="source" data-sort="text">Source IP</th>
@@ -59,6 +62,7 @@
         {% for event in events %}
           <tr data-context-label="{{ event.object_id }}">
             <td data-column="time" data-sort-value="{{ event.timestamp|date:'U' }}">{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
+            <td data-column="cluster" data-sort-value="{{ event.cluster.display_name|default:event.cluster_key_snapshot }}">{{ event.cluster.display_name|default:event.cluster_key_snapshot|default:"-" }}</td>
             <td data-column="module" data-sort-value="{{ event.display_module }}">{{ event.display_module }}</td>
             <td data-column="user" data-sort-value="{{ event.username|default:'-' }}">{{ event.username|default:"-" }}</td>
             <td data-column="source" data-sort-value="{{ event.source_ip|default:'-' }}">{{ event.source_ip|default:"-" }}</td>
@@ -75,7 +79,7 @@
         {% endfor %}
         {% if not events %}
           <tr>
-            <td colspan="7" class="empty-state">{% if audit_filter != 'all' or audit_query %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+            <td colspan="8" class="empty-state">{% if audit_filter != 'all' or audit_query or audit_cluster %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
           </tr>
         {% endif %}
       </tbody>
@@ -106,6 +110,7 @@
           </select>
         </label>
         <input type="hidden" name="page" value="{{ audit_page }}">
+        <input type="hidden" name="cluster" value="{{ audit_cluster }}">
         <label class="form-field">
           <span>Module</span>
           <select name="filter">

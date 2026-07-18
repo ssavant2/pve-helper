@@ -12,7 +12,7 @@
   </section>
 
   <section class="panel panel-spaced guest-edit-panel">
-    <form method="post" action="{% url 'core:guest_create' object_type %}">
+    <form method="post" action="{% url 'core:guest_create' cluster_key object_type %}">
       {% csrf_token %}
 
       <div class="form-grid">

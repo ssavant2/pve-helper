@@ -2,9 +2,10 @@
 
 {% block content %}
   <div class="page-header" data-tag-inventory-view data-rendered-at-ms="{{ tag_view_rendered_at_ms }}">
-    <div><h1>Tags</h1><p>Central Proxmox tag registry and guest membership.</p></div>
+    <div><h1>Tags</h1><p>Central Proxmox tag registry and guest membership for {{ selected_cluster.display_name }}.</p></div>
     <div class="page-header-actions">
-      <form method="post" action="{% url 'core:tags_refresh' %}" data-tag-refresh-form>
+      <label><span class="sr-only">Cluster</span><select data-cluster-navigation>{% for cluster in cluster_choices %}<option value="{% url 'core:tags_overview' cluster.key %}"{% if cluster.key == cluster_key %} selected{% endif %}>{{ cluster.display_name }}</option>{% endfor %}</select></label>
+      <form method="post" action="{% url 'core:tags_refresh' cluster_key %}" data-tag-refresh-form>
         {% csrf_token %}
         <button class="secondary-action" type="submit">Refresh tag inventory</button>
         <p class="form-error tag-form-error" data-tag-refresh-error hidden></p>
@@ -17,7 +18,7 @@
 
   <section class="panel tag-create-panel">
     <div class="panel-heading"><h2>Create tag</h2></div>
-    <form class="tag-create-form" method="post" action="{% url 'core:tag_create' %}" data-tag-async-form>
+    <form class="tag-create-form" method="post" action="{% url 'core:tag_create' cluster_key %}" data-tag-async-form>
       {% csrf_token %}
       <label class="tag-name-field"><span>Name</span><input name="tag" pattern="[a-z0-9_][a-z0-9_+.-]*" placeholder="backup-standard" required></label>
       <label><span>Color</span><input type="color" name="color" value="#3b82f6"></label>

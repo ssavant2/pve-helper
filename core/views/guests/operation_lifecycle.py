@@ -11,7 +11,6 @@ from core.services.cluster_resolver import (
 )
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.public_errors import public_exception_message
-from core.services.guest_scope import guest_ref_from_legacy_identity
 from core.services.refs import GuestRef, RefParseError
 
 # Sentinel returned by the multi-disk migration path when its worker owns the
@@ -336,12 +335,17 @@ def wants_task_json(request) -> bool:
     return request.headers.get("X-Requested-With") == "fetch"
 
 
-def guest_action_response(request, object_type, vmid, error_label="", *, redirect_name):
+def guest_action_response(request, cluster_key, object_type, vmid, error_label="", *, redirect_name):
     if wants_task_json(request):
         return JsonResponse({"ok": not error_label, "errors": [error_label] if error_label else []})
     if error_label:
         messages.error(request, error_label)
-    return redirect(redirect_name, object_type=object_type, vmid=vmid)
+    return redirect(
+        redirect_name,
+        cluster_key=cluster_key,
+        object_type=object_type,
+        vmid=vmid,
+    )
 
 
 def write_result(request, detail, redirect_name, err, audit_action, audit_details=None):
@@ -352,7 +356,12 @@ def write_result(request, detail, redirect_name, err, audit_action, audit_detail
             messages.error(request, f"Failed: {err}")
     else:
         audit_guest(request, detail, audit_action, audit_details)
-    return redirect(redirect_name, object_type=detail.object_type, vmid=detail.vmid)
+    return redirect(
+        redirect_name,
+        cluster_key=detail.cluster_key,
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+    )
 
 
 def parse_guest_target_value(value: str) -> tuple[str | None, int | None, str]:
@@ -367,14 +376,7 @@ def guest_ref_from_target_value(value: str) -> GuestRef | None:
             return GuestRef.parse(raw)
         except RefParseError:
             return None
-    target_text, _node_separator, node = str(value or "").partition("@")
-    object_type, separator, vmid_text = target_text.partition(":")
-    if separator != ":" or object_type not in GUEST_OBJECT_TYPES:
-        return None
-    try:
-        return guest_ref_from_legacy_identity(object_type, int(vmid_text), node=node)
-    except (TypeError, ValueError):
-        return None
+    return None
 
 
 # Compatibility aliases while call sites move to explicit public helper names.

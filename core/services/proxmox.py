@@ -566,10 +566,7 @@ class ProxmoxClient:
             return None
 
 
-def fetch_live_guest_status(*, cluster=None) -> dict[tuple[str, str, int], str]:
-    cluster = cluster or _display_cluster()
-    if cluster is None:
-        return {}
+def fetch_live_guest_status(*, cluster) -> dict[tuple[str, str, int], str]:
     cache_key = cluster_cache_key(LIVE_GUEST_STATUS_CACHE_NAMESPACE, cluster)
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
@@ -580,8 +577,7 @@ def fetch_live_guest_status(*, cluster=None) -> dict[tuple[str, str, int], str]:
     return result
 
 
-def fetch_live_guest_inventory(*, use_cache: bool = True, cluster=None) -> list[ProxmoxGuestSummary]:
-    cluster = cluster or _display_cluster()
+def fetch_live_guest_inventory(*, cluster, use_cache: bool = True) -> list[ProxmoxGuestSummary]:
     if cluster is None:
         return []
     cache_key = cluster_cache_key(LIVE_GUEST_INVENTORY_CACHE_NAMESPACE, cluster)
@@ -596,7 +592,7 @@ def fetch_live_guest_inventory(*, use_cache: bool = True, cluster=None) -> list[
     return result
 
 
-def fetch_verified_guest_inventory(*, cluster=None) -> VerifiedGuestInventory:
+def fetch_verified_guest_inventory(*, cluster) -> VerifiedGuestInventory:
     """Read one cluster's guest membership authoritatively.
 
     Unlike :func:`fetch_live_guest_inventory`, this has no display deadline, cache
@@ -614,21 +610,7 @@ def fetch_verified_guest_inventory(*, cluster=None) -> VerifiedGuestInventory:
     # from it, so a module-level import here would be circular. The cluster-aware
     # read living in the transport module is the reason; Phase 2 moves this read
     # into the cluster-scoped read model and the seam disappears.
-    from core.services.cluster_resolver import (
-        cluster_wide_read,
-        require_sole_enabled_cluster_for_legacy_caller,
-    )
-
-    if cluster is None:
-        try:
-            cluster = require_sole_enabled_cluster_for_legacy_caller()
-        except Exception as exc:
-            return VerifiedGuestInventory(
-                guests=(),
-                attempted_endpoints=(),
-                successful_endpoints=(),
-                errors=(str(exc),),
-            )
+    from core.services.cluster_resolver import cluster_wide_read
 
     def _read(client) -> list:
         resources = client.get("cluster/resources?type=vm")
@@ -661,14 +643,11 @@ def fetch_verified_guest_inventory(*, cluster=None) -> VerifiedGuestInventory:
     )
 
 
-def fetch_live_guest_locks(*, cluster=None) -> dict[tuple[str, str, int], str]:
+def fetch_live_guest_locks(*, cluster) -> dict[tuple[str, str, int], str]:
     """Return {(node, object_type, vmid): lock} for guests that carry a Proxmox
     config lock (``backup``, ``migrate``, ``snapshot``, ``suspended``, ...). The
     lock rides on the per-node ``qemu``/``lxc`` listing (one call per node per
     type), so this is a cluster-wide health signal without any per-VM polling."""
-    cluster = cluster or _display_cluster()
-    if cluster is None:
-        return {}
     cache_key = cluster_cache_key(LIVE_GUEST_LOCKS_CACHE_NAMESPACE, cluster)
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
@@ -676,22 +655,6 @@ def fetch_live_guest_locks(*, cluster=None) -> dict[tuple[str, str, int], str]:
     result = _fetch_live_guest_locks_uncached(cluster=cluster)
     cache.set(cache_key, result, LIVE_GUEST_LOCKS_CACHE_SECONDS)
     return result
-
-
-def _display_cluster():
-    """The cluster a passive display read renders, or None.
-
-    Display reads tolerate missing data by design, so an unresolvable scope
-    produces an empty result rather than an exception: a page must not break
-    because no cluster is configured yet. Destructive callers use
-    fetch_verified_guest_inventory(), which reports coverage explicitly instead.
-    """
-    from core.services.cluster_resolver import require_sole_enabled_cluster_for_legacy_caller
-
-    try:
-        return require_sole_enabled_cluster_for_legacy_caller()
-    except Exception:
-        return None
 
 
 def _cluster_nodes(cluster, *, operation: str, deadline: float):
@@ -733,11 +696,8 @@ def _cluster_resources(cluster, *, operation: str, deadline: float) -> list:
     return result.value or []
 
 
-def _fetch_live_guest_locks_uncached(*, cluster=None) -> dict[tuple[str, str, int], str]:
+def _fetch_live_guest_locks_uncached(*, cluster) -> dict[tuple[str, str, int], str]:
     locks: dict[tuple[str, str, int], str] = {}
-    cluster = cluster or _display_cluster()
-    if cluster is None:
-        return locks
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
     client, nodes = _cluster_nodes(cluster, operation="guest_locks_nodes", deadline=deadline)
     if client is None:
@@ -769,14 +729,11 @@ def _fetch_live_guest_locks_uncached(*, cluster=None) -> dict[tuple[str, str, in
     return locks
 
 
-def fetch_live_guest_lineage(*, cluster=None) -> dict[int, int]:
+def fetch_live_guest_lineage(*, cluster) -> dict[int, int]:
     """Return {child VMID: parent-template VMID} for linked clones — a qcow2 whose
     storage-content ``parent`` points at a template's ``base-<N>-disk-`` volume.
     One content listing per images-storage (deduped across nodes); no per-file
     ``qemu-img`` probing. VM/qcow2/file-storage only; other backends yield nothing."""
-    cluster = cluster or _display_cluster()
-    if cluster is None:
-        return {}
     cache_key = cluster_cache_key(LIVE_GUEST_LINEAGE_CACHE_NAMESPACE, cluster)
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
@@ -786,11 +743,8 @@ def fetch_live_guest_lineage(*, cluster=None) -> dict[int, int]:
     return result
 
 
-def _fetch_live_guest_lineage_uncached(*, cluster=None) -> dict[int, int]:
+def _fetch_live_guest_lineage_uncached(*, cluster) -> dict[int, int]:
     lineage: dict[int, int] = {}
-    cluster = cluster or _display_cluster()
-    if cluster is None:
-        return lineage
     seen_storages: set[str] = set()
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
     client, nodes = _cluster_nodes(cluster, operation="linked_clone_nodes", deadline=deadline)
@@ -875,15 +829,13 @@ def _fetch_live_guest_lineage_uncached(*, cluster=None) -> dict[int, int]:
     return lineage
 
 
-def clear_live_guest_caches(*, cluster=None) -> None:
+def clear_live_guest_caches(*, cluster) -> None:
     """Invalidate every ephemeral read for exactly one cluster.
 
     The generation also covers per-guest snapshot/agent/HA keys constructed by
     the view read model, not only the four aggregate caches in this module.
     """
-    cluster = cluster or _display_cluster()
-    if cluster is not None:
-        invalidate_cluster_cache(cluster)
+    invalidate_cluster_cache(cluster)
 
 
 def _paused_vm_keys(unknown_vm_keys, deadline, *, cluster) -> set[tuple[str, str, int]]:
@@ -960,16 +912,13 @@ def _hibernated_vm_keys(stopped_vm_keys, deadline, *, cluster) -> set[tuple[str,
     return hibernated
 
 
-def _fetch_live_guest_status_uncached(*, cluster=None) -> dict[tuple[str, str, int], str]:
+def _fetch_live_guest_status_uncached(*, cluster) -> dict[tuple[str, str, int], str]:
     """Return {(node, object_type, vmid): status} for all guests.
 
     This is the hot display path for power state. Keep it status-only and
     bounded; safety checks use direct guest APIs elsewhere.
     """
     statuses: dict[tuple[str, str, int], str] = {}
-    cluster = cluster or _display_cluster()
-    if cluster is None:
-        return statuses
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
     resources = _cluster_resources(cluster, operation="live_guest_status", deadline=deadline)
 
@@ -989,12 +938,9 @@ def _fetch_live_guest_status_uncached(*, cluster=None) -> dict[tuple[str, str, i
     return statuses
 
 
-def _fetch_live_guest_inventory_uncached(*, cluster=None) -> list[ProxmoxGuestSummary]:
+def _fetch_live_guest_inventory_uncached(*, cluster) -> list[ProxmoxGuestSummary]:
     """Return lightweight guest inventory across all configured endpoints."""
     guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
-    cluster = cluster or _display_cluster()
-    if cluster is None:
-        return []
     deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
 
     for resource in _cluster_resources(cluster, operation="live_guest_inventory", deadline=deadline):

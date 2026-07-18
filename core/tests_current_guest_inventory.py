@@ -104,6 +104,7 @@ class CurrentGuestInventoryTests(TestCase):
     def test_partial_live_refresh_adds_and_updates_but_never_deletes_unseen_guests(self):
         preserved = self.current_guest(endpoint=self.pve2, object_type="vm", vmid=202, name="preserved")
         result = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
             guests=(
                 ProxmoxGuestSummary(
                     node="pve1",
@@ -145,6 +146,7 @@ class CurrentGuestInventoryTests(TestCase):
     def test_complete_live_refresh_removes_guests_absent_from_authoritative_membership(self):
         self.current_guest(endpoint=self.pve2, object_type="vm", vmid=202, name="deleted")
         result = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
             guests=(ProxmoxGuestSummary(node="pve1", object_type="vm", vmid=100, name="kept", status="running"),),
             attempted_endpoints=(self.pve1.url, self.pve2.url),
             successful_endpoints=(self.pve1.url, self.pve2.url),
@@ -169,6 +171,7 @@ class CurrentGuestInventoryTests(TestCase):
         current.save(update_fields=["config"])
 
         update_current_guest_config(
+            cluster=self.cluster,
             object_type="vm",
             vmid=100,
             updates={"tags": "new"},
@@ -182,6 +185,7 @@ class CurrentGuestInventoryTests(TestCase):
 
     def test_direct_guest_update_creates_a_partial_current_row_when_missing(self):
         update_current_guest_config(
+            cluster=self.cluster,
             object_type="vm",
             vmid=303,
             node="pve1",
@@ -208,6 +212,7 @@ class CurrentGuestInventoryTests(TestCase):
 
         result = refresh_current_guest_from_client(
             client,
+            cluster=self.cluster,
             node="pve1",
             object_type="vm",
             vmid=100,
@@ -234,6 +239,7 @@ class CurrentGuestInventoryTests(TestCase):
 
         result = refresh_current_guest_from_client(
             client,
+            cluster=self.cluster,
             node="pve1",
             object_type="vm",
             vmid=100,
@@ -253,6 +259,7 @@ class CurrentGuestInventoryTests(TestCase):
 
         result = refresh_current_guest_from_client(
             client,
+            cluster=self.cluster,
             node="pve1",
             object_type="vm",
             vmid=100,
@@ -266,6 +273,7 @@ class CurrentGuestInventoryTests(TestCase):
     @patch("core.tasks.fetch_verified_guest_inventory")
     def test_periodic_refresh_updates_projection_outside_the_request(self, fetch_inventory):
         fetch_inventory.return_value = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
             guests=(
                 ProxmoxGuestSummary(
                     node="pve1",

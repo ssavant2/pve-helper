@@ -186,7 +186,7 @@ def vms_bulk_action(request):
         if action == "untemplate":
             _update_current_guest_config(detail, {"template": "0"}, [])
         if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "pool", "migrate", "clone", "tags", "destroy", "agent_enable", "agent_disable", "backup"}:
-            clear_live_guest_caches()
+            clear_live_guest_caches(cluster=detail.cluster)
 
     response = done(not errors, errors)
     if response:

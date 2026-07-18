@@ -120,11 +120,11 @@ def _hotplug_options(config: dict) -> list[dict]:
 
 
 @app_login_required
-def guest_hardware_edit(request, object_type: str, vmid: int):
+def guest_hardware_edit(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
 
-    detail = _resolve_guest_detail(object_type, vmid)
+    detail = _resolve_guest_detail(object_type, vmid, cluster_key=cluster_key)
     if not detail.found:
         raise Http404("Guest not found")
 
@@ -132,11 +132,16 @@ def guest_hardware_edit(request, object_type: str, vmid: int):
         if request.method == "POST":
             error = _apply_ct_hardware_edit(request, detail)
             if error is None:
-                return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+                return redirect(
+                    "core:guest_summary",
+                    cluster_key=cluster_key,
+                    object_type=object_type,
+                    vmid=vmid,
+                )
             messages.error(request, error)
 
         config = detail.config
-        options = create_options(object_type, detail.node)
+        options = create_options(object_type, detail.node, cluster=detail.cluster)
         rootfs, mount_points = _ct_mount_rows(config)
         context = {
             **navigation_context("vms"),
@@ -165,14 +170,21 @@ def guest_hardware_edit(request, object_type: str, vmid: int):
     if request.method == "POST":
         error = _apply_hardware_edit(request, detail)
         if error is None:
-            return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+            return redirect(
+                "core:guest_summary",
+                cluster_key=cluster_key,
+                object_type=object_type,
+                vmid=vmid,
+            )
         messages.error(request, error)
 
     config = detail.config
-    disks, cdroms = guest_disks(config, detail.node, detail.vmid)
+    disks, cdroms = guest_disks(
+        config, detail.node, detail.vmid, cluster_key=detail.cluster_key
+    )
     disks = [disk for disk in disks if _is_disk_device_key(disk["label"])]
     nics = guest_networks(config)
-    options = create_options(object_type, detail.node)
+    options = create_options(object_type, detail.node, cluster=detail.cluster)
     cdrom = cdroms[0] if cdroms else None
     cdrom_iso = ""
     if cdrom:
@@ -877,11 +889,11 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
 
 
 @app_login_required
-def guest_edit(request, object_type: str, vmid: int):
+def guest_edit(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
 
-    detail = _resolve_guest_detail(object_type, vmid)
+    detail = _resolve_guest_detail(object_type, vmid, cluster_key=cluster_key)
     if not detail.found:
         raise Http404("Guest not found")
 
@@ -894,7 +906,12 @@ def guest_edit(request, object_type: str, vmid: int):
     if request.method == "POST":
         result = _apply_guest_edit(request, detail, name_key)
         if result is True:
-            return redirect("core:guest_summary", object_type=object_type, vmid=vmid)
+            return redirect(
+                "core:guest_summary",
+                cluster_key=cluster_key,
+                object_type=object_type,
+                vmid=vmid,
+            )
         form_error = result
         form_values = {
             "name": request.POST.get("name", ""),
@@ -924,7 +941,7 @@ def guest_edit(request, object_type: str, vmid: int):
         }
 
     current_tags = parse_tags(form_values["tags"])
-    available_tags = _available_user_tags() if section == "tags" else []
+    available_tags = _available_user_tags(cluster=detail.cluster) if section == "tags" else []
 
     context = {
         **navigation_context("vms"),
@@ -1091,20 +1108,25 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
     return True
 
 
-def _available_user_tags() -> list[str]:
-    return list(load_tag_catalog().available)
+def _available_user_tags(*, cluster) -> list[str]:
+    return list(load_tag_catalog(cluster=cluster).available)
 
 
 @app_login_required
-def guest_tag_options(request, object_type: str, vmid: int):
+def guest_tag_options(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    detail = _resolve_guest_detail(object_type, vmid, node=request.GET.get("node", "").strip())
+    detail = _resolve_guest_detail(
+        object_type,
+        vmid,
+        cluster_key=cluster_key,
+        node=request.GET.get("node", "").strip(),
+    )
     if not detail.found:
         raise Http404("Guest not found")
     return JsonResponse(
         {
-            "available_tags": _available_user_tags(),
+            "available_tags": _available_user_tags(cluster=detail.cluster),
             "assigned_tags": parse_guest_tags(detail.config),
         }
     )

@@ -2,25 +2,36 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from django.conf import settings
 from django.utils import timezone
 
 from .models import AuditEvent
-from .services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout, clear_live_guest_caches
+from .services.durable_guest_operations import DurableGuestOperationError, client_for_audit_event
+from .services.proxmox import ProxmoxAPIError, ProxmoxTaskTimeout, clear_live_guest_caches
 
 
 def clone_guest_to_template_task(
     audit_event_id: int,
-    endpoint_url: str,
-    node: str,
-    new_vmid: int,
-    clone_upid: str,
-    timeout_seconds: int,
 ) -> None:
     event = AuditEvent.objects.filter(pk=audit_event_id).first()
     if event is None:
         return
     details = dict(event.details) if isinstance(event.details, dict) else {}
-    client = ProxmoxClient(endpoint_url)
+    try:
+        client, ref, cluster = client_for_audit_event(event)
+        node = str(details.get("proxmox_task_node") or ref.node)
+        new_vmid = int(details.get("new_vmid"))
+        clone_upid = str(details.get("proxmox_task_upid") or "")
+    except (DurableGuestOperationError, TypeError, ValueError):
+        event.outcome = "failed"
+        event.details = {
+            **details,
+            "error": "The queued template clone has incomplete target identity.",
+            "finished_at": timezone.now().isoformat(),
+        }
+        event.save(update_fields=["outcome", "details"])
+        return
+    timeout_seconds = settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
 
     def cancelled() -> bool:
         return AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists()
@@ -45,7 +56,7 @@ def clone_guest_to_template_task(
                 "stage": "template",
                 "proxmox_task_upid": template_upid,
                 "proxmox_task_node": node,
-                "proxmox_endpoint": endpoint_url,
+                "proxmox_endpoint": getattr(client, "endpoint", ""),
             }
         )
         event.details = details
@@ -63,7 +74,7 @@ def clone_guest_to_template_task(
         details["error"] = str(exc)
         details["finished_at"] = timezone.now().isoformat()
         event.details = details
-        clear_live_guest_caches()
+        clear_live_guest_caches(cluster=cluster)
         event.save(update_fields=["outcome", "details"])
         return
 
@@ -73,5 +84,5 @@ def clone_guest_to_template_task(
     details["stage"] = "completed"
     details["finished_at"] = timezone.now().isoformat()
     event.details = details
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=cluster)
     event.save(update_fields=["outcome", "details"])

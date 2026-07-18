@@ -8,8 +8,8 @@ from core.services.current_guest_inventory import refresh_current_guest_from_cli
 
 
 @app_login_required
-def guest_monitor(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_monitor(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     timeframe = request.GET.get("timeframe", "hour")
     if timeframe not in {"hour", "day", "week", "month", "year"}:
         timeframe = "hour"
@@ -65,8 +65,8 @@ def guest_monitor(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_permissions(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_permissions(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     acl = None
     error = ""
     for client in common.cluster_scoped_clients(detail.cluster):
@@ -106,8 +106,8 @@ def guest_permissions(request, object_type: str, vmid: int):
 
 
 @app_login_required
-def guest_cloudinit(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_cloudinit(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     config = detail.config
     has_ci = any(str(k).startswith("ci") or str(k).startswith("ipconfig") for k in config) or any(
         "cloudinit" in str(v) for v in config.values()
@@ -142,8 +142,8 @@ def guest_cloudinit(request, object_type: str, vmid: int):
 
 @require_POST
 @app_login_required
-def guest_cloudinit_edit(request, object_type, vmid):
-    detail = _require_guest(object_type, vmid)
+def guest_cloudinit_edit(request, cluster_key, object_type, vmid):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     updates, delete = {}, []
     for field in ("ciuser", "nameserver", "searchdomain", "ipconfig0"):
         val = request.POST.get(field, "").strip()

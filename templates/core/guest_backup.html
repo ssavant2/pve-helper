@@ -5,7 +5,7 @@
 
       <div class="panel panel-spaced">
         <div class="panel-heading"><h2>Back up now</h2></div>
-        <form class="snapshot-form backup-now-form" method="post" action="{% url 'core:guest_backup_now' guest.object_type guest.vmid %}" data-guest-action-form data-action="backup" data-guest-target="{{ guest.object_type }}:{{ guest.vmid }}@{{ guest.node }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-skip-soft-refresh="true">
+        <form class="snapshot-form backup-now-form" method="post" action="{% url 'core:guest_backup_now' guest.cluster_key guest.object_type guest.vmid %}" data-guest-action-form data-action="backup" data-guest-target="{{ guest.guest_ref.serialize }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ guest.name|default:guest.vmid }}" data-skip-soft-refresh="true">
           {% csrf_token %}
           <label class="form-field"><span>Storage</span><select name="storage" required><option value="">Select storage...</option>{% for storage in backup_storages %}<option value="{{ storage.id }}">{{ storage.label }}</option>{% endfor %}</select></label>
           <label class="form-field"><span>Mode</span><select name="mode"><option value="snapshot">Snapshot - no downtime</option><option value="suspend">Suspend - brief pause</option><option value="stop">Stop - offline backup</option></select></label>

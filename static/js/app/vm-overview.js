@@ -1,5 +1,12 @@
 import { selectedVmOverviewRows, visibleVmOverviewRows, vmOverviewRows } from "./scheduling.js";
-import { applyIpVersionStyle, createIcons, ipVersion, registerPageCleanup, renderIpCell } from "./shell.js";
+import {
+  applyIpVersionStyle,
+  createIcons,
+  ipVersion,
+  parseGuestRef,
+  registerPageCleanup,
+  renderIpCell,
+} from "./shell.js";
 
 const syncVmOverviewSelection = (overview) => {
   const rows = vmOverviewRows(overview);
@@ -475,17 +482,16 @@ const pendingVmTaskTarget = (rows) => {
     };
   }
   const row = rows[0];
-  const target = row.dataset.guestTarget || "";
-  const [targetText, server = ""] = target.split("@");
-  const [type = "", vmid = ""] = targetText.split(":");
+  const target = row.dataset.guestRef || row.dataset.guestTarget || "";
+  const parsed = parseGuestRef(target);
   return {
     target: row.dataset.guestLabel || row.dataset.guestName || target || "Guest",
     target_guest: {
-      type,
-      vmid,
+      type: row.dataset.guestType || parsed.type,
+      vmid: row.dataset.guestVmid || parsed.vmid,
       name: row.dataset.guestName || row.dataset.guestLabel || "",
     },
-    server: server || "-",
+    server: parsed.node || "-",
   };
 };
 

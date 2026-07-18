@@ -4,17 +4,15 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from core.models import ProxmoxCluster, ProxmoxEndpoint, RuntimeConfigurationState
+from core.models import ProxmoxCluster, ProxmoxEndpoint
 from core.services.cluster_resolver import (
     ClusterDisabledError,
     ClusterResolutionError,
-    LegacyClusterScopeError,
     cluster_clients,
     cluster_wide_read,
     cluster_write,
     enabled_endpoints,
     pin_cluster_write_client,
-    require_sole_enabled_cluster_for_legacy_caller,
 )
 from core.services.proxmox import ProxmoxAPIError, ProxmoxTransportError
 
@@ -256,34 +254,3 @@ class ClusterWriteContractTests(ClusterResolverTestCase):
         self.assertTrue(ProxmoxTransportError("boom").ambiguous)
         self.assertTrue(ProxmoxTransportError("boom", request_sent=True).ambiguous)
         self.assertFalse(ProxmoxTransportError("boom", request_sent=False).ambiguous)
-
-
-class LegacyScopeAdapterTests(ClusterResolverTestCase):
-    def test_returns_the_sole_enabled_cluster(self):
-        self.assertEqual(require_sole_enabled_cluster_for_legacy_caller(), self.cluster_a)
-
-    def test_fails_when_no_cluster_is_enabled(self):
-        ProxmoxCluster.objects.update(enabled=False)
-
-        with self.assertRaises(LegacyClusterScopeError):
-            require_sole_enabled_cluster_for_legacy_caller()
-
-    def test_fails_closed_at_contract_version_one(self):
-        RuntimeConfigurationState.objects.create(
-            pk=RuntimeConfigurationState.SINGLETON_PK,
-            bootstrap_completed=True,
-            identity_contract_version=1,
-        )
-
-        # Even with exactly one enabled cluster, an implicit selection must stop
-        # working once identity is active: the adapter must fail closed rather than
-        # silently keep choosing.
-        with self.assertRaises(LegacyClusterScopeError):
-            require_sole_enabled_cluster_for_legacy_caller()
-
-    # The "several enabled clusters" branch of the adapter has no test on purpose.
-    # It is unreachable today — the database permits only one enabled cluster before
-    # activation, and after activation the version check above fires first — so any
-    # test would have to mock the ORM and would assert against the mock rather than
-    # the code. The branch stays as defence for the window where activation drops the
-    # single-enabled-cluster constraint; Phase 4 deletes the adapter entirely.

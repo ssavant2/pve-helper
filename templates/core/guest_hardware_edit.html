@@ -9,10 +9,10 @@
         <span class="hardware-title-separator" aria-hidden="true"></span>
         <span class="hardware-editor-guest">{% guest_label guest_identity %}</span>
       </div>
-      <a class="hardware-editor-close" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}" aria-label="Close">x</a>
+      <a class="hardware-editor-close" href="{% url 'core:guest_summary' guest.cluster_key guest.object_type guest.vmid %}" aria-label="Close">x</a>
     </div>
 
-    <form class="hardware-editor-form" method="post" action="{% url 'core:guest_hardware_edit' guest.object_type guest.vmid %}">
+    <form class="hardware-editor-form" method="post" action="{% url 'core:guest_hardware_edit' guest.cluster_key guest.object_type guest.vmid %}">
       {% csrf_token %}
       <input class="hardware-tab-input" type="radio" name="hardware_tab" id="hardware-tab-virtual" value="virtual" checked>
       <input class="hardware-tab-input" type="radio" name="hardware_tab" id="hardware-tab-options" value="options">
@@ -620,7 +620,7 @@
 
       <div class="hardware-editor-actions">
         <button class="primary-action" type="submit">OK</button>
-        <a class="secondary-action" href="{% url 'core:guest_summary' guest.object_type guest.vmid %}">Cancel</a>
+        <a class="secondary-action" href="{% url 'core:guest_summary' guest.cluster_key guest.object_type guest.vmid %}">Cancel</a>
       </div>
     </form>
   </section>

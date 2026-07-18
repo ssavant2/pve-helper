@@ -144,6 +144,7 @@ class OvfImportTests(SimpleTestCase):
                     },
                     source_storage=storage,
                     source_path="packages/appliance.ovf",
+                    cluster=SimpleNamespace(key="default"),
                 )
 
             self.assertIsNone(error)

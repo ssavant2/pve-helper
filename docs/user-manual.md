@@ -79,6 +79,12 @@ IPv4/IPv6 display preferences. Preferences are browser-local. The task bar at
 the bottom of every page is **Recent Tasks**; leave it visible while performing
 writes.
 
+When more than one Proxmox cluster is configured, aggregated pages such as VM
+Overview, Search, Audit and Recent Tasks show or filter by cluster. Tags is
+cluster-specific: its selector navigates to that cluster's Tags URL. Cluster
+selection is never a hidden browser/session setting, so confirm the cluster
+shown by the object or page before submitting a write.
+
 ## Recent Tasks and audit trail
 
 Every submitted guest operation, storage action, scan, import, scheduled run,
@@ -86,9 +92,11 @@ and relevant failure is recorded. Use the two views for different questions:
 
 - **Recent Tasks** answers “what is happening now?” It shows queueing,
   progress, completion, failures, selected task cancellation, and force-stop
-  follow-up where a graceful shutdown timed out.
+  follow-up where a graceful shutdown timed out. In a multi-cluster installation
+  its cluster selector filters the five task rows without changing operation
+  scope elsewhere.
 - **Audit** answers “what happened and who did it?” It is the durable event log
-  for logins, changes, scans, and file actions.
+  for logins, changes, scans, and file actions, with an optional cluster filter.
 
 Do not treat a browser redirect or a queued banner as completion. For any
 background operation, wait for its terminal Recent Tasks row and inspect a
@@ -110,9 +118,13 @@ Use either VMs/CTs surface:
 - **Inventory** is the persistent guest list and detail workspace. Select a
   guest to work through its tabs.
 
-Guest identity is node-qualified. When names or VMIDs are ambiguous, verify the
-node shown in the guest label before taking an action. Linked-clone ancestry,
-locks, and the latest projected runtime status are also shown where available.
+Guest identity is `(cluster, VM/CT type, VMID)`; the node is its current location
+and may change after migration. Overview labels the cluster and Inventory groups
+the guest tree by cluster when several are configured. When names or VMIDs
+overlap, verify both cluster and node before taking an action. Linked-clone
+ancestry, locks, and the latest projected runtime status are also shown where
+available. Old bookmarks without a cluster redirect only when identity is
+unique; an ambiguous bookmark asks you to choose instead of guessing.
 
 ### Use the guest workspace
 
@@ -268,7 +280,7 @@ including monthly date and weekday patterns.
 
 When creating or editing a schedule:
 
-1. Confirm the node-qualified guest target and the action's consequence.
+1. Confirm the cluster-qualified guest target, current node and the action's consequence.
 2. Check the timezone shown by the app/deployment and the next run preview.
 3. Decide explicitly whether a missed occurrence may catch up.
 4. Use **Run now** only when an immediate queued execution is intended.
@@ -281,7 +293,8 @@ one of its runs is in flight.
 ## Tags
 
 **Tags** is the central registry and membership view. It appears below Network
-in the main navigation. Create lowercase tags with an optional color before
+in the main navigation. In a multi-cluster installation, first select the
+cluster whose independent tag registry you want to administer. Create lowercase tags with an optional color before
 assigning them, open any tag to see its VMs/CTs/templates, and use the existing
 guest or overview controls to assign tags.
 

@@ -27,7 +27,7 @@ test("right-click opens the context menu", async ({ page }) => {
 
 test("Tags menu offers existing tags for add and assigned tags for remove", async ({ page }) => {
   const taggedRow = page.locator('[data-vm-overview-row][data-guest-vmid="100"]');
-  await page.route("**/vms/vm/100/tag-options/**", async (route) => {
+  await page.route("**/vms/e2e/vm/100/tag-options/**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -73,7 +73,7 @@ test("Tags menu offers existing tags for add and assigned tags for remove", asyn
 
 test("Tags menu receives registry and membership data in the VM workspace", async ({ page }) => {
   await page.goto("/vms/", { waitUntil: "load" });
-  await page.route("**/vms/vm/100/tag-options/**", async (route) => {
+  await page.route("**/vms/e2e/vm/100/tag-options/**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -94,7 +94,7 @@ test("Tags menu receives registry and membership data in the VM workspace", asyn
 });
 
 test("successful destroy navigates away from the deleted guest summary", async ({ page }) => {
-  await page.goto("/vms/vm/101/summary/", { waitUntil: "load" });
+  await page.goto("/vms/e2e/vm/101/summary/", { waitUntil: "load" });
   await page.route("**/vms/bulk-action/", async (route) => {
     if (route.request().method() === "POST") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, errors: [] }) });
@@ -120,7 +120,7 @@ test("tag detail can remove the tag from one assigned object", async ({ page }) 
   let refreshWasCacheBusted = false;
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (request.method() === "GET" && url.pathname === "/tags/detail/") {
+    if (request.method() === "GET" && url.pathname === "/clusters/e2e/tags/detail/") {
       detailLoads += 1;
       refreshWasCacheBusted ||= url.searchParams.has("_tag_refresh");
     }
@@ -133,7 +133,7 @@ test("tag detail can remove the tag from one assigned object", async ({ page }) 
     }
     await route.continue();
   });
-  await page.goto("/tags/detail/?tag=prod", { waitUntil: "load" });
+  await page.goto("/clusters/e2e/tags/detail/?tag=prod", { waitUntil: "load" });
 
   await page.getByRole("button", { name: "Remove prod from e2e-vm-running" }).click();
   const dialog = page.locator("[data-vm-action-dialog]");
@@ -143,7 +143,7 @@ test("tag detail can remove the tag from one assigned object", async ({ page }) 
   await expect.poll(() => submitted).toContain('name="tags_mode"');
   expect(submitted).toMatch(/name="tags_mode"[\s\S]*remove/);
   expect(submitted).toMatch(/name="tags_value"[\s\S]*prod/);
-  expect(submitted).toMatch(/name="guest"[\s\S]*vm:100@pve1/);
+  expect(submitted).toMatch(/name="guest"[\s\S]*gr1:e2e:vm:100@pve1/);
   await expect.poll(() => detailLoads).toBeGreaterThanOrEqual(2);
   expect(refreshWasCacheBusted).toBe(true);
 });
@@ -169,7 +169,7 @@ test("generic confirm forms use the shared dialog without native popups", async 
     nativeDialogs.push(dialog.type());
     await dialog.dismiss();
   });
-  await page.goto("/tags/detail/?tag=prod", { waitUntil: "load" });
+  await page.goto("/clusters/e2e/tags/detail/?tag=prod", { waitUntil: "load" });
 
   await page.getByRole("button", { name: "Delete tag", exact: true }).click();
 
@@ -185,7 +185,7 @@ test("request failures render locally and never open native alerts", async ({ pa
     nativeDialogs.push(dialog.type());
     await dialog.dismiss();
   });
-  await page.route("**/vms/vm/101/tag-options/**", async (route) => {
+  await page.route("**/vms/e2e/vm/101/tag-options/**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",

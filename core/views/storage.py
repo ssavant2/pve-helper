@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.models import ProxmoxCluster
+
 from .common import *  # noqa: F401,F403
 from . import common
 from ..services.storage import StorageScanner
@@ -43,6 +45,32 @@ STORAGE_CONTENT_TYPES = [
     },
 ]
 STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
+
+
+def _storage_clusters(storage: StorageMount):
+    return list(
+        ProxmoxCluster.objects.filter(
+            storage_consumers__storage=storage,
+            enabled=True,
+        )
+        .distinct()
+        .order_by("display_name", "key")
+    )
+
+
+def _lineage_by_cluster() -> dict[str, dict[int, int]]:
+    return {
+        cluster.key: common.fetch_live_guest_lineage(cluster=cluster)
+        for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key")
+    }
+
+
+def _requested_storage_cluster(request, storage: StorageMount):
+    clusters = _storage_clusters(storage)
+    requested_key = str(request.GET.get("cluster") or request.POST.get("cluster") or "").strip()
+    if requested_key:
+        return next((cluster for cluster in clusters if cluster.key == requested_key), None), clusters
+    return (clusters[0] if len(clusters) == 1 else None), clusters
 
 
 def _storage_tab_context(storage: StorageMount, latest_scan, active_tab: str) -> dict:
@@ -121,12 +149,12 @@ def _api_num(value):
             return None
 
 
-def _api_storage_get(node: str, storage: str, subpath: str):
+def _api_storage_get(cluster, node: str, storage: str, subpath: str):
     """GET nodes/{node}/storage/{storage}/{subpath}. Returns (data, found, error)."""
     node_q = quote(node, safe="")
     storage_q = quote(storage, safe="")
     error = ""
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(cluster):
         try:
             data = client.get(f"nodes/{node_q}/storage/{storage_q}/{subpath}")
         except ProxmoxAPIError as exc:
@@ -136,9 +164,9 @@ def _api_storage_get(node: str, storage: str, subpath: str):
     return None, False, error
 
 
-def _api_storage_context(node: str, storage: str, active_tab: str, *, status=None, found=None, error=""):
+def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, status=None, found=None, error=""):
     if status is None:
-        status, found, error = _api_storage_get(node, storage, "status")
+        status, found, error = _api_storage_get(cluster, node, storage, "status")
         status = status if isinstance(status, dict) else {}
     total = _api_num(status.get("total"))
     used = _api_num(status.get("used"))
@@ -148,12 +176,19 @@ def _api_storage_context(node: str, storage: str, active_tab: str, *, status=Non
     used_pct = round(used / total * 100) if total and used is not None and total > 0 else None
     content_types = [c for c in str(status.get("content") or "").split(",") if c]
     tabs = [
-        {"key": key, "label": label, "url": reverse(name, args=[node, storage]), "active": key == active_tab}
+        {
+            "key": key,
+            "label": label,
+            "url": reverse(name, args=[cluster.key, node, storage]),
+            "active": key == active_tab,
+        }
         for key, label, name in _API_STORAGE_TABS
     ]
     return {
         **navigation_context("datastores"),
         "node": node,
+        "cluster_key": cluster.key,
+        "selected_cluster": cluster,
         "storage": storage,
         "status": status,
         "found": bool(found),
@@ -170,9 +205,11 @@ def _api_storage_context(node: str, storage: str, active_tab: str, *, status=Non
     }
 
 
-def _api_storage_volumes(node: str, storage: str, highlight_vmid=None):
-    content, found, error = _api_storage_get(node, storage, "content")
-    import_content, _imp_found, _imp_error = _api_storage_get(node, storage, "content?content=import")
+def _api_storage_volumes(cluster, node: str, storage: str, highlight_vmid=None):
+    content, found, error = _api_storage_get(cluster, node, storage, "content")
+    import_content, _imp_found, _imp_error = _api_storage_get(
+        cluster, node, storage, "content?content=import"
+    )
     volumes = []
     seen: set[str] = set()
     for entry in list(content or []) + list(import_content or []):
@@ -200,10 +237,11 @@ def _api_storage_volumes(node: str, storage: str, highlight_vmid=None):
 
 
 @app_login_required
-def storage_api_inventory(request, node: str, storage: str):
+def storage_api_inventory(request, cluster_key: str, node: str, storage: str):
     """Backward-compatible entry point; redirects to the Summary tab, keeping the
     optional ?vmid highlight used by the guest Datastores tab."""
-    url = reverse("core:api_storage_summary", args=[node, storage])
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    url = reverse("core:api_storage_summary", args=[cluster.key, node, storage])
     vmid = request.GET.get("vmid")
     if vmid:
         # The untrusted value is query data appended to a locally reversed URL;
@@ -213,42 +251,47 @@ def storage_api_inventory(request, node: str, storage: str):
 
 
 @app_login_required
-def api_storage_summary(request, node: str, storage: str):
-    context = _api_storage_context(node, storage, "summary")
-    volumes, _found, _error = _api_storage_volumes(node, storage)
+def api_storage_summary(request, cluster_key: str, node: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    context = _api_storage_context(cluster, node, storage, "summary")
+    volumes, _found, _error = _api_storage_volumes(cluster, node, storage)
     vmids = {str(v["vmid"]) for v in volumes if v.get("vmid")}
     context.update({"volume_count": len(volumes), "guest_count": len(vmids)})
     return render(request, "core/storage_api/summary.html", context)
 
 
 @app_login_required
-def api_storage_volumes(request, node: str, storage: str):
+def api_storage_volumes(request, cluster_key: str, node: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
     highlight_vmid = _int_or_zero(request.GET.get("vmid")) or None
-    volumes, found, error = _api_storage_volumes(node, storage, highlight_vmid)
-    context = _api_storage_context(node, storage, "volumes")
+    volumes, found, error = _api_storage_volumes(cluster, node, storage, highlight_vmid)
+    context = _api_storage_context(cluster, node, storage, "volumes")
     context.update({"volumes": volumes, "found": found or context["found"], "error": error or context["error"], "highlight_vmid": highlight_vmid})
     return render(request, "core/storage_api/volumes.html", context)
 
 
 @app_login_required
-def api_storage_vms(request, node: str, storage: str):
+def api_storage_vms(request, cluster_key: str, node: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
     guests = []
     prefix = f"{storage}:"
-    lineage = common.fetch_live_guest_lineage()
-    for obj in CurrentGuestInventory.objects.filter(node=node).order_by("object_type", "vmid"):
+    lineage = common.fetch_live_guest_lineage(cluster=cluster)
+    for obj in CurrentGuestInventory.objects.filter(cluster=cluster, node=node).order_by(
+        "object_type", "vmid"
+    ):
         matching = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
         if matching:
             obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
             guests.append(obj)
     if guests:
         _decorate_guests_with_scheduled_actions(guests)
-    context = _api_storage_context(node, storage, "vms")
+    context = _api_storage_context(cluster, node, storage, "vms")
     context.update({"guests": guests, "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS})
     return render(request, "core/storage_api/vms.html", context)
 
 
-def _api_live_content_values(storage: str) -> list[str]:
-    for client in common.cluster_scoped_clients():
+def _api_live_content_values(cluster, storage: str) -> list[str]:
+    for client in common.cluster_scoped_clients(cluster):
         try:
             config = client.storage_config(storage)
         except ProxmoxAPIError:
@@ -257,11 +300,11 @@ def _api_live_content_values(storage: str) -> list[str]:
     return []
 
 
-def _api_content_usage(node: str, storage: str) -> dict[str, dict]:
+def _api_content_usage(cluster, node: str, storage: str) -> dict[str, dict]:
     """Count volumes per content type from the API volume list, so we can block
     removing a content type that is still in use (the local analog of the
     filesystem-scan blocker used for mounted storages)."""
-    volumes, _found, _error = _api_storage_volumes(node, storage)
+    volumes, _found, _error = _api_storage_volumes(cluster, node, storage)
     usage: dict[str, dict] = {}
     for volume in volumes:
         key = str(volume.get("content") or "").strip()
@@ -310,10 +353,11 @@ def _api_content_blockers(usage: dict[str, dict], removed: list[str]) -> list[di
 
 
 @app_login_required
-def api_storage_content(request, node: str, storage: str):
-    context = _api_storage_context(node, storage, "content")
-    current = _api_live_content_values(storage)
-    usage = _api_content_usage(node, storage)
+def api_storage_content(request, cluster_key: str, node: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    context = _api_storage_context(cluster, node, storage, "content")
+    current = _api_live_content_values(cluster, storage)
+    usage = _api_content_usage(cluster, node, storage)
     context.update(
         {
             "content_options": _api_content_options(current, usage),
@@ -326,18 +370,19 @@ def api_storage_content(request, node: str, storage: str):
 
 @require_POST
 @app_login_required
-def update_api_storage_content(request, node: str, storage: str):
-    redirect_to = reverse("core:api_storage_content", args=[node, storage])
+def update_api_storage_content(request, cluster_key: str, node: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    redirect_to = reverse("core:api_storage_content", args=[cluster.key, node, storage])
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    current = _api_live_content_values(storage)
+    current = _api_live_content_values(cluster, storage)
     requested = _ordered_storage_content(request.POST.getlist("content"), current)
     if not requested:
         messages.error(request, "Select at least one content type.")
         return redirect(redirect_to)
 
-    usage = _api_content_usage(node, storage)
+    usage = _api_content_usage(cluster, node, storage)
     removed = [key for key in current if key not in requested]
     blockers = _api_content_blockers(usage, removed)
     if blockers:
@@ -353,7 +398,7 @@ def update_api_storage_content(request, node: str, storage: str):
 
     updated = False
     err = ""
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(cluster):
         try:
             client.set_storage_content(storage, requested)
             updated = True
@@ -370,28 +415,35 @@ def update_api_storage_content(request, node: str, storage: str):
         action="storage.content.updated",
         object_type="storage",
         object_id=storage,
+        cluster=cluster,
         details={"storage_id": storage, "node": node, "old_content": current, "new_content": requested},
     )
     return redirect(redirect_to)
 
 
 @app_login_required
-def api_storage_monitor(request, node: str, storage: str):
-    context = _api_storage_context(node, storage, "monitor")
-    chart_data = _api_storage_space_chart_data(node, storage, tz.now())
+def api_storage_monitor(request, cluster_key: str, node: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    context = _api_storage_context(cluster, node, storage, "monitor")
+    chart_data = _api_storage_space_chart_data(cluster, node, storage, tz.now())
     context["space_chart_data_json"] = json.dumps(chart_data)
     return render(request, "core/storage_api/monitor.html", context)
 
 
 @app_login_required
-def api_storage_configure(request, node: str, storage: str):
-    context = _api_storage_context(node, storage, "configure")
+def api_storage_configure(request, cluster_key: str, node: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    context = _api_storage_context(cluster, node, storage, "configure")
     scan = _latest_result_scan()
     config = {}
     if scan:
         row = (
             ProxmoxInventory.objects.filter(
-                scan_run=scan, node=node, object_type=ProxmoxInventory.ObjectType.STORAGE, name=storage
+                scan_run=scan,
+                cluster=cluster,
+                node=node,
+                object_type=ProxmoxInventory.ObjectType.STORAGE,
+                name=storage,
             ).first()
         )
         if row and isinstance(row.config, dict):
@@ -507,8 +559,12 @@ def storage_browser(request, storage_id: str):
     import re
     from collections import Counter
 
-    lineage = common.fetch_live_guest_lineage()  # {clone VMID: template VMID}
-    clone_counts = Counter(lineage.values())
+    lineage_by_cluster = _lineage_by_cluster()
+    clone_counts = Counter(
+        parent
+        for lineage in lineage_by_cluster.values()
+        for parent in lineage.values()
+    )
     base_volume_re = re.compile(r"base-(\d+)-disk-")
 
     def _template_link(vmid: int) -> dict:
@@ -516,7 +572,14 @@ def storage_browser(request, storage_id: str):
         return {
             "vmid": vmid,
             "name": guest.name if guest and guest.name else f"VM {vmid}",
-            "url": reverse("core:guest_summary", args=[guest.object_type, guest.vmid]) if guest else "",
+            "url": (
+                reverse(
+                    "core:guest_summary",
+                    args=[guest.cluster.key, guest.object_type, guest.vmid],
+                )
+                if guest and guest.cluster_id
+                else ""
+            ),
             "guest_ref": guest.guest_ref().serialize() if guest and guest.guest_ref() else "",
         }
 
@@ -540,11 +603,16 @@ def storage_browser(request, storage_id: str):
             if guest is not None:
                 entry.referenced_guest = {
                     "name": guest.name or f"VM {guest.vmid}",
-                    "url": reverse("core:guest_summary", args=[guest.object_type, guest.vmid]),
+                    "url": reverse(
+                        "core:guest_summary",
+                        args=[guest.cluster.key, guest.object_type, guest.vmid],
+                    ),
                     "guest_ref": guest.guest_ref().serialize() if guest.guest_ref() else "",
                     # If this disk belongs to a linked clone, name its base template.
-                    "linked_clone_of": _template_link(lineage[owner_vmid])
-                    if owner_vmid in lineage
+                    "linked_clone_of": _template_link(
+                        lineage_by_cluster.get(guest.cluster.key, {})[owner_vmid]
+                    )
+                    if owner_vmid in lineage_by_cluster.get(guest.cluster.key, {})
                     else None,
                 }
 
@@ -886,9 +954,15 @@ def _storage_space_chart_data(storage: StorageMount, now) -> list[dict[str, obje
     return _space_chart_from_queryset(StorageSpaceSnapshot.objects.filter(storage=storage), now)
 
 
-def _api_storage_space_chart_data(node: str, storage_id: str, now) -> list[dict[str, object]]:
+def _api_storage_space_chart_data(cluster, node: str, storage_id: str, now) -> list[dict[str, object]]:
     return _space_chart_from_queryset(
-        StorageSpaceSnapshot.objects.filter(storage__isnull=True, node=node, api_storage_id=storage_id), now
+        StorageSpaceSnapshot.objects.filter(
+            storage__isnull=True,
+            cluster=cluster,
+            node=node,
+            api_storage_id=storage_id,
+        ),
+        now,
     )
 
 
@@ -942,12 +1016,15 @@ def storage_content(request, storage_id: str):
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     content_scan = _latest_storage_content_scan(storage) or latest_scan
-    current_content = _live_storage_content_values(storage)
+    cluster, storage_clusters = _requested_storage_cluster(request, storage)
+    current_content = _live_storage_content_values(storage, cluster=cluster)
     context = {
         **_storage_tab_context(storage, latest_scan, "content"),
         "content_options": _storage_content_options(storage, content_scan, current_content=current_content),
         "current_content": current_content,
         "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
+        "storage_cluster": cluster,
+        "storage_clusters": storage_clusters,
     }
     return render(request, "core/storage_content.html", context)
 
@@ -962,9 +1039,19 @@ def update_storage_content(request, storage_id: str):
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     config_scan = latest_scan
-    current_content = _live_storage_content_values(storage)
+    cluster, storage_clusters = _requested_storage_cluster(request, storage)
+    if cluster is None:
+        messages.error(
+            request,
+            "Select the Proxmox cluster whose storage configuration should be changed.",
+        )
+        return redirect("core:storage_content", storage_id=storage.storage_id)
+    current_content = _live_storage_content_values(storage, cluster=cluster)
     requested_content = _ordered_storage_content(request.POST.getlist("content"), current_content)
-    redirect_to = reverse("core:storage_content", args=[storage.storage_id])
+    redirect_to = (
+        f"{reverse('core:storage_content', args=[storage.storage_id])}?"
+        f"{urlencode({'cluster': cluster.key})}"
+    )
 
     if not requested_content:
         messages.error(request, "Select at least one content type.")
@@ -997,7 +1084,7 @@ def update_storage_content(request, storage_id: str):
 
     updated = False
     err = ""
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(cluster):
         try:
             client.set_storage_content(storage.storage_id, requested_content)
             updated = True
@@ -1011,12 +1098,18 @@ def update_storage_content(request, storage_id: str):
         messages.error(request, f"Failed to update storage content: {err}")
         return redirect(redirect_to)
 
-    _update_latest_storage_config_content(storage, config_scan, requested_content)
+    _update_latest_storage_config_content(
+        storage,
+        config_scan,
+        requested_content,
+        cluster=cluster,
+    )
     record_audit_event(
         request,
         action="storage.content.updated",
         object_type="storage",
         object_id=storage.storage_id,
+        cluster=cluster,
         details={
             "storage_id": storage.storage_id,
             "storage_name": storage.display_name,
@@ -1108,19 +1201,34 @@ def _storage_content_preflight_errors(scan: ScanRun | None, storage: StorageMoun
     return errors
 
 
-def _storage_content_values(storage: StorageMount) -> list[str]:
+def _storage_content_values(storage: StorageMount, *, cluster=None) -> list[str]:
+    if cluster is not None:
+        obj = (
+            ProxmoxInventory.objects.filter(
+                cluster=cluster,
+                scan_run__status=ScanRun.Status.COMPLETED,
+                object_type=ProxmoxInventory.ObjectType.STORAGE,
+                name=storage.storage_id,
+            )
+            .order_by("-scan_run__finished_at", "-scan_run__created_at", "-id")
+            .first()
+        )
+        if obj is not None:
+            return _parse_storage_content_values((obj.config or {}).get("content", ""))
     content = getattr(getattr(storage, "details", None), "content", "") or ""
     return [part.strip() for part in str(content).split(",") if part.strip()]
 
 
-def _live_storage_content_values(storage: StorageMount) -> list[str]:
-    for client in common.cluster_scoped_clients():
+def _live_storage_content_values(storage: StorageMount, *, cluster) -> list[str]:
+    if cluster is None:
+        return _storage_content_values(storage)
+    for client in common.cluster_scoped_clients(cluster):
         try:
             config = client.storage_config(storage.storage_id)
         except ProxmoxAPIError:
             continue
         return _parse_storage_content_values(config.get("content", ""))
-    return _storage_content_values(storage)
+    return _storage_content_values(storage, cluster=cluster)
 
 
 def _parse_storage_content_values(content) -> list[str]:
@@ -1276,11 +1384,18 @@ def _finalize_storage_content_usage(usage: dict[str, dict]) -> dict[str, dict]:
     }
 
 
-def _update_latest_storage_config_content(storage: StorageMount, latest_scan: ScanRun | None, content: list[str]) -> None:
+def _update_latest_storage_config_content(
+    storage: StorageMount,
+    latest_scan: ScanRun | None,
+    content: list[str],
+    *,
+    cluster,
+) -> None:
     if latest_scan is None:
         return
     for obj in ProxmoxInventory.objects.filter(
         scan_run=latest_scan,
+        cluster=cluster,
         object_type=ProxmoxInventory.ObjectType.STORAGE,
         name=storage.storage_id,
     ):
@@ -1354,11 +1469,15 @@ def storage_vms(request, storage_id: str):
 
     guests = []
     prefix = f"{storage.storage_id}:"
-    lineage = common.fetch_live_guest_lineage()
+    lineage_by_cluster = _lineage_by_cluster()
     for obj in CurrentGuestInventory.objects.all().order_by("object_type", "vmid"):
         matching_refs = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
         if matching_refs:
-            obj.matching_disk_references = _display_disk_references(obj.vmid, matching_refs, lineage)
+            obj.matching_disk_references = _display_disk_references(
+                obj.vmid,
+                matching_refs,
+                lineage_by_cluster.get(obj.cluster.key, {}),
+            )
             guests.append(obj)
 
     if guests:
@@ -2044,10 +2163,13 @@ def _require_linked_clone_base_unblocked(entries: list[FileInventory]) -> None:
     base_entries = [entry for entry in entries if entry.content_category == "base_image"]
     if not base_entries:
         return
-    lineage = common.fetch_live_guest_lineage()  # {clone VMID: template VMID}
-    if not lineage:
+    clone_counts = Counter(
+        parent
+        for lineage in _lineage_by_cluster().values()
+        for parent in lineage.values()
+    )
+    if not clone_counts:
         return
-    clone_counts = Counter(lineage.values())
     for entry in base_entries:
         vmid = extract_vmid_from_image_path(entry.path)
         count = clone_counts.get(vmid or -1, 0)

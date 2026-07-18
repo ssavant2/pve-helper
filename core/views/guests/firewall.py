@@ -18,8 +18,8 @@ from .operation_lifecycle import (
 
 
 @app_login_required
-def guest_firewall(request, object_type: str, vmid: int):
-    detail = _require_guest(object_type, vmid)
+def guest_firewall(request, cluster_key: str, object_type: str, vmid: int):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     opts, opts_err = _guest_api_get(detail, "firewall/options")
     rules, rules_err = _guest_api_get(detail, "firewall/rules")
     option_rows = []
@@ -63,8 +63,8 @@ def guest_firewall(request, object_type: str, vmid: int):
 
 @require_POST
 @app_login_required
-def guest_firewall_options(request, object_type, vmid):
-    detail = _require_guest(object_type, vmid)
+def guest_firewall_options(request, cluster_key, object_type, vmid):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     data = {"enable": "1" if request.POST.get("enable") == "on" else "0"}
     for key in ("policy_in", "policy_out"):
         val = request.POST.get(key, "").strip()
@@ -76,8 +76,8 @@ def guest_firewall_options(request, object_type, vmid):
 
 @require_POST
 @app_login_required
-def guest_firewall_rule_add(request, object_type, vmid):
-    detail = _require_guest(object_type, vmid)
+def guest_firewall_rule_add(request, cluster_key, object_type, vmid):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     data = {
         "type": request.POST.get("type", "in"),
         "action": request.POST.get("action", "ACCEPT"),
@@ -93,16 +93,16 @@ def guest_firewall_rule_add(request, object_type, vmid):
 
 @require_POST
 @app_login_required
-def guest_firewall_rule_delete(request, object_type, vmid, pos):
-    detail = _require_guest(object_type, vmid)
+def guest_firewall_rule_delete(request, cluster_key, object_type, vmid, pos):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     _d, err = _guest_delete(detail, f"firewall/rules/{pos}")
     return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.rule_delete", {"pos": pos})
 
 
 @require_POST
 @app_login_required
-def guest_firewall_rule_toggle(request, object_type, vmid, pos):
-    detail = _require_guest(object_type, vmid)
+def guest_firewall_rule_toggle(request, cluster_key, object_type, vmid, pos):
+    detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     enable = "1" if request.POST.get("enable") == "1" else "0"
     _d, err = _guest_put(detail, f"firewall/rules/{pos}", {"enable": enable})
     return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.rule_toggle", {"pos": pos, "enable": enable})

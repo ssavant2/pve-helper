@@ -45,6 +45,8 @@ def _global_search_guests(tokens: list[str]) -> list[dict]:
         agent_os = agent.get("os_pretty_name") or agent.get("os_name") or ""
         agent_hostname = agent.get("hostname") or ""
         parts = [
+            row.cluster.display_name if row.cluster else "",
+            row.cluster_key,
             row.name,
             row.vmid,
             row.type_label,
@@ -61,7 +63,7 @@ def _global_search_guests(tokens: list[str]) -> list[dict]:
         ]
         if not _matches_search(parts, tokens):
             continue
-        meta = [row.type_label]
+        meta = [row.cluster.display_name if row.cluster else row.cluster_key, row.type_label]
         if row.vmid is not None:
             meta.append(str(row.vmid))
         if row.node:
@@ -84,7 +86,15 @@ def _global_search_guests(tokens: list[str]) -> list[dict]:
                     if getattr(row, "is_template", False)
                     else ("container" if row.object_type == ProxmoxInventory.ObjectType.CT else "vm")
                 ),
-                score=_search_score(tokens, row.name, row.vmid, row.node, agent_hostname, *agent_ips),
+                score=_search_score(
+                    tokens,
+                    row.cluster.display_name if row.cluster else row.cluster_key,
+                    row.name,
+                    row.vmid,
+                    row.node,
+                    agent_hostname,
+                    *agent_ips,
+                ),
             )
         )
     return results
@@ -116,23 +126,28 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
 
     latest_scan = _latest_proxmox_inventory_scan()
     if latest_scan:
-        seen_api_storage: set[tuple[str, str]] = set()
+        seen_api_storage: set[tuple[str, str, str]] = set()
         for obj in ProxmoxInventory.objects.filter(
             scan_run=latest_scan,
             object_type=ProxmoxInventory.ObjectType.STORAGE,
         ).order_by("node", "name"):
             if not obj.node or not obj.name or obj.name in mounted_ids:
                 continue
-            key = (obj.node or "", obj.name or "")
+            if obj.cluster_id is None:
+                continue
+            key = (obj.cluster.key, obj.node or "", obj.name or "")
             if key in seen_api_storage:
                 continue
             seen_api_storage.add(key)
             content = _config_text(obj.config, "content")
             storage_type = _config_text(obj.config, "type")
             shared = _config_text(obj.config, "shared")
-            if not _matches_search([obj.name, obj.node, storage_type, content, shared], tokens):
+            if not _matches_search(
+                [obj.cluster.display_name, obj.cluster.key, obj.name, obj.node, storage_type, content, shared],
+                tokens,
+            ):
                 continue
-            meta = ["API datastore"]
+            meta = [obj.cluster.display_name, "API datastore"]
             if obj.node:
                 meta.append(obj.node)
             if storage_type:
@@ -145,10 +160,20 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
                     kind="Datastore",
                     label=obj.name or "Storage",
                     meta=" • ".join(meta),
-                    url=reverse("core:api_storage_summary", args=[obj.node, obj.name]),
+                    url=reverse(
+                        "core:api_storage_summary",
+                        args=[obj.cluster.key, obj.node, obj.name],
+                    ),
                     icon_family="vicon",
                     icon="storage",
-                    score=_search_score(tokens, obj.name, obj.node, storage_type),
+                    score=_search_score(
+                        tokens,
+                        obj.cluster.display_name,
+                        obj.cluster.key,
+                        obj.name,
+                        obj.node,
+                        storage_type,
+                    ),
                 )
             )
     return results
@@ -156,7 +181,7 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
 
 def _global_search_hosts(tokens: list[str]) -> list[dict]:
     latest_scan = _latest_proxmox_inventory_scan()
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     candidates = []
     if latest_scan:
         for obj in ProxmoxInventory.objects.filter(
@@ -165,29 +190,34 @@ def _global_search_hosts(tokens: list[str]) -> list[dict]:
         ).order_by("name"):
             if not obj.name:
                 continue
-            seen.add(obj.name)
-            candidates.append((obj.name, obj.status, obj.config))
+            if obj.cluster_id is None:
+                continue
+            seen.add((obj.cluster.key, obj.name))
+            candidates.append((obj.cluster, obj.name, obj.status, obj.config))
         for obj in (
             ProxmoxInventory.objects.filter(scan_run=latest_scan)
             .exclude(object_type=ProxmoxInventory.ObjectType.NODE)
             .exclude(node="")
             .order_by("node")
         ):
-            if not obj.node or obj.node in seen:
+            if obj.cluster_id is None or not obj.node or (obj.cluster.key, obj.node) in seen:
                 continue
-            seen.add(obj.node)
-            candidates.append((obj.node, "", {}))
+            seen.add((obj.cluster.key, obj.node))
+            candidates.append((obj.cluster, obj.node, "", {}))
     for row in _guest_rows()[0]:
-        if row.node and row.node not in seen:
-            seen.add(row.node)
-            candidates.append((row.node, "", {}))
+        key = (row.cluster_key, row.node)
+        if row.cluster is not None and row.node and key not in seen:
+            seen.add(key)
+            candidates.append((row.cluster, row.node, "", {}))
 
     results = []
-    for node, status, config in sorted(candidates, key=lambda item: item[0].casefold()):
-        parts = [node, status, _config_text(config, "cpu"), _config_text(config, "mem")]
+    for cluster, node, status, config in sorted(
+        candidates, key=lambda item: (item[0].display_name.casefold(), item[1].casefold())
+    ):
+        parts = [cluster.display_name, cluster.key, node, status, _config_text(config, "cpu"), _config_text(config, "mem")]
         if not _matches_search(parts, tokens):
             continue
-        meta = ["Host"]
+        meta = [cluster.display_name, "Host"]
         if status:
             meta.append(status)
         results.append(
@@ -199,7 +229,7 @@ def _global_search_hosts(tokens: list[str]) -> list[dict]:
                 url=f"{reverse('core:vms_overview')}?{urlencode({'q': node})}",
                 icon_family="vicon",
                 icon="host",
-                score=_search_score(tokens, node, status),
+                score=_search_score(tokens, cluster.display_name, cluster.key, node, status),
             )
         )
     return results
@@ -207,10 +237,13 @@ def _global_search_hosts(tokens: list[str]) -> list[dict]:
 
 def _global_search_endpoints(tokens: list[str]) -> list[dict]:
     results = []
-    for endpoint in ProxmoxEndpoint.objects.filter(enabled=True).order_by("name"):
-        if not _matches_search([endpoint.name, endpoint.url, endpoint.last_health_status], tokens):
+    for endpoint in ProxmoxEndpoint.objects.filter(enabled=True).select_related("cluster").order_by("cluster__display_name", "name"):
+        if not _matches_search(
+            [endpoint.cluster.display_name, endpoint.cluster.key, endpoint.name, endpoint.url, endpoint.last_health_status],
+            tokens,
+        ):
             continue
-        meta = ["Proxmox endpoint"]
+        meta = [endpoint.cluster.display_name, "Proxmox endpoint"]
         if endpoint.last_health_status:
             meta.append(endpoint.last_health_status)
         results.append(
@@ -222,7 +255,7 @@ def _global_search_endpoints(tokens: list[str]) -> list[dict]:
                 url=reverse("core:dashboard"),
                 icon_family="vicon",
                 icon="cluster",
-                score=_search_score(tokens, endpoint.name, endpoint.url),
+                score=_search_score(tokens, endpoint.cluster.display_name, endpoint.cluster.key, endpoint.name, endpoint.url),
             )
         )
     return results

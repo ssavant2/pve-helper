@@ -25,10 +25,18 @@ import secrets
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 from urllib.parse import quote
 
 from core.models import StorageMount
+from core.services.confined_filesystem import (
+    ConfinedFilesystemError,
+    ConfinedPathExistsError,
+    hardlink_open_file_to_new_directory,
+    normalized_relative_path,
+    open_regular_file,
+    remove_confined_directory,
+)
 from core.services.ovf_import import OvfImportError, OvfPackage, package_disk_volids, parse_ovf_package
 from core.services.proxmox import ProxmoxAPIError
 
@@ -56,15 +64,13 @@ class VmRegisterError(Exception):
     """Raised for pre-flight / staging problems before any Proxmox write."""
 
 
-def _client(*, cluster=None):
+def _client(*, cluster):
     from core.services.cluster_resolver import (
         ClusterResolutionError,
         pin_cluster_write_client,
-        require_sole_enabled_cluster_for_legacy_caller,
     )
 
     try:
-        cluster = cluster or require_sole_enabled_cluster_for_legacy_caller()
         _endpoint, client = pin_cluster_write_client(cluster)
     except ClusterResolutionError as exc:
         raise VmRegisterError(str(exc)) from exc
@@ -147,7 +153,7 @@ def adopt_orphan_disk(
     volid: str,
     params: dict[str, Any],
     *,
-    cluster=None,
+    cluster,
 ) -> tuple[str, str | None]:
     """Create an empty VM (reusing the orphan's VMID) and attach ``volid``.
 
@@ -189,15 +195,17 @@ def _storage_from_volid(volid: str) -> str:
 # --------------------------------------------------------------------------- #
 # Import: stage a loose image as a volume, then import-from it.
 # --------------------------------------------------------------------------- #
-def _detect_image_format(path: Path) -> str:
+def _detect_image_format(source: BinaryIO) -> str:
     """Return the on-disk image format (qcow2/raw/vmdk) via qemu-img."""
+    descriptor_path = f"/proc/self/fd/{source.fileno()}"
     try:
         result = subprocess.run(
-            ["qemu-img", "info", "--output=json", str(path)],
+            ["qemu-img", "info", "--output=json", descriptor_path],
             capture_output=True,
             text=True,
             timeout=60,
             check=True,
+            pass_fds=(source.fileno(),),
         )
         fmt = str(json.loads(result.stdout).get("format", "")).lower()
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -207,50 +215,47 @@ def _detect_image_format(path: Path) -> str:
     return fmt
 
 
-def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, Path]:
+def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, str]:
     """Hardlink ``relative_path`` into ``images/<tmpid>/`` on the same mount.
 
     Returns ``(staging_volid, staging_dir)``. The hardlink is instant and uses
     no extra space (same filesystem); it must live until the import task ends.
     """
-    root = Path(storage.path)
-    source = (root / relative_path).resolve()
-    if not source.is_file():
-        raise VmRegisterError("Source image is not available on the mount.")
-    if root not in source.parents:
-        raise VmRegisterError("Source image is outside the storage mount.")
-
-    ext = source.suffix.lstrip(".").lower()
-    if ext not in {"qcow2", "raw", "vmdk"}:
-        # .img and other/blank extensions: detect the real on-disk format so the
-        # staged volume gets a name Proxmox recognises (its content, unchanged).
-        ext = _detect_image_format(source)
-
-    for _ in range(10):
-        tmpid = secrets.randbelow(9000) + 90000  # 90000-98999, well clear of real VMIDs
-        staging_dir = root / "images" / str(tmpid)
-        if not staging_dir.exists():
-            break
-    else:
-        raise VmRegisterError("Could not allocate a staging id.")
-
-    staging_dir.mkdir(parents=True, exist_ok=False)
-    target = staging_dir / f"vm-{tmpid}-disk-0.{ext}"
     try:
-        os.link(source, target)
-    except OSError as exc:
-        _remove_stage(staging_dir)
-        raise VmRegisterError(f"Could not stage the source image: {exc}") from exc
-    volid = f"{storage.storage_id}:{tmpid}/{target.name}"
-    return volid, staging_dir
+        safe_source = normalized_relative_path(relative_path)
+        with open_regular_file(storage.path, safe_source) as source:
+            ext = Path(safe_source).suffix.lstrip(".").lower()
+            if ext not in {"qcow2", "raw", "vmdk"}:
+                # Detect through the already-confined descriptor. qemu-img never
+                # resolves the request-provided path a second time.
+                ext = _detect_image_format(source)
+
+            for _ in range(10):
+                tmpid = secrets.randbelow(9000) + 90000
+                target_name = f"vm-{tmpid}-disk-0.{ext}"
+                try:
+                    target_relative = hardlink_open_file_to_new_directory(
+                        storage.path,
+                        source,
+                        parent_relative_path="images",
+                        directory_name=str(tmpid),
+                        file_name=target_name,
+                    )
+                    break
+                except ConfinedPathExistsError:
+                    continue
+            else:
+                raise VmRegisterError("Could not allocate a staging id.")
+    except (ConfinedFilesystemError, OSError) as exc:
+        raise VmRegisterError("Could not securely stage the source image.") from exc
+    volid = f"{storage.storage_id}:{tmpid}/{Path(target_relative).name}"
+    return volid, f"images/{tmpid}"
 
 
-def _remove_stage(staging_dir: Path) -> None:
+def _remove_stage(storage: StorageMount, staging_dir: str) -> None:
     try:
-        for child in staging_dir.iterdir():
-            child.unlink(missing_ok=True)
-        staging_dir.rmdir()
-    except OSError:
+        remove_confined_directory(storage.path, staging_dir)
+    except (ConfinedFilesystemError, OSError):
         pass
 
 
@@ -259,7 +264,7 @@ def _create_vm_importing(
     params: dict[str, Any],
     import_volid: str,
     *,
-    cluster=None,
+    cluster,
 ) -> tuple[str, str | None]:
     """Create a VM whose boot disk is imported from ``import_volid`` (a volid)."""
     client = _client(cluster=cluster)
@@ -289,7 +294,7 @@ def import_disk_as_vm(
     *,
     source_storage: StorageMount,
     source_path: str,
-    cluster=None,
+    cluster,
 ) -> tuple[str, str | None]:
     """Stage a browsable image as a volume, import it into a new VM, then clean up.
 
@@ -300,7 +305,7 @@ def import_disk_as_vm(
     try:
         return _create_vm_importing(node, params, staging_volid, cluster=cluster)
     finally:
-        _remove_stage(staging_dir)
+        _remove_stage(source_storage, staging_dir)
 
 
 def import_volid_as_vm(
@@ -308,7 +313,7 @@ def import_volid_as_vm(
     params: dict[str, Any],
     *,
     source_volid: str,
-    cluster=None,
+    cluster,
 ) -> tuple[str, str | None]:
     """Import an already-catalogued volume (e.g. a local ``import``-content image)
     into a new VM. No staging needed — the volid is passed straight to import-from."""
@@ -391,7 +396,7 @@ def import_ovf_package_as_vm(
     source_storage: StorageMount,
     source_path: str,
     progress: Callable[[str, int, int], None] | None = None,
-    cluster=None,
+    cluster,
 ) -> tuple[list[str], str | None]:
     """Create a VM from every disk described by an OVF/OVA package.
 

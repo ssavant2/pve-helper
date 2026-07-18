@@ -10,7 +10,7 @@ const PAGES = [
   { name: "Dashboard", path: "/" },
   { name: "VMs Overview", path: "/vms/overview/" },
   { name: "VMs Inventory", path: "/vms/" },
-  { name: "Tags", path: "/tags/" },
+  { name: "Tags", path: "/clusters/e2e/tags/" },
   { name: "Audit log", path: "/audit/" },
 ];
 
@@ -39,19 +39,19 @@ test("header displays the configured application version", async ({ page }) => {
 });
 
 test("tag links use soft navigation", async ({ page }) => {
-  await page.goto("/tags/");
+  await page.goto("/clusters/e2e/tags/");
   await page.evaluate(() => {
     (window as Window & { tagSoftNavigationMarker?: string }).tagSoftNavigationMarker = "preserved";
   });
   await page.getByRole("link", { name: "prod", exact: true }).first().click();
-  await expect(page).toHaveURL(/\/tags\/detail\/\?tag=prod/);
+  await expect(page).toHaveURL(/\/clusters\/e2e\/tags\/detail\/\?tag=prod/);
   await expect
     .poll(() => page.evaluate(() => (window as Window & { tagSoftNavigationMarker?: string }).tagSoftNavigationMarker))
     .toBe("preserved");
 });
 
 test("tag administration uses aligned controls and the guest editor separates new tags", async ({ page }) => {
-  await page.goto("/tags/");
+  await page.goto("/clusters/e2e/tags/");
   const createWidth = await page.locator('.tag-create-form input[name="tag"]').evaluate((element) => element.getBoundingClientRect().width);
   const filterWidth = await page.locator('input[placeholder="Filter tags"]').evaluate((element) => element.getBoundingClientRect().width);
   expect(Math.abs(createWidth - filterWidth)).toBeLessThan(1);
@@ -72,14 +72,14 @@ test("tag administration uses aligned controls and the guest editor separates ne
   const objectCounts = await page.locator("#tags-table tbody tr td:last-child").allTextContents();
   expect(objectCounts.map(Number)).toEqual([...objectCounts.map(Number)].sort((left, right) => left - right));
 
-  await page.goto("/vms/vm/100/edit/?section=tags");
+  await page.goto("/vms/e2e/vm/100/edit/?section=tags");
   await expect(page.getByLabel("Existing tags")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Create new tag" })).toBeVisible();
   await expect(page.getByText("The new cluster tag will be assigned to this object.")).toBeVisible();
 });
 
 test("partial tag inventory is labelled without hiding known membership", async ({ page }) => {
-  await page.goto("/tags/", { waitUntil: "load" });
+  await page.goto("/clusters/e2e/tags/", { waitUntil: "load" });
 
   const warning = page.locator(".tag-warning", { hasText: "Membership inventory is partial" });
   await expect(warning).toBeVisible();
@@ -90,7 +90,7 @@ test("partial tag inventory is labelled without hiding known membership", async 
 
 test("tag inventory refresh queues work and soft-refreshes after completion", async ({ page }) => {
   let queued = false;
-  await page.route("**/tags/refresh/", async (route) => {
+  await page.route("**/clusters/e2e/tags/refresh/", async (route) => {
     queued = true;
     await route.fulfill({
       status: 202,
@@ -139,7 +139,7 @@ test("tag inventory refresh queues work and soft-refreshes after completion", as
       }),
     });
   });
-  await page.goto("/tags/", { waitUntil: "load" });
+  await page.goto("/clusters/e2e/tags/", { waitUntil: "load" });
   await page.evaluate(() => {
     (window as Window & { tagRefreshMarker?: string }).tagRefreshMarker = "preserved";
   });

@@ -32,6 +32,7 @@
           <div class="column-picker-panel">
             <label><input type="checkbox" data-column-toggle="name" checked disabled> Name</label>
             <label><input type="checkbox" data-column-toggle="state" checked> State</label>
+            <label><input type="checkbox" data-column-toggle="cluster" checked> Cluster</label>
             <label><input type="checkbox" data-column-toggle="provisioned" checked> Provisioned Space</label>
             <label><input type="checkbox" data-column-toggle="used" checked> Used Space</label>
             <label><input type="checkbox" data-column-toggle="cpu" checked> Host CPU</label>
@@ -90,6 +91,7 @@
               </th>
               <th data-column="name" data-sort="text">Name</th>
               <th data-column="state" data-sort="text">State</th>
+              <th data-column="cluster" data-sort="text">Cluster</th>
               <th data-column="provisioned" data-sort="number">Provisioned Space</th>
               <th data-column="used" data-sort="number">Used Space</th>
               <th data-column="cpu" data-sort="number">Host CPU</th>
@@ -118,6 +120,7 @@
                 data-vm-overview-row
                 data-guest-target="{{ g.target_id }}"
                 data-guest-ref="{{ g.guest_ref_id }}"
+                data-guest-cluster="{{ g.cluster_key }}"
                 data-guest-vmid="{{ g.vmid }}"
                 data-guest-parent-vmid="{{ g.parent_vmid|default:'' }}"
                 data-guest-type="{{ g.object_type }}"
@@ -130,20 +133,20 @@
                 data-guest-name="{{ g.name }}"
                 data-guest-tags="{{ g.tags|join:';' }}"
                 data-detail-url="{{ g.detail_url }}"
-                data-snapshots-url="{% url 'core:guest_snapshots' g.object_type g.vmid %}"
-                data-backup-options-url="{% url 'core:guest_backup_options' g.object_type g.vmid %}"
-                data-backup-url="{% url 'core:guest_backup' g.object_type g.vmid %}"
-                data-clone-options-url="{% url 'core:guest_clone_options' g.object_type g.vmid %}"
-                data-pool-options-url="{% url 'core:guest_pool_options' g.object_type g.vmid %}"
-                data-tag-options-url="{% url 'core:guest_tag_options' g.object_type g.vmid %}?node={{ g.node|urlencode }}"
-                data-migrate-options-url="{% url 'core:guest_migrate_options' g.object_type g.vmid %}"
-                data-edit-tags-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=tags"
-                data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.object_type g.vmid %}"
-                data-edit-options-url="{% url 'core:guest_edit' g.object_type g.vmid %}?section=options"
-                data-filter-text="{{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }} {{ g.tags_label|lower }} {{ g.guest_os_label|lower }} {{ g.ip_label|lower }} {{ g.mac_label|lower }} {{ g.storage_label|lower }} {{ g.has_snapshot_label|lower }}"
+                data-snapshots-url="{% url 'core:guest_snapshots' g.cluster_key g.object_type g.vmid %}"
+                data-backup-options-url="{% url 'core:guest_backup_options' g.cluster_key g.object_type g.vmid %}"
+                data-backup-url="{% url 'core:guest_backup' g.cluster_key g.object_type g.vmid %}"
+                data-clone-options-url="{% url 'core:guest_clone_options' g.cluster_key g.object_type g.vmid %}"
+                data-pool-options-url="{% url 'core:guest_pool_options' g.cluster_key g.object_type g.vmid %}"
+                data-tag-options-url="{% url 'core:guest_tag_options' g.cluster_key g.object_type g.vmid %}?node={{ g.node|urlencode }}"
+                data-migrate-options-url="{% url 'core:guest_migrate_options' g.cluster_key g.object_type g.vmid %}"
+                data-edit-tags-url="{% url 'core:guest_edit' g.cluster_key g.object_type g.vmid %}?section=tags"
+                data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.cluster_key g.object_type g.vmid %}"
+                data-edit-options-url="{% url 'core:guest_edit' g.cluster_key g.object_type g.vmid %}?section=options"
+                data-filter-text="{{ g.cluster.display_name|lower }} {{ g.cluster_key|lower }} {{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }} {{ g.tags_label|lower }} {{ g.guest_os_label|lower }} {{ g.ip_label|lower }} {{ g.mac_label|lower }} {{ g.storage_label|lower }} {{ g.has_snapshot_label|lower }}"
               >
                 <td class="vm-select-column">
-                  <input type="checkbox" data-vm-select value="{{ g.object_type }}:{{ g.vmid }}" aria-label="Select {{ g.guest_identity.full_label_with_type }}">
+                  <input type="checkbox" data-vm-select value="{{ g.guest_ref_id }}" aria-label="Select {{ g.guest_identity.full_label_with_type }}">
                 </td>
                 <td data-column="name" data-sort-value="{{ g.name|default:g.vmid }}">
                   <a class="vm-name-link" href="{{ g.detail_url }}">
@@ -156,6 +159,7 @@
                   </a>
                 </td>
                 <td data-column="state" data-guest-state-cell data-sort-value="{{ g.state_label }}">{{ g.state_label }}</td>
+                <td data-column="cluster" data-sort-value="{{ g.cluster.display_name }}">{{ g.cluster.display_name }}</td>
                 <td data-column="provisioned" data-sort-value="{{ g.provisioned_bytes }}">{{ g.provisioned_label }}</td>
                 <td data-column="used" data-sort-value="{{ g.used_bytes }}">{{ g.used_label }}</td>
                 <td data-column="cpu" data-sort-value="{{ g.cpu_value }}">{{ g.cpu_label }}</td>
@@ -175,10 +179,10 @@
                 <td data-column="ip" data-agent-ip-cell data-ip-raw="{{ g.ip_label }}" data-sort-value="{{ g.ip_label }}">{{ g.ip_label }}</td>
                 <td data-column="mac" data-sort-value="{{ g.mac_label }}">{{ g.mac_label }}</td>
                 <td data-column="storage" data-sort-value="{{ g.storage_label }}">{{ g.storage_label }}</td>
-                <td data-column="tags" data-sort-value="{{ g.tags_label }}">{% for tag in g.tag_chips %}<a class="tag-chip" data-user-tag="{{ tag.name }}" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>{% if not forloop.last %} {% endif %}{% endfor %}</td>
+                <td data-column="tags" data-sort-value="{{ g.tags_label }}">{% for tag in g.tag_chips %}<a class="tag-chip" data-user-tag="{{ tag.name }}" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' g.cluster_key %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>{% if not forloop.last %} {% endif %}{% endfor %}</td>
               </tr>
             {% empty %}
-              <tr><td colspan="24" class="empty-state">No guests found.</td></tr>
+              <tr><td colspan="25" class="empty-state">No guests found.</td></tr>
             {% endfor %}
           </tbody>
         </table>

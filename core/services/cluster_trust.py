@@ -214,6 +214,7 @@ def inspect_endpoint_certificate(url: str, *, timeout: float = 8.0) -> Inspected
         raise TransportTrustError(f"{url!r} has no host to inspect.")
 
     context = ssl_module.create_default_context()
+    context.minimum_version = ssl_module.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl_module.CERT_NONE
     try:

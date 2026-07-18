@@ -19,25 +19,9 @@ VM_OSTYPES = [
 ]
 
 
-def _creation_cluster():
-    """The cluster a guest is created in.
-
-    Creation has no existing guest to infer scope from, so it resolves the sole
-    enabled cluster explicitly rather than taking whichever endpoint happens to be
-    first in an ambient list.
-    """
-    from core.services.cluster_resolver import require_sole_enabled_cluster_for_legacy_caller
-
-    try:
-        return require_sole_enabled_cluster_for_legacy_caller()
-    except Exception:
-        return None
-
-
-def _first_client(*, cluster=None):
+def _first_client(*, cluster):
     from core.services.cluster_resolver import pin_cluster_write_client
 
-    cluster = cluster or _creation_cluster()
     if cluster is None:
         return None
     try:
@@ -106,8 +90,8 @@ def _bridges(client, node: str) -> list[str]:
     return result
 
 
-def create_options(object_type: str, node: str | None = None) -> dict[str, Any]:
-    client = _first_client()
+def create_options(object_type: str, node: str | None = None, *, cluster) -> dict[str, Any]:
+    client = _first_client(cluster=cluster)
     if client is None:
         return {"available": False, "nodes": [], "node": ""}
     nodes = client.node_names(fallback="")
@@ -139,7 +123,7 @@ def create_options(object_type: str, node: str | None = None) -> dict[str, Any]:
     return options
 
 
-def _post_create(node: str, kind: str, body: dict, *, cluster=None):
+def _post_create(node: str, kind: str, body: dict, *, cluster):
     """Create a guest inside the selected cluster, without replaying the create.
 
     The previous fan-out retried the create on the next endpoint after any error.
@@ -149,9 +133,8 @@ def _post_create(node: str, kind: str, body: dict, *, cluster=None):
     """
     from core.services.cluster_resolver import cluster_write
 
-    cluster = cluster or _creation_cluster()
     if cluster is None:
-        return None, "No Proxmox cluster is configured."
+        return None, "Guest creation requires an explicit Proxmox cluster."
     try:
         result = cluster_write(
             cluster,
@@ -166,7 +149,7 @@ def _post_create(node: str, kind: str, body: dict, *, cluster=None):
     return result.value, None
 
 
-def create_vm(node: str, params: dict, *, cluster=None):
+def create_vm(node: str, params: dict, *, cluster):
     body = {
         "vmid": params["vmid"],
         "name": params["name"],
@@ -192,7 +175,7 @@ def create_vm(node: str, params: dict, *, cluster=None):
     return _post_create(node, "qemu", body, cluster=cluster)
 
 
-def create_ct(node: str, params: dict, *, cluster=None):
+def create_ct(node: str, params: dict, *, cluster):
     body = {
         "vmid": params["vmid"],
         "hostname": params["hostname"],

@@ -22,31 +22,9 @@ CONSOLE_PROMPT_PATH = Path("static/js/app/console.js")
 # core.services.cluster_resolver with an explicit cluster.
 FORBIDDEN_GLOBAL_FAN_OUT = "configured_clients"
 
-# The legacy scope adapter may only be called at a boundary that has no
-# GuestRef/NodeRef/path scope yet, and Phase 4 deletes it before activation. An
-# empty allowlist is the exit condition, so this list may only shrink.
-LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset(
-    {
-        "core/services/cluster_resolver.py",  # the definition itself
-        # Bounded compatibility readers for callers whose canonical URL or
-        # provider-service contract is migrated in Phase 4.
-        "core/services/proxmox.py",
-        # The only Phase-3 bridge from unqualified URL/form contracts to
-        # GuestRef. Phase 4 deletes this entire module.
-        "core/services/guest_scope.py",
-        # Provider services and worker/view boundaries with no caller-supplied
-        # scope yet. Each resolves once, at its own boundary, and passes the
-        # cluster down explicitly.
-        "core/services/guest_create.py",
-        "core/services/tag_registry.py",
-        "core/services/vm_register.py",
-        "core/tasks.py",
-        "core/views/common.py",
-        # Compatibility defaults retained for callers that have not yet crossed
-        # the Phase-4 URL/service boundary; Phase-3 callers pass cluster explicitly.
-        "core/services/current_guest_inventory.py",
-    }
-)
+# Phase 4 deleted the implicit sole-enabled-cluster adapter. Keep the old symbol
+# as a source-level tripwire so it cannot quietly return under another migration.
+LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset()
 
 LEGACY_ADAPTER_NAME = "require_sole_enabled_cluster_for_legacy_caller"
 
@@ -122,6 +100,7 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
     def test_cluster_operation_locks_use_cluster_identity(self):
         root = Path(settings.BASE_DIR)
         lifecycle_lock_allowlist = {
+            "core/services/cluster_activation.py",
             "core/services/runtime_bootstrap.py",
             "core/services/cluster_credentials.py",
             "core/services/cluster_trust.py",
