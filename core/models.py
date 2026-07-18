@@ -394,6 +394,10 @@ class ConsoleSession(TimestampedModel):
 
 
 class StorageMount(TimestampedModel):
+    # NOTE: globally unique today = single-cluster only. The storage-model
+    # foundation re-keys storage identity to (cluster_key, storage_id); until then
+    # two clusters cannot both expose e.g. `nfs-fs`. Tracked open in
+    # docs/storage-model.local.md — do not treat this uniqueness as permanent.
     storage_id = models.CharField(max_length=120, unique=True)
     display_name = models.CharField(max_length=160)
     export = models.CharField(max_length=512, blank=True)

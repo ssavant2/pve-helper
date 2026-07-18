@@ -22,6 +22,7 @@ from core.models import (
     ConsoleSession,
     ProxmoxCluster,
     ProxmoxEndpoint,
+    ScanRun,
     ScheduledActionRun,
     cluster_key_validator,
 )
@@ -484,6 +485,14 @@ def active_cluster_operation_labels(cluster: ProxmoxCluster) -> list[str]:
     ).count()
     if active_consoles:
         labels.append(f"{active_consoles} console session(s)")
+    # A scan is cluster-wide: it snapshots every enabled endpoint and reads this
+    # cluster's nodes for the whole run. Disabling mid-scan lets the in-flight run
+    # keep reading the just-disabled cluster, so any active scan blocks the change.
+    active_scans = ScanRun.objects.filter(
+        status__in=(ScanRun.Status.QUEUED, ScanRun.Status.RUNNING)
+    ).count()
+    if active_scans:
+        labels.append(f"{active_scans} running scan(s)")
     return labels
 
 

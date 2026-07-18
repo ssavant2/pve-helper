@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.models import ProxmoxCluster
+from core.models import ProxmoxCluster, ProxmoxStorageConsumer
 
 from .common import *  # noqa: F401,F403
 from . import common
@@ -106,6 +106,25 @@ def dashboard(request):
     return render(request, "core/dashboard.html", context)
 
 
+def _clusters_without_storage() -> list[ProxmoxCluster]:
+    """Enabled clusters that have guests but no storage representation yet.
+
+    Storage config (StorageMount + ProxmoxStorageConsumer) is still env-derived and
+    single-cluster, so a cluster added through the Phase 5 wizard shows its guests
+    immediately but has no datastores, scans or orphan surface. Surface that as a
+    known, sequenced gap rather than letting the operator conclude it is broken.
+    """
+    represented = set(ProxmoxStorageConsumer.objects.values_list("cluster_id", flat=True))
+    rows: list[ProxmoxCluster] = []
+    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
+        if cluster.pk in represented:
+            continue
+        if not CurrentGuestInventory.objects.filter(cluster=cluster).exists():
+            continue
+        rows.append(cluster)
+    return rows
+
+
 @app_login_required
 def datastores(request):
     result_scan = _latest_result_scan()
@@ -116,6 +135,7 @@ def datastores(request):
         **navigation_context("datastores"),
         "latest_scan": result_scan,
         "storages": storages,
+        "clusters_without_storage": _clusters_without_storage(),
     }
     return render(request, "core/datastores.html", context)
 

@@ -21,7 +21,6 @@ from django.utils import timezone
 from core.models import ClusterCredential, ProxmoxCluster, RuntimeConfigurationState
 from core.services.cluster_state_identity import invalidate_cluster_cache
 from core.services.secret_encryption import (
-    MissingEncryptionKeyError,
     active_key_id,
     decrypt_secret,
     encrypt_secret,
@@ -211,10 +210,9 @@ def rotate_credential(credential: ClusterCredential) -> ClusterCredential:
     Unsealing with the old key and re-sealing with the current one is what makes a
     compromised key recoverable. The token itself does not change.
     """
-    try:
-        plaintext = decrypt_secret(credential.token_secret_sealed)
-    except MissingEncryptionKeyError:
-        raise
+    # A missing old key raises MissingEncryptionKeyError here: this credential cannot
+    # be rotated until its sealing key is restored, and that propagates to the caller.
+    plaintext = decrypt_secret(credential.token_secret_sealed)
     sealed = encrypt_secret(plaintext)
     credential.token_secret_sealed = sealed
     credential.encryption_key_id = key_id_of(sealed)

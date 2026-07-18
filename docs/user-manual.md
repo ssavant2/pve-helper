@@ -114,10 +114,19 @@ disabled endpoint is re-verified before it can be enabled again.
 
 Disabling a cluster blocks new refreshes, schedules, consoles and writes while
 retaining its last-known inventory, schedules and Audit history. It is refused
-while provider work is active. Re-enabling verifies the stored trust, credential
-and cluster identity first. A CA-identity mismatch quarantines ingestion until an
+while provider work is active — including a running scan, because a scan reads
+every enabled cluster. Re-enabling verifies the stored trust, credential and
+cluster identity first. A CA-identity mismatch quarantines ingestion until an
 operator has independently verified the intended cluster and explicitly
 re-approved the new identity.
+
+**Storage for an added cluster is not yet configurable here.** When you add a
+cluster its guests appear immediately, but datastores, scans and the Orphan
+Finder are still single-cluster and configured from deployment environment values
+at bootstrap — they do not yet cover a cluster added through the wizard. The
+Datastores tab shows an explicit "storage not configured for these clusters"
+notice for such clusters, and their disks are intentionally not classified until
+the storage-model foundation lands. This is a known, sequenced gap, not a failure.
 
 ## Recent Tasks and audit trail
 

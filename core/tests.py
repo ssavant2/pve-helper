@@ -72,6 +72,7 @@ from core.services.proxmox import (
     InventoryResult,
     ProxmoxAPIError,
     ProxmoxClient,
+    ProxmoxObject,
     ProxmoxTaskTimeout,
     ProxmoxTaskResult,
     _fetch_live_guest_inventory_uncached,
@@ -92,7 +93,7 @@ from core.services.scheduled_actions import (
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
 from core.services.guest_inventory_refresh_schedule import GUEST_INVENTORY_REFRESH_SCHEDULE_NAME
-from core.services.storage import StorageScanner
+from core.services.storage import StorageEntry, StorageScanner
 from core.services.storage_actions import (
     StorageActionError,
     inflate_storage_file,
@@ -2456,6 +2457,9 @@ class ScanTaskTests(TestCase):
             def discover_node_name(self, fallback):
                 return fallback
 
+            def node_names(self, *, fallback=""):
+                return ["pve1"]
+
             def inventory(self, node):
                 return InventoryResult(node=node, ok=True, objects=[], errors=[])
 
@@ -2483,6 +2487,89 @@ class ScanTaskTests(TestCase):
         event = AuditEvent.objects.get(action="scan.completed", object_id=str(scan.id))
         self.assertEqual(event.outcome, "success")
         self.assertEqual(event.details["target_label"], "All storages")
+
+    def test_run_scan_covers_endpointless_node_so_its_disk_is_not_orphaned(self):
+        """A guest on a node with no endpoint row of its own must still be scanned
+        through the cluster's reachable member, so its shared-storage disk is
+        referenced and never mis-classified as a likely orphan."""
+        cluster = ProxmoxCluster.objects.create(
+            key="clustera", display_name="Cluster A", enabled=True
+        )
+        # Only pve1 has an endpoint row; pve2 hosts a live guest but is un-endpointed.
+        ProxmoxEndpoint.objects.create(
+            name="pve1", url="https://pve1.example.test:8006", cluster=cluster
+        )
+        StorageMount.objects.create(storage_id="nfs-fs", display_name="nfs-fs", path="/storage")
+        scan = ScanRun.objects.create(progress_message="Queued")
+
+        disk_volid = "nfs-fs:500/vm-500-disk-0.qcow2"
+
+        class FakeProxmoxClient:
+            def __init__(self, url):
+                self.url = url
+
+            def discover_node_name(self, fallback):
+                return "pve1"
+
+            def node_names(self, *, fallback=""):
+                return ["pve1", "pve2"]
+
+            def inventory(self, node):
+                if node == "pve2":
+                    return InventoryResult(
+                        node="pve2",
+                        ok=True,
+                        objects=[
+                            ProxmoxObject(
+                                node="pve2",
+                                object_type="vm",
+                                vmid=500,
+                                name="vm-on-pve2",
+                                status="running",
+                                config={"scsi0": f"{disk_volid},size=32G"},
+                                disk_references=[disk_volid],
+                            )
+                        ],
+                        errors=[],
+                    )
+                return InventoryResult(node=node, ok=True, objects=[], errors=[])
+
+        disk_entry = StorageEntry(
+            path="images/500/vm-500-disk-0.qcow2",
+            full_path="/storage/images/500/vm-500-disk-0.qcow2",
+            relative_path="images/500/vm-500-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            content_category="vm_disk",
+            derived_volid=disk_volid,
+            size_bytes=1024,
+            modified_at=None,
+        )
+
+        class SingleDiskScanner:
+            errors = []
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def iter_entries(self):
+                return iter((disk_entry,))
+
+        with (
+            patch("core.tasks.client_for_endpoint", lambda ep: FakeProxmoxClient(ep.url)),
+            patch("core.tasks._verify_scan_cluster_identities", return_value=set()),
+            patch("core.tasks.StorageScanner", SingleDiskScanner),
+            patch("core.tasks.probe_qemu_image_info", return_value=None),
+            patch("core.tasks.ensure_bootstrap"),
+            patch("core.tasks._prune_scan_history_after_success"),
+        ):
+            run_scan(scan.id)
+
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.COMPLETED)
+        # pve2 was reached through pve1's client and is now covered.
+        self.assertIn("pve2", scan.endpoints_succeeded)
+        row = FileInventory.objects.get(path="images/500/vm-500-disk-0.qcow2")
+        self.assertNotEqual(row.classification, FileInventory.Classification.LIKELY_ORPHAN)
 
 
 class AuditEventTests(TestCase):

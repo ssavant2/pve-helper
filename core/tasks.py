@@ -49,6 +49,7 @@ from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
 from .services.proxmox import (
+    InventoryResult,
     ProxmoxAPIError,
     ProxmoxTaskTimeout,
     clear_live_guest_caches,
@@ -1346,6 +1347,45 @@ def _verify_scan_cluster_identities(endpoints: list[ProxmoxEndpoint]) -> set[int
     return quarantined
 
 
+def _ingest_scan_objects(
+    *,
+    scan: ScanRun,
+    endpoint: ProxmoxEndpoint,
+    result: InventoryResult,
+    proxmox_objects: list[ProxmoxInventory],
+    referenced_volids: set[str],
+    template_vmids: set[int],
+    guest_observations: list[ScanGuestObservation],
+) -> None:
+    """Ingest one node's inventory: disk references, template ids, rows, observations.
+
+    A guest's disks are added to ``referenced_volids`` here, so a node whose guests
+    are never ingested cannot mark a shared-storage volume as referenced — the exact
+    gap that lets a live guest's disk be mis-classified as an orphan when the node has
+    no endpoint row of its own. Ingesting every node of a cluster (see the gap-fill
+    pass in ``_run_scan``) closes that gap.
+    """
+    for obj in result.objects:
+        referenced_volids.update(obj.disk_references)
+        if obj.object_type == "vm" and _is_template(obj.config) and obj.vmid is not None:
+            template_vmids.add(obj.vmid)
+        proxmox_objects.append(
+            ProxmoxInventory(
+                scan_run=scan,
+                cluster=endpoint.cluster,
+                node=obj.node,
+                object_type=obj.object_type,
+                vmid=obj.vmid,
+                name=obj.name,
+                status=obj.status,
+                config=obj.config,
+                disk_references=obj.disk_references,
+            )
+        )
+        if obj.object_type in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT}:
+            guest_observations.append(ScanGuestObservation(endpoint=endpoint, guest=obj))
+
+
 def _run_scan(scan: ScanRun) -> None:
     now = timezone.now()
     scan.status = ScanRun.Status.RUNNING
@@ -1396,6 +1436,12 @@ def _run_scan(scan: ScanRun) -> None:
     # not be ingested: a re-pointed endpoint would merge another cluster's inventory.
     quarantined_cluster_ids = _verify_scan_cluster_identities(endpoints)
 
+    # First reachable endpoint per cluster, kept as the member used to fill coverage
+    # gaps below. Endpoints of one cluster are redundant transports over a single
+    # control plane, so any member can read `nodes/<any>/qemu`.
+    cluster_member: dict[int, tuple[ProxmoxEndpoint, Any]] = {}
+
+    # Pass 1 — scan each endpoint's own node (one endpoint == one node, as before).
     for endpoint in endpoints:
         # Build through the resolver so the client carries this cluster's own
         # credential and TLS trust, not the global fallback.
@@ -1420,6 +1466,7 @@ def _run_scan(scan: ScanRun) -> None:
             successful_endpoint_objects.append(endpoint)
             if endpoint.cluster_id is not None:
                 cluster_coverage[endpoint.cluster_id].add(node_name)
+                cluster_member.setdefault(endpoint.cluster_id, (endpoint, client))
             endpoint.last_health_status = "ok"
             endpoint.last_successful_scan = timezone.now()
             endpoint.details = {"node": node_name}
@@ -1431,25 +1478,49 @@ def _run_scan(scan: ScanRun) -> None:
                 cluster_errors[endpoint.cluster_id][node_name] = result.errors
         endpoint.save(update_fields=["last_health_status", "last_successful_scan", "details", "updated_at"])
 
-        for obj in result.objects:
-            referenced_volids.update(obj.disk_references)
-            if obj.object_type == "vm" and _is_template(obj.config) and obj.vmid is not None:
-                template_vmids.add(obj.vmid)
-            proxmox_objects.append(
-                ProxmoxInventory(
-                    scan_run=scan,
-                    cluster=endpoint.cluster,
-                    node=obj.node,
-                    object_type=obj.object_type,
-                    vmid=obj.vmid,
-                    name=obj.name,
-                    status=obj.status,
-                    config=obj.config,
-                    disk_references=obj.disk_references,
+        _ingest_scan_objects(
+            scan=scan,
+            endpoint=endpoint,
+            result=result,
+            proxmox_objects=proxmox_objects,
+            referenced_volids=referenced_volids,
+            template_vmids=template_vmids,
+            guest_observations=guest_observations,
+        )
+
+    # Pass 2 — orphan-coverage gap fill. A cluster node with no endpoint row of its
+    # own is still read through the cluster's reachable member, so a live guest on
+    # that node contributes its disks to `referenced_volids`. Without this, the scan
+    # under-covers a multi-node / one-endpoint cluster and can classify a real
+    # guest's shared-storage disk as an orphan. Guests are attributed to the member
+    # endpoint (which already succeeded in pass 1), keeping the guest reconcile
+    # completeness contract intact.
+    for cluster_id, (member_endpoint, member_client) in cluster_member.items():
+        try:
+            all_nodes = member_client.node_names(fallback="")
+        except ProxmoxAPIError:
+            all_nodes = []
+        for node in all_nodes:
+            if node in cluster_coverage[cluster_id]:
+                continue
+            gap_result = member_client.inventory(node)
+            endpoint_attempts.append(node)
+            cluster_attempts[cluster_id].add(node)
+            if gap_result.ok:
+                endpoint_successes.append(node)
+                cluster_coverage[cluster_id].add(node)
+                _ingest_scan_objects(
+                    scan=scan,
+                    endpoint=member_endpoint,
+                    result=gap_result,
+                    proxmox_objects=proxmox_objects,
+                    referenced_volids=referenced_volids,
+                    template_vmids=template_vmids,
+                    guest_observations=guest_observations,
                 )
-            )
-            if obj.object_type in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT}:
-                guest_observations.append(ScanGuestObservation(endpoint=endpoint, guest=obj))
+            else:
+                endpoint_errors[node] = gap_result.errors
+                cluster_errors[cluster_id][node] = gap_result.errors
 
     ProxmoxInventory.objects.bulk_create(proxmox_objects, batch_size=500)
 

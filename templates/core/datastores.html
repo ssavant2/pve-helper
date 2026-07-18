@@ -8,6 +8,24 @@
     </div>
   </section>
 
+  {% if clusters_without_storage %}
+    <section class="panel notice notice-warning">
+      <h2>Storage not configured for these clusters</h2>
+      <p>
+        These clusters are connected and their guests are visible, but storage is not
+        yet configurable here — datastores, scans and the Orphan Finder are still
+        single-cluster and env-derived. This is a known, sequenced gap (the storage
+        model foundation is next), not a failure. Their disks are intentionally not
+        classified until then.
+      </p>
+      <ul>
+        {% for cluster in clusters_without_storage %}
+          <li><code>{{ cluster.key }}</code>{% if cluster.display_name %} — {{ cluster.display_name }}{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   <section class="panel">
     <table class="data-table">
       <thead>

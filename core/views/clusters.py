@@ -18,8 +18,9 @@ from core.cluster_forms import (
 )
 from core.models import ClusterCredential, ClusterTransportTrust, ProxmoxCluster, ProxmoxEndpoint
 from core.services.audit_events import record_audit_event
-from core.services.cluster_activation import enable_cluster
-from core.services.cluster_credentials import set_cluster_credential
+from core.services.cluster_activation import ClusterActivationError, enable_cluster
+from core.services.cluster_credentials import ClusterCredentialError, set_cluster_credential
+from core.services.cluster_trust import TransportTrustError
 from core.services.cluster_onboarding import (
     ClusterCandidate,
     ClusterOnboardingError,
@@ -38,9 +39,26 @@ from core.services.cluster_onboarding import (
     verify_replacement_credential,
 )
 from core.services.config import endpoint_name_from_url
-from core.services.secret_encryption import decrypt_secret, encrypt_secret
+from core.services.secret_encryption import (
+    EncryptionConfigurationError,
+    decrypt_secret,
+    encrypt_secret,
+)
 
 from .common import app_login_required, navigation_context
+
+
+# Curated, secret-free domain errors surfaced to the operator. Catching this
+# explicit set — rather than the RuntimeError base they all share — keeps an
+# unexpected RuntimeError from rendering its raw string into the page (the
+# public_errors invariant); anything else 500s into the logs.
+CLUSTER_OPERATION_ERRORS = (
+    ClusterOnboardingError,
+    ClusterCredentialError,
+    ClusterActivationError,
+    TransportTrustError,
+    EncryptionConfigurationError,
+)
 
 
 _INSPECTION_SALT = "pve-helper.cluster-onboarding.inspection.v1"
@@ -143,7 +161,7 @@ def cluster_add(request):
                         "verified": _verified_data(verified),
                     },
                 )
-            except (ClusterOnboardingError, RuntimeError) as exc:
+            except CLUSTER_OPERATION_ERRORS as exc:
                 form.add_error(None, str(exc))
             else:
                 context.update(
@@ -163,7 +181,7 @@ def cluster_add(request):
             payload = _load(request, request.POST.get("candidate", ""), _CANDIDATE_SALT, "cluster-candidate")
             candidate = _candidate_from_data(payload["candidate"], decrypt_secret(payload["token_secret_sealed"]))
             context.update({"candidate": candidate, "verified": _verified_from_data(payload["verified"])})
-        except (ClusterOnboardingError, RuntimeError) as exc:
+        except CLUSTER_OPERATION_ERRORS as exc:
             form.add_error(None, str(exc))
             return render(request, "core/cluster_add.html", context)
         if form.is_valid():
@@ -191,7 +209,7 @@ def cluster_add(request):
                             "ca_uuid": verified.identity.ca_uuid,
                         },
                     )
-            except (ClusterOnboardingError, RuntimeError) as exc:
+            except CLUSTER_OPERATION_ERRORS as exc:
                 form.add_error(None, str(exc))
             else:
                 return redirect("core:cluster_connection", cluster_key=cluster.key)
@@ -318,7 +336,7 @@ def cluster_connection_action(request, cluster_key: str):
                 )
         else:
             raise Http404("Unknown cluster action")
-    except (ClusterOnboardingError, RuntimeError) as exc:
+    except CLUSTER_OPERATION_ERRORS as exc:
         error = str(exc)
 
     if error:
@@ -409,7 +427,7 @@ def cluster_endpoint_add(request, cluster_key: str):
                         "verified": _verified_data(verified),
                     },
                 )
-            except (ClusterOnboardingError, RuntimeError) as exc:
+            except CLUSTER_OPERATION_ERRORS as exc:
                 form.add_error(None, str(exc))
             else:
                 context.update(
@@ -471,7 +489,7 @@ def cluster_endpoint_add(request, cluster_key: str):
                             "ca_uuid": verified.identity.ca_uuid,
                         },
                     )
-            except (ClusterOnboardingError, RuntimeError) as exc:
+            except CLUSTER_OPERATION_ERRORS as exc:
                 form.add_error(None, str(exc))
             else:
                 return redirect("core:cluster_connection", cluster_key=cluster.key)

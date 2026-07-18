@@ -8,7 +8,12 @@ from django.shortcuts import render
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 
-from core.models import CurrentGuestInventory, ProxmoxCluster, ProxmoxInventory
+from core.models import (
+    CurrentGuestInventory,
+    ProxmoxCluster,
+    ProxmoxInventory,
+    ProxmoxStorageConsumer,
+)
 
 from .common import app_login_required
 
@@ -171,6 +176,15 @@ def legacy_node_redirect(route_name: str) -> Callable:
             ProxmoxInventory.objects.filter(
                 cluster__enabled=True,
                 node=node,
+            ).values_list("cluster_id", flat=True)
+        )
+        # Storage identity, not just guest evidence: a fresh/evacuated node hosts no
+        # guest yet is a declared storage consumer, so a storage URL still resolves
+        # (or offers the picker) instead of 404-ing for lack of a guest row.
+        cluster_ids.update(
+            ProxmoxStorageConsumer.objects.filter(
+                cluster__enabled=True,
+                expected_node_name=node,
             ).values_list("cluster_id", flat=True)
         )
         clusters = list(
