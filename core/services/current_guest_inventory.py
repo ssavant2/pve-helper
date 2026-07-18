@@ -413,6 +413,7 @@ def refresh_current_guest_from_client(
     node: str,
     object_type: str,
     vmid: int,
+    cluster=None,
     allow_relocation: bool = False,
     delete_if_authoritatively_absent: bool = False,
 ) -> TargetedGuestRefresh:
@@ -452,7 +453,9 @@ def refresh_current_guest_from_client(
             if delete_if_authoritatively_absent:
                 endpoint = ProxmoxEndpoint.objects.filter(url=getattr(client, "endpoint", "")).first()
                 delete_current_guest(
-                    object_type=object_type, vmid=vmid, cluster=_target_cluster(endpoint=endpoint)
+                    object_type=object_type,
+                    vmid=vmid,
+                    cluster=_target_cluster(cluster, endpoint=endpoint),
                 )
             return TargetedGuestRefresh(found=False, absent=True)
         if len(matches) != 1:
@@ -471,7 +474,7 @@ def refresh_current_guest_from_client(
         return TargetedGuestRefresh(found=False, node=resolved_node, error=direct_error or "Guest status unavailable.")
 
     endpoint = ProxmoxEndpoint.objects.filter(url=getattr(client, "endpoint", "")).first()
-    target_cluster = _target_cluster(endpoint=endpoint)
+    target_cluster = _target_cluster(cluster, endpoint=endpoint)
     existing = CurrentGuestInventory.objects.filter(
         cluster=target_cluster, object_type=object_type, vmid=vmid
     ).first()

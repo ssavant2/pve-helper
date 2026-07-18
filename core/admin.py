@@ -26,9 +26,9 @@ class OidcIdentityAdmin(admin.ModelAdmin):
 
 @admin.register(AuditEvent)
 class AuditEventAdmin(admin.ModelAdmin):
-    list_display = ("timestamp", "username", "action", "object_type", "object_id", "storage_id", "path", "outcome")
-    list_filter = ("action", "outcome", "object_type", "storage_id")
-    search_fields = ("username", "action", "object_id", "storage_id", "path")
+    list_display = ("timestamp", "cluster_key_snapshot", "username", "action", "object_type", "object_id", "storage_id", "path", "outcome")
+    list_filter = ("cluster", "action", "outcome", "object_type", "storage_id")
+    search_fields = ("cluster_key_snapshot", "username", "action", "object_id", "storage_id", "path")
     readonly_fields = ("timestamp", "storage_id", "path", "target_preallocation")
 
 
@@ -100,6 +100,7 @@ class ScheduledActionAdmin(admin.ModelAdmin):
     list_display = (
         "name",
         "enabled",
+        "cluster",
         "action_type",
         "target_type",
         "target_vmid",
@@ -107,7 +108,7 @@ class ScheduledActionAdmin(admin.ModelAdmin):
         "next_run_at",
         "last_status",
     )
-    list_filter = ("enabled", "action_type", "target_type", "schedule_type", "catch_up_policy", "last_status")
+    list_filter = ("cluster", "enabled", "action_type", "target_type", "schedule_type", "catch_up_policy", "last_status")
     search_fields = ("name", "target_name_snapshot", "target_node", "=target_vmid")
     readonly_fields = ("created_at", "updated_at", "last_run_at", "last_status")
     raw_id_fields = ("created_by",)

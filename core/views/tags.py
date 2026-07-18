@@ -10,7 +10,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from core.models import CurrentGuestInventory, ProxmoxInventory
+from core.models import CurrentGuestInventory, ProxmoxCluster, ProxmoxInventory
 from core.services.guests import is_template
 from core.services.proxmox import ProxmoxAPIError
 from core.services.tag_inventory_refresh import (
@@ -37,6 +37,10 @@ from .common import app_login_required, navigation_context, record_audit_event
 
 
 logger = logging.getLogger(__name__)
+
+
+def _catalog_cluster(catalog):
+    return ProxmoxCluster.objects.filter(key=catalog.cluster_key).first()
 
 
 def _tag_context(*, selected: str = "") -> dict:
@@ -99,8 +103,9 @@ def tag_detail(request):
         cluster_key=context["cluster_key"],
     )
     if CurrentGuestInventory.objects.exists():
+        cluster = _catalog_cluster(context["inventory_state"])
         try:
-            linked_clones = set(common.fetch_live_guest_lineage())
+            linked_clones = set(common.fetch_live_guest_lineage(cluster=cluster))
         except ProxmoxAPIError as exc:
             # Type is presentation metadata; a lineage outage must not make tag
             # membership administration unavailable.
@@ -115,18 +120,26 @@ def tag_detail(request):
             )
             linked_clones = set()
             context["lineage_error"] = "Linked-clone classification is temporarily unavailable."
-        assigned = {(guest.object_type, guest.vmid) for guest in summary.guests}
-        assignable = list(
-            CurrentGuestInventory.objects.all().order_by("name", "vmid", "node")
-        )
+        assigned = {
+            guest.guest_ref().identity_tuple
+            for guest in summary.guests
+            if guest.guest_ref() is not None
+        }
+        assignable = list(context["inventory_state"].guests)
+        assignable.sort(key=lambda guest: ((guest.name or "").casefold(), guest.vmid, guest.node))
         for guest in assignable:
-            guest.tag_target = f"{guest.object_type}:{guest.vmid}@{guest.node}"
+            ref = guest.guest_ref()
+            guest.tag_target = ref.serialize() if ref is not None else ""
             guest.tag_type_label = _tag_type_label(guest, linked_clones)
         for guest in summary.guests:
+            ref = guest.guest_ref()
+            guest.tag_target = ref.serialize() if ref is not None else ""
             guest.tag_type_label = _tag_type_label(guest, linked_clones)
         context["assignable_guests"] = [
             guest for guest in assignable
-            if (guest.object_type, guest.vmid) not in assigned and summary.name not in parse_tags(guest.config)
+            if guest.tag_target
+            and guest.guest_ref().identity_tuple not in assigned
+            and summary.name not in parse_tags(guest.config)
         ]
     return render(request, "core/tag_detail.html", context)
 
@@ -134,12 +147,23 @@ def tag_detail(request):
 @require_POST
 @app_login_required
 def tag_create(request):
-    _tags, error = register_tag(request.POST.get("tag", ""), request.POST.get("color", ""))
+    catalog = load_tag_catalog()
+    cluster = _catalog_cluster(catalog)
+    _tags, error = register_tag(
+        request.POST.get("tag", ""), request.POST.get("color", ""), cluster=cluster
+    )
     if error:
         return _tag_form_response(request, ok=False, error=error)
     else:
         name = request.POST.get("tag", "").strip().lower()
-        record_audit_event(request, action="tag.registered", object_type="cluster", object_id=name, details={"tag": name})
+        record_audit_event(
+            request,
+            action="tag.registered",
+            object_type="cluster",
+            object_id=name,
+            cluster=cluster,
+            details={"tag": name},
+        )
     return _tag_form_response(request, ok=True)
 
 
@@ -147,11 +171,20 @@ def tag_create(request):
 @app_login_required
 def tag_recolor(request):
     name = request.POST.get("tag", "").strip().lower()
-    _tags, error = recolor_tag(name, request.POST.get("color", ""))
+    catalog = load_tag_catalog()
+    cluster = _catalog_cluster(catalog)
+    _tags, error = recolor_tag(name, request.POST.get("color", ""), cluster=cluster)
     if error:
         return _tag_form_response(request, ok=False, error=error)
     else:
-        record_audit_event(request, action="tag.recolored", object_type="cluster", object_id=name, details={"tag": name})
+        record_audit_event(
+            request,
+            action="tag.recolored",
+            object_type="cluster",
+            object_id=name,
+            cluster=cluster,
+            details={"tag": name},
+        )
     if _wants_json(request):
         return JsonResponse({"ok": True, "error": ""})
     return redirect(reverse("core:tag_detail") + "?" + urlencode({"tag": name}))
@@ -166,6 +199,7 @@ def tag_operation(request):
     if operation not in {"delete", "rename"}:
         raise Http404("Unknown tag operation")
     catalog = load_tag_catalog()
+    cluster = _catalog_cluster(catalog)
     summary = next((row for row in catalog.summaries if row.name == source), None)
     confirmation, error = validate_tag_operation_confirmation(
         request.POST.get("confirmation", ""),
@@ -186,6 +220,7 @@ def tag_operation(request):
         object_type="tag",
         object_id=source,
         outcome="queued",
+        cluster=cluster,
         details={
             "username": request.user.get_username(),
             "cluster_key": confirmation.cluster_key,
@@ -215,8 +250,12 @@ def tag_operation(request):
 @require_POST
 @app_login_required
 def tags_refresh(request):
+    catalog = load_tag_catalog()
     try:
-        event, task_id = queue_tag_inventory_refresh(request=request)
+        event, task_id = queue_tag_inventory_refresh(
+            request=request,
+            cluster=_catalog_cluster(catalog),
+        )
     except TagInventoryRefreshAlreadyActive:
         error = "A tag inventory refresh is already queued or running."
         if _wants_json(request):

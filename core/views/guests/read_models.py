@@ -49,6 +49,7 @@ def vms_overview_agent_info(request):
         payload.append(
             {
                 "target": row.target_id,
+                "guest_ref": row.guest_ref_id,
                 "guest_os": summary.get("os_pretty_name") or summary.get("os_name") or "",
                 "ip_label": ", ".join(summary.get("ips", [])[:3]) if summary.get("ips") else "",
                 "agent": "Running",
@@ -71,6 +72,7 @@ def vms_overview_snapshot_info(request):
         payload.append(
             {
                 "target": row.target_id,
+                "guest_ref": row.guest_ref_id,
                 "has_snapshot": bool(has_snapshot),
                 "has_snapshot_label": "-" if has_snapshot is None else ("Yes" if has_snapshot else "No"),
             }
@@ -90,6 +92,7 @@ def vms_status(request):
     guests = [
         {
             "target": _guest_target_value(guest.object_type, guest.vmid, guest.node),
+            "guest_ref": guest.guest_ref().serialize() if guest.guest_ref() else "",
             "status": guest.status,
             "state_label": _guest_state_label(guest.status),
             "lock": _display_lock(guest.runtime_lock),

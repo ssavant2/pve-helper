@@ -386,7 +386,7 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
         return "Could not resolve the container's current node."
     client = None
     fresh: dict = {}
-    for candidate in common.cluster_scoped_clients():
+    for candidate in common.cluster_scoped_clients(detail.cluster):
         try:
             fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate
@@ -587,12 +587,14 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
         node=node,
         updates=updates,
         delete=delete,
+        cluster=detail.cluster,
     )
     refresh_current_guest_from_client(
         client,
         node=node,
         object_type=detail.object_type,
         vmid=detail.vmid,
+        cluster=detail.cluster,
     )
     _audit_guest(
         request,
@@ -611,7 +613,7 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         return "Could not resolve the guest's current node."
     client = None
     fresh: dict = {}
-    for candidate in common.cluster_scoped_clients():
+    for candidate in common.cluster_scoped_clients(detail.cluster):
         try:
             fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate
@@ -854,12 +856,14 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
         node=node,
         updates=updates,
         delete=delete,
+        cluster=detail.cluster,
     )
     refresh_current_guest_from_client(
         client,
         node=node,
         object_type=detail.object_type,
         vmid=detail.vmid,
+        cluster=detail.cluster,
     )
     _audit_guest(
         request,
@@ -946,7 +950,7 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
 
     client = None
     fresh: dict = {}
-    for candidate in common.cluster_scoped_clients():
+    for candidate in common.cluster_scoped_clients(detail.cluster):
         try:
             fresh = candidate.guest_config(node=node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate
@@ -998,7 +1002,11 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
                 new_tag = validate_tag(new_tag)
                 from core.services.tag_actions import register_tag
 
-                _registered, registry_error = register_tag(new_tag, request.POST.get("new_tag_color", ""))
+                _registered, registry_error = register_tag(
+                    new_tag,
+                    request.POST.get("new_tag_color", ""),
+                    cluster=detail.cluster,
+                )
                 if registry_error:
                     return f"Could not create the new tag: {registry_error}"
                 if new_tag not in requested_tags:
@@ -1009,6 +1017,7 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
                     action="tag.registered",
                     object_type="cluster",
                     object_id=new_tag,
+                    cluster=detail.cluster,
                     details={"tag": new_tag, "source": "guest-tag-editor"},
                 )
             new_tags = join_tags(requested_tags)
@@ -1064,20 +1073,20 @@ def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):
         node=node,
         updates=updates,
         delete=delete,
+        cluster=detail.cluster,
     )
     refresh_current_guest_from_client(
         client,
         node=node,
         object_type=detail.object_type,
         vmid=detail.vmid,
+        cluster=detail.cluster,
     )
-    record_audit_event(
+    _audit_guest(
         request,
-        action="guest.config.updated",
-        object_type="guest",
-        object_id=f"{detail.object_type}:{detail.vmid}",
-        details={"fields": changed, "node": node, "vmid": detail.vmid, "target_type": detail.object_type, "name": detail.name},
-        system_username="system",
+        detail,
+        "guest.config.updated",
+        {"fields": changed},
     )
     return True
 

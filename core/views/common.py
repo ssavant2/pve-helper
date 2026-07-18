@@ -356,7 +356,13 @@ def _audit_guest_identity(event: AuditEvent):
         if separator == ":":
             target_type = target_type or raw_type
             vmid = vmid if vmid is not None else raw_vmid
-    return guest_identity(target_type, vmid, details.get("name") or "")
+    return guest_identity(
+        target_type,
+        vmid,
+        details.get("name") or "",
+        cluster_key=event.cluster_key_snapshot or details.get("cluster_key") or "",
+        node=details.get("node") or details.get("target_node") or "",
+    )
 
 
 def _audit_module_key(event: AuditEvent) -> str:
@@ -557,7 +563,13 @@ def _audit_object_label(event: AuditEvent) -> str:
             if separator == ":":
                 target_type = target_type or raw_type
                 vmid = vmid if vmid is not None else raw_vmid
-        return guest_identity(target_type, vmid, details.get("name") or "").full_label_with_type
+        return guest_identity(
+            target_type,
+            vmid,
+            details.get("name") or "",
+            cluster_key=event.cluster_key_snapshot or details.get("cluster_key") or "",
+            node=details.get("node") or details.get("target_node") or "",
+        ).full_label_with_type
     if event.object_type == "scan_run" and event.object_id:
         return "Storage inventory scan"
     if event.object_type == "scan_retention":
@@ -619,28 +631,48 @@ def _safe_next_url(request) -> str:
 
 
 def _decorate_guests_with_scheduled_actions(guests: list) -> None:
-    vmids = [guest.vmid for guest in guests if guest.object_type == ProxmoxInventory.ObjectType.VM and guest.vmid]
-    ctids = [guest.vmid for guest in guests if guest.object_type == ProxmoxInventory.ObjectType.CT and guest.vmid]
     action_filter = Q()
-    if vmids:
-        action_filter |= Q(target_type=ScheduledAction.TargetType.VM, target_vmid__in=vmids)
-    if ctids:
-        action_filter |= Q(target_type=ScheduledAction.TargetType.CT, target_vmid__in=ctids)
+    guest_keys: set[tuple[int, str, int]] = set()
+    for guest in guests:
+        cluster_id = getattr(guest, "cluster_id", None) or getattr(
+            getattr(guest, "cluster", None), "pk", None
+        )
+        if cluster_id and guest.vmid and guest.object_type in {
+            ProxmoxInventory.ObjectType.VM,
+            ProxmoxInventory.ObjectType.CT,
+        }:
+            guest_keys.add((cluster_id, guest.object_type, guest.vmid))
+            action_filter |= Q(
+                cluster_id=cluster_id,
+                target_type=guest.object_type,
+                target_vmid=guest.vmid,
+            )
 
-    actions_by_target: dict[tuple[str, int], list[ScheduledAction]] = {}
+    actions_by_target: dict[tuple[int, str, int], list[ScheduledAction]] = {}
     if action_filter:
         actions = ScheduledAction.objects.filter(action_filter, deleted_at__isnull=True).order_by("-enabled", "next_run_at", "name")
         for action in actions:
             action.display_schedule = _scheduled_action_schedule_label(action)
             action.display_status_class = _scheduled_action_status_class(action.last_status)
-            actions_by_target.setdefault((action.target_type, action.target_vmid), []).append(action)
+            actions_by_target.setdefault(
+                (action.cluster_id, action.target_type, action.target_vmid), []
+            ).append(action)
 
     for guest in guests:
-        target = f"{guest.object_type}:{guest.vmid}"
-        guest.scheduled_actions = actions_by_target.get((guest.object_type, guest.vmid), [])
+        cluster = getattr(guest, "cluster", None)
+        cluster_id = getattr(guest, "cluster_id", None) or getattr(cluster, "pk", None)
+        ref = guest.guest_ref() if callable(getattr(guest, "guest_ref", None)) else getattr(guest, "guest_ref", None)
+        target = ref.without_node().serialize() if ref is not None else ""
+        guest.scheduled_actions = actions_by_target.get(
+            (cluster_id, guest.object_type, guest.vmid), []
+        )
         guest.scheduled_action_count = len(guest.scheduled_actions)
         guest.scheduled_action_search_text = " ".join(action.name for action in guest.scheduled_actions)
-        guest.schedule_action_url = f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}"
+        guest.schedule_action_url = (
+            f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}"
+            if target
+            else reverse("core:scheduled_task_create")
+        )
         guest.scheduled_actions_url = f"{reverse('core:scheduled_tasks')}?{urlencode({'target': target})}"
 
 
@@ -744,17 +776,17 @@ def enqueue_bulk_task(func, *args, **kwargs):
     return async_task(func, *args, q_options=q_options, **kwargs)
 
 
-def cluster_scoped_clients():
+def cluster_scoped_clients(cluster=None):
     """Provider clients for the guest views, bounded to one cluster.
 
     This replaces the global client fan-out these views used to share. That fan-out selected clients from settings with no cluster scope, so a
     view looking for `vm:500` on `pve1` would accept whichever endpoint answered
     first — including one belonging to a different cluster.
 
-    Scope is resolved here, at the guest views' shared boundary, and the returned
-    clients all belong to the same cluster. It is a bounded migration seam: views
-    still infer their cluster instead of carrying it, which Phase 3 fixes by giving
-    them a GuestRef, and Phase 4 removes the adapter behind this entirely.
+    Explicit callers carry the cluster resolved from GuestRef and all returned
+    clients belong to it. The omitted-cluster branch is a bounded migration seam
+    for the two global restore entry points; Phase 4 qualifies those routes and
+    removes the adapter entirely.
 
     Returns an empty list when no single cluster can be resolved, matching the old
     behaviour of an unconfigured install rather than breaking passive reads.
@@ -766,7 +798,7 @@ def cluster_scoped_clients():
     )
 
     try:
-        return cluster_clients(require_sole_enabled_cluster_for_legacy_caller())
+        return cluster_clients(cluster or require_sole_enabled_cluster_for_legacy_caller())
     except ClusterResolutionError:
         return []
 

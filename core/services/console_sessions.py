@@ -48,12 +48,13 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
     from core.services.cluster_resolver import (
         ClusterResolutionError,
         cluster_clients,
-        require_sole_enabled_cluster_for_legacy_caller,
     )
 
-    cluster = None
+    cluster = getattr(detail, "cluster", None)
+    guest_ref = getattr(detail, "guest_ref", None)
     try:
-        cluster = require_sole_enabled_cluster_for_legacy_caller()
+        if cluster is None or guest_ref is None or cluster.key != guest_ref.cluster_key:
+            raise ClusterResolutionError("Console target is missing cluster-qualified identity.")
         candidates = cluster_clients(cluster)
     except ClusterResolutionError as exc:
         candidates = []
@@ -115,5 +116,5 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
         proxmox_password=password,
         details={"cert_present": bool(response.get("cert")), "console_type": console_type, "proxmox_user": proxmox_user},
     )
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=cluster)
     return ConsoleSessionResult(session=session, token=token, password=password, console_type=console_type)

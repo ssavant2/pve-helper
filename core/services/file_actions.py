@@ -3,18 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 
-from core.models import FileInventory, ProxmoxInventory
+from core.models import FileInventory, ProxmoxCluster, ProxmoxInventory
+from core.services.refs import GuestRef
 from core.services.classification import extract_vmid_from_image_path
 from core.services.proxmox import fetch_live_guest_status
 
 
 @dataclass(frozen=True)
 class ReferencedObject:
+    cluster_key: str
     object_type: str
     vmid: int | None
     name: str
     node: str
     status: str
+
+    @property
+    def guest_ref(self) -> GuestRef | None:
+        if not self.cluster_key or self.vmid is None or self.object_type not in {"vm", "ct"}:
+            return None
+        return GuestRef(self.cluster_key, self.object_type, self.vmid, self.node)
 
     @property
     def label(self) -> str:
@@ -111,9 +119,9 @@ def file_action_risk(entry: FileInventory, *, block_running_guests: bool = True)
 def guest_objects_for_entry(entry: FileInventory) -> list[ReferencedObject]:
     objects = [*_referenced_objects(entry), *_vmid_objects(entry)]
     deduped: list[ReferencedObject] = []
-    seen: set[tuple[str, str, int | None]] = set()
+    seen: set[tuple[str, str, str, int | None]] = set()
     for item in objects:
-        key = (item.node, item.object_type, item.vmid)
+        key = (item.cluster_key, item.node, item.object_type, item.vmid)
         if key in seen:
             continue
         seen.add(key)
@@ -121,9 +129,19 @@ def guest_objects_for_entry(entry: FileInventory) -> list[ReferencedObject]:
     # Override each scanned status with the live status so an action-time
     # warning ("belongs to a running guest") is honest, not stale from the last
     # scan. Live status is cached and falls back to the scanned value on error.
-    live = fetch_live_guest_status()
+    statuses_by_cluster: dict[str, dict] = {}
+    for cluster_key in {item.cluster_key for item in deduped if item.cluster_key}:
+        cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+        if cluster is not None:
+            statuses_by_cluster[cluster_key] = fetch_live_guest_status(cluster=cluster)
     return [
-        replace(item, status=live.get((item.node or "", item.object_type, item.vmid), item.status))
+        replace(
+            item,
+            status=statuses_by_cluster.get(item.cluster_key, {}).get(
+                (item.node or "", item.object_type, item.vmid),
+                item.status,
+            ),
+        )
         if item.vmid is not None
         else item
         for item in deduped
@@ -156,6 +174,7 @@ def _vmid_objects(entry: FileInventory) -> list[ReferencedObject]:
 
 def _referenced_object(obj: ProxmoxInventory) -> ReferencedObject:
     return ReferencedObject(
+        cluster_key=obj.cluster.key if obj.cluster_id else "",
         object_type=obj.object_type,
         vmid=obj.vmid,
         name=obj.name,

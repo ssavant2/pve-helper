@@ -299,7 +299,7 @@ const submitVmBulkAction = async (overview, action, fields = {}, targetRows = nu
     input.remove();
   });
   rows.forEach((row) => {
-    const target = row.dataset.guestTarget || "";
+    const target = row.dataset.guestRef || row.dataset.guestTarget || "";
     if (!target) {
       return;
     }

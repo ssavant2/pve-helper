@@ -8,10 +8,11 @@ from ..common import *  # noqa: F401,F403
 from .. import common
 from core.services.cluster_resolver import (
     cluster_write,
-    require_sole_enabled_cluster_for_legacy_caller,
 )
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.public_errors import public_exception_message
+from core.services.guest_scope import guest_ref_from_legacy_identity
+from core.services.refs import GuestRef, RefParseError
 
 # Sentinel returned by the multi-disk migration path when its worker owns the
 # running Audit event. Keeping it here makes ownership explicit for every view
@@ -26,16 +27,15 @@ def guest_kind(detail: SimpleNamespace) -> str:
 def guest_cluster(detail: SimpleNamespace):
     """The cluster a guest operation acts inside.
 
-    Every guest write funnels through this module, so this is the one boundary where
-    scope is resolved for them. `detail` does not carry a cluster yet: Phase 3 gives
-    it a GuestRef, and this falls away with the adapter in Phase 4. Until then the
-    lookup is explicit and fails closed rather than letting a write pick an endpoint
-    from an ambient global list.
+    Every guest write funnels through this module. Phase 3 resolves the legacy URL
+    to a GuestRef before lookup, so a write arriving here without its owning cluster
+    is a programming error rather than a reason to guess from global state.
     """
     cluster = getattr(detail, "cluster", None)
-    if cluster is not None:
-        return cluster
-    return require_sole_enabled_cluster_for_legacy_caller()
+    ref = getattr(detail, "guest_ref", None)
+    if cluster is None or ref is None or cluster.key != ref.cluster_key:
+        raise ValueError("Guest operation requires a matching cluster-qualified GuestRef.")
+    return cluster
 
 
 def _guest_path(detail: SimpleNamespace, subpath: str = "") -> str:
@@ -209,8 +209,10 @@ def audit_guest(
         request,
         action=action,
         object_type="guest",
-        object_id=f"{detail.object_type}:{detail.vmid}",
         outcome=outcome,
+        cluster=guest_cluster(detail),
+        guest_ref=detail.guest_ref,
+        node_ref=detail.node_ref,
         details={
             "node": detail.node,
             "vmid": detail.vmid,
@@ -242,13 +244,15 @@ def audit_guest_task_or_success(
             }
         )
         event = audit_guest(request, detail, audit_action, details, outcome="running")
+        event.details = {
+            **event.details,
+            "operation_payload_version": 1,
+            "task_timeout_seconds": timeout_seconds or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
+        }
+        event.save(update_fields=["details"])
         task_id = common.enqueue_bulk_task(
             "core.tasks.poll_guest_audit_task",
             event.id,
-            getattr(client, "endpoint", ""),
-            detail.node,
-            response,
-            timeout_seconds or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
         )
         event.details = {**event.details, "poll_task_id": task_id}
         event.save(update_fields=["details"])
@@ -283,18 +287,16 @@ def finish_guest_running_audit(
     if isinstance(response, str) and response.startswith("UPID:") and client is not None:
         details.update(
             {
+                "operation_payload_version": 1,
                 "proxmox_task_upid": response,
                 "proxmox_task_node": detail.node,
                 "proxmox_endpoint": getattr(client, "endpoint", ""),
+                "task_timeout_seconds": timeout_seconds or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
             }
         )
         task_id = common.enqueue_bulk_task(
             "core.tasks.poll_guest_audit_task",
             event.id,
-            getattr(client, "endpoint", ""),
-            detail.node,
-            response,
-            timeout_seconds or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
         )
         details["poll_task_id"] = task_id
         event.details = details
@@ -312,6 +314,7 @@ def finish_guest_running_audit(
                 node=detail.node,
                 object_type=detail.object_type,
                 vmid=detail.vmid,
+                cluster=guest_cluster(detail),
             )
             if refresh.error:
                 details["projection_refresh_error"] = refresh.error
@@ -353,20 +356,32 @@ def write_result(request, detail, redirect_name, err, audit_action, audit_detail
 
 
 def parse_guest_target_value(value: str) -> tuple[str | None, int | None, str]:
+    ref = guest_ref_from_target_value(value)
+    return (ref.object_type, ref.vmid, ref.node) if ref is not None else (None, None, "")
+
+
+def guest_ref_from_target_value(value: str) -> GuestRef | None:
+    raw = str(value or "").strip()
+    if raw.startswith("gr"):
+        try:
+            return GuestRef.parse(raw)
+        except RefParseError:
+            return None
     target_text, _node_separator, node = str(value or "").partition("@")
     object_type, separator, vmid_text = target_text.partition(":")
     if separator != ":" or object_type not in GUEST_OBJECT_TYPES:
-        return None, None, ""
+        return None
     try:
-        return object_type, int(vmid_text), node
-    except ValueError:
-        return None, None, ""
+        return guest_ref_from_legacy_identity(object_type, int(vmid_text), node=node)
+    except (TypeError, ValueError):
+        return None
 
 
 # Compatibility aliases while call sites move to explicit public helper names.
 _MIGRATE_ASYNC = MIGRATE_ASYNC
 _audit_guest = audit_guest
 _audit_guest_task_or_success = audit_guest_task_or_success
+_guest_ref_from_target_value = guest_ref_from_target_value
 _finish_guest_running_audit = finish_guest_running_audit
 _guest_action_response = guest_action_response
 _guest_delete = guest_delete

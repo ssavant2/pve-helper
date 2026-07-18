@@ -11,9 +11,9 @@
           <p>
             <span class="badge{% if guest_is_template %} infrastructure{% endif %}">{{ guest_type_label }}</span>
             {% if guest.status == "running" %}
-              <span class="badge completed" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}">{{ guest.status }}</span>
+              <span class="badge completed" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}" data-guest-ref="{{ active_guest_ref }}">{{ guest.status }}</span>
             {% else %}
-              <span class="badge" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}">{{ guest.status|default:"-" }}</span>
+              <span class="badge" data-active-guest-status-badge data-guest-target="{{ active_guest_target_id }}" data-guest-ref="{{ active_guest_ref }}">{{ guest.status|default:"-" }}</span>
             {% endif %}
             on node <strong>{{ guest.node|default:"-" }}</strong>
           </p>

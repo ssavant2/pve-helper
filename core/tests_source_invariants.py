@@ -28,22 +28,22 @@ FORBIDDEN_GLOBAL_FAN_OUT = "configured_clients"
 LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset(
     {
         "core/services/cluster_resolver.py",  # the definition itself
-        # The authoritative cluster-wide read and the passive display reads.
-        # Phase 2 moves these into the cluster-scoped read model.
+        # Bounded compatibility readers for callers whose canonical URL or
+        # provider-service contract is migrated in Phase 4.
         "core/services/proxmox.py",
+        # The only Phase-3 bridge from unqualified URL/form contracts to
+        # GuestRef. Phase 4 deletes this entire module.
+        "core/services/guest_scope.py",
         # Provider services and worker/view boundaries with no caller-supplied
         # scope yet. Each resolves once, at its own boundary, and passes the
         # cluster down explicitly.
-        "core/services/console_sessions.py",
         "core/services/guest_create.py",
-        "core/services/tag_actions.py",
         "core/services/tag_registry.py",
         "core/services/vm_register.py",
         "core/tasks.py",
         "core/views/common.py",
-        "core/views/guests/operation_lifecycle.py",
-        # The read-model reconciler resolves a cluster for targeted single-guest
-        # writes and freshness state until Phase 3 threads a GuestRef through.
+        # Compatibility defaults retained for callers that have not yet crossed
+        # the Phase-4 URL/service boundary; Phase-3 callers pass cluster explicitly.
         "core/services/current_guest_inventory.py",
     }
 )

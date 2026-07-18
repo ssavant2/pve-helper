@@ -282,7 +282,13 @@ def _visible_guest_tasks():
 
 def _guest_task(event: AuditEvent) -> dict[str, object]:
     details = event.details if isinstance(event.details, dict) else {}
-    identity = guest_identity(details.get("target_type"), details.get("vmid"), details.get("name") or "")
+    identity = guest_identity(
+        details.get("target_type"),
+        details.get("vmid"),
+        details.get("name") or "",
+        cluster_key=event.cluster_key_snapshot or details.get("cluster_key") or "",
+        node=details.get("node") or details.get("target_node") or "",
+    )
     status, status_class = _guest_task_status(event)
     finished_at = _guest_task_finished_at(event, details, status_class)
     extra = ""
@@ -371,7 +377,9 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
             offer_force_stop = False
             status, status_class = "Completed", "completed"
         else:
-            force_stop_target = f"{ttype}:{vmid}" + (f"@{node}" if node else "")
+            force_stop_target = str(details.get("guest_ref") or "")
+            if not force_stop_target:
+                force_stop_target = f"{ttype}:{vmid}" + (f"@{node}" if node else "")
     retryable = event.action == "tag.bulk_operation" and event.outcome == "failed" and details.get("retryable") is True
     if retryable:
         status = "Failed — right-click for options"

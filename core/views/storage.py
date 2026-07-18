@@ -493,9 +493,13 @@ def storage_browser(request, storage_id: str):
     # Link each referenced disk image to the current VM/CT that owns it.
     from core.services.classification import extract_vmid_from_image_path
 
-    guest_map: dict[int, CurrentGuestInventory] = {
-        obj.vmid: obj for obj in CurrentGuestInventory.objects.all()
-    }
+    guests_by_vmid: dict[int, list[CurrentGuestInventory]] = {}
+    for obj in CurrentGuestInventory.objects.select_related("cluster").all():
+        guests_by_vmid.setdefault(obj.vmid, []).append(obj)
+
+    def _unique_guest(vmid: int) -> CurrentGuestInventory | None:
+        matches = guests_by_vmid.get(vmid, [])
+        return matches[0] if len(matches) == 1 else None
 
     # Linked-clone lineage: which template each clone descends from, and how many
     # clones each template's base volume backs. Cached live fetch; empty if the
@@ -508,11 +512,12 @@ def storage_browser(request, storage_id: str):
     base_volume_re = re.compile(r"base-(\d+)-disk-")
 
     def _template_link(vmid: int) -> dict:
-        guest = guest_map.get(vmid)
+        guest = _unique_guest(vmid)
         return {
             "vmid": vmid,
             "name": guest.name if guest and guest.name else f"VM {vmid}",
             "url": reverse("core:guest_summary", args=[guest.object_type, guest.vmid]) if guest else "",
+            "guest_ref": guest.guest_ref().serialize() if guest and guest.guest_ref() else "",
         }
 
     for entry in entries:
@@ -531,11 +536,12 @@ def storage_browser(request, storage_id: str):
             }
         if entry.classification == FileInventory.Classification.REFERENCED:
             owner_vmid = extract_vmid_from_image_path(entry.path)
-            guest = guest_map.get(owner_vmid or -1)
+            guest = _unique_guest(owner_vmid or -1)
             if guest is not None:
                 entry.referenced_guest = {
                     "name": guest.name or f"VM {guest.vmid}",
                     "url": reverse("core:guest_summary", args=[guest.object_type, guest.vmid]),
+                    "guest_ref": guest.guest_ref().serialize() if guest.guest_ref() else "",
                     # If this disk belongs to a linked clone, name its base template.
                     "linked_clone_of": _template_link(lineage[owner_vmid])
                     if owner_vmid in lineage

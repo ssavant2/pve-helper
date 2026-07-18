@@ -150,7 +150,7 @@ const openBulkMigrateDialog = (overview, rows) => {
     const csrf = overview.querySelector("[data-vm-bulk-form] [name=csrfmiddlewaretoken]")?.value || "";
     const body = new URLSearchParams();
     rows.forEach((row) => {
-      body.append("guest", row.dataset.guestTarget || "");
+      body.append("guest", row.dataset.guestRef || row.dataset.guestTarget || "");
     });
     fetch(new URL(nicsUrl, window.location.origin), {
       method: "POST",

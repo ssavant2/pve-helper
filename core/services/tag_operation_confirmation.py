@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 from django.core import signing
 
+from core.services.refs import GuestRef, RefParseError
+
 
 TAG_OPERATION_CONFIRMATION_SALT = "pve-helper.tag-operation-confirmation.v1"
 TAG_OPERATION_CONFIRMATION_MAX_AGE_SECONDS = 15 * 60
@@ -21,6 +23,12 @@ CHANGED_CONFIRMATION_ERROR = (
 
 def _target_identity(target) -> tuple[str, str, str, int]:
     if isinstance(target, Mapping):
+        try:
+            ref = GuestRef.parse(str(target.get("guest_ref") or ""))
+        except RefParseError:
+            ref = None
+        if ref is not None:
+            return (ref.cluster_key, ref.node, ref.object_type, ref.vmid)
         return (
             str(target.get("cluster_key") or ""),
             str(target.get("node") or ""),

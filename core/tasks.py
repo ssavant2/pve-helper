@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import quote
 
@@ -30,7 +31,7 @@ from .services.classification import classify_entry, extract_disk_references
 from .services.cluster_state_identity import cluster_advisory_lock_id
 from .services.audit_events import record_audit_event
 from .services.console_session_cleanup import prune_console_sessions
-from .services.cluster_resolver import client_for_endpoint
+from .services.cluster_resolver import client_for_endpoint, cluster_clients
 from .services.runtime_bootstrap import ensure_bootstrap
 from .services.current_guest_inventory import (
     ScanGuestObservation,
@@ -38,6 +39,10 @@ from .services.current_guest_inventory import (
     reconcile_scan_guest_inventory,
     refresh_current_guest_from_client,
     upsert_current_guest,
+)
+from .services.durable_guest_operations import (
+    DurableGuestOperationError,
+    client_for_audit_event,
 )
 from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
@@ -69,6 +74,51 @@ SPACE_SNAPSHOT_RETENTION_DAYS = 8
 logger = logging.getLogger(__name__)
 
 CURRENT_GUEST_REFRESH_LOCK_ID = 0x50564547554501
+
+
+def _durable_or_legacy_guest_operation(
+    event: AuditEvent,
+    *,
+    endpoint_url: str = "",
+    node: str = "",
+    object_type: str = "",
+    vmid: int | None = None,
+):
+    """Resolve a Phase-3 operation, with one bounded pre-Phase-3 reader.
+
+    Old Django-Q rows carried the endpoint and target as positional arguments.
+    They may finish during a rolling deployment even though their AuditEvent has
+    no cluster identity.  Only that explicit old payload is accepted; new event-
+    only writers must resolve through the durable relation and GuestRef.
+    """
+    try:
+        return client_for_audit_event(event, preferred_endpoint_url=endpoint_url)
+    except DurableGuestOperationError:
+        details = event.details if isinstance(event.details, dict) else {}
+        legacy_type = object_type or str(details.get("target_type") or "")
+        legacy_node = node or str(details.get("node") or details.get("target_node") or "")
+        try:
+            legacy_vmid = int(vmid if vmid is not None else details.get("vmid"))
+        except (TypeError, ValueError):
+            legacy_vmid = 0
+        if (
+            details.get("operation_payload_version") is None
+            and endpoint_url
+            and legacy_node
+            and legacy_type in {"vm", "ct"}
+            and legacy_vmid > 0
+        ):
+            return (
+                ProxmoxClient(endpoint_url),
+                SimpleNamespace(
+                    cluster_key="",
+                    node=legacy_node,
+                    object_type=legacy_type,
+                    vmid=legacy_vmid,
+                ),
+                None,
+            )
+        raise
 
 
 
@@ -140,10 +190,10 @@ def run_scheduled_action(run_id: int) -> None:
 
 def poll_guest_audit_task(
     audit_event_id: int,
-    endpoint_url: str,
-    node: str,
-    upid: str,
-    timeout_seconds: int,
+    endpoint_url: str = "",
+    node: str = "",
+    upid: str = "",
+    timeout_seconds: int | None = None,
 ) -> None:
     event = AuditEvent.objects.filter(pk=audit_event_id).first()
     if event is None:
@@ -151,7 +201,33 @@ def poll_guest_audit_task(
 
     details = event.details if isinstance(event.details, dict) else {}
     details = dict(details)
-    client = ProxmoxClient(endpoint_url)
+    try:
+        client, ref, cluster = _durable_or_legacy_guest_operation(
+            event,
+            endpoint_url=endpoint_url,
+            node=node,
+        )
+    except DurableGuestOperationError as exc:
+        event.outcome = "failed"
+        details["error"] = str(exc)
+        details["finished_at"] = timezone.now().isoformat()
+        event.details = details
+        event.save(update_fields=["outcome", "details"])
+        return
+    node = node or str(details.get("proxmox_task_node") or ref.node)
+    upid = upid or str(details.get("proxmox_task_upid") or "")
+    timeout_seconds = int(
+        timeout_seconds
+        or details.get("task_timeout_seconds")
+        or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
+    )
+    if not node or not upid:
+        event.outcome = "failed"
+        details["error"] = "The queued operation is missing its Proxmox task identity."
+        details["finished_at"] = timezone.now().isoformat()
+        event.details = details
+        event.save(update_fields=["outcome", "details"])
+        return
     try:
         result = client.wait_for_task(
             node=node,
@@ -181,9 +257,9 @@ def poll_guest_audit_task(
 
     if event.outcome == "success":
         try:
-            target_type = str(details.get("target_type") or "")
-            target_vmid = int(details.get("vmid"))
-            target_node = str(details.get("node") or node)
+            target_type = ref.object_type
+            target_vmid = ref.vmid
+            target_node = ref.node or str(details.get("node") or node)
             allow_relocation = event.action in {"guest.migrate", "guest.destroy"}
             if event.action == "guest.clone.create" and details.get("new_vmid"):
                 target_vmid = int(details["new_vmid"])
@@ -193,6 +269,7 @@ def poll_guest_audit_task(
                 node=target_node,
                 object_type=target_type,
                 vmid=target_vmid,
+                cluster=cluster,
                 allow_relocation=allow_relocation,
                 delete_if_authoritatively_absent=event.action == "guest.destroy",
             )
@@ -208,7 +285,7 @@ def poll_guest_audit_task(
         event.details = details
         event.save(update_fields=["details"])
 
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=cluster)
     if event.outcome == "success":
         enqueue_storage_rescan(details.get("rescan_storage_ids") or [])
 
@@ -522,12 +599,12 @@ def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
 
 def migrate_guest_disks_task(
     audit_event_id: int,
-    endpoint_url: str,
-    node: str,
-    object_type: str,
-    vmid: int,
-    moves: list,
-    timeout_seconds: int,
+    endpoint_url: str = "",
+    node: str = "",
+    object_type: str = "",
+    vmid: int | None = None,
+    moves: list | None = None,
+    timeout_seconds: int | None = None,
 ) -> None:
     """Worker task: relocate every one of a guest's volumes to a target storage.
 
@@ -540,7 +617,37 @@ def migrate_guest_disks_task(
     if event is None:
         return
     details = dict(event.details) if isinstance(event.details, dict) else {}
-    client = ProxmoxClient(endpoint_url)
+    try:
+        client, ref, cluster = _durable_or_legacy_guest_operation(
+            event,
+            endpoint_url=endpoint_url,
+            node=node,
+            object_type=object_type,
+            vmid=vmid,
+        )
+    except DurableGuestOperationError as exc:
+        event.outcome = "failed"
+        event.details = {**details, "error": str(exc), "finished_at": timezone.now().isoformat()}
+        event.save(update_fields=["outcome", "details"])
+        return
+    node = node or ref.node
+    object_type = object_type or ref.object_type
+    vmid = vmid or ref.vmid
+    moves = moves if moves is not None else details.get("moves", [])
+    timeout_seconds = int(
+        timeout_seconds
+        or details.get("task_timeout_seconds")
+        or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
+    )
+    if not node or not isinstance(moves, list):
+        event.outcome = "failed"
+        event.details = {
+            **details,
+            "error": "The queued disk migration has incomplete target data.",
+            "finished_at": timezone.now().isoformat(),
+        }
+        event.save(update_fields=["outcome", "details"])
+        return
     kind = "qemu" if object_type == ProxmoxInventory.ObjectType.VM else "lxc"
     subpath = "move_disk" if kind == "qemu" else "move_volume"
     disk_param = "disk" if kind == "qemu" else "volume"
@@ -590,21 +697,21 @@ def migrate_guest_disks_task(
     details["finished_at"] = timezone.now().isoformat()
     event.details = details
     event.save(update_fields=["outcome", "details"])
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=cluster)
 
 
 def restore_guest_backup_task(
     audit_event_id: int,
-    endpoint_url: str,
-    node: str,
-    object_type: str,
-    vmid: int,
-    archive: str,
-    storage: str,
-    overwrite: bool,
-    shutdown_first: bool,
-    start_after: bool,
-    timeout_seconds: int,
+    endpoint_url: str = "",
+    node: str = "",
+    object_type: str = "",
+    vmid: int | None = None,
+    archive: str = "",
+    storage: str = "",
+    overwrite: bool | None = None,
+    shutdown_first: bool | None = None,
+    start_after: bool | None = None,
+    timeout_seconds: int | None = None,
 ) -> None:
     """Restore a vzdump archive, optionally replacing an existing guest.
 
@@ -618,7 +725,42 @@ def restore_guest_backup_task(
     if event is None:
         return
     details = dict(event.details) if isinstance(event.details, dict) else {}
-    client = ProxmoxClient(endpoint_url)
+    try:
+        client, ref, cluster = _durable_or_legacy_guest_operation(
+            event,
+            endpoint_url=endpoint_url,
+            node=node,
+            object_type=object_type,
+            vmid=vmid,
+        )
+    except DurableGuestOperationError as exc:
+        event.outcome = "failed"
+        event.details = {**details, "error": str(exc), "finished_at": timezone.now().isoformat()}
+        event.save(update_fields=["outcome", "details"])
+        return
+    endpoint_url = endpoint_url or str(details.get("proxmox_endpoint") or getattr(client, "endpoint", ""))
+    node = node or ref.node
+    object_type = object_type or ref.object_type
+    vmid = vmid or ref.vmid
+    archive = archive or str(details.get("archive") or "")
+    storage = storage or str(details.get("target_storage") or "")
+    overwrite = bool(details.get("overwrite")) if overwrite is None else overwrite
+    shutdown_first = bool(details.get("shutdown_first")) if shutdown_first is None else shutdown_first
+    start_after = bool(details.get("start_after")) if start_after is None else start_after
+    timeout_seconds = int(
+        timeout_seconds
+        or details.get("task_timeout_seconds")
+        or settings.BACKUP_TASK_TIMEOUT_SECONDS
+    )
+    if not node or not archive or not storage:
+        event.outcome = "failed"
+        event.details = {
+            **details,
+            "error": "The queued restore has incomplete target data.",
+            "finished_at": timezone.now().isoformat(),
+        }
+        event.save(update_fields=["outcome", "details"])
+        return
     kind = "qemu" if object_type == ProxmoxInventory.ObjectType.VM else "lxc"
 
     def cancelled() -> bool:
@@ -712,15 +854,15 @@ def restore_guest_backup_task(
         details["stage"] = "completed"
     event.details = details
     event.save(update_fields=["outcome", "details"])
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=cluster)
 
 
 def register_import_vm_task(
     audit_event_id: int,
-    node: str,
-    params: dict,
-    source_storage_id: str,
-    source_path: str,
+    node: str = "",
+    params: dict | None = None,
+    source_storage_id: str = "",
+    source_path: str = "",
     source_volid: str = "",
 ) -> None:
     """Worker task: import a disk image into a new VM and record the outcome.
@@ -733,15 +875,47 @@ def register_import_vm_task(
 
     event = AuditEvent.objects.filter(pk=audit_event_id).first()
     details = dict(event.details) if event and isinstance(event.details, dict) else {}
+    if event is None:
+        return
+    try:
+        _client, ref, cluster = client_for_audit_event(event)
+    except DurableGuestOperationError as exc:
+        event.outcome = "failed"
+        event.details = {**details, "error": str(exc), "finished_at": timezone.now().isoformat()}
+        event.save(update_fields=["outcome", "details"])
+        return
+    node = node or ref.node
+    params = params if isinstance(params, dict) else details.get("params", {})
+    source_storage_id = source_storage_id or str(details.get("source_storage_id") or "")
+    source_path = source_path or str(details.get("source_path") or "")
+    source_volid = source_volid or str(details.get("source_volid") or "")
+    if not node or not isinstance(params, dict):
+        event.outcome = "failed"
+        event.details = {
+            **details,
+            "error": "The queued VM import has incomplete target data.",
+            "finished_at": timezone.now().isoformat(),
+        }
+        event.save(update_fields=["outcome", "details"])
+        return
     upid = ""
     error: str | None = None
     try:
         if source_volid:
-            upid, error = import_volid_as_vm(node, params, source_volid=source_volid)
+            upid, error = import_volid_as_vm(
+                node,
+                params,
+                source_volid=source_volid,
+                cluster=cluster,
+            )
         else:
             storage = StorageMount.objects.get(storage_id=source_storage_id, enabled=True)
             upid, error = import_disk_as_vm(
-                node, params, source_storage=storage, source_path=source_path
+                node,
+                params,
+                source_storage=storage,
+                source_path=source_path,
+                cluster=cluster,
             )
     except StorageMount.DoesNotExist:
         error = "Source storage is no longer available."
@@ -769,8 +943,9 @@ def register_import_vm_task(
             str(params.get("target_storage", "")),
             str(params.get("vmid", "")),
             node=node,
+            cluster=cluster,
         )
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=cluster)
 
 
 def _refresh_import_target_inventory(
@@ -778,6 +953,7 @@ def _refresh_import_target_inventory(
     vmid: str,
     *,
     node: str = "",
+    cluster=None,
 ) -> None:
     """Refresh an imported VM's disk rows using its current PVE config.
 
@@ -810,7 +986,8 @@ def _refresh_import_target_inventory(
     if node and numeric_vmid is not None:
         # Bounded to one cluster: asking every endpoint whether it holds this
         # node/vmid is a cross-cluster search, and two clusters may each answer.
-        for client in _cluster_clients():
+        clients = cluster_clients(cluster) if cluster is not None else _cluster_clients()
+        for client in clients:
             try:
                 config = client.guest_config(
                     node=node,
@@ -832,6 +1009,7 @@ def _refresh_import_target_inventory(
                 name=str(config.get("name") or ""),
                 status=str(current.get("status") or ""),
                 config=config,
+                cluster=cluster,
             )
             break
 

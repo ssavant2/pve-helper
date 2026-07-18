@@ -6,7 +6,7 @@ from django.db import models
 from django.db.models.functions import Lower
 
 # A dependency-free value object: refs.py must never import models, or this cycles.
-from core.services.refs import NodeRef
+from core.services.refs import GuestRef, NodeRef
 
 
 class TimestampedModel(models.Model):
@@ -54,6 +54,17 @@ class AuditEvent(models.Model):
     # Denormalized UI category (auth/vms/storage/clusters/network/system) so the
     # audit-log module filter can query the DB instead of only the rendered page.
     module = models.CharField(max_length=20, blank=True, db_index=True)
+    # Durable scope snapshot plus relation. The snapshot remains meaningful when
+    # the cluster display name changes; the relation supports filtering and
+    # prevents deleting a cluster that still owns history.
+    cluster = models.ForeignKey(
+        "ProxmoxCluster",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="audit_events",
+    )
+    cluster_key_snapshot = models.CharField(max_length=63, blank=True)
     storage_id = models.CharField(max_length=120, blank=True)
     path = models.CharField(max_length=1024, blank=True)
     target_preallocation = models.CharField(max_length=40, blank=True)
@@ -66,6 +77,7 @@ class AuditEvent(models.Model):
             models.Index(fields=["object_type", "object_id"]),
             models.Index(fields=["storage_id", "timestamp"], name="core_audit_store_time_idx"),
             models.Index(fields=["storage_id", "path", "target_preallocation"], name="core_audit_store_path_pre_idx"),
+            models.Index(fields=["cluster_key_snapshot", "timestamp"], name="core_audit_cluster_time_idx"),
         ]
 
     def save(self, *args, **kwargs):
@@ -259,7 +271,7 @@ class RuntimeConfigurationState(TimestampedModel):
 
 
 class ProxmoxEndpoint(TimestampedModel):
-    name = models.CharField(max_length=120, unique=True)
+    name = models.CharField(max_length=120)
     url = models.URLField()
     # Nullable for the additive Phase 1a deploy: old code must tolerate the new
     # column and new code must tolerate rows not yet backfilled. Made non-null by a
@@ -284,6 +296,11 @@ class ProxmoxEndpoint(TimestampedModel):
     class Meta:
         ordering = ["name"]
         constraints = [
+            models.UniqueConstraint(
+                fields=["cluster", "name"],
+                name="unique_endpoint_name_per_cluster",
+                nulls_distinct=False,
+            ),
             models.UniqueConstraint(
                 fields=["normalized_url"],
                 condition=~models.Q(normalized_url=""),
@@ -364,8 +381,23 @@ class ConsoleSession(TimestampedModel):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["target_type", "target_vmid"], name="core_console_target_idx"),
+            models.Index(fields=["cluster", "target_type", "target_vmid"], name="core_con_cluster_target_idx"),
+            models.Index(
+                fields=["cluster", "target_node", "target_type", "target_vmid"],
+                name="core_con_cluster_node_idx",
+            ),
             models.Index(fields=["status", "expires_at"], name="core_console_status_exp_idx"),
         ]
+
+    def guest_ref(self) -> "GuestRef | None":
+        if self.cluster_id is None:
+            return None
+        return GuestRef(
+            cluster_key=self.cluster.key,
+            object_type=self.target_type,
+            vmid=self.target_vmid,
+            node=self.target_node,
+        )
 
     def __str__(self) -> str:
         return f"{self.target_type}:{self.target_vmid} console {self.status}"
@@ -514,6 +546,11 @@ class ProxmoxInventory(TimestampedModel):
         label = self.name or self.vmid or self.object_type
         return f"{self.node}: {label}"
 
+    def guest_ref(self) -> "GuestRef | None":
+        if self.cluster_id is None or self.vmid is None or self.object_type not in {"vm", "ct"}:
+            return None
+        return GuestRef(self.cluster.key, self.object_type, self.vmid, self.node)
+
 
 class CurrentGuestInventory(TimestampedModel):
     """Mutable current-state projection for VM/CT reads.
@@ -589,6 +626,11 @@ class CurrentGuestInventory(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.node}: {self.name or self.vmid}"
+
+    def guest_ref(self) -> "GuestRef | None":
+        if self.cluster_id is None:
+            return None
+        return GuestRef(self.cluster.key, self.object_type, self.vmid, self.node)
 
 
 class CurrentGuestInventoryState(TimestampedModel):
@@ -765,6 +807,15 @@ class ScheduledAction(TimestampedModel):
     enabled = models.BooleanField(default=True)
     action_type = models.CharField(max_length=40, choices=ActionType.choices)
     action_timeout_seconds = models.PositiveIntegerField(default=1800)
+    # Additive during the mixed-version rollout. New writers always set it;
+    # legacy rows are resolved only through the version-0 sole-cluster adapter.
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="scheduled_actions",
+    )
     target_type = models.CharField(max_length=20, choices=TargetType.choices)
     target_vmid = models.PositiveIntegerField()
     target_node = models.CharField(max_length=120, blank=True)
@@ -806,6 +857,11 @@ class ScheduledAction(TimestampedModel):
         indexes = [
             models.Index(fields=["enabled", "next_run_at"], name="core_sched_enabled_next_idx"),
             models.Index(fields=["target_type", "target_vmid"], name="core_sched_target_idx"),
+            models.Index(fields=["cluster", "target_type", "target_vmid"], name="core_sched_cluster_target_idx"),
+            models.Index(
+                fields=["cluster", "target_node", "target_type", "target_vmid"],
+                name="core_sched_cluster_node_idx",
+            ),
             models.Index(fields=["action_type"], name="core_sched_action_idx"),
             models.Index(fields=["created_by"], name="core_sched_created_by_idx"),
         ]
@@ -820,6 +876,16 @@ class ScheduledAction(TimestampedModel):
     def __str__(self) -> str:
         target = f"{self.target_type}:{self.target_vmid}"
         return f"{self.name} ({self.action_type} {target})"
+
+    def guest_ref(self) -> "GuestRef | None":
+        if self.cluster_id is None:
+            return None
+        return GuestRef(
+            cluster_key=self.cluster.key,
+            object_type=self.target_type,
+            vmid=self.target_vmid,
+            node=self.target_node,
+        )
 
 
 class ScheduledActionRun(TimestampedModel):

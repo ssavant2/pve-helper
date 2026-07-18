@@ -12,6 +12,7 @@ from core.services.proxmox import (
     VerifiedGuestInventory,
     fetch_verified_guest_inventory,
 )
+from core.services.refs import GuestRef, RefParseError
 from core.services.tag_operation_confirmation import CHANGED_CONFIRMATION_ERROR, tag_membership_fingerprint
 from core.services.tag_registry import (
     mutate_registered_tags,
@@ -174,11 +175,14 @@ def unregister_tag(tag: str, *, cluster=None) -> tuple[dict[str, RegisteredTag],
 
 
 def _target_from_guest(row, *, cluster=None) -> dict:
+    cluster_key = (
+        getattr(getattr(row, "cluster", None), "key", "")
+        or getattr(cluster, "key", "")
+    )
+    ref = GuestRef(cluster_key, row.object_type, row.vmid, row.node)
     return {
-        "cluster_key": (
-            getattr(getattr(row, "cluster", None), "key", "")
-            or getattr(cluster, "key", "")
-        ),
+        "guest_ref": ref.serialize(),
+        "cluster_key": cluster_key,
         "node": row.node,
         "object_type": row.object_type,
         "vmid": row.vmid,
@@ -249,7 +253,9 @@ def prepare_tag_operation(
         "username": username,
     }
     event.outcome = "queued"
-    event.save(update_fields=["details", "outcome"])
+    event.cluster = cluster
+    event.cluster_key_snapshot = cluster.key
+    event.save(update_fields=["details", "outcome", "cluster", "cluster_key_snapshot"])
     if not targets:
         verification = fetch_verified_guest_inventory(cluster=cluster)
         remaining = [
@@ -282,10 +288,17 @@ def prepare_tag_operation(
 
 
 def _target_key(target: dict) -> str:
-    return (
-        f"{target.get('cluster_key')}:{target.get('object_type')}:"
-        f"{target.get('vmid')}@{target.get('node')}"
-    )
+    try:
+        return GuestRef.parse(str(target.get("guest_ref") or "")).serialize()
+    except RefParseError:
+        # Bounded reader for a queued pre-Phase-3 tag fan-out. New writers always
+        # persist guest_ref; activation verifies that no legacy payload remains.
+        return GuestRef(
+            str(target.get("cluster_key") or ""),
+            str(target.get("object_type") or ""),
+            int(target.get("vmid") or 0),
+            str(target.get("node") or ""),
+        ).serialize()
 
 
 def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> None:
@@ -438,7 +451,8 @@ def _update_target(details: dict, target: dict, live_guest, *, cluster) -> tuple
         username=event_username(details),
         action="tag.membership.renamed" if details["operation"] == "rename" else "tag.membership.removed",
         object_type="guest",
-        object_id=_target_key(target),
+        cluster=cluster,
+        guest_ref=GuestRef.parse(_target_key(target)),
         details={"source_tag": source, "new_tag": details.get("new_tag", ""), **target},
     )
     return "succeeded", ""
@@ -458,6 +472,8 @@ def _record_summary_audit(operation_event: AuditEvent) -> None:
         action="tag.renamed" if operation == "rename" else "tag.deleted",
         object_type="tag",
         object_id=str(details.get("source_tag") or operation_event.object_id),
+        cluster=operation_event.cluster,
+        cluster_key_snapshot=operation_event.cluster_key_snapshot,
         details={
             "source_tag": details.get("source_tag", ""),
             "new_tag": details.get("new_tag", ""),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (MIGRATE_KINDS, SNAPSHOT_NAME_HELP, SNAPSHOT_NAME_RE, _MIGRATE_ACTIVE_STATES, _apply_migrate_net_remap, _backup_error, _delete_all_guest_snapshots, _guest_movable_disks, _snapshot_error, _split_tag_text, _submit_guest_backup, _template_linked_clone_children, _template_storage_paths, _unique_tags, _update_current_guest_config)
-from .operation_lifecycle import (_MIGRATE_ASYNC, _audit_guest, _finish_guest_running_audit, _guest_destroy_with_client, _guest_post_with_client, _parse_guest_target_value)
+from .operation_lifecycle import (_MIGRATE_ASYNC, _audit_guest, _finish_guest_running_audit, _guest_destroy_with_client, _guest_post_with_client, _guest_ref_from_target_value)
 from .presenters import _config_enabled
 from .read_model_support import (_config_storage_ids, _guest_agent_config_enabled, _guest_pool_memberships, _linked_clone_children, _require_guest)
 from core.services.public_errors import public_exception_message
@@ -75,12 +75,12 @@ def vms_bulk_action(request):
 
     errors = []
     for target in targets:
-        object_type, vmid, target_node = _parse_guest_target_value(target)
-        if not object_type or vmid is None:
+        ref = _guest_ref_from_target_value(target)
+        if ref is None:
             errors.append(f"Invalid target: {target}")
             continue
         try:
-            detail = _require_guest(object_type, vmid, node=target_node)
+            detail = _require_guest(ref)
         except Http404:
             errors.append(f"Could not find target: {target}")
             continue
@@ -120,7 +120,7 @@ def vms_bulk_action(request):
             err, audit_details, response, client = _destroy_guest_from_bulk_request(request, detail)
             error_label = f"Destroy failed: {err}" if err else ""
         elif action == "template":
-            if object_type != ProxmoxInventory.ObjectType.VM:
+            if detail.object_type != ProxmoxInventory.ObjectType.VM:
                 _finish_guest_running_audit(
                     running_event,
                     detail,
@@ -130,7 +130,7 @@ def vms_bulk_action(request):
                 )
                 errors.append("Only VMs can be converted to templates.")
                 continue
-            if detail.vmid in common.fetch_live_guest_lineage():
+            if detail.vmid in common.fetch_live_guest_lineage(cluster=detail.cluster):
                 msg = (
                     f"{detail.name or detail.vmid} is a linked clone; converting it to a "
                     "template would create a fragile chained lineage. Full-clone it first."
@@ -310,7 +310,7 @@ def _move_guest_to_pool_from_bulk_request(request, detail: SimpleNamespace) -> t
     client = None
     pools: list[str] = []
     memberships: list[str] = []
-    for candidate in common.cluster_scoped_clients():
+    for candidate in common.cluster_scoped_clients(detail.cluster):
         try:
             # Resolve both the guest and the pool list through the same endpoint.
             # Pools are cluster-local, not globally shared between configured PVE
@@ -402,7 +402,7 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_e
     # Relocating a template's disks (storage / both) would move the base volume
     # out from under its linked clones and orphan their backing chain.
     if kind in {"storage", "both"}:
-        children = _linked_clone_children(detail.vmid)
+        children = _linked_clone_children(detail)
         if children:
             labels = ", ".join(str(child) for child in children)
             return (
@@ -455,7 +455,7 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_e
         audit["noop"] = True
         return "", audit, None, None
     endpoint = ""
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             endpoint = getattr(client, "endpoint", "")
@@ -464,15 +464,17 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_e
             continue
     if not endpoint:
         return "Could not reach the guest's Proxmox endpoint.", audit, None, None
+    running_event.details = {
+        **(running_event.details or {}),
+        "operation_payload_version": 1,
+        "proxmox_endpoint": endpoint,
+        "moves": moves,
+        "task_timeout_seconds": settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
+    }
+    running_event.save(update_fields=["details"])
     common.enqueue_bulk_task(
         "core.tasks.migrate_guest_disks_task",
         running_event.id,
-        endpoint,
-        detail.node,
-        detail.object_type,
-        detail.vmid,
-        moves,
-        settings.SCHEDULED_ACTION_TIMEOUT_SECONDS,
     )
     return "", audit, _MIGRATE_ASYNC, None
 
@@ -502,7 +504,7 @@ def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str,
     client = None
     fresh_config: dict = {}
     current: dict = {}
-    for candidate in common.cluster_scoped_clients():
+    for candidate in common.cluster_scoped_clients(detail.cluster):
         try:
             fresh_config = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             current = candidate.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
@@ -594,7 +596,7 @@ def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
         return "Stop the guest before destroying it.", {"status": detail.status}, None, None
     # A template whose base volume still backs linked clones must not be destroyed:
     # Proxmox refuses it anyway, but fail early with a clear message.
-    children = _linked_clone_children(detail.vmid)
+    children = _linked_clone_children(detail)
     if children:
         labels = ", ".join(str(child) for child in children)
         return (
@@ -641,7 +643,7 @@ def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tu
 
     client = None
     fresh: dict = {}
-    for candidate in common.cluster_scoped_clients():
+    for candidate in common.cluster_scoped_clients(detail.cluster):
         try:
             fresh = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate
@@ -716,7 +718,7 @@ def _set_guest_agent_from_bulk_request(
 
     client = None
     fresh: dict = {}
-    for candidate in common.cluster_scoped_clients():
+    for candidate in common.cluster_scoped_clients(detail.cluster):
         try:
             fresh = candidate.guest_config(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             client = candidate

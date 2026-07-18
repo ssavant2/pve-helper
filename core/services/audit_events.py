@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.models import AuditEvent
+from core.models import AuditEvent, ProxmoxCluster
+from core.services.refs import GuestRef, NodeRef
 from core.services.request_metadata import client_ip
 
 
@@ -46,6 +47,10 @@ def record_audit_event(
     outcome: str = "success",
     details: dict | None = None,
     system_username: str = "",
+    cluster: ProxmoxCluster | None = None,
+    cluster_key_snapshot: str = "",
+    guest_ref: GuestRef | None = None,
+    node_ref: NodeRef | None = None,
 ) -> AuditEvent:
     """Create a normalized Audit event for an HTTP request or background actor.
 
@@ -54,7 +59,24 @@ def record_audit_event(
     All callers share module classification and model-level detail
     denormalization.
     """
-    details = details if isinstance(details, dict) else {}
+    details = dict(details) if isinstance(details, dict) else {}
+    if guest_ref is not None:
+        if node_ref is not None and guest_ref.node_ref not in {None, node_ref}:
+            raise ValueError("GuestRef and NodeRef identify different current nodes.")
+        node_ref = node_ref or guest_ref.node_ref
+        details["guest_ref"] = guest_ref.serialize()
+        object_id = guest_ref.without_node().serialize()
+        cluster_key_snapshot = cluster_key_snapshot or guest_ref.cluster_key
+    if node_ref is not None:
+        details["node_ref"] = node_ref.serialize()
+        cluster_key_snapshot = cluster_key_snapshot or node_ref.cluster_key
+
+    if cluster is not None:
+        if cluster_key_snapshot and cluster.key != cluster_key_snapshot:
+            raise ValueError("Audit cluster relation and durable key snapshot disagree.")
+        cluster_key_snapshot = cluster.key
+    elif cluster_key_snapshot:
+        cluster = ProxmoxCluster.objects.filter(key=cluster_key_snapshot).first()
     resolved_user = user
     resolved_username = str(username or "")
     source_ip = None
@@ -86,5 +108,7 @@ def record_audit_event(
         object_id=object_id,
         outcome=outcome,
         module=audit_module_key(action, object_type, details),
+        cluster=cluster,
+        cluster_key_snapshot=cluster_key_snapshot,
         details=details,
     )

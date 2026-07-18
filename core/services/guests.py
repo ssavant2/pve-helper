@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from core.services.refs import GuestRef, RefParseError
+
 
 @dataclass(frozen=True)
 class GuestIdentity:
@@ -16,6 +18,14 @@ class GuestIdentity:
     object_type: str  # "vm" | "ct"
     vmid: int | None = None
     name: str = ""
+    ref: GuestRef | None = None
+
+    def __post_init__(self) -> None:
+        if self.ref is not None and (self.object_type, self.vmid) != (
+            self.ref.object_type,
+            self.ref.vmid,
+        ):
+            raise ValueError("Presentation identity and GuestRef disagree.")
 
     @property
     def type_label(self) -> str:
@@ -55,15 +65,38 @@ class GuestIdentity:
         return f"{base} ({self.name})" if self.name else base
 
     def as_dict(self) -> dict[str, Any]:
-        return {"type": self.object_type, "vmid": self.vmid, "name": self.name}
+        payload = {"type": self.object_type, "vmid": self.vmid, "name": self.name}
+        if self.ref is not None:
+            payload["guest_ref"] = self.ref.serialize()
+            payload["cluster_key"] = self.ref.cluster_key
+        return payload
 
 
-def guest_identity(object_type: Any, vmid: Any, name: Any = "") -> GuestIdentity:
+def guest_identity(
+    object_type: Any,
+    vmid: Any,
+    name: Any = "",
+    *,
+    cluster_key: Any = "",
+    node: Any = "",
+    ref: GuestRef | None = None,
+) -> GuestIdentity:
     try:
         vmid_int = int(vmid) if vmid is not None and str(vmid) != "" else None
     except (TypeError, ValueError):
         vmid_int = None
-    return GuestIdentity(object_type=str(object_type or ""), vmid=vmid_int, name=str(name or ""))
+    object_type_text = str(object_type or "")
+    if ref is None and cluster_key and vmid_int is not None:
+        try:
+            ref = GuestRef(str(cluster_key), object_type_text, vmid_int, str(node or ""))
+        except RefParseError:
+            ref = None
+    return GuestIdentity(
+        object_type=object_type_text,
+        vmid=vmid_int,
+        name=str(name or ""),
+        ref=ref,
+    )
 
 
 def guest_identity_from_inventory(obj: Any) -> GuestIdentity:
@@ -72,6 +105,9 @@ def guest_identity_from_inventory(obj: Any) -> GuestIdentity:
         getattr(obj, "object_type", ""),
         getattr(obj, "vmid", None),
         getattr(obj, "name", ""),
+        cluster_key=getattr(getattr(obj, "cluster", None), "key", "")
+        or getattr(obj, "cluster_key", ""),
+        node=getattr(obj, "node", ""),
     )
 
 
@@ -81,6 +117,8 @@ def guest_identity_from_scheduled_action(action: Any) -> GuestIdentity:
         getattr(action, "target_type", ""),
         getattr(action, "target_vmid", None),
         getattr(action, "target_name_snapshot", "") or "",
+        cluster_key=getattr(getattr(action, "cluster", None), "key", ""),
+        node=getattr(action, "target_node", ""),
     )
 
 

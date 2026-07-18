@@ -62,7 +62,7 @@ from core.services.cluster_activation import (
 )
 from core.services.cluster_state_identity import cluster_cache_key
 from core.services import runtime_bootstrap
-from core.services.refs import NodeRef, RefParseError
+from core.services.refs import GuestRef, NodeRef, RefParseError
 from core.services.runtime_bootstrap import ensure_bootstrap
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
 from core.services.proxmox import (
@@ -368,13 +368,19 @@ class GuestHealthTests(SimpleTestCase):
 
 
 class GuestLineageTests(SimpleTestCase):
-    def _row(self, vmid, name="", ct=False):
+    def _row(self, vmid, name="", ct=False, cluster=None):
         from types import SimpleNamespace
 
         from core.models import ProxmoxInventory
 
         ot = ProxmoxInventory.ObjectType.CT if ct else ProxmoxInventory.ObjectType.VM
-        return SimpleNamespace(vmid=vmid, object_type=ot, name=name or f"g{vmid}")
+        return SimpleNamespace(
+            cluster=cluster,
+            cluster_key=getattr(cluster, "key", ""),
+            vmid=vmid,
+            object_type=ot,
+            name=name or f"g{vmid}",
+        )
 
     def test_children_indent_under_parent_template(self):
         from unittest.mock import patch
@@ -437,6 +443,34 @@ class GuestLineageTests(SimpleTestCase):
         self.assertTrue(by[101].is_linked_clone)
         self.assertFalse(by[100].is_linked_clone)
 
+    def test_duplicate_vmids_keep_lineage_inside_their_cluster(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from core.views.guests import _apply_workspace_lineage
+
+        cluster_a = SimpleNamespace(key="a")
+        cluster_b = SimpleNamespace(key="b")
+        rows = [
+            self._row(500, "a-template", cluster=cluster_a),
+            self._row(501, "a-clone", cluster=cluster_a),
+            self._row(500, "b-vm", cluster=cluster_b),
+            self._row(501, "b-vm-2", cluster=cluster_b),
+        ]
+
+        def lineage(*, cluster=None):
+            return {501: 500} if cluster is cluster_a else {}
+
+        with patch("core.views.common.fetch_live_guest_lineage", side_effect=lineage):
+            ordered = _apply_workspace_lineage(rows)
+
+        self.assertEqual(len(ordered), 4)
+        self.assertTrue(rows[1].is_linked_clone)
+        self.assertEqual(rows[1].lineage_parent_name, "a-template")
+        self.assertFalse(rows[3].is_linked_clone)
+        self.assertEqual(rows[2].depth, 0)
+        self.assertEqual(rows[3].depth, 0)
+
 
 class LinkedCloneTemplateGuardTests(TestCase):
     """A linked clone must not be converted to a template (it would seed a
@@ -446,10 +480,21 @@ class LinkedCloneTemplateGuardTests(TestCase):
         from types import SimpleNamespace
 
         from core.models import ProxmoxInventory
+        from core.services.refs import GuestRef
         from core.views import guests as G  # noqa: F401 (import path patched below)
 
+        cluster = ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
+        ref = GuestRef(cluster.key, "vm", 101, "pve3")
         detail = SimpleNamespace(
-            object_type=ProxmoxInventory.ObjectType.VM, vmid=101, name="clone", node="pve3", config={}
+            cluster=cluster,
+            cluster_key=cluster.key,
+            guest_ref=ref,
+            node_ref=ref.node_ref,
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=101,
+            name="clone",
+            node="pve3",
+            config={},
         )
         self.client.force_login(get_user_model().objects.create_user("tester", password="x"))
         with patch("core.views.guests.actions._require_guest", return_value=detail), patch(
@@ -1885,8 +1930,14 @@ class ScheduledRecurrenceTests(TestCase):
 
 
 class ScheduledActionDispatchTests(TestCase):
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
+
     def _action(self, *, next_run_at=None, catch_up_policy=None, max_lateness_minutes=0):
         return ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Start VM 500",
             action_type=ScheduledAction.ActionType.START,
             target_type=ScheduledAction.TargetType.VM,
@@ -1970,6 +2021,7 @@ class ScheduledActionDispatchTests(TestCase):
     def test_dispatch_recurring_action_advances_next_run(self):
         now = datetime(2026, 7, 1, 21, 0, tzinfo=timezone.UTC)
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -2053,6 +2105,11 @@ class ScheduledActionDispatchTests(TestCase):
 
 
 class ScheduledActionExecutionTests(TestCase):
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
+
     class FakeProxmoxClient:
         def __init__(self, *, status="stopped", config=None, task_success=True):
             self.status = status
@@ -2100,6 +2157,7 @@ class ScheduledActionExecutionTests(TestCase):
 
     def _queued_run(self, *, action_type=ScheduledAction.ActionType.START):
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Power action",
             action_type=action_type,
             target_type=ScheduledAction.TargetType.VM,
@@ -2112,7 +2170,11 @@ class ScheduledActionExecutionTests(TestCase):
             occurrence_key="manual",
             status=ScheduledActionRun.Status.QUEUED,
         )
-        ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.com:8006")
+        ProxmoxEndpoint.objects.create(
+            cluster=self.cluster,
+            name="pve1",
+            url="https://pve1.example.com:8006",
+        )
         return action, run
 
     @override_settings(SCHEDULED_ACTIONS_ENABLED=True)
@@ -2458,6 +2520,7 @@ class AuditEventTests(TestCase):
             node="pve1",
             object_type="vm",
             vmid=500,
+            cluster=None,
             allow_relocation=False,
             delete_if_authoritatively_absent=False,
         )
@@ -2633,6 +2696,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             config={"agent": 1, "ostype": "l26", "tags": "prod"},
         )
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             source_scan=scan,
             node="pve1",
             object_type=CurrentGuestInventory.ObjectType.VM,
@@ -3094,6 +3158,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status={"nfs-vm": {"ok": True}})
         ProxmoxInventory.objects.create(
+            cluster=self.cluster,
             scan_run=scan,
             node="pve-node-1",
             object_type=ProxmoxInventory.ObjectType.VM,
@@ -3103,6 +3168,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             disk_references=["nfs-vm:images/100/vm-100-disk-0.qcow2"],
         )
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             source_scan=scan,
             node="pve-node-1",
             object_type=CurrentGuestInventory.ObjectType.VM,
@@ -3114,6 +3180,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             observed_at=timezone.now(),
         )
         ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -3138,7 +3205,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Scheduled Tasks")
         self.assertContains(response, "Night shutdown")
         self.assertContains(response, "Never run")
-        self.assertContains(response, "target=vm%3A100")
+        self.assertContains(response, "target=gr1%3Adefault%3Avm%3A100")
         self.assertContains(second_response, "stopped")
         cache.clear()
 
@@ -6204,6 +6271,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
     def test_recent_tasks_include_scheduled_action_runs(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -6311,7 +6379,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.json()["guests"],
-            [{"target": "vm:500@pve1", "has_snapshot": True, "has_snapshot_label": "Yes"}],
+            [
+                {
+                    "target": "vm:500@pve1",
+                    "guest_ref": "gr1:default:vm:500@pve1",
+                    "has_snapshot": True,
+                    "has_snapshot_label": "Yes",
+                }
+            ],
         )
 
     def test_vms_overview_snapshot_info_reports_unknown_when_probe_unavailable(self):
@@ -7599,6 +7674,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             name="Lab VM",
         )
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             source_scan=scan,
             node="pve1",
             object_type=CurrentGuestInventory.ObjectType.VM,
@@ -7607,6 +7683,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             observed_at=timezone.now(),
         )
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -7621,6 +7698,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             last_status=ScheduledAction.LastStatus.COMPLETED,
         )
         ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Container reboot",
             action_type=ScheduledAction.ActionType.REBOOT,
             target_type=ScheduledAction.TargetType.CT,
@@ -7662,7 +7740,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "filtered to VM 500 (Lab VM)")
         self.assertContains(response, "Night shutdown")
-        self.assertContains(response, "target=vm%3A500")
+        self.assertContains(response, "target=gr1%3Adefault%3Avm%3A500")
         self.assertNotContains(response, "Container reboot")
 
     def test_scheduled_task_runs_endpoint_lists_and_filters_latest_runs(self):
@@ -7762,7 +7840,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
-        self.assertContains(response, 'value="vm:500"')
+        target_ref = GuestRef(self.cluster.key, "vm", 500).serialize()
+        self.assertContains(response, f'value="{target_ref}"')
         self.assertContains(response, "Current Node")
         self.assertContains(response, 'data-node="pve1"')
         self.assertContains(response, "Timeout (seconds)")
@@ -7775,11 +7854,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Months")
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
-            response = self.client.get(reverse("core:scheduled_task_create"), {"target": "vm:500"})
+            response = self.client.get(reverse("core:scheduled_task_create"), {"target": target_ref})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
-        self.assertContains(response, 'value="vm:500" data-node="pve1" selected')
+        self.assertContains(response, f'value="{target_ref}" data-node="pve1" selected')
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
@@ -7787,7 +7866,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 {
                     "name": "Night shutdown",
                     "enabled": "on",
-                    "target": "vm:500",
+                    "target": target_ref,
                     "action_type": ScheduledAction.ActionType.SHUTDOWN,
                     "action_timeout_seconds": "900",
                     "recurrence_kind": ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
@@ -7808,6 +7887,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         action = ScheduledAction.objects.get(name="Night shutdown")
         self.assertTrue(action.enabled)
         self.assertEqual(action.created_by, user)
+        self.assertEqual(action.cluster, self.cluster)
         self.assertEqual(action.target_node, "pve1")
         self.assertEqual(action.target_name_snapshot, "Lab VM")
         self.assertEqual(action.recurrence["ordinals"], ["second", "fourth"])
@@ -7858,10 +7938,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             response = self.client.get(reverse("core:scheduled_task_create"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'value="vm:500"')
+        self.assertContains(response, 'value="gr1:default:vm:500"')
         self.assertContains(response, "VM 500 (Lab VM)")
         self.assertContains(response, 'data-node="pve1"')
-        self.assertContains(response, 'value="ct:101"')
+        self.assertContains(response, 'value="gr1:default:ct:101"')
         self.assertContains(response, "Container 101 (Lab CT)")
         self.assertContains(response, 'data-node="pve2"')
 
@@ -8385,7 +8465,11 @@ class GuestBackupRestoreTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("backup-operator", password="unused")
         self.client.force_login(self.user)
+        self.cluster = ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             object_type="vm",
             vmid=500,
             node="pve1",
@@ -8490,9 +8574,9 @@ class GuestBackupRestoreTests(TestCase):
         event = AuditEvent.objects.get(action="guest.backup.restore")
         self.assertEqual(event.outcome, "running")
         self.assertEqual(event.details["archive"], archive)
-        self.assertEqual(enqueue.call_args.args[0], "core.tasks.restore_guest_backup_task")
-        self.assertEqual(enqueue.call_args.args[4], "vm")
-        self.assertEqual(enqueue.call_args.args[5], 501)
+        self.assertEqual(enqueue.call_args.args, ("core.tasks.restore_guest_backup_task", event.id))
+        self.assertEqual(event.details["target_type"], "vm")
+        self.assertEqual(event.details["vmid"], 501)
 
     def test_restore_page_embeds_parseable_storage_options(self):
         archive = "backup:vzdump-qemu-500-2026_07_11-12_00_00.vma.zst"
@@ -8579,8 +8663,10 @@ class GuestBackupRestoreTests(TestCase):
             )
 
         self.assertRedirects(response, reverse("core:vms"), fetch_redirect_response=False)
-        self.assertTrue(enqueue.call_args.args[8])
-        self.assertTrue(enqueue.call_args.args[9])
+        event = AuditEvent.objects.get(action="guest.backup.restore")
+        self.assertEqual(enqueue.call_args.args, ("core.tasks.restore_guest_backup_task", event.id))
+        self.assertTrue(event.details["overwrite"])
+        self.assertTrue(event.details["shutdown_first"])
 
     def test_restore_worker_records_each_proxmox_stage(self):
         event = AuditEvent.objects.create(

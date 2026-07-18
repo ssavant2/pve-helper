@@ -668,6 +668,7 @@ class TagViewTests(TestCase):
     @patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
     def test_detail_offers_assignment_for_an_unassigned_guest(self, _registered):
         other = CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             node="pve1", object_type="ct", vmid=101, name="ct-two", observed_at=timezone.now(),
             config={},
         )
@@ -681,7 +682,7 @@ class TagViewTests(TestCase):
 
         self.assertContains(response, 'data-tag-unassign-form')
         self.assertContains(response, 'name="tags_mode" value="remove"')
-        self.assertContains(response, 'name="guest" value="vm:100@pve1"')
+        self.assertContains(response, 'name="guest" value="gr1:default:vm:100@pve1"')
 
 
 class TagInventoryRefreshTests(ClusterFixtureMixin, TestCase):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..common import *  # noqa: F401,F403
 from .. import common
 from ._core import (_backup_error,_delete_all_guest_snapshots,_guest_nic_bridges,_queue_guest_backup_restore,_restore_archive_from_key,_restore_options,_snapshot_error,_submit_guest_backup)
-from .operation_lifecycle import (_guest_write,_audit_guest,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_post_with_client,_parse_guest_target_value,_wants_task_json)
+from .operation_lifecycle import (_guest_write,_audit_guest,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_post_with_client,_guest_ref_from_target_value,_wants_task_json)
 from .read_model_support import _require_guest
 from core.services.public_errors import public_exception_message
 
@@ -264,19 +264,18 @@ def guest_bulk_nics(request):
     preflight (which guests would land without a network on the target node)."""
     guests: list[dict] = []
     for value in request.POST.getlist("guest"):
-        object_type, vmid, node = _parse_guest_target_value(value)
-        if not object_type or vmid is None:
+        ref = _guest_ref_from_target_value(value)
+        if ref is None:
             continue
         try:
-            detail = _require_guest(object_type, vmid, node=node)
+            detail = _require_guest(ref)
         except Http404:
             continue
         guests.append(
             {
                 "target": value,
-                "label": detail.name or str(vmid),
+                "label": detail.name or str(ref.vmid),
                 "bridges": [nic["bridge"] for nic in _guest_nic_bridges(detail)],
             }
         )
     return JsonResponse({"guests": guests})
-

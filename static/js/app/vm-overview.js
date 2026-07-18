@@ -84,7 +84,9 @@ const initVmOverviewAgentInfo = (root = document) => {
         const data = await response.json();
         (data.guests || []).forEach((guest) => {
           const target = guest.target || "";
-          const row = overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
+          const row = guest.guest_ref
+            ? overview.querySelector(`[data-guest-ref="${CSS.escape(guest.guest_ref)}"]`)
+            : overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
           if (!row) {
             return;
           }
@@ -140,7 +142,9 @@ const initVmOverviewSnapshotInfo = (root = document) => {
         const data = await response.json();
         (data.guests || []).forEach((guest) => {
           const target = guest.target || "";
-          const row = overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
+          const row = guest.guest_ref
+            ? overview.querySelector(`[data-guest-ref="${CSS.escape(guest.guest_ref)}"]`)
+            : overview.querySelector(`[data-guest-target="${CSS.escape(target)}"]`);
           const cell = row?.querySelector("[data-snapshot-status-cell]");
           if (!row || !cell) {
             return;
@@ -209,7 +213,11 @@ const updateVmRowStatus = (row, guest) => {
 
   const activeBadge = row
     .closest("[data-vm-overview]")
-    ?.querySelector(`[data-active-guest-status-badge][data-guest-target="${CSS.escape(guest.target || "")}"]`);
+    ?.querySelector(
+      guest.guest_ref
+        ? `[data-active-guest-status-badge][data-guest-ref="${CSS.escape(guest.guest_ref)}"]`
+        : `[data-active-guest-status-badge][data-guest-target="${CSS.escape(guest.target || "")}"]`
+    );
   if (activeBadge) {
     activeBadge.textContent = status || "-";
     activeBadge.classList.toggle("completed", status === "running");
@@ -251,15 +259,16 @@ const initVmStatusRefresh = (root = document) => {
           return;
         }
         const data = await response.json();
-        // Key by node-agnostic type:vmid so a guest that changed node (e.g. a
-        // migration) is followed, not treated as gone and dropped from the list.
+        // Key by node-agnostic GuestRef so a migration is followed without ever
+        // merging the same VMID from two clusters.
         const bareTarget = (value) => String(value || "").split("@")[0];
         const liveByBare = new Map();
         (data.guests || []).forEach((guest) => {
-          liveByBare.set(bareTarget(guest.target), guest);
+          liveByBare.set(bareTarget(guest.guest_ref || guest.target), guest);
         });
         vmOverviewRows(overview).forEach((row) => {
-          const guest = liveByBare.get(bareTarget(row.dataset.guestTarget || ""));
+          const rowRef = row.dataset.guestRef || row.dataset.guestTarget || "";
+          const guest = liveByBare.get(bareTarget(rowRef));
           if (!guest) {
             return;
           }
@@ -274,11 +283,14 @@ const initVmStatusRefresh = (root = document) => {
               nodeCell.dataset.sortValue = newNode;
             }
           }
+          if (guest.guest_ref) {
+            row.dataset.guestRef = guest.guest_ref;
+          }
           updateVmRowStatus(row, guest);
         });
         if (data.live_available) {
           vmOverviewRows(overview).forEach((row) => {
-            const bare = bareTarget(row.dataset.guestTarget || "");
+            const bare = bareTarget(row.dataset.guestRef || row.dataset.guestTarget || "");
             if (bare && !liveByBare.has(bare)) {
               row.remove();
             }

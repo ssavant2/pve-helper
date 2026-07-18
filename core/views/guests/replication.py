@@ -10,8 +10,9 @@ def guest_replication(request, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid)
     jobs = []
     error = ""
+    clients = common.cluster_scoped_clients(detail.cluster)
     try:
-        raw = common.cluster_scoped_clients()[0].get("cluster/replication") if common.cluster_scoped_clients() else []
+        raw = clients[0].get("cluster/replication") if clients else []
         for job in raw if isinstance(raw, list) else []:
             if str(job.get("guest", "")) == str(vmid) or str(job.get("id", "")).startswith(f"{vmid}-"):
                 jobs.append(
@@ -27,8 +28,8 @@ def guest_replication(request, object_type: str, vmid: int):
     except ProxmoxAPIError as exc:
         error = str(exc)
     target_nodes = []
-    if common.cluster_scoped_clients():
-        target_nodes = [n for n in common.cluster_scoped_clients()[0].node_names(fallback="") if n != detail.node]
+    if clients:
+        target_nodes = [n for n in clients[0].node_names(fallback="") if n != detail.node]
     context = _guest_tab_context(detail, "replication")
     context.update({"replication_jobs": jobs, "replication_error": error, "target_nodes": target_nodes})
     return render(request, "core/guest_replication.html", context)
@@ -76,5 +77,4 @@ def guest_replication_delete(request, object_type, vmid):
         call=lambda client: client.delete(f"cluster/replication/{quote(job_id, safe='')}"),
     ).error
     return _write_result(request, detail, "core:guest_replication", err, "guest.replication.delete", {"job_id": job_id})
-
 

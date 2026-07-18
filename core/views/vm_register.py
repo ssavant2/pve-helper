@@ -17,8 +17,9 @@ from django.conf import settings
 from django.contrib import messages
 from django.shortcuts import redirect, render
 
-from core.models import StorageMount
+from core.models import ProxmoxCluster, StorageMount
 from core.services.guest_create import create_options
+from core.services.guest_scope import guest_ref_from_legacy_identity
 from core.services.ovf_import import OvfImportError, parse_ovf_package
 from core.services.proxmox import clear_live_guest_caches
 from core.services import vm_register as reg
@@ -199,6 +200,8 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         return "VMID must be a whole number."
     if not params["name"]:
         return "Name is required."
+    ref = guest_ref_from_legacy_identity("vm", params["vmid"], node=node)
+    cluster = ProxmoxCluster.objects.get(key=ref.cluster_key)
     if params["bios"] == "ovmf":
         params["efidisk_storage"] = (
             post.get("efidisk_storage", "").strip() or post.get("target_storage", "").strip()
@@ -214,7 +217,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         if params["bios"] == "ovmf" and not params.get("efidisk_storage"):
             params["efidisk_storage"] = volid.split(":", 1)[0]
         try:
-            _upid, err = reg.adopt_orphan_disk(node, volid, params)
+            _upid, err = reg.adopt_orphan_disk(node, volid, params, cluster=cluster)
         except reg.VmRegisterError as exc:
             return str(exc)
         if err:
@@ -223,8 +226,9 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
             request,
             action="guest.register.adopt",
             object_type="guest",
-            object_id=f"vm:{params['vmid']}",
             outcome="success",
+            cluster=cluster,
+            guest_ref=ref,
             details={
                 "target_type": "vm",
                 "vmid": params["vmid"],
@@ -235,7 +239,7 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         )
         # Drop the cached live inventory so the freshly registered VM (with its
         # name) shows up on the next list load instead of after the cache TTL.
-        clear_live_guest_caches()
+        clear_live_guest_caches(cluster=cluster)
         # No success toast — the outcome is in Recent Tasks / audit and the new
         # VM appears in the list.
         return None
@@ -266,9 +270,11 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
             request,
             action="guest.register.import",
             object_type="guest",
-            object_id=f"vm:{params['vmid']}",
             outcome="running",
+            cluster=cluster,
+            guest_ref=ref,
             details={
+                "operation_payload_version": 1,
                 "target_type": "vm",
                 "vmid": params["vmid"],
                 "name": params["name"],
@@ -278,15 +284,14 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
                 "disk_count": len(package.disks),
                 "target_storage": params["target_storage"],
                 "stage": "queued",
+                "params": params,
+                "source_storage_id": storage_id,
+                "source_path": source_path,
             },
         )
         task_id = enqueue_bulk_task(
             "core.ovf_import_tasks.import_ovf_package_task",
             event.id,
-            node,
-            params,
-            storage_id,
-            source_path,
         )
         event.details = {**event.details, "poll_task_id": task_id}
         event.save(update_fields=["details"])
@@ -296,25 +301,26 @@ def _register_submit(request, mode: str, options: dict) -> str | None:
         request,
         action="guest.register.import",
         object_type="guest",
-        object_id=f"vm:{params['vmid']}",
         outcome="running",
+        cluster=cluster,
+        guest_ref=ref,
         details={
+            "operation_payload_version": 1,
             "target_type": "vm",
             "vmid": params["vmid"],
             "name": params["name"],
             "node": node,
             "source": source_volid or f"{storage_id}:{source_path}",
             "target_storage": params["target_storage"],
+            "params": params,
+            "source_storage_id": storage_id,
+            "source_path": source_path,
+            "source_volid": source_volid,
         },
     )
     task_id = enqueue_bulk_task(
         "core.tasks.register_import_vm_task",
         event.id,
-        node,
-        params,
-        storage_id,
-        source_path,
-        source_volid,
     )
     event.details = {**event.details, "poll_task_id": task_id}
     event.save(update_fields=["details"])

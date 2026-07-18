@@ -78,6 +78,7 @@ def queue_tag_inventory_refresh(
             object_type="tag_inventory",
             object_id=cluster.key,
             outcome="queued",
+            cluster=cluster,
             details={
                 "cluster_key": cluster.key,
                 "stage": "queued",

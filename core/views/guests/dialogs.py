@@ -39,8 +39,9 @@ def guest_backup(request, object_type: str, vmid: int):
     backups, backup_storages, error = _guest_backup_archives(detail)
 
     jobs = []
+    clients = common.cluster_scoped_clients(detail.cluster)
     try:
-        raw_jobs = common.cluster_scoped_clients()[0].get("cluster/backup") if common.cluster_scoped_clients() else []
+        raw_jobs = clients[0].get("cluster/backup") if clients else []
         for job in raw_jobs if isinstance(raw_jobs, list) else []:
             if _backup_job_covers(job, vmid):
                 jobs.append(
@@ -97,7 +98,7 @@ def guest_migrate_options(request, object_type: str, vmid: int):
     bridges_by_node: dict[str, list[str]] = {}
     sdn_vnet_names: list[str] = []
     local_resources: list[str] = []
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             raw_nodes = client.get("nodes")
         except ProxmoxAPIError:
@@ -231,7 +232,7 @@ def guest_clone_options(request, object_type: str, vmid: int):
     nextid = ""
     storages: list[str] = []
     content = "rootdir" if object_type == ProxmoxInventory.ObjectType.CT else "images"
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             nextid = str(client.get("cluster/nextid") or "")
         except ProxmoxAPIError:
@@ -256,7 +257,11 @@ def guest_clone_options(request, object_type: str, vmid: int):
         default_storage = storages[0]
 
     used_vmids = sorted(
-        {guest.vmid for guest in common.fetch_live_guest_inventory() if guest.vmid is not None}
+        {
+            guest.vmid
+            for guest in common.fetch_live_guest_inventory(cluster=detail.cluster)
+            if guest.vmid is not None
+        }
     )
 
     return JsonResponse(
@@ -279,7 +284,7 @@ def guest_clone_options(request, object_type: str, vmid: int):
 @app_login_required
 def guest_pool_options(request, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid)
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             pools, memberships = _guest_pool_memberships(client, detail)
@@ -293,4 +298,3 @@ def guest_pool_options(request, object_type: str, vmid: int):
         except ProxmoxAPIError:
             continue
     return JsonResponse({"error": "Could not load pools from the guest's Proxmox endpoint."}, status=502)
-

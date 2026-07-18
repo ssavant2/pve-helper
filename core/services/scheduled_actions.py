@@ -11,8 +11,10 @@ from django.utils import timezone
 from django_q.models import Schedule
 from django_q.tasks import async_task
 
-from core.models import AuditEvent, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
+from core.models import AuditEvent, ProxmoxCluster, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
 from core.services.audit_events import record_audit_event
+from core.services.cluster_resolver import cluster_clients
+from core.services.guest_scope import guest_ref_from_legacy_identity
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.proxmox import clear_live_guest_caches, ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
@@ -275,7 +277,7 @@ def prune_scheduled_action_runs(*, retention_days: int | None = None, now=None) 
 def execute_scheduled_action_run(
     run_id: int,
     *,
-    client_factory: Callable[[str], ProxmoxClient] = ProxmoxClient,
+    client_factory: Callable[[str], ProxmoxClient] | None = None,
 ) -> None:
     run = _start_run(run_id)
     if run is None:
@@ -292,6 +294,7 @@ def execute_scheduled_action_run(
         return
 
     action = run.scheduled_action
+    cluster = _scheduled_action_cluster(action)
     try:
         target = _find_guest(action, client_factory=client_factory)
         preflight = _preflight_snapshot(action, target)
@@ -306,7 +309,7 @@ def execute_scheduled_action_run(
                 action_status=ScheduledAction.LastStatus.COMPLETED,
                 result={"message": no_op_outcome},
             )
-            clear_live_guest_caches()
+            clear_live_guest_caches(cluster=cluster)
             return
 
         skip_reason = _skip_reason(action, preflight)
@@ -366,7 +369,7 @@ def execute_scheduled_action_run(
 
     if result.success:
         if _run_was_cancelled(run):
-            clear_live_guest_caches()
+            clear_live_guest_caches(cluster=cluster)
             return
         result_details = {"proxmox_task": result.raw}
         try:
@@ -375,6 +378,7 @@ def execute_scheduled_action_run(
                 node=target.node,
                 object_type=action.target_type,
                 vmid=action.target_vmid,
+                cluster=cluster,
             )
             if projection.error:
                 result_details["projection_refresh_error"] = projection.error
@@ -388,10 +392,10 @@ def execute_scheduled_action_run(
             action_status=ScheduledAction.LastStatus.COMPLETED,
             result=result_details,
         )
-        clear_live_guest_caches()
+        clear_live_guest_caches(cluster=cluster)
     else:
         if _run_was_cancelled(run):
-            clear_live_guest_caches()
+            clear_live_guest_caches(cluster=cluster)
             return
         _finish_run(
             run,
@@ -425,12 +429,17 @@ def _start_run(run_id: int) -> ScheduledActionRun | None:
 def _find_guest(
     action: ScheduledAction,
     *,
-    client_factory: Callable[[str], ProxmoxClient],
+    client_factory: Callable[[str], ProxmoxClient] | None,
 ) -> GuestTarget:
     errors: list[dict[str, Any]] = []
-    endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True).order_by("name"))
-    for endpoint in endpoints:
-        client = client_factory(endpoint.url)
+    cluster = _scheduled_action_cluster(action)
+    endpoints = list(ProxmoxEndpoint.objects.filter(cluster=cluster, enabled=True).order_by("name"))
+    clients = (
+        [client_factory(endpoint.url) for endpoint in endpoints]
+        if client_factory is not None
+        else cluster_clients(cluster)
+    )
+    for endpoint, client in zip(endpoints, clients, strict=True):
         try:
             node_names = client.node_names(fallback=endpoint.name)
         except ProxmoxAPIError as exc:
@@ -455,15 +464,29 @@ def _find_guest(
             return GuestTarget(endpoint=endpoint, client=client, node=node, current=current, config=config)
 
     raise ScheduledActionExecutionError(
-        f"Could not find {action.target_type} {action.target_vmid} on any visible Proxmox node.",
-        preflight={"lookup_errors": errors, "endpoint_count": len(endpoints)},
+        f"Could not find {action.target_type} {action.target_vmid} in cluster '{cluster.key}'.",
+        preflight={"lookup_errors": errors, "endpoint_count": len(endpoints), "cluster_key": cluster.key},
     )
+
+
+def _scheduled_action_cluster(action: ScheduledAction):
+    """Resolve nullable pre-Phase-3 rows only while contract version 0 permits it."""
+    if action.cluster_id is not None:
+        return action.cluster
+    ref = guest_ref_from_legacy_identity(
+        action.target_type,
+        action.target_vmid,
+        node=action.target_node,
+    )
+    return ProxmoxCluster.objects.get(key=ref.cluster_key)
 
 
 def _preflight_snapshot(action: ScheduledAction, target: GuestTarget) -> dict[str, Any]:
     status = str(target.current.get("status") or "")
     lock = target.config.get("lock") or target.current.get("lock") or ""
     return {
+        "guest_ref": action.guest_ref().serialize() if action.guest_ref() else "",
+        "cluster_key": _scheduled_action_cluster(action).key,
         "endpoint": target.endpoint.name,
         "node": target.node,
         "target_type": action.target_type,
@@ -625,6 +648,17 @@ def _audit_run(
     details: dict[str, Any] | None = None,
 ) -> None:
     scheduled_action = run.scheduled_action
+    cluster = _scheduled_action_cluster(scheduled_action)
+    ref = scheduled_action.guest_ref()
+    if ref is None:
+        from core.services.refs import GuestRef
+
+        ref = GuestRef(
+            cluster.key,
+            scheduled_action.target_type,
+            scheduled_action.target_vmid,
+            scheduled_action.target_node,
+        )
     user = run.triggered_by if run.triggered_by_id else None
     record_audit_event(
         user=user,
@@ -633,6 +667,8 @@ def _audit_run(
         object_type="scheduled_action",
         object_id=str(scheduled_action.id),
         outcome=outcome,
+        cluster=cluster,
+        guest_ref=ref,
         details={
             "scheduled_action_id": scheduled_action.id,
             "scheduled_action_name": scheduled_action.name,

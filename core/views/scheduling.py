@@ -4,24 +4,37 @@ from django.db import transaction
 
 from .common import *  # noqa: F401,F403
 from . import common
+from ..models import ProxmoxCluster
 from ..services.proxmox import ProxmoxClient
 from ..services.public_errors import public_exception_message
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
+from ..services.guest_scope import guest_ref_from_legacy_identity
+from ..services.refs import GuestRef, RefParseError
 from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
 
 
 @app_login_required
 def scheduled_tasks(request):
     target_filter = request.GET.get("target", "")
-    target_type, target_vmid = _parse_scheduled_target(target_filter)
-    target_filter_value = f"{target_type}:{target_vmid}" if target_type and target_vmid else ""
+    target_ref = _parse_scheduled_target_ref(target_filter)
+    target_type = target_ref.object_type if target_ref else None
+    target_vmid = target_ref.vmid if target_ref else None
+    target_filter_value = target_ref.without_node().serialize() if target_ref else ""
 
-    actions_query = ScheduledAction.objects.select_related("created_by").filter(deleted_at__isnull=True)
+    actions_query = ScheduledAction.objects.select_related("created_by", "cluster").filter(deleted_at__isnull=True)
     if target_filter_value:
-        actions_query = actions_query.filter(target_type=target_type, target_vmid=target_vmid)
+        actions_query = actions_query.filter(
+            Q(cluster__key=target_ref.cluster_key) | Q(cluster__isnull=True),
+            target_type=target_type,
+            target_vmid=target_vmid,
+        )
 
     actions = list(actions_query.order_by("-enabled", "next_run_at", "name"))
-    latest_runs = _latest_scheduled_runs(target_type=target_type, target_vmid=target_vmid)
+    latest_runs = _latest_scheduled_runs(
+        cluster_key=target_ref.cluster_key if target_ref else "",
+        target_type=target_type,
+        target_vmid=target_vmid,
+    )
 
     for action in actions:
         action.display_target = _scheduled_action_target_label(action)
@@ -42,7 +55,7 @@ def scheduled_tasks(request):
         "schedule_timezone": settings.TIME_ZONE,
         "run_retention_days": settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS,
         "target_filter": target_filter_value,
-        "target_filter_label": _scheduled_target_label(target_type, target_vmid) if target_filter_value else "",
+        "target_filter_label": _scheduled_target_label(target_ref) if target_filter_value else "",
         "scheduled_task_create_query": urlencode({"target": target_filter_value}) if target_filter_value else "",
         "scheduled_runs_url": scheduled_runs_url,
     }
@@ -52,12 +65,17 @@ def scheduled_tasks(request):
 @app_login_required
 def scheduled_task_runs(request):
     target_filter = request.GET.get("target", "")
-    target_type, target_vmid = _parse_scheduled_target(target_filter)
+    target_ref = _parse_scheduled_target_ref(target_filter)
     return JsonResponse(
         {
             "runs": [
                 _serialize_scheduled_run(run)
-                for run in _latest_scheduled_runs(target_type=target_type, target_vmid=target_vmid, limit=10)
+                for run in _latest_scheduled_runs(
+                    cluster_key=target_ref.cluster_key if target_ref else "",
+                    target_type=target_ref.object_type if target_ref else None,
+                    target_vmid=target_ref.vmid if target_ref else None,
+                    limit=10,
+                )
             ]
         }
     )
@@ -72,10 +90,11 @@ def scheduled_task_create(request):
             _audit_scheduled_action_definition(request, "scheduled_action.created", action)
             return redirect("core:scheduled_tasks")
     else:
-        target_type, target_vmid = _parse_scheduled_target(request.GET.get("target", ""))
-        if target_type and target_vmid:
-            action.target_type = target_type
-            action.target_vmid = target_vmid
+        target_ref = _parse_scheduled_target_ref(request.GET.get("target", ""))
+        if target_ref:
+            action.cluster = ProxmoxCluster.objects.get(key=target_ref.cluster_key)
+            action.target_type = target_ref.object_type
+            action.target_vmid = target_ref.vmid
             _apply_target_snapshot(action)
         errors = []
 
@@ -260,7 +279,12 @@ def _cancel_guest_recent_task(request, event_id: int) -> None:
     if not upid or not node:
         raise ProxmoxAPIError("This task has no Proxmox task id to cancel.")
 
-    _cancel_proxmox_task(node=node, upid=upid, endpoint_url=str(details.get("proxmox_endpoint") or ""))
+    _cancel_proxmox_task(
+        node=node,
+        upid=upid,
+        cluster=event.cluster,
+        endpoint_url=str(details.get("proxmox_endpoint") or ""),
+    )
     now = tz.now()
     username = request.user.get_username()
     details.update(
@@ -281,7 +305,7 @@ def _cancel_guest_recent_task(request, event_id: int) -> None:
         object_id=f"guest:{event.id}",
         details={"task_id": f"guest:{event.id}", "proxmox_task_upid": upid, "proxmox_task_node": node},
     )
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=event.cluster)
 
 
 def _cancel_scheduled_action_recent_task(request, run_id: int) -> None:
@@ -294,7 +318,11 @@ def _cancel_scheduled_action_recent_task(request, run_id: int) -> None:
     if not run.proxmox_task_upid or not run.proxmox_task_node:
         raise ProxmoxAPIError("This task has no Proxmox task id to cancel.")
 
-    _cancel_proxmox_task(node=run.proxmox_task_node, upid=run.proxmox_task_upid)
+    _cancel_proxmox_task(
+        node=run.proxmox_task_node,
+        upid=run.proxmox_task_upid,
+        cluster=run.scheduled_action.cluster,
+    )
     now = tz.now()
     username = request.user.get_username()
     run.status = ScheduledActionRun.Status.CANCELLED
@@ -328,10 +356,10 @@ def _cancel_scheduled_action_recent_task(request, run_id: int) -> None:
             "cancelled_by": username,
         },
     )
-    clear_live_guest_caches()
+    clear_live_guest_caches(cluster=run.scheduled_action.cluster)
 
 
-def _cancel_proxmox_task(*, node: str, upid: str, endpoint_url: str = "") -> None:
+def _cancel_proxmox_task(*, node: str, upid: str, cluster, endpoint_url: str = "") -> None:
     """Stop a Proxmox task, preferring the endpoint that submitted it.
 
     The recorded endpoint is tried first because it is the one that owns the task.
@@ -339,11 +367,29 @@ def _cancel_proxmox_task(*, node: str, upid: str, endpoint_url: str = "") -> Non
     and two clusters may each have a node called pve1, so an unscoped fallback
     could stop the wrong cluster's task.
     """
-    from ..views.common import cluster_scoped_clients
+    from core.models import ProxmoxEndpoint
+    from core.services.cluster_resolver import client_for_endpoint, cluster_clients
 
     errors: list[str] = []
-    clients = [ProxmoxClient(endpoint_url)] if endpoint_url else []
-    clients.extend(cluster_scoped_clients())
+    clients = []
+    if cluster is None:
+        # Bounded mixed-version reader: pre-Phase-3 running events carried an
+        # explicit endpoint but no cluster relation. New writers always set the
+        # relation and therefore take the validated branch below.
+        if endpoint_url:
+            clients.append(ProxmoxClient(endpoint_url))
+        else:
+            raise ProxmoxAPIError("This legacy task has no cluster or endpoint identity.")
+    if endpoint_url:
+        endpoint = ProxmoxEndpoint.objects.filter(
+            cluster=cluster,
+            enabled=True,
+            url=endpoint_url,
+        ).first()
+        if endpoint is not None:
+            clients.append(client_for_endpoint(endpoint))
+    if cluster is not None:
+        clients.extend(cluster_clients(cluster))
     seen: set[str] = set()
     for client in clients:
         endpoint = getattr(client, "endpoint", "")
@@ -498,7 +544,8 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
         }
 
     recurrence = action.recurrence if isinstance(action.recurrence, dict) else {}
-    target = f"{action.target_type}:{action.target_vmid}" if action.target_type and action.target_vmid else ""
+    ref = action.guest_ref() if action.pk or action.cluster_id else None
+    target = ref.without_node().serialize() if ref else ""
     run_at = None
     if action.schedule_type == ScheduledAction.ScheduleType.ONCE:
         run_at = action.run_at or action.next_run_at
@@ -532,35 +579,28 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
 def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> list[dict]:
     choices = []
     seen = set()
-    for guest in common.fetch_live_guest_inventory(use_cache=False):
-        key = (guest.object_type, guest.vmid)
+    for obj in CurrentGuestInventory.objects.select_related("cluster").order_by(
+        "cluster__key", "object_type", "vmid", "node"
+    ):
+        ref = obj.guest_ref()
+        if ref is None:
+            continue
+        key = ref.identity_tuple
         if key in seen:
             continue
         seen.add(key)
         choices.append(
             {
-                "value": f"{guest.object_type}:{guest.vmid}",
-                "label": _live_guest_target_label(guest),
-                "node": guest.node,
-            }
-        )
-
-    for obj in CurrentGuestInventory.objects.order_by("object_type", "vmid", "node"):
-        key = (obj.object_type, obj.vmid)
-        if key in seen:
-            continue
-        seen.add(key)
-        choices.append(
-            {
-                "value": f"{obj.object_type}:{obj.vmid}",
+                "value": ref.without_node().serialize(),
                 "label": _inventory_target_label(obj),
                 "node": obj.node,
             }
         )
 
-    if action and action.target_type and action.target_vmid:
-        value = f"{action.target_type}:{action.target_vmid}"
-        if (action.target_type, action.target_vmid) not in seen:
+    action_ref = action.guest_ref() if action and action.cluster_id else None
+    if action_ref:
+        value = action_ref.without_node().serialize()
+        if action_ref.identity_tuple not in seen:
             choices.append(
                 {
                     "value": value,
@@ -579,30 +619,20 @@ def _live_guest_target_label(guest) -> str:
     return guest_identity_from_inventory(guest).full_label_with_type
 
 
-def _scheduled_target_label(target_type: str | None, target_vmid: int | None) -> str:
-    if target_type is None or target_vmid is None:
+def _scheduled_target_label(ref: GuestRef | None) -> str:
+    if ref is None:
         return ""
     obj = (
-        CurrentGuestInventory.objects.filter(object_type=target_type, vmid=target_vmid).first()
+        CurrentGuestInventory.objects.filter(
+            cluster__key=ref.cluster_key,
+            object_type=ref.object_type,
+            vmid=ref.vmid,
+        ).first()
     )
     if obj:
         return _inventory_target_label(obj)
-    type_label = "VM" if target_type == ScheduledAction.TargetType.VM else "Container"
-    return f"{type_label} {target_vmid}"
-
-
-def _live_guest_for_target(
-    target_type: str | None,
-    target_vmid: int | None,
-    *,
-    use_cache: bool,
-):
-    if target_type is None or target_vmid is None:
-        return None
-    for guest in common.fetch_live_guest_inventory(use_cache=use_cache):
-        if guest.object_type == target_type and guest.vmid == target_vmid:
-            return guest
-    return None
+    type_label = "VM" if ref.object_type == ScheduledAction.TargetType.VM else "Container"
+    return f"{type_label} {ref.vmid}"
 
 
 def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[str]:
@@ -614,8 +644,8 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
         errors.append("Name is required.")
     elif ScheduledAction.objects.filter(name=name, deleted_at__isnull=True).exclude(pk=action.pk).exists():
         errors.append("A scheduled task with this name already exists.")
-    target_type, target_vmid = _parse_scheduled_target(post.get("target", ""))
-    if target_type is None or target_vmid is None:
+    target_ref = _parse_scheduled_target_ref(post.get("target", ""))
+    if target_ref is None:
         errors.append("Target is required.")
 
     action_type = post.get("action_type", "")
@@ -662,8 +692,9 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     action.enabled = post.get("enabled") == "on"
     action.action_type = action_type
     action.action_timeout_seconds = timeout_seconds
-    action.target_type = target_type
-    action.target_vmid = target_vmid
+    action.cluster = ProxmoxCluster.objects.get(key=target_ref.cluster_key)
+    action.target_type = target_ref.object_type
+    action.target_vmid = target_ref.vmid
     _apply_target_snapshot(action)
     action.schedule_type = schedule_type
     action.run_at = run_at
@@ -691,28 +722,39 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
 
 
 def _parse_scheduled_target(value: str) -> tuple[str | None, int | None]:
+    ref = _parse_scheduled_target_ref(value)
+    return (ref.object_type, ref.vmid) if ref else (None, None)
+
+
+def _parse_scheduled_target_ref(value: str) -> GuestRef | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    if value.startswith("gr"):
+        try:
+            ref = GuestRef.parse(value).without_node()
+        except RefParseError:
+            return None
+        return ref if ProxmoxCluster.objects.filter(key=ref.cluster_key).exists() else None
     if ":" not in value:
-        return None, None
+        return None
     target_type, raw_vmid = value.split(":", 1)
     if target_type not in ScheduledAction.TargetType.values:
-        return None, None
+        return None
     try:
         vmid = int(raw_vmid)
     except ValueError:
-        return None, None
-    return target_type, vmid if vmid > 0 else None
+        return None
+    if vmid <= 0:
+        return None
+    return guest_ref_from_legacy_identity(target_type, vmid)
 
 
 def _apply_target_snapshot(action: ScheduledAction) -> None:
     action.target_node = ""
     action.target_name_snapshot = ""
-    live_guest = _live_guest_for_target(action.target_type, action.target_vmid, use_cache=False)
-    if live_guest:
-        action.target_node = live_guest.node
-        action.target_name_snapshot = live_guest.name
-        return
-
     obj = CurrentGuestInventory.objects.filter(
+        cluster=action.cluster,
         object_type=action.target_type,
         vmid=action.target_vmid,
     ).first()
@@ -959,11 +1001,14 @@ def _posted_datetime_parts(post, prefix: str) -> dict[str, str]:
 
 
 def _audit_scheduled_action_definition(request, action: str, scheduled_action: ScheduledAction) -> None:
+    ref = scheduled_action.guest_ref()
     record_audit_event(
         request,
         action=action,
         object_type="scheduled_action",
         object_id=str(scheduled_action.id),
+        cluster=scheduled_action.cluster,
+        guest_ref=ref,
         details={
             "scheduled_action_id": scheduled_action.id,
             "scheduled_action_name": scheduled_action.name,
@@ -985,13 +1030,19 @@ def _scheduled_action_target_label(action: ScheduledAction) -> str:
 
 def _latest_scheduled_runs(
     *,
+    cluster_key: str = "",
     target_type: str | None = None,
     target_vmid: int | None = None,
     limit: int = 10,
 ) -> list[ScheduledActionRun]:
-    runs_query = ScheduledActionRun.objects.select_related("scheduled_action")
+    runs_query = ScheduledActionRun.objects.select_related("scheduled_action", "scheduled_action__cluster")
     if target_type and target_vmid is not None:
-        runs_query = runs_query.filter(scheduled_action__target_type=target_type, scheduled_action__target_vmid=target_vmid)
+        runs_query = runs_query.filter(
+            Q(scheduled_action__cluster__key=cluster_key)
+            | Q(scheduled_action__cluster__isnull=True),
+            scheduled_action__target_type=target_type,
+            scheduled_action__target_vmid=target_vmid,
+        )
 
     runs = list(runs_query.order_by("-created_at")[:limit])
     for run in runs:

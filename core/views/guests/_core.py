@@ -7,7 +7,8 @@ from pathlib import Path, PurePosixPath
 
 from ..common import *  # noqa: F401,F403
 from .. import common
-from core.models import StorageMount
+from core.models import ProxmoxCluster, StorageMount
+from core.services.guest_scope import guest_ref_from_legacy_identity
 from core.services.public_errors import public_exception_message
 from core.services.current_guest_inventory import (
     delete_current_guest,
@@ -100,7 +101,7 @@ def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[di
     if not detail.node:
         return [], [], "The guest's node could not be resolved."
     error = ""
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             # A cheap live request also proves this configured endpoint owns the
             # guest instead of accepting a same-named node on another endpoint.
@@ -153,7 +154,7 @@ def _guest_backup_storages(detail: SimpleNamespace) -> tuple[list[dict], str]:
     if not detail.node:
         return [], "The guest's node could not be resolved."
     error = ""
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
             storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
@@ -230,7 +231,7 @@ def _submit_guest_backup(request, detail: SimpleNamespace):
     if not detail.node:
         return None, "The guest's node could not be resolved.", None, audit_details
     last_error = "No Proxmox endpoint could reach this guest."
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             # Resolve storage through the endpoint that currently owns the guest.
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
@@ -518,6 +519,7 @@ def _update_current_guest_config(detail: SimpleNamespace, updates: dict[str, str
         node=detail.node,
         updates=updates,
         delete=delete,
+        cluster=detail.cluster,
     )
 
 
@@ -525,6 +527,7 @@ def _delete_current_guest_object(detail: SimpleNamespace) -> None:
     delete_current_guest(
         object_type=detail.object_type,
         vmid=detail.vmid,
+        cluster=detail.cluster,
     )
 
 
@@ -540,6 +543,8 @@ def _create_guest(request, object_type: str, options: dict):
     vmid = post.get("vmid", "").strip()
     if not vmid.isdigit():
         return "VMID must be a whole number."
+    ref = guest_ref_from_legacy_identity(object_type, int(vmid), node=node)
+    cluster = ProxmoxCluster.objects.get(key=ref.cluster_key)
     disk_storage = post.get("disk_storage", "").strip()
     if not disk_storage:
         return "Select a storage for the disk."
@@ -569,7 +574,7 @@ def _create_guest(request, object_type: str, options: dict):
         }
         if not bridge:
             params["bridge"] = ""
-        _data, err = create_vm(node, params)
+        _data, err = create_vm(node, params, cluster=cluster)
     else:
         hostname = post.get("hostname", "").strip()
         if not hostname:
@@ -590,7 +595,7 @@ def _create_guest(request, object_type: str, options: dict):
             "ssh_keys": ssh_keys,
             "ip": post.get("ip", "dhcp").strip() or "dhcp",
         }
-        _data, err = create_ct(node, params)
+        _data, err = create_ct(node, params, cluster=cluster)
 
     if err:
         if "403" in err:
@@ -601,7 +606,8 @@ def _create_guest(request, object_type: str, options: dict):
         request,
         action="guest.create",
         object_type="guest",
-        object_id=f"{object_type}:{vmid}",
+        cluster=cluster,
+        guest_ref=ref,
         details={"node": node, "vmid": vmid, "target_type": object_type, "name": post.get("name") or post.get("hostname") or ""},
         system_username="system",
     )
@@ -812,10 +818,26 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
         return "Could not confirm the existing guest's current power state. Restore was not queued."
 
     target_name = getattr(existing, "name", "") or f"Restored {archive['type_label']} {vmid}"
+    ref = guest_ref_from_legacy_identity(
+        archive["object_type"],
+        vmid,
+        node=target_node,
+    )
+    cluster = ProxmoxCluster.objects.get(key=ref.cluster_key)
     detail = SimpleNamespace(
-        object_type=archive["object_type"], vmid=vmid, node=target_node, name=target_name, config={}, current={}
+        cluster=cluster,
+        cluster_key=cluster.key,
+        guest_ref=ref,
+        node_ref=ref.node_ref,
+        object_type=archive["object_type"],
+        vmid=vmid,
+        node=target_node,
+        name=target_name,
+        config={},
+        current={},
     )
     audit_details = {
+        "operation_payload_version": 1,
         "archive": archive["volid"],
         "archive_storage": archive["storage"],
         "source_node": archive["node"],
@@ -824,21 +846,13 @@ def _queue_guest_backup_restore(request, archives: list[dict]) -> str:
         "start_after": start_after,
         "stage": "queued",
         "proxmox_endpoint": getattr(client, "endpoint", ""),
+        "shutdown_first": bool(existing and existing_status != "stopped"),
+        "task_timeout_seconds": settings.BACKUP_TASK_TIMEOUT_SECONDS,
     }
     event = _audit_guest(request, detail, "guest.backup.restore", audit_details, outcome="running")
     task_id = common.enqueue_bulk_task(
         "core.tasks.restore_guest_backup_task",
         event.id,
-        getattr(client, "endpoint", ""),
-        target_node,
-        archive["object_type"],
-        vmid,
-        archive["volid"],
-        target_storage,
-        overwrite,
-        bool(existing and existing_status != "stopped"),
-        start_after,
-        settings.BACKUP_TASK_TIMEOUT_SECONDS,
     )
     event.details = {**event.details, "worker_task_id": task_id}
     event.save(update_fields=["details"])

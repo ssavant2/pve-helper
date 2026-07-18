@@ -56,7 +56,7 @@ class VmRegisterError(Exception):
     """Raised for pre-flight / staging problems before any Proxmox write."""
 
 
-def _client():
+def _client(*, cluster=None):
     from core.services.cluster_resolver import (
         ClusterResolutionError,
         pin_cluster_write_client,
@@ -64,7 +64,7 @@ def _client():
     )
 
     try:
-        cluster = require_sole_enabled_cluster_for_legacy_caller()
+        cluster = cluster or require_sole_enabled_cluster_for_legacy_caller()
         _endpoint, client = pin_cluster_write_client(cluster)
     except ClusterResolutionError as exc:
         raise VmRegisterError(str(exc)) from exc
@@ -142,14 +142,20 @@ def _poll_task(client, node: str, upid: str, *, timeout: int = 3600) -> str:
 # --------------------------------------------------------------------------- #
 # Adopt: attach an existing orphan disk to a new, empty VM.
 # --------------------------------------------------------------------------- #
-def adopt_orphan_disk(node: str, volid: str, params: dict[str, Any]) -> tuple[str, str | None]:
+def adopt_orphan_disk(
+    node: str,
+    volid: str,
+    params: dict[str, Any],
+    *,
+    cluster=None,
+) -> tuple[str, str | None]:
     """Create an empty VM (reusing the orphan's VMID) and attach ``volid``.
 
     Returns ``(upid_of_create, error)``. The create task is quick; the disk is
     attached with a follow-up config write, which is why create alone is not
     enough (a create-time disk reference to an existing volume is dropped).
     """
-    client = _client()
+    client = _client(cluster=cluster)
     if params.get("bios") == "ovmf":
         params.setdefault("efidisk_storage", _storage_from_volid(volid))
     bus_key = _bus_key(params.get("disk_bus", "sata"))
@@ -248,9 +254,15 @@ def _remove_stage(staging_dir: Path) -> None:
         pass
 
 
-def _create_vm_importing(node: str, params: dict[str, Any], import_volid: str) -> tuple[str, str | None]:
+def _create_vm_importing(
+    node: str,
+    params: dict[str, Any],
+    import_volid: str,
+    *,
+    cluster=None,
+) -> tuple[str, str | None]:
     """Create a VM whose boot disk is imported from ``import_volid`` (a volid)."""
-    client = _client()
+    client = _client(cluster=cluster)
     bus_key = _bus_key(params.get("disk_bus", "sata"))
     if params.get("disk_bus") == "scsi":
         params.setdefault("scsihw", "virtio-scsi-single")
@@ -277,6 +289,7 @@ def import_disk_as_vm(
     *,
     source_storage: StorageMount,
     source_path: str,
+    cluster=None,
 ) -> tuple[str, str | None]:
     """Stage a browsable image as a volume, import it into a new VM, then clean up.
 
@@ -285,15 +298,21 @@ def import_disk_as_vm(
     """
     staging_volid, staging_dir = _stage_source(source_storage, source_path)
     try:
-        return _create_vm_importing(node, params, staging_volid)
+        return _create_vm_importing(node, params, staging_volid, cluster=cluster)
     finally:
         _remove_stage(staging_dir)
 
 
-def import_volid_as_vm(node: str, params: dict[str, Any], *, source_volid: str) -> tuple[str, str | None]:
+def import_volid_as_vm(
+    node: str,
+    params: dict[str, Any],
+    *,
+    source_volid: str,
+    cluster=None,
+) -> tuple[str, str | None]:
     """Import an already-catalogued volume (e.g. a local ``import``-content image)
     into a new VM. No staging needed — the volid is passed straight to import-from."""
-    return _create_vm_importing(node, params, source_volid)
+    return _create_vm_importing(node, params, source_volid, cluster=cluster)
 
 
 # --------------------------------------------------------------------------- #
@@ -372,6 +391,7 @@ def import_ovf_package_as_vm(
     source_storage: StorageMount,
     source_path: str,
     progress: Callable[[str, int, int], None] | None = None,
+    cluster=None,
 ) -> tuple[list[str], str | None]:
     """Create a VM from every disk described by an OVF/OVA package.
 
@@ -396,7 +416,7 @@ def import_ovf_package_as_vm(
     except VmRegisterError as exc:
         return [], str(exc)
 
-    client = _client()
+    client = _client(cluster=cluster)
     upids: list[str] = []
     try:
         if bus == "scsi":

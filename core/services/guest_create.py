@@ -34,10 +34,10 @@ def _creation_cluster():
         return None
 
 
-def _first_client():
+def _first_client(*, cluster=None):
     from core.services.cluster_resolver import pin_cluster_write_client
 
-    cluster = _creation_cluster()
+    cluster = cluster or _creation_cluster()
     if cluster is None:
         return None
     try:
@@ -139,7 +139,7 @@ def create_options(object_type: str, node: str | None = None) -> dict[str, Any]:
     return options
 
 
-def _post_create(node: str, kind: str, body: dict):
+def _post_create(node: str, kind: str, body: dict, *, cluster=None):
     """Create a guest inside the selected cluster, without replaying the create.
 
     The previous fan-out retried the create on the next endpoint after any error.
@@ -149,7 +149,7 @@ def _post_create(node: str, kind: str, body: dict):
     """
     from core.services.cluster_resolver import cluster_write
 
-    cluster = _creation_cluster()
+    cluster = cluster or _creation_cluster()
     if cluster is None:
         return None, "No Proxmox cluster is configured."
     try:
@@ -166,7 +166,7 @@ def _post_create(node: str, kind: str, body: dict):
     return result.value, None
 
 
-def create_vm(node: str, params: dict):
+def create_vm(node: str, params: dict, *, cluster=None):
     body = {
         "vmid": params["vmid"],
         "name": params["name"],
@@ -189,10 +189,10 @@ def create_vm(node: str, params: dict):
         body["ide2"] = "none,media=cdrom"
     if params.get("start"):
         body["start"] = 1
-    return _post_create(node, "qemu", body)
+    return _post_create(node, "qemu", body, cluster=cluster)
 
 
-def create_ct(node: str, params: dict):
+def create_ct(node: str, params: dict, *, cluster=None):
     body = {
         "vmid": params["vmid"],
         "hostname": params["hostname"],
@@ -214,4 +214,4 @@ def create_ct(node: str, params: dict):
         body["net0"] = net
     if params.get("start"):
         body["start"] = 1
-    return _post_create(node, "lxc", body)
+    return _post_create(node, "lxc", body, cluster=cluster)

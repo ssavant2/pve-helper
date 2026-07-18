@@ -8,6 +8,9 @@ from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_state_identity import cluster_cache_key
 from core.services.current_guest_inventory import current_inventory_state
 from core.services.public_errors import public_exception_message
+from core.services.refs import GuestRef
+from core.services.guest_scope import guest_ref_from_legacy_identity
+from core.models import ProxmoxCluster
 from core.services.tag_catalog import load_tag_catalog
 from .presenters import (
     _config_ip_addresses,
@@ -18,42 +21,67 @@ from .presenters import (
 
 def _mark_linked_clones(
     rows: list[SimpleNamespace], lineage: dict[int, int] | None = None
-) -> dict[int, int]:
+) -> dict[str, dict[int, int]]:
     """Flag VM rows that are linked clones (disk backed by a template's base
     volume) and record their parent template (vmid + name when the parent row is
     present). Independent of tree ordering, so the overview can show a flat
     'linked clone of X' marker and gate 'Convert to Template' everywhere (a linked
     clone must not become a template — it would seed a deeper, fragile chain).
-    Returns the lineage map so callers can reuse it without a second fetch."""
-    if lineage is None:
-        lineage = common.fetch_live_guest_lineage()  # {child VMID: parent VMID}
+    Returns lineage grouped by cluster so duplicate VMIDs never share parents."""
+    clusters: dict[str, object | None] = {}
+    for row in rows:
+        cluster = getattr(row, "cluster", None)
+        cluster_key = str(getattr(row, "cluster_key", "") or getattr(cluster, "key", ""))
+        clusters.setdefault(cluster_key, cluster)
+    if lineage is not None:
+        # Compatibility for the presentation helper's old single-cluster input.
+        only_key = next(iter(clusters), "")
+        lineage_by_cluster = {only_key: lineage}
+    else:
+        lineage_by_cluster = {
+            cluster_key: common.fetch_live_guest_lineage(cluster=cluster)
+            if cluster is not None
+            else common.fetch_live_guest_lineage()
+            for cluster_key, cluster in clusters.items()
+        }
     vm_rows = {
-        row.vmid: row
+        (str(getattr(row, "cluster_key", "")), row.vmid): row
         for row in rows
         if row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid is not None
     }
     for row in rows:
-        parent = lineage.get(row.vmid) if row.object_type == ProxmoxInventory.ObjectType.VM else None
+        cluster_key = str(getattr(row, "cluster_key", ""))
+        cluster_lineage = lineage_by_cluster.get(cluster_key, {})
+        parent = (
+            cluster_lineage.get(row.vmid)
+            if row.object_type == ProxmoxInventory.ObjectType.VM
+            else None
+        )
         if parent is not None and parent != row.vmid:
             row.is_linked_clone = True
             row.parent_vmid = parent
-            parent_row = vm_rows.get(parent)
+            parent_row = vm_rows.get((cluster_key, parent))
             row.lineage_parent_name = (parent_row.name if parent_row and parent_row.name else str(parent))
         else:
             row.is_linked_clone = False
             row.parent_vmid = None
             row.lineage_parent_name = ""
-    return lineage
+    return lineage_by_cluster
 
 
-def _linked_clone_children(vmid: int | None) -> list[int]:
+def _linked_clone_children(detail: SimpleNamespace) -> list[int]:
     """VMIDs of linked clones that depend on this guest's base volume (empty if
     none / API unreachable). Used to gate operations that would break the backing
     chain: destroy, storage migration, disk removal/resize on a parent template."""
-    if vmid is None:
+    if detail.vmid is None:
         return []
-    lineage = common.fetch_live_guest_lineage()
-    return sorted(clone for clone, parent in lineage.items() if parent == vmid)
+    cluster = getattr(detail, "cluster", None)
+    lineage = (
+        common.fetch_live_guest_lineage(cluster=cluster)
+        if cluster is not None
+        else common.fetch_live_guest_lineage()
+    )
+    return sorted(clone for clone, parent in lineage.items() if parent == detail.vmid)
 
 
 def _linked_clone_disk_edit_block(detail: SimpleNamespace, delete: list[str], resizes: list) -> str | None:
@@ -62,7 +90,7 @@ def _linked_clone_disk_edit_block(detail: SimpleNamespace, delete: list[str], re
     disk_deletes = [key for key in delete if DISK_CONFIG_KEYS.match(key)]
     if not (disk_deletes or resizes):
         return None
-    children = _linked_clone_children(detail.vmid)
+    children = _linked_clone_children(detail)
     if not children:
         return None
     labels = ", ".join(str(child) for child in children)
@@ -82,34 +110,38 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
     for row in rows:
         row.depth = 0
         row.deeper_chain = False
-    lineage = _mark_linked_clones(rows)  # sets is_linked_clone / parent_vmid / name
-    if not lineage:
+    lineage_by_cluster = _mark_linked_clones(rows)  # sets is_linked_clone / parent_vmid / name
+    if not any(lineage_by_cluster.values()):
         return rows
     vm_rows = {
-        row.vmid: row
+        (str(getattr(row, "cluster_key", "")), row.vmid): row
         for row in rows
         if row.object_type == ProxmoxInventory.ObjectType.VM and row.vmid is not None
     }
-    children: dict[int, list[SimpleNamespace]] = {}
+    children: dict[tuple[str, int], list[SimpleNamespace]] = {}
     for row in rows:
         # Only nest under a parent that is actually present in this view.
-        if row.parent_vmid is not None and row.parent_vmid in vm_rows:
-            children.setdefault(row.parent_vmid, []).append(row)
+        cluster_key = str(getattr(row, "cluster_key", ""))
+        parent_key = (cluster_key, row.parent_vmid)
+        if row.parent_vmid is not None and parent_key in vm_rows:
+            children.setdefault(parent_key, []).append(row)
     if not children:
         return rows
 
     ordered: list[SimpleNamespace] = []
-    visited: set[int] = set()
+    visited: set[tuple[str, int]] = set()
 
     def emit(row: SimpleNamespace, depth: int) -> None:
         if row.vmid is not None:
-            if row.vmid in visited:
+            identity = (str(getattr(row, "cluster_key", "")), row.vmid)
+            if identity in visited:
                 return
-            visited.add(row.vmid)
+            visited.add(identity)
         row.depth = min(depth, 2)
         row.deeper_chain = depth > 2
         ordered.append(row)
-        for child in children.get(row.vmid, []) if row.vmid is not None else []:
+        child_key = (str(getattr(row, "cluster_key", "")), row.vmid)
+        for child in children.get(child_key, []) if row.vmid is not None else []:
             emit(child, depth + 1)
 
     for row in rows:
@@ -243,10 +275,18 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
     macs = _config_mac_addresses(config)
     ips = _config_ip_addresses(config)
     storage_ids = _config_storage_ids(config)
-    identity = guest_identity(object_type, vmid, name or "")
+    cluster = getattr(current_obj, "cluster", None)
+    ref = (
+        GuestRef(cluster.key, object_type, vmid, node or "")
+        if cluster is not None and vmid is not None
+        else None
+    )
+    identity = guest_identity(object_type, vmid, name or "", ref=ref)
     return SimpleNamespace(
-        cluster=getattr(current_obj, "cluster", None),
-        cluster_key=getattr(getattr(current_obj, "cluster", None), "key", ""),
+        cluster=cluster,
+        cluster_key=getattr(cluster, "key", ""),
+        guest_ref=ref,
+        guest_ref_id=ref.serialize() if ref is not None else "",
         object_type=object_type,
         vmid=vmid,
         name=name or "",
@@ -348,7 +388,7 @@ def _live_guest_has_snapshot(row: SimpleNamespace, *, allow_fetch: bool = True) 
         return None
     kind = "qemu" if row.object_type == ProxmoxInventory.ObjectType.VM else "lxc"
     path = f"nodes/{quote(row.node, safe='')}/{kind}/{row.vmid}/snapshot"
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(cluster):
         try:
             data = client.get(path, timeout=2)
         except ProxmoxAPIError:
@@ -476,12 +516,15 @@ def _guest_lineage(detail: SimpleNamespace) -> dict:
     empty = {"parent": None, "children": []}
     if detail.object_type != ProxmoxInventory.ObjectType.VM or detail.vmid is None:
         return empty
-    lineage = common.fetch_live_guest_lineage()
+    lineage = common.fetch_live_guest_lineage(cluster=detail.cluster)
     if not lineage:
         return empty
     names = {
         guest.vmid: guest.name
-        for guest in CurrentGuestInventory.objects.filter(object_type=ProxmoxInventory.ObjectType.VM)
+        for guest in CurrentGuestInventory.objects.filter(
+            cluster=detail.cluster,
+            object_type=ProxmoxInventory.ObjectType.VM,
+        )
         if guest.object_type == ProxmoxInventory.ObjectType.VM
     }
     parent = None
@@ -496,29 +539,85 @@ def _guest_lineage(detail: SimpleNamespace) -> dict:
     return {"parent": parent, "children": children}
 
 
-def _require_guest(object_type: str, vmid: int, *, node: str = "") -> SimpleNamespace:
+def _legacy_route_guest_ref(object_type: str, vmid: int, *, node: str = "") -> GuestRef:
+    """Translate a Phase-3 legacy URL into the one durable guest identity.
+
+    URLs gain an explicit cluster segment in Phase 4. Until then activation keeps
+    exactly one cluster enabled, so the route boundary can make that temporary
+    source explicit without allowing a database lookup to guess by VMID.
+    """
     if object_type not in GUEST_OBJECT_TYPES:
         raise Http404("Unknown guest type")
-    detail = _resolve_guest_detail(object_type, vmid, node=node)
+    return guest_ref_from_legacy_identity(object_type, vmid, node=node)
+
+
+def _coerce_guest_ref(
+    object_type_or_ref: str | GuestRef,
+    vmid: int | None = None,
+    *,
+    node: str = "",
+) -> GuestRef:
+    if isinstance(object_type_or_ref, GuestRef):
+        if vmid is not None:
+            raise ValueError("VMID must not be supplied with GuestRef.")
+        if node and object_type_or_ref.node and node != object_type_or_ref.node:
+            raise ValueError("Conflicting node qualification for GuestRef.")
+        if node and not object_type_or_ref.node:
+            return GuestRef(
+                object_type_or_ref.cluster_key,
+                object_type_or_ref.object_type,
+                object_type_or_ref.vmid,
+                node,
+            )
+        return object_type_or_ref
+    if vmid is None:
+        raise ValueError("VMID is required for a legacy guest route.")
+    return _legacy_route_guest_ref(str(object_type_or_ref), vmid, node=node)
+
+
+def _require_guest(
+    object_type_or_ref: str | GuestRef,
+    vmid: int | None = None,
+    *,
+    node: str = "",
+) -> SimpleNamespace:
+    ref = _coerce_guest_ref(object_type_or_ref, vmid, node=node)
+    if ref.object_type not in GUEST_OBJECT_TYPES:
+        raise Http404("Unknown guest type")
+    detail = _resolve_guest_detail(ref)
     if not detail.found:
         raise Http404("Guest not found")
     return detail
 
 
-def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> SimpleNamespace:
-    """Resolve read-only guest context without provider I/O in the request."""
-    current_query = CurrentGuestInventory.objects.filter(object_type=object_type, vmid=vmid)
-    if node:
-        current_query = current_query.filter(node=node)
-    obj = current_query.first()
+def _resolve_guest_detail(
+    object_type_or_ref: str | GuestRef,
+    vmid: int | None = None,
+    *,
+    node: str = "",
+) -> SimpleNamespace:
+    """Resolve one cluster-qualified guest without provider I/O in the request."""
+    ref = _coerce_guest_ref(object_type_or_ref, vmid, node=node)
+    current_query = CurrentGuestInventory.objects.filter(
+        Q(cluster__key=ref.cluster_key) | Q(cluster__isnull=True),
+        object_type=ref.object_type,
+        vmid=ref.vmid,
+    )
+    if ref.node:
+        current_query = current_query.filter(node=ref.node)
+    # Prefer the qualified writer. A null row is a bounded mixed-version reader
+    # for pre-Phase-3 data and becomes impossible at contract activation.
+    obj = current_query.order_by(F("cluster_id").desc(nulls_last=True)).first()
     if obj is None:
         return SimpleNamespace(
             cluster=None,
-            cluster_key="",
-            object_type=object_type,
-            vmid=vmid,
+            cluster_key=ref.cluster_key,
+            guest_ref=ref,
+            node_ref=ref.node_ref,
+            object_type=ref.object_type,
+            vmid=ref.vmid,
             name="",
-            node=node,
+            node=ref.node,
             status="",
             config={},
             current={},
@@ -541,10 +640,12 @@ def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> Sim
     }
 
     return SimpleNamespace(
-        cluster=obj.cluster,
-        cluster_key=obj.cluster.key if obj.cluster_id else "",
-        object_type=object_type,
-        vmid=vmid,
+        cluster=obj.cluster or ProxmoxCluster.objects.get(key=ref.cluster_key),
+        cluster_key=ref.cluster_key,
+        guest_ref=GuestRef(ref.cluster_key, obj.object_type, obj.vmid, obj.node),
+        node_ref=GuestRef(ref.cluster_key, obj.object_type, obj.vmid, obj.node).node_ref,
+        object_type=ref.object_type,
+        vmid=ref.vmid,
         name=obj.name or "",
         node=obj.node or "",
         status=obj.status or "",
@@ -558,6 +659,7 @@ def _resolve_guest_detail(object_type: str, vmid: int, *, node: str = "") -> Sim
 
 
 def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
+    detail_ref = getattr(detail, "guest_ref", None)
     is_tmpl = detail.object_type == ProxmoxInventory.ObjectType.VM and is_template(detail.config)
     if is_tmpl:
         type_label = "Template"
@@ -565,7 +667,11 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         type_label = "CT"
     else:
         type_label = "VM"
-    target = f"{detail.object_type}:{detail.vmid}"
+    target = (
+        detail_ref.without_node().serialize()
+        if detail_ref is not None
+        else f"{detail.object_type}:{detail.vmid}"
+    )
     active_target = _guest_target_value(detail.object_type, detail.vmid, detail.node)
     tag_catalog = load_tag_catalog()
     rows, live_available, scan_at = _guest_rows(current_guests=tag_catalog.guests)
@@ -578,7 +684,12 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
     return {
         **navigation_context("vms"),
         "guest": detail,
-        "guest_identity": guest_identity(detail.object_type, detail.vmid, detail.name),
+        "guest_identity": guest_identity(
+            detail.object_type,
+            detail.vmid,
+            detail.name,
+            ref=detail_ref,
+        ),
         "guest_is_template": is_tmpl,
         "guest_type_label": type_label,
         "guest_tags": parse_guest_tags(detail.config),
@@ -592,6 +703,7 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         "active_object_type": detail.object_type,
         "active_vmid": detail.vmid,
         "active_guest_target_id": active_target,
+        "active_guest_ref": detail_ref.serialize() if detail_ref is not None else "",
         "available_user_tags": available_user_tags,
         "schedule_action_url": f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}",
         "scheduled_actions_url": f"{reverse('core:scheduled_tasks')}?{urlencode({'target': target})}",
@@ -628,7 +740,7 @@ def _guest_api_get(detail: SimpleNamespace, subpath: str, *, timeout_seconds: fl
     if not detail.node:
         return None, "The guest's node could not be resolved."
     err = "No Proxmox endpoint could reach this guest."
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         try:
             return client.get(
                 f"nodes/{quote(detail.node, safe='')}/{kind}/{detail.vmid}/{subpath}",
@@ -752,7 +864,7 @@ def _empty_guest_agent_summary(*, enabled: bool, running: bool) -> dict:
 def _guest_pool_label(detail: SimpleNamespace) -> str:
     if not detail.live_ok or not detail.node:
         return ""
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         if not hasattr(client, "get"):
             continue
         try:
@@ -799,7 +911,7 @@ def _guest_ha_summary(detail: SimpleNamespace) -> dict:
     if isinstance(cached, dict):
         return cached
 
-    for client in common.cluster_scoped_clients():
+    for client in common.cluster_scoped_clients(detail.cluster):
         if not hasattr(client, "get"):
             continue
         try:
