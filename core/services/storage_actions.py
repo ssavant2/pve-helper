@@ -14,7 +14,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
 
-from core.models import AuditEvent, FileInventory, ProxmoxEndpoint, StorageMount, TrashItem
+from core.models import AuditEvent, FileInventory, ProxmoxCluster, StorageMount, TrashItem
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     ConfinedPathExistsError,
@@ -23,7 +23,7 @@ from core.services.confined_filesystem import (
 from core.services.file_actions import ReferencedObject, file_action_risk, guest_objects_for_entry
 from core.services.filesystem import storage_space_info
 from core.services.image_info import probe_qemu_image_info
-from core.services.proxmox import ProxmoxAPIError, ProxmoxClient
+from core.services.cluster_resolver import ClusterResolutionError, cluster_wide_read
 
 
 class StorageActionError(Exception):
@@ -120,42 +120,44 @@ def require_live_guest_stopped(entry: FileInventory) -> list[dict[str, object]]:
 
 def _live_guest_status(guest: ReferencedObject) -> str:
     # File-action safety checks must bypass the display cache used by the VMs/CTs tab.
-    endpoints = _candidate_endpoints_for_node(guest.node)
-    if not endpoints:
+    guest_ref = guest.guest_ref
+    if guest_ref is None:
         raise StorageActionError(
-            f"Could not verify live Proxmox status for {_guest_label(guest)}. "
+            f"Could not verify cluster identity for {_guest_label(guest)}. "
+            "The file action is blocked until the inventory reference is cluster-qualified."
+        )
+
+    cluster = ProxmoxCluster.objects.filter(key=guest_ref.cluster_key).first()
+    if cluster is None:
+        raise StorageActionError(
+            f"Could not resolve cluster '{guest_ref.cluster_key}' for {_guest_label(guest)}. "
             "The file action is blocked until the guest can be confirmed stopped."
         )
 
-    errors: list[str] = []
-    for endpoint in endpoints:
-        try:
-            return ProxmoxClient(endpoint.url).guest_status(
-                node=guest.node,
-                object_type=guest.object_type,
-                vmid=int(guest.vmid),
-            )
-        except ProxmoxAPIError as exc:
-            errors.append(str(exc))
+    try:
+        result = cluster_wide_read(
+            cluster,
+            operation="storage_file_guest_status",
+            call=lambda client: client.guest_status(
+                node=guest_ref.node,
+                object_type=guest_ref.object_type,
+                vmid=guest_ref.vmid,
+            ),
+        )
+    except ClusterResolutionError as exc:
+        raise StorageActionError(
+            f"Could not verify live Proxmox status for {_guest_label(guest)}. "
+            "The file action is blocked until the guest can be confirmed stopped."
+        ) from exc
 
-    detail = f" Last error: {errors[-1]}" if errors else ""
+    if result.complete:
+        return str(result.value)
+
+    detail = f" Last error: {result.errors[-1]}" if result.errors else ""
     raise StorageActionError(
         f"Could not verify live Proxmox status for {_guest_label(guest)}. "
         f"The file action is blocked until the guest can be confirmed stopped.{detail}"
     )
-
-
-def _candidate_endpoints_for_node(node: str) -> list[ProxmoxEndpoint]:
-    endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True).order_by("name"))
-    matching: list[ProxmoxEndpoint] = []
-    fallback: list[ProxmoxEndpoint] = []
-    for endpoint in endpoints:
-        endpoint_node = str((endpoint.details or {}).get("node") or endpoint.name)
-        if endpoint.name == node or endpoint_node == node:
-            matching.append(endpoint)
-        else:
-            fallback.append(endpoint)
-    return matching + fallback
 
 
 def _guest_label(guest: ReferencedObject) -> str:

@@ -64,6 +64,14 @@ class EndpointSelectionTests(ClusterResolverTestCase):
 
         self.assertEqual([e.name for e in enabled_endpoints(self.cluster_a)], ["a2"])
 
+    def test_known_healthy_endpoint_precedes_a_known_failed_endpoint(self):
+        self.a1.last_health_status = "error"
+        self.a1.save(update_fields=["last_health_status"])
+        self.a2.last_health_status = "ok"
+        self.a2.save(update_fields=["last_health_status"])
+
+        self.assertEqual([e.name for e in enabled_endpoints(self.cluster_a)], ["a2", "a1"])
+
 
 class ClusterWideReadTests(ClusterResolverTestCase):
     def test_one_authoritative_answer_is_complete_coverage(self):

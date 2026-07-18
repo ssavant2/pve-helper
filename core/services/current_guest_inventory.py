@@ -241,6 +241,15 @@ def reconcile_live_guest_inventory(
         existing = cluster_rows.filter(object_type=guest.object_type, vmid=guest.vmid).first()
         endpoint = _endpoint_for_live_guest(guest, endpoints)
         config = _live_config(existing, guest)
+        # Some cluster/resources responses omit the display name even though the
+        # already-refreshed config contains it. Runtime refreshes must enrich the
+        # projection, never erase a known name with an empty summary field.
+        config_name_key = "name" if guest.object_type == ProxmoxInventory.ObjectType.VM else "hostname"
+        resolved_name = str(
+            guest.name
+            or config.get(config_name_key)
+            or (existing.name if existing else "")
+        )
         CurrentGuestInventory.objects.update_or_create(
             cluster=cluster,
             object_type=guest.object_type,
@@ -249,7 +258,7 @@ def reconcile_live_guest_inventory(
                 "source_endpoint": endpoint or (existing.source_endpoint if existing else None),
                 "source_scan": existing.source_scan if existing else None,
                 "node": guest.node,
-                "name": guest.name,
+                "name": resolved_name,
                 "status": guest.status,
                 "cpu_usage": guest.cpu,
                 "memory_used_bytes": guest.mem,

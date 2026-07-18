@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header cluster-page-header">
+    <div>
+      <h1>Cluster connections</h1>
+      <p>Verified Proxmox control-plane connections. A standalone node is one cluster with one endpoint.</p>
+    </div>
+    <div class="page-header-actions"><a class="primary-action" href="{% url 'core:cluster_add' %}"><i data-lucide="plus" aria-hidden="true"></i> Add cluster</a></div>
+  </div>
+
+  <section class="panel cluster-list-panel">
+    <div class="panel-heading"><h2>Configured clusters</h2><span class="panel-meta">{{ clusters|length }} total</span></div>
+    {% if clusters %}
+      <div class="cluster-table-scroll">
+        <table class="data-table compact" data-sortable-table>
+          <thead><tr><th data-sort="text">Name</th><th data-sort="text">Key</th><th data-sort="text">State</th><th data-sort="number">Endpoints</th><th data-sort="text">Trust</th><th data-sort="text">Credential</th><th><span class="sr-only">Open</span></th></tr></thead>
+          <tbody>
+            {% for cluster in clusters %}
+              <tr>
+                <td data-sort-value="{{ cluster.display_name }}"><a href="{% url 'core:cluster_connection' cluster.key %}">{{ cluster.display_name }}</a></td>
+                <td data-sort-value="{{ cluster.key }}"><code>{{ cluster.key }}</code></td>
+                <td data-sort-value="{% if cluster.ingestion_quarantined %}Quarantined{% elif cluster.enabled %}Enabled{% else %}Disabled{% endif %}">
+                  {% if cluster.ingestion_quarantined %}<span class="badge failed">Quarantined</span>{% elif cluster.enabled %}<span class="badge completed">Enabled</span>{% else %}<span class="badge muted-badge">Disabled</span>{% endif %}
+                </td>
+                <td data-sort-value="{{ cluster.endpoint_count }}">{{ cluster.enabled_endpoint_count }}/{{ cluster.endpoint_count }} enabled</td>
+                <td data-sort-value="{{ cluster.trust_label }}">{{ cluster.trust_label }}</td>
+                <td data-sort-value="{{ cluster.token_id|default:'Missing' }}">{{ cluster.token_id|default:"Missing" }}</td>
+                <td><a class="icon-button" href="{% url 'core:cluster_connection' cluster.key %}" aria-label="Open {{ cluster.display_name }}"><i data-lucide="chevron-right" aria-hidden="true"></i></a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cluster-zero-state">
+        <span class="cluster-zero-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
+        <h2>No Proxmox cluster is configured</h2>
+        <p>Add one endpoint, approve its TLS transport, and verify an Administrator API token. Nothing is saved until every check passes.</p>
+        <a class="primary-action" href="{% url 'core:cluster_add' %}">Add first cluster</a>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

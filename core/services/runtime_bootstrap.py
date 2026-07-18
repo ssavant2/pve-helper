@@ -92,17 +92,24 @@ def _ensure_bootstrap_once() -> RuntimeConfigurationState:
 
 
 def _import_environment(state: RuntimeConfigurationState) -> None:
-    """Seed one `default` cluster and its configuration from the environment.
+    """Seed legacy environment configuration, or record an intentional empty install.
 
     Runs inside the caller's atomic block so the imported records and the completion
     marker commit together: a failed transaction leaves no marker and is safe to retry.
+    A new wizard-owned installation has no ``PVE_ENDPOINTS`` and must remain at zero
+    clusters; inventing a disabled or endpoint-less ``default`` row would hide the
+    onboarding state and make environment bootstrap own identity again.
     """
-    cluster, _ = ProxmoxCluster.objects.get_or_create(
-        key=DEFAULT_CLUSTER_KEY,
-        defaults={"display_name": DEFAULT_CLUSTER_DISPLAY_NAME, "enabled": True},
-    )
+    endpoint_definitions = configured_endpoint_definitions()
+    storage_definitions = configured_storage_definitions()
+    cluster = None
+    if endpoint_definitions:
+        cluster, _ = ProxmoxCluster.objects.get_or_create(
+            key=DEFAULT_CLUSTER_KEY,
+            defaults={"display_name": DEFAULT_CLUSTER_DISPLAY_NAME, "enabled": True},
+        )
 
-    for definition in configured_endpoint_definitions():
+    for definition in endpoint_definitions:
         endpoint, created = ProxmoxEndpoint.objects.get_or_create(
             name=definition.name,
             defaults={"url": definition.url, "enabled": True, "cluster": cluster},
@@ -111,7 +118,7 @@ def _import_environment(state: RuntimeConfigurationState) -> None:
             endpoint.cluster = cluster
             endpoint.save(update_fields=["cluster", "updated_at"])
 
-    for definition in configured_storage_definitions():
+    for definition in storage_definitions:
         storage, _ = StorageMount.objects.get_or_create(
             storage_id=definition.storage_id,
             defaults={
@@ -123,7 +130,8 @@ def _import_environment(state: RuntimeConfigurationState) -> None:
                 "enabled": True,
             },
         )
-        sync_storage_consumers(storage, cluster)
+        if cluster is not None:
+            sync_storage_consumers(storage, cluster)
 
     state.bootstrap_completed = True
     state.bootstrap_completed_at = timezone.now()

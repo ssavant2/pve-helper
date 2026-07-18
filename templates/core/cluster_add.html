@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header cluster-page-header">
+    <div><a href="{% url 'core:clusters_overview' %}">Cluster connections</a><h1>Add Proxmox cluster</h1><p>Credentials are sent only after you inspect and approve the endpoint certificate.</p></div>
+    <a class="secondary-action" href="{% url 'core:clusters_overview' %}">Cancel</a>
+  </div>
+
+  <ol class="cluster-wizard-steps" aria-label="Onboarding progress">
+    <li class="{% if step == 'identity' %}active{% else %}complete{% endif %}"><span>1</span>Connection</li>
+    <li class="{% if step == 'trust' %}active{% elif step == 'confirm' %}complete{% endif %}"><span>2</span>Trust &amp; token</li>
+    <li class="{% if step == 'confirm' %}active{% endif %}"><span>3</span>Identity</li>
+  </ol>
+
+  {% if step == "identity" %}
+    <section class="panel cluster-wizard-panel">
+      <div class="panel-heading"><div><h2>Connection identity</h2><p class="panel-meta">The cluster key becomes durable identity in URLs, Audit and queued operations.</p></div></div>
+      <form method="post" class="cluster-form-grid">
+        {% csrf_token %}<input type="hidden" name="action" value="inspect">
+        {% include "core/partials/cluster_form_errors.html" with form=inspect_form %}
+        <label><span>Display name</span>{{ inspect_form.display_name }}{% for error in inspect_form.display_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label><span>Cluster key</span>{{ inspect_form.cluster_key }}<small>{{ inspect_form.cluster_key.help_text }}</small>{% for error in inspect_form.cluster_key.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label class="cluster-field-wide"><span>First endpoint URL</span>{{ inspect_form.endpoint_url }}<small>{{ inspect_form.endpoint_url.help_text }}</small>{% for error in inspect_form.endpoint_url.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label><span>Endpoint name</span>{{ inspect_form.endpoint_name }}<small>{{ inspect_form.endpoint_name.help_text }}</small>{% for error in inspect_form.endpoint_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <div class="cluster-form-actions cluster-field-wide"><button class="primary-action" type="submit">Inspect certificate</button></div>
+      </form>
+    </section>
+  {% elif step == "trust" %}
+    <section class="panel cluster-wizard-panel">
+      <div class="panel-heading"><div><h2>Approve transport and verify token</h2><p class="panel-meta">No API credential has been sent yet.</p></div></div>
+      <div class="cluster-candidate-summary"><strong>{{ candidate_meta.display_name }}</strong><code>{{ candidate_meta.cluster_key }}</code><span>{{ candidate_meta.endpoint_name }} · {{ candidate_meta.endpoint_url }}</span></div>
+      {% include "core/partials/cluster_certificate.html" with certificate=certificate %}
+      <form method="post" class="cluster-form-grid" autocomplete="off">
+        {% csrf_token %}<input type="hidden" name="action" value="verify">{{ trust_form.inspection }}
+        {% include "core/partials/cluster_form_errors.html" with form=trust_form %}
+        <label><span>Transport trust</span>{{ trust_form.trust_mode }}{% for error in trust_form.trust_mode.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label class="cluster-field-wide"><span>Internal CA bundle (PEM)</span>{{ trust_form.ca_pem }}<small>Leave empty when pveproxy uses a publicly trusted certificate.</small>{% for error in trust_form.ca_pem.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label><span>API token ID</span>{{ trust_form.token_id }}<small>{{ trust_form.token_id.help_text }}</small>{% for error in trust_form.token_id.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label><span>API token secret</span>{{ trust_form.token_secret }}<small>The secret is never rendered back or written to Audit.</small>{% for error in trust_form.token_secret.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label class="cluster-check cluster-field-wide">{{ trust_form.confirm_certificate }}<span>{{ trust_form.confirm_certificate.label }}</span></label>
+        <div class="cluster-form-actions cluster-field-wide"><a class="secondary-action" href="{% url 'core:cluster_add' %}">Start over</a><button class="primary-action" type="submit">Verify Proxmox</button></div>
+      </form>
+    </section>
+  {% else %}
+    <section class="panel cluster-wizard-panel">
+      <div class="panel-heading"><div><h2>Bind verified cluster identity</h2><p class="panel-meta">The token has Administrator permissions on <code>/</code>. Review the permanent identity before saving.</p></div></div>
+      <div class="cluster-verification-grid">
+        <div><span>Cluster key</span><strong>{{ candidate.key }}</strong></div><div><span>Display name</span><strong>{{ candidate.display_name }}</strong></div>
+        <div><span>Proxmox cluster</span><strong>{{ verified.discovered_name|default:"Standalone / unnamed" }}</strong></div><div><span>Version</span><strong>{{ verified.version|default:"Unknown" }}</strong></div>
+        <div><span>Nodes</span><strong>{{ verified.node_names|join:", " }}</strong></div><div><span>Token</span><strong>{{ candidate.token_id }}</strong></div>
+        <div class="cluster-field-wide"><span>Cluster CA UUID</span><code>{{ verified.identity.ca_uuid }}</code></div>
+        <div class="cluster-field-wide"><span>Cluster CA fingerprint</span><code>{{ verified.identity.ca_fingerprint|default:"Not reported" }}</code></div>
+      </div>
+      <form method="post" class="cluster-confirm-form">
+        {% csrf_token %}<input type="hidden" name="action" value="confirm">{{ confirm_form.candidate }}
+        {% include "core/partials/cluster_form_errors.html" with form=confirm_form %}
+        <label class="cluster-check">{{ confirm_form.confirm_identity }}<span>{{ confirm_form.confirm_identity.label }}</span></label>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_add' %}">Cancel</a><button class="primary-action" type="submit">Add and enable cluster</button></div>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}

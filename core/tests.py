@@ -1230,6 +1230,21 @@ class ClassificationTests(SimpleTestCase):
     TRUENAS_VM_CONTAINER_PATH="/storages/truenas-vm",
 )
 class RuntimeConfigurationTests(TestCase):
+    def test_empty_endpoint_environment_records_bootstrap_without_inventing_a_cluster(self):
+        with self.settings(PVE_ENDPOINTS=[]):
+            first = ensure_bootstrap()
+            second = ensure_bootstrap()
+
+        self.assertTrue(first.bootstrap_completed)
+        self.assertEqual(first.pk, second.pk)
+        self.assertFalse(ProxmoxCluster.objects.exists())
+        self.assertFalse(ProxmoxEndpoint.objects.exists())
+        self.assertEqual(
+            set(StorageMount.objects.values_list("storage_id", flat=True)),
+            {"nfs-fs", "nfs-vm"},
+        )
+        self.assertFalse(ProxmoxStorageConsumer.objects.exists())
+
     def test_bootstrap_imports_environment_into_default_cluster(self):
         state = ensure_bootstrap()
 
@@ -2506,7 +2521,9 @@ class AuditEventTests(TestCase):
         )
 
     def test_poll_guest_audit_task_marks_running_event_completed(self):
+        cluster = ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
         event = AuditEvent.objects.create(
+            cluster=cluster,
             username="operator",
             action="guest.power.start",
             object_type="guest",
@@ -2522,11 +2539,15 @@ class AuditEventTests(TestCase):
             },
         )
 
+        client = Mock()
         with (
-            patch("core.tasks.ProxmoxClient") as client_cls,
+            patch(
+                "core.tasks.client_for_audit_event",
+                return_value=(client, GuestRef("default", "vm", 500, "pve1"), cluster),
+            ),
             patch("core.tasks.refresh_current_guest_from_client") as refresh_projection,
         ):
-            client_cls.return_value.wait_for_task.return_value = ProxmoxTaskResult(
+            client.wait_for_task.return_value = ProxmoxTaskResult(
                 node="pve1",
                 upid="UPID:pve1:start:500:root@pam:",
                 status="stopped",
@@ -2548,11 +2569,11 @@ class AuditEventTests(TestCase):
         self.assertEqual(event.details["proxmox_task"]["exitstatus"], "OK")
         self.assertIn("finished_at", event.details)
         refresh_projection.assert_called_once_with(
-            client_cls.return_value,
+            client,
             node="pve1",
             object_type="vm",
             vmid=500,
-            cluster=None,
+            cluster=cluster,
             allow_relocation=False,
             delete_if_authoritatively_absent=False,
         )
@@ -2668,6 +2689,10 @@ class StartupCheckTests(SimpleTestCase):
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)
+@override_settings(
+    PVE_API_TOKEN_ID="root@pam!test",
+    PVE_API_TOKEN_SECRET="test-secret",
+)
 class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
     def setUp(self):
         super().setUp()
@@ -3573,6 +3598,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=501,
                 name="inflate-test",
+                cluster=self.cluster,
                 status="stopped",
                 disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
             )
@@ -3588,7 +3614,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             original_stat = disk.stat()
             with (
-                patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"),
+                patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
                 patch("core.services.storage_actions.os.chown") as chown_mock,
                 patch("core.services.storage_actions.os.chmod") as chmod_mock,
             ):
@@ -3701,6 +3727,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=501,
                 name="inflate-test",
+                cluster=self.cluster,
                 status="stopped",
                 disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
             )
@@ -3714,7 +3741,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.REFERENCED,
             )
 
-            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+            with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"):
                 result = inflate_storage_file(storage=storage, entry=entry, target_preallocation="metadata")
 
             self.assertTrue(disk.exists())
@@ -3763,6 +3790,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=501,
                 name="inflate-test",
+                cluster=self.cluster,
                 status="running",
                 disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
             )
@@ -3792,7 +3820,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=images%2F501"
 
             with (
-                patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"),
+                patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
                 patch("core.services.storage_actions.os.geteuid", return_value=999999),
                 patch("core.services.storage_actions.os.getegid", return_value=999999),
                 patch("core.views.common.async_task", return_value="inflate-task-1") as async_task_mock,
@@ -3875,6 +3903,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=501,
                 name="inflate-test",
+                cluster=self.cluster,
                 status="stopped",
                 disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
             )
@@ -3910,7 +3939,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+            with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"):
                 inflate_storage_file_task(storage.id, entry.id, "viewer", "metadata")
 
             refreshed = FileInventory.objects.get(
@@ -3968,6 +3997,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=500,
                 name="stale-scan-test",
+                cluster=self.cluster,
                 status="stopped",
                 disk_references=["nfs-vm:500/vm-500-disk-0.qcow2"],
             )
@@ -3981,7 +4011,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.REFERENCED,
             )
 
-            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="running"):
+            with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="running"):
                 with self.assertRaisesMessage(StorageActionError, "Stop it manually in Proxmox"):
                     validate_inflate_storage_file(storage=storage, entry=entry)
 
@@ -4104,6 +4134,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=501,
                 name="inflate-growth-test",
+                cluster=self.cluster,
                 status="stopped",
                 disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
             )
@@ -4129,7 +4160,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+            with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"):
                 result = validate_inflate_storage_file(storage=storage, entry=entry)
 
             self.assertEqual(result["virtual_size_bytes"], 32 * 1024**2)
@@ -5692,6 +5723,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 object_type=ProxmoxInventory.ObjectType.VM,
                 vmid=100,
                 name="restore-test",
+                cluster=self.cluster,
                 status="stopped",
                 disk_references=["nfs-vm:100/vm-100-disk-0.qcow2"],
             )
@@ -5719,7 +5751,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertTrue(disk.exists())
             self.assertFalse(TrashItem.objects.exists())
 
-            with patch("core.services.storage_actions.ProxmoxClient.guest_status", return_value="stopped"):
+            with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"):
                 response = self.client.post(
                     reverse("core:storage_trash_file", args=[storage.storage_id]),
                     {
@@ -6221,6 +6253,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="operator", password="unused")
         self.client.force_login(user)
         event = AuditEvent.objects.create(
+            cluster=self.cluster,
             user=user,
             username="operator",
             action="guest.power.shutdown",
@@ -6240,13 +6273,20 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         stopped_tasks = []
 
         class FakeProxmoxClient:
-            def __init__(self, endpoint):
-                self.endpoint = endpoint
-
+            endpoint = "https://pve1.example.invalid:8006/api2/json"
             def stop_task(self, *, node, upid):
                 stopped_tasks.append((self.endpoint, node, upid))
 
-        with patch("core.views.scheduling.ProxmoxClient", FakeProxmoxClient):
+        ProxmoxEndpoint.objects.create(
+            cluster=self.cluster,
+            name="pve1",
+            url="https://pve1.example.invalid:8006/api2/json",
+            enabled=True,
+        )
+        with patch(
+            "core.services.cluster_resolver.client_for_endpoint",
+            return_value=FakeProxmoxClient(),
+        ):
             response = self.client.post(reverse("core:cancel_recent_task"), {"task_id": f"guest:{event.id}"})
 
         self.assertEqual(response.status_code, 200)
@@ -6516,6 +6556,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             config={"agent": "1", "ostype": "l26"},
         )
         CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
             source_scan=scan,
             node="pve1",
             object_type=CurrentGuestInventory.ObjectType.VM,
@@ -8737,6 +8778,7 @@ class GuestBackupRestoreTests(TestCase):
 
     def test_restore_worker_records_each_proxmox_stage(self):
         event = AuditEvent.objects.create(
+            cluster=self.cluster,
             action="guest.backup.restore",
             object_type="guest",
             object_id="vm:501",
@@ -8755,7 +8797,11 @@ class GuestBackupRestoreTests(TestCase):
             def wait_for_task(self, *, node, upid, timeout_seconds):
                 return ProxmoxTaskResult(node=node, upid=upid, status="stopped", exitstatus="OK", raw={})
 
-        with patch("core.tasks.ProxmoxClient", FakeClient):
+        fake = FakeClient("unused")
+        with patch(
+            "core.tasks.client_for_audit_event",
+            return_value=(fake, GuestRef("default", "vm", 501, "pve1"), self.cluster),
+        ):
             restore_guest_backup_task(
                 event.id,
                 "https://pve1.invalid:8006",
@@ -8776,6 +8822,7 @@ class GuestBackupRestoreTests(TestCase):
 
     def test_restore_worker_rechecks_and_shuts_down_running_guest(self):
         event = AuditEvent.objects.create(
+            cluster=self.cluster,
             action="guest.backup.restore",
             object_type="guest",
             object_id="vm:500",
@@ -8799,7 +8846,10 @@ class GuestBackupRestoreTests(TestCase):
                 return ProxmoxTaskResult(node=node, upid=upid, status="stopped", exitstatus="OK", raw={})
 
         fake = FakeClient("unused")
-        with patch("core.tasks.ProxmoxClient", return_value=fake):
+        with patch(
+            "core.tasks.client_for_audit_event",
+            return_value=(fake, GuestRef("default", "vm", 500, "pve1"), self.cluster),
+        ):
             restore_guest_backup_task(
                 event.id,
                 "https://pve1.invalid:8006",

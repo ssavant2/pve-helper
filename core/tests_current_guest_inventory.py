@@ -79,6 +79,32 @@ class CurrentGuestInventoryTests(TestCase):
         self.assertEqual(existing.name, "new-name")
         self.assertEqual(CurrentGuestInventory.objects.get(vmid=100).config["tags"], "prod")
 
+    def test_runtime_summary_without_name_preserves_name_from_complete_config(self):
+        guest = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=100, name="")
+        guest.config = {"name": "configured-name"}
+        guest.config_complete = True
+        guest.save(update_fields=["config", "config_complete"])
+        inventory = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
+            guests=(
+                ProxmoxGuestSummary(
+                    node="pve1",
+                    object_type="vm",
+                    vmid=100,
+                    name="",
+                    status="running",
+                ),
+            ),
+            attempted_endpoints=(self.pve1.url,),
+            successful_endpoints=(self.pve1.url,),
+            errors=(),
+        )
+
+        reconcile_live_guest_inventory(inventory)
+
+        guest.refresh_from_db()
+        self.assertEqual(guest.name, "configured-name")
+
     def test_partial_scan_only_retires_membership_from_successful_endpoints(self):
         self.current_guest(endpoint=self.pve1, object_type="vm", vmid=101, name="gone-from-pve1")
         preserved = self.current_guest(endpoint=self.pve2, object_type="vm", vmid=202, name="preserved")
@@ -161,6 +187,7 @@ class CurrentGuestInventoryTests(TestCase):
     def test_direct_guest_updates_do_not_mutate_historical_scan_evidence(self):
         historical = ProxmoxInventory.objects.create(
             scan_run=self.scan,
+            cluster=self.cluster,
             node="pve1",
             object_type="vm",
             vmid=100,

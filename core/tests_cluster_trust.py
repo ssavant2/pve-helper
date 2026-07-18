@@ -111,6 +111,16 @@ class TrustResolutionTests(TestCase):
         with self.assertRaises(TransportTrustError):
             resolve_trust_profile(self.cluster)
 
+    def test_identity_contract_v1_closes_fallback_without_a_separate_marker(self):
+        RuntimeConfigurationState.objects.create(
+            pk=RuntimeConfigurationState.SINGLETON_PK,
+            bootstrap_completed=True,
+            identity_contract_version=1,
+        )
+
+        with self.assertRaises(TransportTrustError):
+            resolve_trust_profile(self.cluster)
+
 
 class ClusterIdentityTests(TestCase):
     def setUp(self):
@@ -296,7 +306,12 @@ class TrustCutoverTests(TestCase):
         reset.assert_called_once()
 
 
-@override_settings(PVE_CA_BUNDLE="", PVE_VERIFY_TLS=True)
+@override_settings(
+    PVE_CA_BUNDLE="",
+    PVE_VERIFY_TLS=True,
+    PVE_API_TOKEN_ID="root@pam!test",
+    PVE_API_TOKEN_SECRET="test-secret",
+)
 class TrustProfileInjectionTests(TestCase):
     def test_client_carries_the_clusters_trust_profile(self):
         cluster = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)

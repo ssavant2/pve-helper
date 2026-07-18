@@ -5,7 +5,6 @@ from django.db import transaction
 from .common import *  # noqa: F401,F403
 from . import common
 from ..models import ProxmoxCluster
-from ..services.proxmox import ProxmoxClient
 from ..services.public_errors import public_exception_message
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
 from ..services.refs import GuestRef, RefParseError
@@ -378,13 +377,7 @@ def _cancel_proxmox_task(*, node: str, upid: str, cluster, endpoint_url: str = "
     errors: list[str] = []
     clients = []
     if cluster is None:
-        # Bounded mixed-version reader: pre-Phase-3 running events carried an
-        # explicit endpoint but no cluster relation. New writers always set the
-        # relation and therefore take the validated branch below.
-        if endpoint_url:
-            clients.append(ProxmoxClient(endpoint_url))
-        else:
-            raise ProxmoxAPIError("This legacy task has no cluster or endpoint identity.")
+        raise ProxmoxAPIError("This task has no cluster identity and cannot be cancelled safely.")
     if endpoint_url:
         endpoint = ProxmoxEndpoint.objects.filter(
             cluster=cluster,
@@ -393,8 +386,7 @@ def _cancel_proxmox_task(*, node: str, upid: str, cluster, endpoint_url: str = "
         ).first()
         if endpoint is not None:
             clients.append(client_for_endpoint(endpoint))
-    if cluster is not None:
-        clients.extend(cluster_clients(cluster))
+    clients.extend(cluster_clients(cluster))
     seen: set[str] = set()
     for client in clients:
         endpoint = getattr(client, "endpoint", "")

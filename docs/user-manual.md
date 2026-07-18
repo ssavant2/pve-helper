@@ -61,18 +61,20 @@ This distinction explains several UI behaviours:
 
 ## Start here
 
-The sidebar is the primary navigation. Its five working areas are:
+The sidebar is the primary navigation. Its working areas are:
 
 | Area | Use it for |
 | --- | --- |
+| **Clusters → Connections** | Add verified clusters/endpoints and manage per-cluster credentials and enabled state. |
 | **VMs/CTs** | Guest inventory, power, console, configuration, migration, backup/restore, and related operations. |
 | **Storage** | Mounted shared datastores, API-only local/block storage, scans, file operations, and orphan review. |
 | **Tags** | Create and color tags, inspect membership, assign or remove tags, and rename or delete them across guests. |
 | **Scheduled Tasks** | One-time and recurring guest power schedules, their runs, and history. |
 | **Audit** | Authentication and administration history, filters, search, and export. |
 
-**Clusters** and **Network** remain reserved for later modules. They are not
-active administration surfaces in the current release.
+**Network** remains reserved for a later module. Cluster **Connections** is the
+configuration surface; the broader host/cluster operations workspace arrives in
+a later module.
 
 The top bar provides global search, theme selection, VM/CT ID visibility, and
 IPv4/IPv6 display preferences. Preferences are browser-local. The task bar at
@@ -84,6 +86,38 @@ Overview, Search, Audit and Recent Tasks show or filter by cluster. Tags is
 cluster-specific: its selector navigates to that cluster's Tags URL. Cluster
 selection is never a hidden browser/session setting, so confirm the cluster
 shown by the object or page before submitting a write.
+
+## Cluster connections
+
+A standalone Proxmox node and a multi-node Proxmox cluster are both represented
+as one pve-helper cluster. A cluster has one permanent lowercase key and one or
+more replaceable API endpoints. The key is durable identity used in URLs, tasks
+and Audit; it cannot be renamed. The display name can be changed.
+
+To add a cluster, open **Clusters → Connections → Add cluster**:
+
+1. Enter its display name, permanent key and first HTTPS Proxmox endpoint.
+2. Review the certificate shown before entering credentials. Choose public trust
+   or paste the internal CA PEM used to verify this cluster.
+3. Enter an `Administrator` API token and explicitly bind the chosen key to the
+   Proxmox CA UUID/fingerprint returned by the verified endpoint.
+
+The token secret is write-only: it is encrypted in the database and is never
+shown again or written to Audit. Rotate it by entering a complete replacement on
+the connection detail page. To revoke it from pve-helper, disable the cluster
+first and then remove the stored credential; revoke/delete the token in Proxmox
+as a separate provider-side action.
+
+Add another node of the same Proxmox cluster with **Add endpoint**. Certificate,
+credential and pinned CA identity are verified before it joins failover. A
+disabled endpoint is re-verified before it can be enabled again.
+
+Disabling a cluster blocks new refreshes, schedules, consoles and writes while
+retaining its last-known inventory, schedules and Audit history. It is refused
+while provider work is active. Re-enabling verifies the stored trust, credential
+and cluster identity first. A CA-identity mismatch quarantines ingestion until an
+operator has independently verified the intended cluster and explicitly
+re-approved the new identity.
 
 ## Recent Tasks and audit trail
 

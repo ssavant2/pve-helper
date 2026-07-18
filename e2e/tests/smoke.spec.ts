@@ -10,6 +10,9 @@ const PAGES = [
   { name: "Dashboard", path: "/" },
   { name: "VMs Overview", path: "/vms/overview/" },
   { name: "VMs Inventory", path: "/vms/" },
+  { name: "Cluster connections", path: "/clusters/" },
+  { name: "Add cluster", path: "/clusters/add/" },
+  { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
   { name: "Audit log", path: "/audit/" },
 ];
@@ -36,6 +39,24 @@ for (const p of PAGES) {
 test("header displays the configured application version", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".brand-version")).toHaveText("DEV");
+});
+
+test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {
+  await page.goto("/clusters/");
+  await expect(page.getByRole("heading", { name: "Cluster connections" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "E2E cluster", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Add cluster", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "Add Proxmox cluster" })).toBeVisible();
+  await expect(page.getByLabel("Cluster key")).toBeVisible();
+  await expect(page.getByText("Permanent lowercase identity used in URLs")).toBeVisible();
+  await expect(page.locator('input[name="token_secret"]')).toHaveCount(0);
+
+  await page.goto("/clusters/e2e/connection/");
+  await expect(page.getByText("Permanent key")).toBeVisible();
+  const secret = page.locator('input[name="token_secret"]');
+  await expect(secret).toHaveValue("");
+  await expect(secret).toHaveAttribute("autocomplete", "new-password");
 });
 
 test("tag links use soft navigation", async ({ page }) => {
@@ -189,6 +210,7 @@ test("CSS layers load in the intended cascade order", async ({ page }) => {
     "/static/css/app/vm-overview.css",
     "/static/css/app/hardware-forms.css",
     "/static/css/app/tags.css",
+    "/static/css/app/clusters.css",
     "/static/css/app.css",
   ]);
 

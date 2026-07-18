@@ -8,6 +8,7 @@ from .services.recent_tasks import recent_task_page
 
 def app_settings(request):
     task_page = recent_task_page()
+    has_configured_clusters = ProxmoxCluster.objects.exists()
     enabled_clusters = list(
         ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
     )
@@ -32,6 +33,7 @@ def app_settings(request):
         "app_nav_local_datastores": local_datastores,
         "app_enabled_clusters": enabled_clusters,
         "app_multiple_clusters": len(enabled_clusters) > 1,
+        "app_has_clusters": has_configured_clusters,
         "app_recent_tasks": task_page.tasks,
         "app_recent_tasks_page": task_page,
         "app_recent_tasks_rendered_at": timezone.now(),

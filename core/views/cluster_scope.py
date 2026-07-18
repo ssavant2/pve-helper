@@ -69,7 +69,12 @@ def legacy_cluster_redirect(route_name: str) -> Callable:
             return _reject_legacy_mutation()
         clusters = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
         if not clusters:
-            raise Http404("No enabled Proxmox cluster is configured")
+            destination = (
+                reverse("core:clusters_overview")
+                if ProxmoxCluster.objects.exists()
+                else reverse("core:cluster_add")
+            )
+            return HttpResponseRedirect(destination)
         if len(clusters) == 1:
             return _redirect_with_query(
                 request,

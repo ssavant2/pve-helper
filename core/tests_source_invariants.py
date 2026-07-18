@@ -123,6 +123,22 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
             f"{', '.join(offenders)}",
         )
 
+    def test_production_proxmox_clients_are_built_only_by_scoped_factories(self):
+        allowed = {
+            "core/services/cluster_resolver.py",
+            "core/services/cluster_onboarding.py",
+        }
+        offenders = sorted(
+            self._modules_containing("ProxmoxClient(") - allowed
+        )
+        self.assertEqual(
+            offenders,
+            [],
+            "Production provider clients must carry an explicit cluster credential "
+            "and trust profile; construct them only in the scoped factories: "
+            f"{', '.join(offenders)}",
+        )
+
 
 class FrontendSourceInvariantTests(SimpleTestCase):
     def _frontend_sources(self) -> list[Path]:

@@ -18,6 +18,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from django.db.models import Case, IntegerField, Value, When
+
 from core.models import ProxmoxCluster, ProxmoxEndpoint
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTransportError
 
@@ -95,8 +97,24 @@ class ClusterReadResult:
 
 
 def enabled_endpoints(cluster: ProxmoxCluster) -> list[ProxmoxEndpoint]:
-    """Enabled endpoints of exactly this cluster, in stable order."""
-    return list(ProxmoxEndpoint.objects.filter(cluster=cluster, enabled=True).order_by("name"))
+    """Enabled endpoints of exactly this cluster, healthy transports first.
+
+    A known-offline member must not impose its connect timeout on every request
+    while another endpoint of the same control plane is healthy. New/unknown
+    endpoints still get tried before known failures, with deterministic ordering
+    inside each health tier.
+    """
+    health_rank = Case(
+        When(last_health_status="ok", then=Value(0)),
+        When(last_health_status="", then=Value(1)),
+        default=Value(2),
+        output_field=IntegerField(),
+    )
+    return list(
+        ProxmoxEndpoint.objects.filter(cluster=cluster, enabled=True)
+        .annotate(_health_rank=health_rank)
+        .order_by("_health_rank", "name")
+    )
 
 
 def client_for_endpoint(endpoint: ProxmoxEndpoint) -> ProxmoxClient:
@@ -108,22 +126,15 @@ def client_for_endpoint(endpoint: ProxmoxEndpoint) -> ProxmoxClient:
 
     Phase 1d adds the cluster's transport-trust profile alongside this.
     """
-    from core.services.cluster_credentials import ClusterCredentialError, resolve_credential
-    from core.services.cluster_trust import TransportTrustError, resolve_trust_profile
+    from core.services.cluster_credentials import resolve_credential
+    from core.services.cluster_trust import resolve_trust_profile
 
-    credential = None
-    trust_profile = None
-    if endpoint.cluster_id is not None:
-        try:
-            credential = resolve_credential(endpoint.cluster)
-        except ClusterCredentialError:
-            # Fall through to the client's own legacy handling, which produces a
-            # clear provider error rather than a resolver-shaped one.
-            credential = None
-        try:
-            trust_profile = resolve_trust_profile(endpoint.cluster)
-        except TransportTrustError:
-            trust_profile = None
+    if endpoint.cluster_id is None:
+        raise ClusterResolutionError(
+            f"Endpoint '{endpoint.name}' has no cluster identity and cannot be used."
+        )
+    credential = resolve_credential(endpoint.cluster)
+    trust_profile = resolve_trust_profile(endpoint.cluster)
     return ProxmoxClient(endpoint.url, credential=credential, trust_profile=trust_profile)
 
 

@@ -55,7 +55,13 @@ class ProxmoxCredential:
 
 def credential_cutover_completed() -> bool:
     state = RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).first()
-    return bool(state and state.credential_cutover_completed_at)
+    return bool(
+        state
+        and (
+            state.credential_cutover_completed_at
+            or state.identity_contract_version >= 1
+        )
+    )
 
 
 def set_cluster_credential(cluster: ProxmoxCluster, *, token_id: str, token_secret: str) -> ClusterCredential:

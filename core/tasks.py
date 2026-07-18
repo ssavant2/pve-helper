@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
 from urllib.parse import quote
 
@@ -50,7 +49,6 @@ from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
 from .services.proxmox import (
     ProxmoxAPIError,
-    ProxmoxClient,
     ProxmoxTaskTimeout,
     clear_live_guest_caches,
     fetch_live_guest_status,
@@ -85,41 +83,13 @@ def _durable_or_legacy_guest_operation(
     object_type: str = "",
     vmid: int | None = None,
 ):
-    """Resolve a Phase-3 operation, with one bounded pre-Phase-3 reader.
+    """Resolve a durable, cluster-qualified guest operation.
 
-    Old Django-Q rows carried the endpoint and target as positional arguments.
-    They may finish during a rolling deployment even though their AuditEvent has
-    no cluster identity.  Only that explicit old payload is accepted; new event-
-    only writers must resolve through the durable relation and GuestRef.
+    The legacy positional arguments remain in the signature only so an old queued
+    callable fails safely after a rolling deploy. They are never sufficient to
+    authorize provider access once identity contract version 1 is active.
     """
-    try:
-        return client_for_audit_event(event, preferred_endpoint_url=endpoint_url)
-    except DurableGuestOperationError:
-        details = event.details if isinstance(event.details, dict) else {}
-        legacy_type = object_type or str(details.get("target_type") or "")
-        legacy_node = node or str(details.get("node") or details.get("target_node") or "")
-        try:
-            legacy_vmid = int(vmid if vmid is not None else details.get("vmid"))
-        except (TypeError, ValueError):
-            legacy_vmid = 0
-        if (
-            details.get("operation_payload_version") is None
-            and endpoint_url
-            and legacy_node
-            and legacy_type in {"vm", "ct"}
-            and legacy_vmid > 0
-        ):
-            return (
-                ProxmoxClient(endpoint_url),
-                SimpleNamespace(
-                    cluster_key="",
-                    node=legacy_node,
-                    object_type=legacy_type,
-                    vmid=legacy_vmid,
-                ),
-                None,
-            )
-        raise
+    return client_for_audit_event(event, preferred_endpoint_url=endpoint_url)
 
 
 
@@ -331,13 +301,19 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         details = dict(event.details) if isinstance(event.details, dict) else {}
         upid = details.get("proxmox_task_upid")
         node = details.get("proxmox_task_node")
-        endpoint = details.get("proxmox_endpoint") or ""
+        endpoint_url = details.get("proxmox_endpoint") or ""
         status = None
         if upid and node:
             client = None
-            if endpoint:
-                client = ProxmoxClient(endpoint)
-            elif event.cluster_id is not None:
+            if endpoint_url and event.cluster_id is not None:
+                endpoint = ProxmoxEndpoint.objects.filter(
+                    cluster=event.cluster,
+                    enabled=True,
+                    url=endpoint_url,
+                ).first()
+                if endpoint is not None:
+                    client = client_for_endpoint(endpoint)
+            if client is None and event.cluster_id is not None:
                 clients = cluster_clients(event.cluster)
                 client = clients[0] if clients else None
             if client is not None:

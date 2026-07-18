@@ -183,6 +183,17 @@ class ClusterCredentialTests(TestCase):
         with self.assertRaises(ClusterCredentialError):
             resolve_credential(self.cluster_b)
 
+    def test_identity_contract_v1_closes_fallback_without_a_separate_marker(self):
+        RuntimeConfigurationState.objects.create(
+            pk=RuntimeConfigurationState.SINGLETON_PK,
+            bootstrap_completed=True,
+            identity_contract_version=1,
+        )
+        ClusterCredential.objects.filter(cluster=self.cluster_b).delete()
+
+        with self.assertRaises(ClusterCredentialError):
+            resolve_credential(self.cluster_b)
+
     def test_rotation_reseals_without_changing_the_token(self):
         set_cluster_credential(self.cluster_a, token_id="a@pve!t", token_secret="secret-a")
 

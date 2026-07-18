@@ -16,6 +16,7 @@ Git, Python, Node.js or a source checkout. No development image is published.
 - 2 vCPU and 2 GB RAM minimum; 2 vCPU and 4 GB RAM recommended
 - Network access from the containers to the Proxmox API
 - Host mounts for any Proxmox storage that pve-helper should browse
+- A base64-encoded 32-byte encryption key, backed up separately from the database
 - A Proxmox API token with the permissions described in
   `docs/proxmox-api-token.md`
 
@@ -35,16 +36,26 @@ placeholders when login is enabled, and configure:
 
 - the public or internal `APP_BASE_URL`, allowed hosts and CSRF origins;
 - unique application and database secrets;
-- the Proxmox endpoint and API token;
+- `PVE_HELPER_ENCRYPTION_KEYS` and its active key id;
 - both host storage paths and their matching Proxmox storage IDs;
 - OIDC values when `APP_REQUIRE_LOGIN=true`.
 
 `PVE_HELPER_NETWORK` and Docker's Compose project name must be unique when more
 than one production-style stack runs on the same Docker host.
 
-The production template fails before container creation when required secrets,
-Proxmox values or storage paths are missing. It also starts with `DEBUG=false`,
-login required and storage writes disabled.
+Generate the token-encryption key with a local cryptographic random source, for
+example:
+
+```bash
+printf 'PVE_HELPER_ENCRYPTION_KEYS=primary:'
+head -c 32 /dev/urandom | base64
+```
+
+Put the resulting value and `PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID=primary` in
+`.env`, and keep an independent copy of the key. The production template fails
+before container creation when required application/database/encryption secrets
+or storage paths are missing. It starts with `DEBUG=false`, login required and
+storage writes disabled.
 
 If the Proxmox or OIDC endpoints use a private CA, place a PEM bundle at
 `certs/ca-bundle.pem` and set `REQUESTS_CA_BUNDLE` to
@@ -60,7 +71,12 @@ docker compose run --rm --no-deps web python manage.py migrate --noinput
 docker compose up -d --wait
 ```
 
-Open the configured `APP_BASE_URL`. pve-helper listens over HTTP. A certificate
+Open the configured `APP_BASE_URL`, then choose **Clusters → Connections → Add
+cluster**. The wizard inspects the endpoint certificate before sending a token,
+verifies effective Administrator permissions and the Proxmox CA identity, and
+only then stores the cluster and its encrypted write-only credential.
+
+pve-helper listens over HTTP. A certificate
 is neither provisioned nor required; an external reverse proxy may terminate
 HTTPS if your environment needs it.
 

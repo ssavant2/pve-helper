@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header cluster-page-header">
+    <div><a href="{% url 'core:clusters_overview' %}">Cluster connections</a><h1>{{ cluster.display_name }}</h1><p><code>{{ cluster.key }}</code> · {% if cluster.enabled %}Enabled{% else %}Disabled{% endif %}{% if cluster.ingestion_quarantined %} · Quarantined{% endif %}</p></div>
+    <a class="primary-action" href="{% url 'core:cluster_endpoint_add' cluster.key %}"><i data-lucide="plus" aria-hidden="true"></i> Add endpoint</a>
+  </div>
+
+  {% if operation_error %}<div class="panel cluster-operation-error"><strong>Operation refused:</strong> {{ operation_error }}</div>{% endif %}
+  {% if cluster.ingestion_quarantined %}<div class="panel cluster-quarantine"><strong>Identity quarantine:</strong> {{ cluster.quarantine_reason }}</div>{% endif %}
+
+  <div class="cluster-detail-grid">
+    <section class="panel">
+      <div class="panel-heading"><h2>Identity</h2></div>
+      <dl class="cluster-detail-list"><dt>Permanent key</dt><dd><code>{{ cluster.key }}</code></dd><dt>Discovered name</dt><dd>{{ cluster.discovered_name|default:"-" }}</dd><dt>CA UUID</dt><dd><code>{{ cluster.discovered_ca_uuid|default:"Not bound" }}</code></dd><dt>CA fingerprint</dt><dd><code>{{ cluster.discovered_ca_fingerprint|default:"-" }}</code></dd></dl>
+      <form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" class="cluster-inline-form">{% csrf_token %}<input type="hidden" name="action" value="display-name"><label><span>Display name</span>{{ display_name_form.display_name }}</label><button class="secondary-action" type="submit">Update name</button></form>
+      {% if cluster.ingestion_quarantined %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" data-confirm="Re-bind {{ cluster.key }} to the CA currently reported by its endpoint? Only continue after independently verifying the intended cluster." data-confirm-title="Re-approve cluster identity" data-confirm-label="Re-approve"><input type="hidden" name="action" value="reapprove-identity">{% csrf_token %}<button class="secondary-action danger" type="submit">Re-approve current identity</button></form>{% endif %}
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><h2>Transport &amp; credential</h2></div>
+      <dl class="cluster-detail-list"><dt>Trust</dt><dd>{% if trust %}{{ trust.get_mode_display }}{% else %}Missing{% endif %}</dd><dt>Token ID</dt><dd>{{ credential.token_id|default:"Missing" }}</dd><dt>Last rotated</dt><dd>{% if credential.rotated_at %}{{ credential.rotated_at }}{% else %}-{% endif %}</dd></dl>
+      <form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" class="cluster-form-grid cluster-credential-form" autocomplete="off">{% csrf_token %}<input type="hidden" name="action" value="rotate-credential"><label><span>API token ID</span>{{ credential_form.token_id }}</label><label><span>New token secret</span>{{ credential_form.token_secret }}<small>Verified before replacing the stored credential.</small></label><div class="cluster-form-actions cluster-field-wide"><button class="secondary-action" type="submit">Verify and rotate credential</button></div></form>
+      {% if credential %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" data-confirm="Remove the stored credential for {{ cluster.display_name }}? The cluster must be disabled and cannot be contacted until a new token is added." data-confirm-title="Remove stored credential" data-confirm-label="Remove" data-confirm-danger="true">{% csrf_token %}<input type="hidden" name="action" value="remove-credential"><button class="secondary-action danger" type="submit" {% if cluster.enabled %}disabled title="Disable the cluster first"{% endif %}>Remove stored credential</button></form>{% endif %}
+    </section>
+  </div>
+
+  <section class="panel panel-spaced">
+    <div class="panel-heading"><h2>Endpoints</h2><a class="secondary-action" href="{% url 'core:cluster_endpoint_add' cluster.key %}">Add endpoint</a></div>
+    <table class="data-table compact"><thead><tr><th>Name</th><th>URL</th><th>State</th><th>Last successful scan</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+      {% for endpoint in endpoints %}<tr><td>{{ endpoint.name }}</td><td><code>{{ endpoint.normalized_url }}</code></td><td>{% if endpoint.enabled %}<span class="badge completed">Enabled</span>{% else %}<span class="badge muted-badge">Disabled</span>{% endif %}</td><td>{{ endpoint.last_successful_scan|default:"-" }}</td><td><form method="post" action="{% url 'core:cluster_endpoint_action' cluster.key endpoint.id %}">{% csrf_token %}<input type="hidden" name="action" value="{% if endpoint.enabled %}disable{% else %}enable{% endif %}"><button class="secondary-action" type="submit">{% if endpoint.enabled %}Disable{% else %}Enable{% endif %}</button></form></td></tr>{% empty %}<tr><td colspan="5" class="empty-state">No endpoint is registered.</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+
+  <section class="panel panel-spaced cluster-lifecycle-panel">
+    <div><h2>Connection lifecycle</h2><p>Disabling blocks new refreshes, schedules, consoles and writes while retaining inventory, schedules and Audit history. Cluster records with retained history are deliberately not hard-deleted.</p></div>
+    {% if cluster.enabled %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" data-confirm="Disable {{ cluster.display_name }}? New provider operations stop, but last-known data and history remain." data-confirm-title="Disable cluster" data-confirm-label="Disable" data-confirm-danger="true">{% csrf_token %}<input type="hidden" name="action" value="disable"><button class="secondary-action danger" type="submit">Disable cluster</button></form>{% else %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}">{% csrf_token %}<input type="hidden" name="action" value="enable"><button class="primary-action" type="submit" {% if not credential or not trust %}disabled title="Credential and trust are required"{% endif %}>Verify and enable cluster</button></form>{% endif %}
+  </section>
+{% endblock %}

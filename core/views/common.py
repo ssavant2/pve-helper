@@ -473,6 +473,24 @@ def _audit_action_label(event: AuditEvent) -> str:
     }
     if event.action in tag_action_labels:
         return tag_action_labels[event.action]
+    cluster_action_labels = {
+        "cluster.added": "Add cluster",
+        "cluster.display_name_changed": "Change cluster display name",
+        "cluster.disabled": "Disable cluster",
+        "cluster.enabled": "Enable cluster",
+        "cluster.endpoint_added": "Add cluster endpoint",
+        "cluster.endpoint_enabled": "Enable cluster endpoint",
+        "cluster.endpoint_disabled": "Disable cluster endpoint",
+        "cluster.credential_rotated": "Rotate cluster credential",
+        "cluster.credential_removed": "Remove cluster credential",
+        "cluster.credential.set": "Set cluster credential",
+        "cluster.credential.cutover": "Import legacy cluster credential",
+        "cluster.credential.rotate": "Re-encrypt cluster credential",
+        "cluster.identity_reapproved": "Re-approve cluster identity",
+        "cluster.identity.reapprove": "Re-approve cluster identity",
+    }
+    if event.action in cluster_action_labels:
+        return cluster_action_labels[event.action]
     guest_action_labels = {
         "guest.power.start": "Power on guest",
         "guest.power.shutdown": "Shut down guest OS",
@@ -555,6 +573,16 @@ def _inflate_action_label(base_label: str, details: dict) -> str:
 
 def _audit_object_label(event: AuditEvent) -> str:
     details = event.details if isinstance(event.details, dict) else {}
+    cluster_label = event.cluster.display_name if event.cluster_id else (
+        details.get("display_name") or event.cluster_key_snapshot or details.get("cluster_key")
+    )
+    if event.object_type == "cluster":
+        return str(cluster_label or event.object_id or "Cluster")
+    if event.object_type == "cluster_credential":
+        return f"{cluster_label or event.object_id or 'Cluster'} API credential"
+    if event.object_type == "cluster_endpoint":
+        endpoint_name = details.get("endpoint_name") or event.object_id
+        return f"{cluster_label or 'Cluster'} · {endpoint_name}"
     if event.object_type == "guest":
         target_type = details.get("target_type")
         vmid = details.get("vmid")

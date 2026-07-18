@@ -506,9 +506,9 @@ class ProxmoxInventory(TimestampedModel):
         NODE = "node", "Node"
 
     scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="proxmox_objects")
-    # Which cluster this scan evidence came from. Nullable for the additive
-    # migration; backfilled from the sole cluster. Historical rows keep whatever
-    # cluster produced them so the same VMID in two clusters stays unambiguous.
+    # Which cluster this scan evidence came from. New rows are always qualified.
+    # Nullable only to retain genuinely ambiguous pre-contract history; such rows
+    # are display evidence and fail closed if considered by a file action.
     cluster = models.ForeignKey(
         ProxmoxCluster,
         null=True,
@@ -555,12 +555,10 @@ class CurrentGuestInventory(TimestampedModel):
 
     # Durable cluster identity of the guest. A guest is (cluster, object_type, vmid);
     # the source_endpoint below is only where this projection was last observed and
-    # may change. Nullable for the additive migration; backfilled from
-    # source_endpoint.cluster where known, otherwise the sole cluster.
+    # may change. The rollout backfilled source_endpoint.cluster where known,
+    # otherwise the sole cluster; the activated contract now requires it.
     cluster = models.ForeignKey(
         ProxmoxCluster,
-        null=True,
-        blank=True,
         on_delete=models.PROTECT,
         related_name="current_guests",
     )
@@ -635,8 +633,6 @@ class CurrentGuestInventoryState(TimestampedModel):
 
     cluster = models.OneToOneField(
         ProxmoxCluster,
-        null=True,
-        blank=True,
         on_delete=models.CASCADE,
         related_name="inventory_state",
     )

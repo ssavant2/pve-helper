@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header cluster-page-header">
+    <div><a href="{% url 'core:cluster_connection' cluster.key %}">{{ cluster.display_name }}</a><h1>Add endpoint</h1><p>Add a redundant transport to the same verified Proxmox cluster.</p></div>
+    <a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a>
+  </div>
+
+  {% if step == "inspect" %}
+    <section class="panel cluster-wizard-panel"><div class="panel-heading"><h2>Endpoint connection</h2></div>
+      <form method="post" class="cluster-form-grid">{% csrf_token %}<input type="hidden" name="action" value="inspect">
+        {% include "core/partials/cluster_form_errors.html" with form=inspect_form %}
+        <label class="cluster-field-wide"><span>Endpoint URL</span>{{ inspect_form.endpoint_url }}{% for error in inspect_form.endpoint_url.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <label><span>Endpoint name</span>{{ inspect_form.endpoint_name }}{% for error in inspect_form.endpoint_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
+        <div class="cluster-form-actions cluster-field-wide"><button class="primary-action" type="submit">Inspect certificate</button></div>
+      </form>
+    </section>
+  {% elif step == "trust" %}
+    <section class="panel cluster-wizard-panel"><div class="panel-heading"><div><h2>Approve endpoint transport</h2><p class="panel-meta">The stored cluster credential has not been sent to this endpoint yet.</p></div></div>
+      <div class="cluster-candidate-summary"><strong>{{ cluster.display_name }}</strong><code>{{ endpoint_meta.endpoint_name }}</code><span>{{ endpoint_meta.endpoint_url }}</span></div>
+      {% include "core/partials/cluster_certificate.html" with certificate=certificate %}
+      <form method="post" class="cluster-confirm-form">{% csrf_token %}<input type="hidden" name="action" value="verify">{{ trust_form.inspection }}
+        {% include "core/partials/cluster_form_errors.html" with form=trust_form %}
+        <label class="cluster-check">{{ trust_form.confirm_certificate }}<span>{{ trust_form.confirm_certificate.label }}</span></label>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_endpoint_add' cluster.key %}">Start over</a><button class="primary-action" type="submit">Verify endpoint identity</button></div>
+      </form>
+    </section>
+  {% else %}
+    <section class="panel cluster-wizard-panel"><div class="panel-heading"><div><h2>Verified endpoint</h2><p class="panel-meta">This endpoint reports the same pinned Proxmox CA as {{ cluster.display_name }}.</p></div></div>
+      <div class="cluster-verification-grid"><div><span>Endpoint</span><strong>{{ endpoint_meta.endpoint_name }}</strong></div><div><span>URL</span><strong>{{ endpoint_meta.endpoint_url }}</strong></div><div><span>Version</span><strong>{{ verified.version }}</strong></div><div><span>Nodes</span><strong>{{ verified.node_names|join:", " }}</strong></div><div class="cluster-field-wide"><span>Cluster CA UUID</span><code>{{ verified.identity.ca_uuid }}</code></div></div>
+      <form method="post" class="cluster-confirm-form">{% csrf_token %}<input type="hidden" name="action" value="confirm">{{ confirm_form.endpoint }}
+        {% include "core/partials/cluster_form_errors.html" with form=confirm_form %}
+        <label class="cluster-check">{{ confirm_form.confirm_identity }}<span>{{ confirm_form.confirm_identity.label }}</span></label>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a><button class="primary-action" type="submit">Add endpoint</button></div>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}

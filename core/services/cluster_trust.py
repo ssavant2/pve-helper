@@ -124,7 +124,13 @@ def trust_cutover_completed() -> bool:
     from core.models import RuntimeConfigurationState
 
     state = RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).first()
-    return bool(state and state.trust_cutover_completed_at)
+    return bool(
+        state
+        and (
+            state.trust_cutover_completed_at
+            or state.identity_contract_version >= 1
+        )
+    )
 
 
 def resolve_trust_profile(cluster) -> TrustProfile:

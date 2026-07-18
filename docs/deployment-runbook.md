@@ -84,8 +84,9 @@ cgroup counters of the running container.
 
 1. Download `example.env` from the release as `.env`.
 2. Fill every required blank value: application and database secrets, external
-   URL/host/origin values, Proxmox endpoint/token and both storage host paths.
-   Configure the OIDC placeholders as well when login is enabled.
+   URL/host/origin values, the token-encryption keyring and both storage host
+   paths. Configure the OIDC placeholders as well when login is enabled. A new
+   install leaves the legacy `PVE_*` endpoint/token fields empty.
 3. Start Postgres:
 
    ```bash
@@ -110,7 +111,10 @@ cgroup counters of the running container.
    docker compose up -d nginx web worker worker-bulk console
    ```
 
-7. Open `http://dockerhost:21080` directly or configure NPM for `https://pve-helper.example.com`.
+7. Open `http://dockerhost:21080` directly or configure NPM for
+   `https://pve-helper.example.com`. Choose **Clusters → Connections → Add
+   cluster** and complete the verified onboarding flow. No cluster record or
+   credential is saved until transport, permissions and CA identity pass.
 
 Set `APP_BASE_URL` to the browser-facing URL. A direct deployment needs no
 certificate:
@@ -444,7 +448,7 @@ argument: arguments are visible in the process list and in shell history.
 
 ### Credential cutover
 
-Existing installations start with the legacy global `PVE_API_TOKEN_ID` /
+Existing installations may start with the legacy global `PVE_API_TOKEN_ID` /
 `PVE_API_TOKEN_SECRET`. Moving to per-cluster credentials is one explicit step,
 because it changes where every provider call gets its identity:
 
@@ -462,7 +466,15 @@ boundary has succeeded.**
 
 Follow `docs/authentik-oidc-setup.md`.
 
-Set:
+For a new installation, leave the legacy `PVE_ENDPOINTS`,
+`PVE_API_TOKEN_ID`, `PVE_API_TOKEN_SECRET` and `PVE_CA_BUNDLE` fields empty.
+Start the application and add each independent cluster through **Clusters →
+Connections**. The wizard stores transport trust and an encrypted, write-only
+credential per cluster and verifies effective `Administrator` permissions at
+`/` before persisting anything.
+
+The following environment block is retained only for a one-time import by an
+older/single-cluster deployment:
 
 ```env
 APP_REQUIRE_LOGIN=true
@@ -494,9 +506,10 @@ CA or the calls fail with `SSLError` (visible as a 500 right after the OIDC redi
    REQUESTS_CA_BUNDLE=/etc/ssl/pve-helper-ca-bundle.pem
    ```
 
-`REQUESTS_CA_BUNDLE` covers the OIDC path (which uses `requests`). The Proxmox client uses
-`httpx`; with publicly-trusted Proxmox certs it needs nothing extra, otherwise set
-`PVE_CA_BUNDLE` to an internal-CA path.
+`REQUESTS_CA_BUNDLE` covers the OIDC path (which uses `requests`). Proxmox trust
+is separate and cluster-owned: approve public trust or paste that cluster's CA
+PEM in **Clusters → Connections**. `PVE_CA_BUNDLE` remains only for the legacy
+single-cluster bootstrap/rollback path.
 
 The `certs/` directory is gitignored — CA material is environment-specific and must not be
 committed.
@@ -538,7 +551,8 @@ SCHEDULED_ACTION_POLL_INTERVAL_SECONDS=5
 SCHEDULED_ACTION_RUN_RETENTION_DAYS=90
 ```
 
-If Proxmox uses an internal CA, set `PVE_CA_BUNDLE` to a mounted internal-CA path.
+For UI onboarding, paste the internal CA PEM in that cluster's trust step. Do not
+put a new cluster's CA in the legacy global `PVE_CA_BUNDLE`.
 
 Set `SCHEDULED_ACTIONS_ENABLED=false` if you want to disable scheduled VM/CT
 power actions at runtime even when the pve-helper token has administrator
