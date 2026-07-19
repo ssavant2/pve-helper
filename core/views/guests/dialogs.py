@@ -5,6 +5,7 @@ from .. import common
 from ._core import (_backup_job_covers,_guest_backup_archives,_guest_backup_storages,_guest_cpu_model,_guest_movable_disks,_guest_nic_bridges,_guest_snapshot_entries,_migrate_not_allowed_reason,_node_available_bridges,_node_cpu_models,_node_cpu_signature,_ordered_snapshot_entries)
 from .operation_lifecycle import _guest_kind
 from .read_model_support import (_config_disk_bytes,_config_storage_ids,_guest_pool_memberships,_guest_tab_context,_require_guest)
+from core.services.storage_catalog import node_storage_rows
 
 
 @app_login_required
@@ -181,10 +182,7 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
             nodes.append(entry)
 
         for name in node_names:
-            try:
-                raw_storages = client.get(f"nodes/{quote(name, safe='')}/storage")
-            except ProxmoxAPIError:
-                continue
+            raw_storages = node_storage_rows(detail.cluster, name, content=content)
             if not isinstance(raw_storages, list):
                 continue
             ids: list[str] = []
@@ -237,10 +235,7 @@ def guest_clone_options(request, cluster_key: str, object_type: str, vmid: int):
             nextid = str(client.get("cluster/nextid") or "")
         except ProxmoxAPIError:
             nextid = ""
-        try:
-            raw_storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
-        except ProxmoxAPIError:
-            raw_storages = []
+        raw_storages = node_storage_rows(detail.cluster, detail.node, content=content)
         if isinstance(raw_storages, list):
             for storage in raw_storages:
                 if not isinstance(storage, dict) or not storage.get("storage"):

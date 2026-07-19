@@ -29,6 +29,7 @@ from typing import Any, BinaryIO, Callable
 from urllib.parse import quote
 
 from core.models import StorageMount
+from core.services.storage_mounts import storage_mount_root
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     ConfinedPathExistsError,
@@ -223,7 +224,8 @@ def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, str]:
     """
     try:
         safe_source = normalized_relative_path(relative_path)
-        with open_regular_file(storage.path, safe_source) as source:
+        root = str(storage_mount_root(storage))
+        with open_regular_file(root, safe_source) as source:
             ext = Path(safe_source).suffix.lstrip(".").lower()
             if ext not in {"qcow2", "raw", "vmdk"}:
                 # Detect through the already-confined descriptor. qemu-img never
@@ -235,7 +237,7 @@ def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, str]:
                 target_name = f"vm-{tmpid}-disk-0.{ext}"
                 try:
                     target_relative = hardlink_open_file_to_new_directory(
-                        storage.path,
+                        root,
                         source,
                         parent_relative_path="images",
                         directory_name=str(tmpid),
@@ -254,7 +256,7 @@ def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, str]:
 
 def _remove_stage(storage: StorageMount, staging_dir: str) -> None:
     try:
-        remove_confined_directory(storage.path, staging_dir)
+        remove_confined_directory(str(storage_mount_root(storage)), staging_dir)
     except (ConfinedFilesystemError, OSError):
         pass
 
@@ -335,7 +337,7 @@ def _stage_ovf_package_sources(storage: StorageMount, source_path: str, package:
     if package.source_path.startswith("import/"):
         return direct, []
 
-    root = Path(storage.path).resolve()
+    root = storage_mount_root(storage).resolve()
     source = (root / package.source_path).resolve()
     if root not in source.parents or not source.is_file():
         raise VmRegisterError("Package is not available on the source storage.")

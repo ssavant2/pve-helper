@@ -120,13 +120,12 @@ cluster identity first. A CA-identity mismatch quarantines ingestion until an
 operator has independently verified the intended cluster and explicitly
 re-approved the new identity.
 
-**Storage for an added cluster is not yet configurable here.** When you add a
-cluster its guests appear immediately, but datastores, scans and the Orphan
-Finder are still single-cluster and configured from deployment environment values
-at bootstrap — they do not yet cover a cluster added through the wizard. The
-Datastores tab shows an explicit "storage not configured for these clusters"
-notice for such clusters, and their disks are intentionally not classified until
-the storage-model foundation lands. This is a known, sequenced gap, not a failure.
+An added cluster's Proxmox storage definitions and node state appear in
+**Datastores** after catalog refresh. This API inventory requires no host mount.
+If a file-tree datastore should also be browsable, mount it beneath the deployment's
+`/storages` host root and use **Register mount** to bind that existing directory to
+the correct cluster storage and, for node-local storage, node. Registration does
+not create or edit a Proxmox storage definition.
 
 ## Recent Tasks and audit trail
 
@@ -238,12 +237,12 @@ native Proxmox UI for platform-level console diagnosis if needed.
 
 ### Know the storage type first
 
-pve-helper distinguishes two storage access models:
+pve-helper separates its API inventory from optional filesystem access:
 
 | Storage type | What pve-helper can do |
 | --- | --- |
-| **Mounted shared datastore** | Scan files, browse folders, classify entries, download/upload, create folders, rename, move, use the app-managed trash, inspect permissions, and work with disk images where supported. |
-| **API-only datastore** | Read Proxmox-provided summary, monitor, volumes, guest references, configuration, and content types. It has no host-mounted filesystem, so file browsing and file operations are not applicable. |
+| **Proxmox API inventory (Layer 1)** | Read definitions, node state, capacity, volumes and guest references. Block/API backends such as LVM-thin, RBD and PBS remain useful here but never pretend to have a file browser. |
+| **Registered file-tree mount (Layer 2)** | Adds scanning, folder browsing and supported file actions for eligible backends such as `dir`, NFS, CIFS and CephFS. The mount is an explicit deployment association, not inferred from a matching name. |
 
 Mounted storage is only as writable as its effective Docker bind mount. A green
 app-level write setting does not override a read-only NFS mount. Conversely,
@@ -252,9 +251,12 @@ storage writes even when a mount is writable.
 
 ### Scan before judging files
 
-Storage classification is conservative. Start a scan from a datastore page or
-the Storage overview whenever the inventory is stale or after a relevant Proxmox
-change. A scan compares storage files with the Proxmox configuration it can see.
+Storage classification is conservative. The catalog refreshes definition/node
+metadata frequently and volume observations on a slower interval; accepted guest
+or storage operations trigger a targeted refresh, while destructive preflight does
+its own fresh read. Start a file scan after a relevant mounted-storage change. A
+scan enriches the API-owned volume view with files visible through a registered
+mount.
 
 Interpret classifications carefully:
 
@@ -265,10 +267,10 @@ Interpret classifications carefully:
   causes are an unavailable expected consumer, incomplete inventory, or an
   unsupported reference. Do not delete or trash the entry based on this result.
 
-Before adding a Proxmox node that can consume shared storage, ensure it is listed
-as an expected consumer in the deployment configuration and run a fresh scan.
-Otherwise pve-helper intentionally blocks orphan classification instead of
-guessing.
+Before treating a shared-storage object as unused, confirm the catalog has complete
+coverage for its permitted active nodes and that its mount association identifies
+the intended backend. pve-helper intentionally blocks orphan classification when
+coverage or cross-cluster identity is incomplete instead of guessing.
 
 ### Files and destructive file actions
 
@@ -307,10 +309,12 @@ The remaining datastore tabs answer different operational questions:
 Use these tabs before changing a storage definition or treating an apparently
 unused file as safe to remove.
 
-If an expected Proxmox node is offline, a shared datastore reports **inventory
-incomplete**. You can still browse it through pve-helper and operate guests on
-healthy cluster members; orphan classification and risky file changes remain
-restricted until the missing node has been inventoried.
+An explicitly offline Proxmox node is excluded from the active candidates used for
+shared-volume agreement. You can still browse through the registered mount and use
+healthy members during maintenance. A node that should be online but cannot be
+queried, disagreement between active shared-storage consumers, or stale/partial
+coverage is shown as **unknown/incomplete** and blocks orphan conclusions and
+destructive actions.
 
 ## Orphan Finder
 

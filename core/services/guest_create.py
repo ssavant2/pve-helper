@@ -4,6 +4,7 @@ from typing import Any
 from urllib.parse import quote
 
 from core.services.proxmox import ProxmoxAPIError
+from core.services.storage_catalog import node_storage_rows, storage_volume_rows
 
 
 VM_OSTYPES = [
@@ -31,12 +32,8 @@ def _first_client(*, cluster):
     return client
 
 
-def _storages(client, node: str) -> list[dict]:
-    try:
-        data = client.get(f"nodes/{quote(node, safe='')}/storage")
-    except ProxmoxAPIError:
-        return []
-    return data if isinstance(data, list) else []
+def _storages(cluster, node: str) -> list[dict]:
+    return node_storage_rows(cluster, node)
 
 
 def _storages_for(storages: list[dict], content: str) -> list[str]:
@@ -48,17 +45,15 @@ def _storages_for(storages: list[dict], content: str) -> list[str]:
     return out
 
 
-def _content_volids(client, node: str, storages: list[str], content: str) -> list[str]:
+def _content_volids(cluster, node: str, storages: list[str], content: str) -> list[str]:
     volids = []
     for storage in storages:
-        try:
-            data = client.get(f"nodes/{quote(node, safe='')}/storage/{quote(storage, safe='')}/content?content={content}")
-        except ProxmoxAPIError:
+        data, complete, _reason = storage_volume_rows(cluster, node, storage, content=content)
+        if not complete:
             continue
-        if isinstance(data, list):
-            for entry in data:
-                if isinstance(entry, dict) and entry.get("volid"):
-                    volids.append(entry["volid"])
+        for entry in data:
+            if entry.get("volid"):
+                volids.append(entry["volid"])
     return sorted(volids)
 
 
@@ -104,7 +99,7 @@ def create_options(object_type: str, node: str | None = None, *, cluster) -> dic
     except ProxmoxAPIError:
         nextid = ""
 
-    storages = _storages(client, node)
+    storages = _storages(cluster, node)
     is_vm = object_type == "vm"
     disk_storages = _storages_for(storages, "images" if is_vm else "rootdir")
     options = {
@@ -117,9 +112,9 @@ def create_options(object_type: str, node: str | None = None, *, cluster) -> dic
     }
     if is_vm:
         options["ostypes"] = VM_OSTYPES
-        options["isos"] = _content_volids(client, node, _storages_for(storages, "iso"), "iso")
+        options["isos"] = _content_volids(cluster, node, _storages_for(storages, "iso"), "iso")
     else:
-        options["templates"] = _content_volids(client, node, _storages_for(storages, "vztmpl"), "vztmpl")
+        options["templates"] = _content_volids(cluster, node, _storages_for(storages, "vztmpl"), "vztmpl")
     return options
 
 

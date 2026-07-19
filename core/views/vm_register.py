@@ -21,6 +21,7 @@ from django.shortcuts import redirect, render
 from core.models import ProxmoxCluster, StorageMount
 from core.services.guest_create import create_options
 from core.services.refs import GuestRef
+from core.services.storage_mounts import resolve_storage_mount
 from core.services.ovf_import import OvfImportError, parse_ovf_package
 from core.services.proxmox import clear_live_guest_caches
 from core.services import vm_register as reg
@@ -146,8 +147,9 @@ def register_vm(request, cluster_key: str):
     else:
         storage_id = request.GET.get("storage", "").strip()
         source_path = request.GET.get("path", "").strip()
-        storage = StorageMount.objects.filter(storage_id=storage_id, enabled=True).first()
-        if storage is None:
+        try:
+            storage = resolve_storage_mount(storage_id, enabled=True)
+        except StorageMount.DoesNotExist:
             messages.error(request, "Unknown OVA/OVF source storage.")
             return redirect("core:vms")
         try:
@@ -158,7 +160,7 @@ def register_vm(request, cluster_key: str):
         form_values = {
             **_defaults(),
             "mode": "ovf",
-            "source_storage": storage_id,
+            "source_storage": storage.mount_ref,
             "source_path": source_path,
             "vmid": options.get("nextid", ""),
             "name": package.name,
@@ -252,19 +254,24 @@ def _register_submit(request, mode: str, options: dict, *, cluster) -> str | Non
     source_volid = post.get("source_volid", "").strip()
     storage_id = post.get("source_storage", "").strip()
     source_path = post.get("source_path", "").strip()
+    source_mount = None
     if not source_volid:
         if not storage_id or not source_path:
             return "Missing source image."
-        if not StorageMount.objects.filter(storage_id=storage_id, enabled=True).exists():
+        try:
+            source_mount = resolve_storage_mount(storage_id, enabled=True)
+        except StorageMount.DoesNotExist:
             return "Unknown source storage."
+        storage_id = source_mount.mount_ref
     params["target_storage"] = post.get("target_storage", "").strip()
     if not params["target_storage"]:
         return "Select a target storage for the imported disk."
     params["format"] = post.get("format", "qcow2").strip() or "qcow2"
 
     if mode == "ovf":
-        storage = StorageMount.objects.filter(storage_id=storage_id, enabled=True).first()
-        if storage is None:
+        try:
+            storage = resolve_storage_mount(storage_id, enabled=True)
+        except StorageMount.DoesNotExist:
             return "Unknown OVA/OVF source storage."
         try:
             package = parse_ovf_package(storage, source_path)
@@ -278,18 +285,18 @@ def _register_submit(request, mode: str, options: dict, *, cluster) -> str | Non
             cluster=cluster,
             guest_ref=ref,
             details={
-                "operation_payload_version": 1,
+                "operation_payload_version": 2,
                 "target_type": "vm",
                 "vmid": params["vmid"],
                 "name": params["name"],
                 "node": node,
-                "source": f"{storage_id}:{source_path}",
+                "source": f"{storage.storage_id}:{source_path}",
                 "source_kind": package.kind,
                 "disk_count": len(package.disks),
                 "target_storage": params["target_storage"],
                 "stage": "queued",
                 "params": params,
-                "source_storage_id": storage_id,
+                "source_mount_ref": storage.mount_ref,
                 "source_path": source_path,
             },
         )
@@ -309,15 +316,15 @@ def _register_submit(request, mode: str, options: dict, *, cluster) -> str | Non
         cluster=cluster,
         guest_ref=ref,
         details={
-            "operation_payload_version": 1,
+            "operation_payload_version": 2,
             "target_type": "vm",
             "vmid": params["vmid"],
             "name": params["name"],
             "node": node,
-            "source": source_volid or f"{storage_id}:{source_path}",
+            "source": source_volid or f"{source_mount.storage_id}:{source_path}",
             "target_storage": params["target_storage"],
             "params": params,
-            "source_storage_id": storage_id,
+            "source_mount_ref": storage_id,
             "source_path": source_path,
             "source_volid": source_volid,
         },

@@ -13,6 +13,7 @@ from .classification import classify_entry
 from .image_info import probe_qemu_image_info
 from .storage import StorageScanner
 from .storage_visibility import ignored_relative_paths_for_storage
+from .storage_mounts import storage_mount_root
 
 
 def refresh_storage_directory(
@@ -23,7 +24,7 @@ def refresh_storage_directory(
 ) -> None:
     scanner = StorageScanner(
         storage.storage_id,
-        storage.path,
+        str(storage_mount_root(storage)),
         ignored_paths=ignored_relative_paths_for_storage(storage),
     )
     entries = scanner.iter_directory(directory_path)

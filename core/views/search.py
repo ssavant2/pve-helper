@@ -117,7 +117,7 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
                 kind="Datastore",
                 label=storage.display_name or storage.storage_id,
                 meta=" • ".join(meta),
-                url=reverse("core:storage_summary", args=[storage.storage_id]),
+                url=reverse("core:storage_summary", args=[storage.mount_ref]),
                 icon_family="vicon",
                 icon="storage",
                 score=_search_score(tokens, storage.display_name, storage.storage_id),

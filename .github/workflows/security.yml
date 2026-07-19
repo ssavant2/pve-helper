@@ -43,7 +43,12 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
         with:
+          config-file: ./.github/codeql/codeql-config.yml
           languages: ${{ matrix.language }}
       - name: Analyze
         uses: github/codeql-action/analyze@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
-
+        env:
+          # The action is commit-pinned; these supported CLI pass-through options
+          # load the checked-in sanitizer model without an external package.
+          CODEQL_ACTION_EXTRA_OPTIONS: >-
+            {"database":{"run-queries":["--additional-packs=${{ github.workspace }}/.github/codeql/extensions","--model-packs=ssavant2/pve-helper-storage-python"]}}

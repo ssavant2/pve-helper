@@ -21,6 +21,8 @@ class StorageDefinition:
     export: str
     path: str
     trash_path: str
+    relative_path: str
+    trash_relative_path: str
     expected_consumers: list[str]
 
 
@@ -74,6 +76,8 @@ def configured_storage_definitions() -> list[StorageDefinition]:
             export=settings.TRUENAS_FS_EXPORT,
             path=settings.TRUENAS_FS_CONTAINER_PATH,
             trash_path=f"{settings.TRUENAS_FS_CONTAINER_PATH.rstrip('/')}/.trash/pve-helper",
+            relative_path=settings.TRUENAS_FS_CONTAINER_PATH.removeprefix("/storages/").strip("/"),
+            trash_relative_path=f"{settings.TRUENAS_FS_CONTAINER_PATH.removeprefix('/storages/').strip('/')}/.trash/pve-helper",
             expected_consumers=expected_consumers,
         ),
         StorageDefinition(
@@ -82,6 +86,8 @@ def configured_storage_definitions() -> list[StorageDefinition]:
             export=settings.TRUENAS_VM_EXPORT,
             path=settings.TRUENAS_VM_CONTAINER_PATH,
             trash_path=f"{settings.TRUENAS_VM_CONTAINER_PATH.rstrip('/')}/.trash/pve-helper",
+            relative_path=settings.TRUENAS_VM_CONTAINER_PATH.removeprefix("/storages/").strip("/"),
+            trash_relative_path=f"{settings.TRUENAS_VM_CONTAINER_PATH.removeprefix('/storages/').strip('/')}/.trash/pve-helper",
             expected_consumers=expected_consumers,
         ),
     ]

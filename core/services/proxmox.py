@@ -261,7 +261,6 @@ class ProxmoxClient:
     def inventory(self, node: str) -> InventoryResult:
         objects: list[ProxmoxObject] = []
         errors: list[dict[str, Any]] = []
-        storage_configs = self._storage_config_map()
 
         qemu_vms = self._get_list(f"nodes/{quote(node)}/qemu", errors, "qemu.list")
         for vm in qemu_vms:
@@ -300,29 +299,6 @@ class ProxmoxClient:
                     status=str(container.get("status") or ""),
                     config=config,
                     disk_references=extract_disk_references(config),
-                )
-            )
-
-        storages = self._get_list(f"nodes/{quote(node)}/storage", errors, "storage.list")
-        for storage in storages:
-            storage_id = str(storage.get("storage") or "")
-            if not storage_id:
-                continue
-            config = {
-                **storage_configs.get(storage_id, {}),
-                "node_status": storage,
-            }
-            for key, value in storage.items():
-                config.setdefault(key, value)
-            objects.append(
-                ProxmoxObject(
-                    node=node,
-                    object_type="storage",
-                    vmid=None,
-                    name=storage_id,
-                    status=str(storage.get("active") or ""),
-                    config=config,
-                    disk_references=[],
                 )
             )
 
@@ -472,12 +448,6 @@ class ProxmoxClient:
             raise ProxmoxAPIError("Storage content cannot be empty.")
         return self.put(f"storage/{quote(storage_id, safe='')}", data={"content": normalized})
 
-    def storage_config(self, storage_id: str) -> dict[str, Any]:
-        config = self._storage_config_map().get(storage_id)
-        if config is None:
-            raise ProxmoxAPIError(f"Storage '{storage_id}' was not found in Proxmox storage config.")
-        return config
-
     def _guest_kind(self, object_type: str) -> str:
         if object_type == "vm":
             return "qemu"
@@ -528,19 +498,6 @@ class ProxmoxClient:
             errors.append({"action": action, "path": path, "error": str(exc)})
             return []
         return data if isinstance(data, list) else []
-
-    def _storage_config_map(self) -> dict[str, dict[str, Any]]:
-        try:
-            data = self.get("storage")
-        except ProxmoxAPIError:
-            return {}
-
-        storages = data if isinstance(data, list) else []
-        return {
-            str(storage.get("storage") or ""): storage
-            for storage in storages
-            if storage.get("storage")
-        }
 
     def _get_config(
         self,
@@ -745,88 +702,29 @@ def fetch_live_guest_lineage(*, cluster) -> dict[int, int]:
 
 
 def _fetch_live_guest_lineage_uncached(*, cluster) -> dict[int, int]:
-    lineage: dict[int, int] = {}
-    seen_storages: set[str] = set()
-    deadline = time.monotonic() + LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS
-    client, nodes = _cluster_nodes(cluster, operation="linked_clone_nodes", deadline=deadline)
-    if client is None:
-        return lineage
+    from core.models import ClusterStorageVolumeObservation, StorageCatalogState
 
-    for node_info in nodes:
-        node = str(node_info.get("node") or "") if isinstance(node_info, dict) else ""
-        if not node or str(node_info.get("status") or "") != "online":
+    lineage: dict[int, int] = {}
+    state = StorageCatalogState.objects.filter(cluster=cluster).first()
+    if state is None or not state.volume_complete or state.volume_generation is None:
+        return lineage
+    observations = ClusterStorageVolumeObservation.objects.filter(
+        cluster_storage__cluster=cluster,
+        cluster_storage__present=True,
+        content="images",
+        observed_volume_generation=state.volume_generation,
+    ).only("vmid", "metadata")
+    for item in observations:
+        match = _BASE_VOLUME_RE.search(str((item.metadata or {}).get("parent") or ""))
+        if not match:
             continue
-        timeout = _remaining_display_timeout(deadline)
-        if timeout is None:
-            return lineage
         try:
-            storages = client.get(f"nodes/{quote(node, safe='')}/storage?content=images", timeout=timeout)
-        except ProxmoxAPIError as exc:
-            logger.warning(
-                "Proxmox read failed: cluster=%s endpoint=%s operation=linked_clone_storages node=%s error=%s",
-                cluster.key,
-                client.endpoint,
-                node,
-                exc,
-                extra={
-                    "proxmox_cluster": cluster.key,
-                    "proxmox_endpoint": client.endpoint,
-                    "proxmox_operation": "linked_clone_storages",
-                    "proxmox_node": node,
-                },
-            )
+            child = int(item.vmid)
+            parent = int(match.group(1))
+        except (TypeError, ValueError):
             continue
-        if not isinstance(storages, list):
-            continue
-        for storage in storages:
-            if not isinstance(storage, dict) or not storage.get("storage"):
-                continue
-            storage_id = str(storage["storage"])
-            # Shared storage is reported by every node that mounts it; its content
-            # only needs reading once per cluster.
-            if storage_id in seen_storages:
-                continue
-            seen_storages.add(storage_id)
-            timeout = _remaining_display_timeout(deadline)
-            if timeout is None:
-                return lineage
-            try:
-                content = client.get(
-                    f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content?content=images",
-                    timeout=timeout,
-                )
-            except ProxmoxAPIError as exc:
-                logger.warning(
-                    "Proxmox read failed: cluster=%s endpoint=%s operation=linked_clone_content node=%s storage=%s error=%s",
-                    cluster.key,
-                    client.endpoint,
-                    node,
-                    storage_id,
-                    exc,
-                    extra={
-                        "proxmox_cluster": cluster.key,
-                        "proxmox_endpoint": client.endpoint,
-                        "proxmox_operation": "linked_clone_content",
-                        "proxmox_node": node,
-                        "proxmox_storage": storage_id,
-                    },
-                )
-                continue
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                match = _BASE_VOLUME_RE.search(str(item.get("parent") or ""))
-                if not match:
-                    continue
-                try:
-                    child = int(item.get("vmid"))
-                    parent = int(match.group(1))
-                except (TypeError, ValueError):
-                    continue
-                if child and parent and child != parent:
-                    lineage[child] = parent
+        if child and parent and child != parent:
+            lineage[child] = parent
     return lineage
 
 

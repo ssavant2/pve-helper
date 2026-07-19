@@ -1,0 +1,3 @@
+paths-ignore:
+  - core/tests.py
+  - core/tests_*.py

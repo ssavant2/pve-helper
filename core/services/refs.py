@@ -14,7 +14,9 @@ ad-hoc strings with subtly different field order.
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
+from urllib.parse import quote, unquote
 
 
 # Serialized references are durable: they reach queue payloads and audit rows and
@@ -27,6 +29,85 @@ _CLUSTER_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 class RefParseError(ValueError):
     """A serialized reference was absent, malformed or of an unknown version."""
+
+
+@dataclass(frozen=True)
+class ClusterStorageRef:
+    cluster_key: str
+    storage_id: str
+
+    def __post_init__(self) -> None:
+        if not self.cluster_key or not self.storage_id or ":" in self.cluster_key:
+            raise RefParseError("Invalid cluster storage reference.")
+
+    def serialize(self) -> str:
+        return f"sr1:{quote(self.cluster_key, safe='')}:{quote(self.storage_id, safe='')}"
+
+    @classmethod
+    def parse(cls, raw: str) -> "ClusterStorageRef":
+        parts = str(raw or "").split(":")
+        if len(parts) != 3 or parts[0] != "sr1":
+            raise RefParseError("Invalid cluster storage reference.")
+        return cls(unquote(parts[1]), unquote(parts[2]))
+
+
+@dataclass(frozen=True)
+class StorageInstanceRef:
+    cluster_key: str
+    storage_id: str
+    node: str = ""
+
+    def serialize(self) -> str:
+        return ":".join(
+            ("si1", quote(self.cluster_key, safe=""), quote(self.storage_id, safe=""), quote(self.node, safe=""))
+        )
+
+    @classmethod
+    def parse(cls, raw: str) -> "StorageInstanceRef":
+        parts = str(raw or "").split(":")
+        if len(parts) != 4 or parts[0] != "si1":
+            raise RefParseError("Invalid storage instance reference.")
+        values = [unquote(value) for value in parts[1:]]
+        if not values[0] or not values[1]:
+            raise RefParseError("Invalid storage instance reference.")
+        return cls(*values)
+
+
+@dataclass(frozen=True)
+class VolumeRef:
+    instance: StorageInstanceRef
+    volid: str
+
+    def serialize(self) -> str:
+        return f"vr1:{quote(self.instance.serialize(), safe='')}:{quote(self.volid, safe='')}"
+
+    @classmethod
+    def parse(cls, raw: str) -> "VolumeRef":
+        parts = str(raw or "").split(":")
+        if len(parts) != 3 or parts[0] != "vr1":
+            raise RefParseError("Invalid volume reference.")
+        return cls(StorageInstanceRef.parse(unquote(parts[1])), unquote(parts[2]))
+
+
+@dataclass(frozen=True)
+class MountRef:
+    mount_key: str
+
+    def __post_init__(self) -> None:
+        try:
+            uuid.UUID(str(self.mount_key))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise RefParseError("Invalid mount key.") from exc
+
+    def serialize(self) -> str:
+        return f"mr1:{self.mount_key}"
+
+    @classmethod
+    def parse(cls, raw: str) -> "MountRef":
+        parts = str(raw or "").split(":")
+        if len(parts) != 2 or parts[0] != "mr1" or not parts[1]:
+            raise RefParseError("Invalid mount reference.")
+        return cls(parts[1])
 
 
 @dataclass(frozen=True)

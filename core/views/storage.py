@@ -1,6 +1,26 @@
 from __future__ import annotations
 
-from core.models import ProxmoxCluster, ProxmoxStorageConsumer
+import os
+import uuid
+from pathlib import PurePosixPath
+from typing import BinaryIO
+
+from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
+from core.services.storage_backends import backend_profile
+from core.services.storage_catalog import refresh_storage_catalog, storage_view
+from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
+from core.services.storage_mounts import (
+    StorageMountError,
+    bind_storage_mount,
+    mount_health,
+    mountinfo_entries,
+    normalized_backend_identity,
+    normalized_relative_path,
+    registered_mount_health,
+    resolve_storage_mount,
+    storage_mount_root,
+    unbind_storage_mount,
+)
 
 from .common import *  # noqa: F401,F403
 from . import common
@@ -49,13 +69,23 @@ STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
 
 def _storage_clusters(storage: StorageMount):
     return list(
-        ProxmoxCluster.objects.filter(
-            storage_consumers__storage=storage,
-            enabled=True,
+        ProxmoxCluster.objects.filter(enabled=True)
+        .filter(
+            Q(storage_consumers__storage=storage)
+            | Q(storage_definitions__mount_bindings__mount=storage)
         )
         .distinct()
         .order_by("display_name", "key")
     )
+
+
+def _cluster_storage_for_mount(storage: StorageMount, cluster: ProxmoxCluster):
+    matches = list(ClusterStorage.objects.filter(
+        cluster=cluster,
+        mount_bindings__mount=storage,
+        present=True,
+    ).distinct()[:2])
+    return matches[0] if len(matches) == 1 else None
 
 
 def _lineage_by_cluster() -> dict[str, dict[int, int]]:
@@ -83,6 +113,13 @@ def _storage_tab_context(storage: StorageMount, latest_scan, active_tab: str) ->
     }
 
 
+def _mount_or_404(reference: str, *, enabled: bool = True) -> StorageMount:
+    try:
+        return resolve_storage_mount(reference, enabled=enabled)
+    except StorageMount.DoesNotExist as exc:
+        raise Http404("Storage mount not found.") from exc
+
+
 @app_login_required
 def dashboard(request):
     latest_scan = ScanRun.objects.order_by("-created_at").first()
@@ -107,22 +144,15 @@ def dashboard(request):
 
 
 def _clusters_without_storage() -> list[ProxmoxCluster]:
-    """Enabled clusters that have guests but no storage representation yet.
-
-    Storage config (StorageMount + ProxmoxStorageConsumer) is still env-derived and
-    single-cluster, so a cluster added through the Phase 5 wizard shows its guests
-    immediately but has no datastores, scans or orphan surface. Surface that as a
-    known, sequenced gap rather than letting the operator conclude it is broken.
-    """
-    represented = set(ProxmoxStorageConsumer.objects.values_list("cluster_id", flat=True))
-    rows: list[ProxmoxCluster] = []
-    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
-        if cluster.pk in represented:
-            continue
-        if not CurrentGuestInventory.objects.filter(cluster=cluster).exists():
-            continue
-        rows.append(cluster)
-    return rows
+    """Enabled clusters whose catalog has not published a current definition."""
+    represented = set(
+        ClusterStorage.objects.filter(present=True).values_list("cluster_id", flat=True)
+    )
+    return list(
+        ProxmoxCluster.objects.filter(enabled=True)
+        .exclude(pk__in=represented)
+        .order_by("key")
+    )
 
 
 @app_login_required
@@ -130,14 +160,202 @@ def datastores(request):
     result_scan = _latest_result_scan()
     storages = list(StorageMount.objects.order_by("display_name"))
     _decorate_storages_with_scan_state(storages, result_scan)
+    catalog_rows = []
+    definitions = (
+        ClusterStorage.objects.select_related("cluster")
+        .filter(cluster__enabled=True, present=True)
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_observations")
+        .order_by("cluster__display_name", "storage_id")
+    )
+    for definition in definitions:
+        nodes = list(definition.node_states.filter(present=True).order_by("node"))
+        selected_node = next((row.node for row in nodes if row.active), nodes[0].node if nodes else "")
+        view = storage_view(definition, node=selected_node)
+        catalog_rows.append(
+            {
+                "definition": definition,
+                "view": view,
+                "node": selected_node,
+                "nodes": nodes,
+            }
+        )
 
     context = {
         **navigation_context("datastores"),
         "latest_scan": result_scan,
         "storages": storages,
         "clusters_without_storage": _clusters_without_storage(),
+        "catalog_rows": catalog_rows,
     }
     return render(request, "core/datastores.html", context)
+
+
+def _mount_candidates() -> list[dict[str, str]]:
+    root = Path(settings.PVE_HELPER_STORAGE_CONTAINER_ROOT)
+    mounted = {path: filesystem for path, filesystem in mountinfo_entries()}
+    try:
+        children = [child for child in root.iterdir() if child.is_dir() and not child.is_symlink()]
+    except OSError:
+        return []
+    return [
+        {
+            "relative_path": child.relative_to(root).as_posix(),
+            "filesystem_type": mounted.get(str(child), "directory"),
+        }
+        for child in sorted(children, key=lambda item: item.name.lower())
+    ]
+
+
+@app_login_required
+def storage_mount_register(request):
+    definitions = list(
+        ClusterStorage.objects.select_related("cluster")
+        .filter(cluster__enabled=True, present=True)
+        .prefetch_related("node_states")
+        .order_by("cluster__display_name", "storage_id")
+    )
+    definitions = [row for row in definitions if backend_profile(row.storage_type).filesystem_eligible]
+    errors: list[str] = []
+    registered = None
+    if request.method == "POST":
+        if request.POST.get("action") == "remove_binding":
+            binding = ClusterStorageMount.objects.select_related(
+                "cluster_storage__cluster", "mount"
+            ).filter(pk=request.POST.get("binding_id")).first()
+            if binding is None:
+                errors.append("Mount association no longer exists.")
+            else:
+                cluster = binding.cluster_storage.cluster
+                mount = binding.mount
+                try:
+                    unbind_storage_mount(binding)
+                except StorageMountError as exc:
+                    errors.append(str(exc))
+                else:
+                    record_audit_event(
+                        request=request,
+                        user=request.user,
+                        username=request.user.get_username(),
+                        action="storage.mount.unregistered",
+                        object_type="storage_mount",
+                        object_id=mount.mount_ref,
+                        cluster=cluster,
+                        details={
+                            "cluster_key": cluster.key,
+                            "storage_id": binding.cluster_storage.storage_id,
+                            "mount_ref": mount.mount_ref,
+                            "scope": binding.node or "shared",
+                        },
+                    )
+                    registered = "removed"
+        else:
+            definition = next(
+                (row for row in definitions if str(row.pk) == str(request.POST.get("cluster_storage"))),
+                None,
+            )
+            relative = str(request.POST.get("relative_path") or "")
+            node = str(request.POST.get("node") or "").strip()
+            display_name = str(request.POST.get("display_name") or "").strip()
+            try:
+                backend_identity = normalized_backend_identity(
+                    request.POST.get("backend_identity") or ""
+                )
+            except StorageMountError as exc:
+                backend_identity = ""
+                backend_identity_error = True
+                errors.append(str(exc))
+            else:
+                backend_identity_error = False
+            candidates = {item["relative_path"]: item for item in _mount_candidates()}
+            if definition is None:
+                errors.append("Choose a current file-based cluster storage.")
+            if relative not in candidates:
+                errors.append("Choose a directory currently visible beneath /storages.")
+            if not display_name:
+                errors.append("Display name is required.")
+            if not backend_identity and not backend_identity_error:
+                errors.append("Backend/export identity is required.")
+            if definition is not None and not definition.shared:
+                permitted = set(definition.node_states.filter(present=True).values_list("node", flat=True))
+                if not node or node not in permitted:
+                    errors.append("Choose the node-local storage instance this mount represents.")
+            elif definition is not None:
+                node = ""
+            if not errors and definition is not None:
+                profile = backend_profile(definition.storage_type)
+                candidate = candidates[relative]
+                existing = StorageMount.objects.filter(relative_path=relative).first()
+                if (
+                    existing
+                    and existing.backend_identity != backend_identity
+                    and existing.cluster_bindings.exists()
+                ):
+                    errors.append(
+                        "This host path is registered with a different backend identity. "
+                        "Remove its existing associations before remapping it."
+                    )
+                mount = existing or StorageMount(
+                    storage_id=f"mount-{uuid.uuid4().hex[:12]}",
+                    display_name=display_name,
+                    path=f"/storages/{relative}",
+                    relative_path=normalized_relative_path(relative),
+                    trash_path=f"/storages/{relative}/.pve-helper-trash",
+                    trash_relative_path=f"{relative}/.pve-helper-trash",
+                    filesystem_type=candidate["filesystem_type"],
+                    backend_identity=backend_identity,
+                    enabled=True,
+                )
+                if not errors:
+                    if existing:
+                        mount.display_name = display_name
+                        mount.backend_identity = backend_identity
+                        mount.filesystem_type = candidate["filesystem_type"]
+                        mount.enabled = True
+                    health = mount_health(mount, profile)
+                    if not health.available:
+                        errors.append(health.reason)
+                    else:
+                        mount.save()
+                        try:
+                            bind_storage_mount(
+                                cluster_storage=definition, mount=mount, node=node
+                            )
+                        except StorageMountError as exc:
+                            if not existing:
+                                mount.delete()
+                            errors.append(str(exc))
+                        else:
+                            registered = mount
+                            record_audit_event(
+                                request=request,
+                                user=request.user,
+                                username=request.user.get_username(),
+                                action="storage.mount.registered",
+                                object_type="storage_mount",
+                                object_id=mount.mount_ref,
+                                cluster=definition.cluster,
+                                details={
+                                    "cluster_key": definition.cluster.key,
+                                    "storage_id": definition.storage_id,
+                                    "mount_ref": mount.mount_ref,
+                                    "scope": node or "shared",
+                                },
+                            )
+    return render(
+        request,
+        "core/storage_mount_register.html",
+        {
+            **navigation_context("datastores"),
+            "definitions": definitions,
+            "candidates": _mount_candidates(),
+            "errors": errors,
+            "registered": registered if registered != "removed" else None,
+            "removed": registered == "removed",
+            "bindings": ClusterStorageMount.objects.select_related(
+                "cluster_storage__cluster", "mount"
+            ).order_by("cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"),
+        },
+    )
 
 
 def _live_status_for(statuses: dict, node: str, object_type: str, vmid: int, default: str = "") -> str:
@@ -169,25 +387,32 @@ def _api_num(value):
             return None
 
 
-def _api_storage_get(cluster, node: str, storage: str, subpath: str):
-    """GET nodes/{node}/storage/{storage}/{subpath}. Returns (data, found, error)."""
-    node_q = quote(node, safe="")
-    storage_q = quote(storage, safe="")
-    error = ""
-    for client in common.cluster_scoped_clients(cluster):
-        try:
-            data = client.get(f"nodes/{node_q}/storage/{storage_q}/{subpath}")
-        except ProxmoxAPIError as exc:
-            error = str(exc)
-            continue
-        return data, True, ""
-    return None, False, error
-
-
 def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, status=None, found=None, error=""):
     if status is None:
-        status, found, error = _api_storage_get(cluster, node, storage, "status")
-        status = status if isinstance(status, dict) else {}
+        definition = (
+            ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
+            .prefetch_related("node_states", "mount_bindings__mount", "volume_observations")
+            .first()
+        )
+        if definition is None:
+            status, found, error = {}, False, "Storage is not present in the latest catalog."
+        else:
+            view = storage_view(definition, node=node)
+            node_state = next((row for row in view.nodes if row.node == node), None)
+            status = {
+                **dict(definition.config or {}),
+                "storage": definition.storage_id,
+                "type": definition.storage_type,
+                "content": ",".join(definition.content),
+                "shared": int(definition.shared),
+                "enabled": int(not definition.disabled and bool(node_state and node_state.enabled)),
+                "active": int(bool(node_state and node_state.active)),
+                "total": node_state.total_bytes if node_state else None,
+                "used": node_state.used_bytes if node_state else None,
+                "avail": node_state.available_bytes if node_state else None,
+            }
+            found = True
+            error = view.coverage_reason if not view.coverage_complete else ""
     total = _api_num(status.get("total"))
     used = _api_num(status.get("used"))
     avail = _api_num(status.get("avail"))
@@ -222,38 +447,47 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, s
         "active_api_tab": active_tab,
         "active_api_node": node,
         "active_api_storage": storage,
+        "catalog_view": view if "view" in locals() else None,
+        "storage_shared": bool(definition.shared) if "definition" in locals() and definition else False,
     }
 
 
+@require_POST
+@app_login_required
+def storage_catalog_refresh_view(request, cluster_key: str, storage: str):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key, enabled=True)
+    if not ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True).exists():
+        raise Http404("Storage is not present in the latest catalog.")
+    async_task("core.tasks.refresh_storage_catalog_for_cluster", cluster.key)
+    return JsonResponse({"ok": True, "status": "queued"}, status=202)
+
+
 def _api_storage_volumes(cluster, node: str, storage: str, highlight_vmid=None):
-    content, found, error = _api_storage_get(cluster, node, storage, "content")
-    import_content, _imp_found, _imp_error = _api_storage_get(
-        cluster, node, storage, "content?content=import"
+    definition = (
+        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_observations")
+        .first()
     )
+    if definition is None:
+        return [], False, "Storage is not present in the latest catalog."
+    catalog = storage_view(definition, node=node)
     volumes = []
-    seen: set[str] = set()
-    for entry in list(content or []) + list(import_content or []):
-        if not isinstance(entry, dict):
-            continue
-        volid = entry.get("volid", "")
-        if volid in seen:
-            continue
-        seen.add(volid)
-        entry_vmid = entry.get("vmid")
+    for entry in catalog.volumes:
+        entry_vmid = entry.vmid
         volumes.append(
             {
-                "volid": volid,
-                "content": entry.get("content", ""),
-                "format": entry.get("format", ""),
-                "size": entry.get("size"),
-                "used": entry.get("used"),
+                "volid": entry.volid,
+                "content": entry.content,
+                "format": entry.volume_format,
+                "size": entry.size_bytes,
+                "used": entry.used_bytes,
                 "vmid": entry_vmid,
-                "importable": entry.get("content") == "import",
+                "importable": entry.content == "import",
                 "highlight": highlight_vmid is not None and str(entry_vmid) == str(highlight_vmid),
             }
         )
     volumes.sort(key=lambda item: (str(item["vmid"] or ""), item["volid"]))
-    return volumes, found, error
+    return volumes, catalog.coverage_complete, catalog.coverage_reason
 
 
 @app_login_required
@@ -311,13 +545,10 @@ def api_storage_vms(request, cluster_key: str, node: str, storage: str):
 
 
 def _api_live_content_values(cluster, storage: str) -> list[str]:
-    for client in common.cluster_scoped_clients(cluster):
-        try:
-            config = client.storage_config(storage)
-        except ProxmoxAPIError:
-            continue
-        return _parse_storage_content_values(config.get("content", ""))
-    return []
+    definition = ClusterStorage.objects.filter(
+        cluster=cluster, storage_id=storage, present=True
+    ).first()
+    return list(definition.content) if definition else []
 
 
 def _api_content_usage(cluster, node: str, storage: str) -> dict[str, dict]:
@@ -430,6 +661,8 @@ def update_api_storage_content(request, cluster_key: str, node: str, storage: st
         messages.error(request, f"Failed to update storage content: {err or 'No configured Proxmox endpoints.'}")
         return redirect(redirect_to)
 
+    refresh_storage_catalog(cluster)
+
     record_audit_event(
         request,
         action="storage.content.updated",
@@ -492,14 +725,15 @@ def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan
         storage.latest_gate_status = (result_scan.storage_gate_status or {}).get(storage.storage_id, {}) if result_scan else {}
         storage.latest_scan = storage_result_scan
         storage.latest_scan_at = _scan_timestamp(storage_result_scan)
-        storage.space_info = common.storage_space_info(storage.path)
-        storage.storage_actions_enabled = settings.STORAGE_WRITE_ENABLED and storage.space_info.can_write
+        storage.space_info = common.storage_space_info(storage)
+        storage.mount_health = registered_mount_health(storage)
+        storage.storage_actions_enabled = storage.mount_health.available and storage.mount_health.writable
         storage.details = storage_details(storage, storage_result_scan, storage.space_info)
 
 
 @app_login_required
 def storage_browser(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     current_path = _normalize_browser_path(request.GET.get("path", ""))
@@ -648,6 +882,17 @@ def storage_browser(request, storage_id: str):
         if file_has_next
         else ""
     )
+    restore_clusters = {
+        binding.cluster_storage.cluster.key: {
+            "key": binding.cluster_storage.cluster.key,
+            "display_name": binding.cluster_storage.cluster.display_name,
+            "storage_id": binding.cluster_storage.storage_id,
+        }
+        for binding in storage.cluster_bindings.select_related(
+            "cluster_storage__cluster"
+        ).filter(cluster_storage__cluster__enabled=True, cluster_storage__present=True)
+    }
+    storage.backup_restore_clusters = list(restore_clusters.values())
 
     context = {
         **_storage_tab_context(storage, latest_scan, "files"),
@@ -688,7 +933,7 @@ def storage_browser(request, storage_id: str):
 
 @app_login_required
 def download_storage_file(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     latest_scan = _latest_storage_result_scan(storage)
     if latest_scan is None:
         raise Http404("No storage inventory has been scanned yet.")
@@ -704,15 +949,19 @@ def download_storage_file(request, storage_id: str):
         path=requested_path,
         entry_type=FileInventory.EntryType.FILE,
     )
-    absolute_path = _resolve_storage_file(storage, entry.path)
+    try:
+        file_handle = _open_storage_file(storage, entry.path)
+    except ConfinedFilesystemError as exc:
+        raise Http404("File not found.") from exc
 
     record_audit_event(
         request,
         action="file.downloaded",
         object_type="file",
-        object_id=f"{storage.storage_id}:{entry.path}",
+        object_id=f"{storage.mount_ref}:{entry.path}",
         details={
             "storage_id": storage.storage_id,
+            "mount_ref": storage.mount_ref,
             "storage_name": storage.display_name,
             "path": entry.path,
             "size_bytes": entry.size_bytes,
@@ -720,7 +969,7 @@ def download_storage_file(request, storage_id: str):
         },
     )
 
-    return _download_response(request, storage, entry.path, absolute_path)
+    return _download_response(request, storage, entry.path, file_handle)
 
 
 @require_POST
@@ -730,7 +979,7 @@ def create_storage_folder(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     current_path = _normalize_browser_path(request.POST.get("path", ""))
     redirect_to = _safe_next_url(request) or _storage_browser_url(storage, current_path)
     latest_scan = _latest_storage_result_scan(storage)
@@ -766,7 +1015,7 @@ def upload_storage_file(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     current_path = _normalize_browser_path(request.POST.get("path", ""))
     redirect_to = _safe_next_url(request) or _storage_browser_url(storage, current_path)
     uploaded_file = request.FILES.get("file")
@@ -806,7 +1055,7 @@ def upload_storage_folder(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     current_path = _normalize_browser_path(request.POST.get("path", ""))
     redirect_to = _safe_next_url(request) or _storage_browser_url(storage, current_path)
     uploaded_files = request.FILES.getlist("files")
@@ -851,7 +1100,7 @@ def upload_storage_folder(request, storage_id: str):
 
 @app_login_required
 def storage_trash(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     if settings.STORAGE_WRITE_ENABLED and storage.storage_actions_enabled:
@@ -866,7 +1115,7 @@ def storage_trash(request, storage_id: str):
             pass
     items = list(
         TrashItem.objects.filter(
-            storage_id=storage.storage_id,
+            mount=storage,
             restore_status=TrashItem.RestoreStatus.TRASHED,
         )
         .select_related("moved_by")
@@ -887,7 +1136,7 @@ def storage_trash(request, storage_id: str):
 
 @app_login_required
 def storage_summary(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
 
@@ -920,7 +1169,7 @@ def storage_monitor(request, storage_id: str):
     MONITOR_PAGE_SIZE = 10
     ACTIVITY_RETENTION_DAYS = 7
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
 
@@ -1021,7 +1270,7 @@ def _space_chart_from_queryset(base_qs, now) -> list[dict[str, object]]:
 
 @app_login_required
 def storage_configure(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     context = {
@@ -1032,7 +1281,7 @@ def storage_configure(request, storage_id: str):
 
 @app_login_required
 def storage_content(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     content_scan = _latest_storage_content_scan(storage) or latest_scan
@@ -1055,7 +1304,7 @@ def update_storage_content(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     config_scan = latest_scan
@@ -1069,7 +1318,7 @@ def update_storage_content(request, storage_id: str):
     current_content = _live_storage_content_values(storage, cluster=cluster)
     requested_content = _ordered_storage_content(request.POST.getlist("content"), current_content)
     redirect_to = (
-        f"{reverse('core:storage_content', args=[storage.storage_id])}?"
+        f"{reverse('core:storage_content', args=[storage.mount_ref])}?"
         f"{urlencode({'cluster': cluster.key})}"
     )
 
@@ -1106,7 +1355,11 @@ def update_storage_content(request, storage_id: str):
     err = ""
     for client in common.cluster_scoped_clients(cluster):
         try:
-            client.set_storage_content(storage.storage_id, requested_content)
+            definition = _cluster_storage_for_mount(storage, cluster)
+            client.set_storage_content(
+                definition.storage_id if definition else storage.storage_id,
+                requested_content,
+            )
             updated = True
             err = ""
             break
@@ -1117,6 +1370,8 @@ def update_storage_content(request, storage_id: str):
             err = "No configured Proxmox endpoints."
         messages.error(request, f"Failed to update storage content: {err}")
         return redirect(redirect_to)
+
+    refresh_storage_catalog(cluster)
 
     _update_latest_storage_config_content(
         storage,
@@ -1131,7 +1386,7 @@ def update_storage_content(request, storage_id: str):
         object_id=storage.storage_id,
         cluster=cluster,
         details={
-            "storage_id": storage.storage_id,
+            "storage_id": (definition.storage_id if definition else storage.storage_id),
             "storage_name": storage.display_name,
             "old_content": current_content,
             "new_content": requested_content,
@@ -1153,7 +1408,7 @@ def _run_storage_content_preflight_scan(storage: StorageMount) -> ScanRun:
 
     scanner = StorageScanner(
         storage.storage_id,
-        storage.path,
+        str(storage_mount_root(storage)),
         ignored_paths=ignored_relative_paths_for_storage(storage),
     )
     rows = [
@@ -1223,31 +1478,18 @@ def _storage_content_preflight_errors(scan: ScanRun | None, storage: StorageMoun
 
 def _storage_content_values(storage: StorageMount, *, cluster=None) -> list[str]:
     if cluster is not None:
-        obj = (
-            ProxmoxInventory.objects.filter(
-                cluster=cluster,
-                scan_run__status=ScanRun.Status.COMPLETED,
-                object_type=ProxmoxInventory.ObjectType.STORAGE,
-                name=storage.storage_id,
-            )
-            .order_by("-scan_run__finished_at", "-scan_run__created_at", "-id")
-            .first()
-        )
-        if obj is not None:
-            return _parse_storage_content_values((obj.config or {}).get("content", ""))
+        definition = ClusterStorage.objects.filter(
+            cluster=cluster,
+            mount_bindings__mount=storage,
+            present=True,
+        ).first()
+        if definition is not None:
+            return list(definition.content)
     content = getattr(getattr(storage, "details", None), "content", "") or ""
     return [part.strip() for part in str(content).split(",") if part.strip()]
 
 
 def _live_storage_content_values(storage: StorageMount, *, cluster) -> list[str]:
-    if cluster is None:
-        return _storage_content_values(storage)
-    for client in common.cluster_scoped_clients(cluster):
-        try:
-            config = client.storage_config(storage.storage_id)
-        except ProxmoxAPIError:
-            continue
-        return _parse_storage_content_values(config.get("content", ""))
     return _storage_content_values(storage, cluster=cluster)
 
 
@@ -1427,11 +1669,11 @@ def _update_latest_storage_config_content(
 
 @app_login_required
 def storage_permissions_view(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
 
-    perms = get_permissions(storage.path)
+    perms = get_permissions(str(storage_mount_root(storage)))
 
     context = {
         **_storage_tab_context(storage, latest_scan, "permissions"),
@@ -1442,7 +1684,7 @@ def storage_permissions_view(request, storage_id: str):
 
 @app_login_required
 def storage_hosts(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
 
@@ -1483,7 +1725,7 @@ def _display_disk_references(vmid: int | None, matching: list[str], lineage: dic
 
 @app_login_required
 def storage_vms(request, storage_id: str):
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
 
@@ -1519,7 +1761,7 @@ def trash_storage_file(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     redirect_to = _safe_next_url(request)
     latest_scan = _latest_storage_result_scan(storage)
     entries = _selected_storage_file_entries(
@@ -1568,7 +1810,7 @@ def move_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     redirect_to = _safe_next_url(request)
     latest_scan = _latest_storage_result_scan(storage)
     entries = _selected_storage_file_entries(request, storage=storage, latest_scan=latest_scan)
@@ -1576,8 +1818,9 @@ def move_storage_file_view(request, storage_id: str):
     dest_storage_id = request.POST.get("dest_storage", "").strip()
     dest_storage = storage
     if dest_storage_id:
-        dest_storage = StorageMount.objects.filter(storage_id=dest_storage_id, enabled=True).first()
-        if dest_storage is None:
+        try:
+            dest_storage = resolve_storage_mount(dest_storage_id, enabled=True)
+        except StorageMount.DoesNotExist:
             messages.error(request, "Unknown destination storage.")
             return redirect(redirect_to)
 
@@ -1643,7 +1886,7 @@ def copy_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     redirect_to = _safe_next_url(request)
     latest_scan = _latest_storage_result_scan(storage)
     requested_path = _normalize_browser_path(request.POST.get("path", ""))
@@ -1654,10 +1897,11 @@ def copy_storage_file_view(request, storage_id: str):
         path=requested_path,
         entry_type=FileInventory.EntryType.FILE,
     )
-    dest_storage = StorageMount.objects.filter(
-        storage_id=request.POST.get("dest_storage", "").strip(), enabled=True
-    ).first()
-    if dest_storage is None:
+    try:
+        dest_storage = resolve_storage_mount(
+            request.POST.get("dest_storage", "").strip(), enabled=True
+        )
+    except StorageMount.DoesNotExist:
         messages.error(request, "Unknown destination storage.")
         return redirect(redirect_to)
 
@@ -1696,7 +1940,7 @@ def copy_storage_file_view(request, storage_id: str):
 def storage_folders_view(request, storage_id: str):
     """JSON list of the folders in a storage, for the move/copy destination picker
     (so a folder can be chosen from a dropdown instead of typed by hand)."""
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     scan = _latest_storage_result_scan(storage)
     folders: list[str] = []
     if scan:
@@ -1725,7 +1969,7 @@ def rename_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     redirect_to = _safe_next_url(request)
     latest_scan = _latest_storage_result_scan(storage)
     requested_path = _normalize_browser_path(request.POST.get("path", ""))
@@ -1769,7 +2013,7 @@ def inflate_storage_file_view(request, storage_id: str):
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
-    storage = get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    storage = _mount_or_404(storage_id)
     redirect_to = _safe_next_url(request)
     target_preallocation = request.POST.get("target_preallocation") or INFLATE_PREALLOCATION_FULL
     if target_preallocation not in INFLATE_PREALLOCATION_MODES:
@@ -1904,7 +2148,10 @@ def classified_files(request):
     storage_id = request.GET.get("storage", "").strip()
     storages = StorageMount.objects.filter(enabled=True).order_by("display_name")
     if storage_id:
-        storages = storages.filter(storage_id=storage_id)
+        try:
+            storages = [resolve_storage_mount(storage_id, enabled=True)]
+        except StorageMount.DoesNotExist:
+            storages = []
 
     files: list[FileInventory] = []
     for storage in storages:
@@ -1956,7 +2203,7 @@ def classified_files(request):
 
 def _browser_url_for_file(entry: FileInventory) -> str:
     """Link to the storage browser opened at the file's containing folder."""
-    url = reverse("core:storage_browser", args=[entry.storage.storage_id])
+    url = reverse("core:storage_browser", args=[entry.storage.mount_ref])
     parent = PurePosixPath(entry.path).parent
     parent_str = "" if str(parent) in (".", "") else str(parent)
     if parent_str:
@@ -2065,8 +2312,9 @@ def _latest_storage_content_scan(storage: StorageMount) -> ScanRun | None:
 
 
 def _decorate_storage_with_space_info(storage: StorageMount) -> None:
-    storage.space_info = common.storage_space_info(storage.path)
-    storage.storage_actions_enabled = settings.STORAGE_WRITE_ENABLED and storage.space_info.can_write
+    storage.space_info = common.storage_space_info(storage)
+    storage.mount_health = registered_mount_health(storage)
+    storage.storage_actions_enabled = storage.mount_health.available and storage.mount_health.writable
     storage.details = storage_details(storage, _latest_storage_result_scan(storage), storage.space_info)
 
 
@@ -2096,7 +2344,7 @@ def _decorate_orphan_files_with_action_state(files: list[FileInventory]) -> None
 
 
 def _storage_browser_url(storage: StorageMount, path: str = "", **params: object) -> str:
-    url = reverse("core:storage_browser", args=[storage.storage_id])
+    url = reverse("core:storage_browser", args=[storage.mount_ref])
     query = {}
     if path:
         query["path"] = path
@@ -2134,9 +2382,10 @@ def _audit_file_action(request, *, action: str, storage: StorageMount, path: str
         request,
         action=action,
         object_type="file",
-        object_id=f"{storage.storage_id}:{path}",
+        object_id=f"{storage.mount_ref}:{path}",
         details={
             "storage_id": storage.storage_id,
+            "mount_ref": storage.mount_ref,
             "storage_name": storage.display_name,
             "path": path,
             **details,
@@ -2267,23 +2516,23 @@ def _upload_error_response(request, redirect_to: str, message: str):
     return redirect(redirect_to)
 
 
-def _resolve_storage_file(storage: StorageMount, relative_path: str) -> Path:
-    root = Path(storage.path).resolve(strict=True)
-    candidate = root.joinpath(*PurePosixPath(relative_path).parts).resolve(strict=True)
-
-    if not candidate.is_relative_to(root) or not candidate.is_file():
-        raise Http404("File not found.")
-    return candidate
+def _open_storage_file(storage: StorageMount, relative_path: str) -> BinaryIO:
+    health = registered_mount_health(storage)
+    if not health.available:
+        raise Http404(health.reason or "Storage mount is unavailable.")
+    return open_regular_file_handle(storage_mount_root(storage), relative_path)
 
 
-def _download_response(request, storage: StorageMount, relative_path: str, absolute_path: Path):
-    if settings.STORAGE_DOWNLOAD_ACCEL_ENABLED:
+def _download_response(request, storage: StorageMount, relative_path: str, file_handle: BinaryIO):
+    file_name = PurePosixPath(relative_path).name
+    file_size = os.fstat(file_handle.fileno()).st_size
+    if _download_accel_available(storage):
+        file_handle.close()
         response = HttpResponse(content_type="application/octet-stream")
         response["X-Accel-Redirect"] = _download_accel_uri(storage, relative_path)
-        _decorate_download_response(response, absolute_path)
+        _decorate_download_response(response, file_name)
         return response
 
-    file_size = absolute_path.stat().st_size
     range_header = request.headers.get("Range", "")
     if range_header:
         try:
@@ -2298,19 +2547,19 @@ def _download_response(request, storage: StorageMount, relative_path: str, absol
             start, end = byte_range
             length = end - start + 1
             response = StreamingHttpResponse(
-                _file_range_iterator(absolute_path, start=start, length=length),
+                _file_range_iterator(file_handle, start=start, length=length),
                 status=206,
                 content_type="application/octet-stream",
             )
             response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
             response["Content-Length"] = str(length)
-            _decorate_download_response(response, absolute_path)
+            _decorate_download_response(response, file_name)
             return response
 
     response = FileResponse(
-        absolute_path.open("rb"),
+        file_handle,
         as_attachment=True,
-        filename=absolute_path.name,
+        filename=file_name,
     )
     response.block_size = 1024 * 1024
     response["Accept-Ranges"] = "bytes"
@@ -2318,17 +2567,42 @@ def _download_response(request, storage: StorageMount, relative_path: str, absol
     return response
 
 
-def _decorate_download_response(response, absolute_path: Path) -> None:
+def _download_accel_available(storage: StorageMount) -> bool:
+    if not settings.STORAGE_DOWNLOAD_ACCEL_ENABLED:
+        return False
+    relative = storage.relative_path
+    if not relative and settings.PVE_TEST_NETWORK_DISABLED:
+        relative = storage.storage_id
+    try:
+        relative = normalized_relative_path(relative).split("/", 1)[0]
+        available = {
+            line.strip()
+            for line in settings.STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH.read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        }
+    except (OSError, StorageMountError):
+        return False
+    return relative in available
+
+
+def _decorate_download_response(response, file_name: str) -> None:
     response["Accept-Ranges"] = "bytes"
     response["X-Accel-Buffering"] = "no"
-    response["Content-Disposition"] = content_disposition_header(True, absolute_path.name)
+    response["Content-Disposition"] = content_disposition_header(True, file_name)
 
 
 def _download_accel_uri(storage: StorageMount, relative_path: str) -> str:
     prefix = settings.STORAGE_DOWNLOAD_ACCEL_PREFIX.rstrip("/")
-    storage_id = quote(storage.storage_id, safe="")
-    path = quote(PurePosixPath(relative_path).as_posix(), safe="/")
-    return f"{prefix}/{storage_id}/{path}"
+    if not storage.relative_path and settings.PVE_TEST_NETWORK_DISABLED:
+        mounted_path = PurePosixPath(storage.storage_id, relative_path).as_posix()
+        return f"{prefix}/{quote(mounted_path, safe='/')}"
+    mounted_path = PurePosixPath(
+        normalized_relative_path(storage.relative_path),
+        PurePosixPath(relative_path).as_posix(),
+    ).as_posix()
+    return f"{prefix}/{quote(mounted_path, safe='/')}"
 
 
 def _parse_http_byte_range(range_header: str, file_size: int) -> tuple[int, int] | None:
@@ -2357,12 +2631,12 @@ def _parse_http_byte_range(range_header: str, file_size: int) -> tuple[int, int]
     return start, min(end, file_size - 1)
 
 
-def _file_range_iterator(absolute_path: Path, *, start: int, length: int):
+def _file_range_iterator(file_handle: BinaryIO, *, start: int, length: int):
     remaining = length
-    with absolute_path.open("rb") as handle:
-        handle.seek(start)
+    with file_handle:
+        file_handle.seek(start)
         while remaining > 0:
-            chunk = handle.read(min(1024 * 1024, remaining))
+            chunk = file_handle.read(min(1024 * 1024, remaining))
             if not chunk:
                 break
             remaining -= len(chunk)

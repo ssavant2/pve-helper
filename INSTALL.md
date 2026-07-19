@@ -48,7 +48,7 @@ placeholders when login is enabled, and configure:
 - the public or internal `APP_BASE_URL`, allowed hosts and CSRF origins;
 - unique application and database secrets;
 - `PVE_HELPER_ENCRYPTION_KEYS` and its active key id;
-- both host storage paths and their matching Proxmox storage IDs;
+- the single `PVE_HELPER_STORAGE_ROOT` containing any optional file-tree mounts;
 - OIDC values when `APP_REQUIRE_LOGIN=true`.
 
 `PVE_HELPER_NETWORK` and Docker's Compose project name must be unique when more
@@ -87,21 +87,35 @@ cluster**. The wizard inspects the endpoint certificate before sending a token,
 verifies effective Administrator permissions and the Proxmox CA identity, and
 only then stores the cluster and its encrypted write-only credential.
 
+Proxmox storage definitions are discovered automatically. A host mount is not
+required for volume inventory. To add file browsing for an eligible datastore,
+mount it as a subdirectory of `PVE_HELPER_STORAGE_ROOT`, then open **Datastores →
+Register mount** and explicitly associate that directory with its cluster storage
+and node scope. The app never mounts storage or creates the Proxmox definition as
+part of registration.
+
+`STORAGE_METADATA_REFRESH_INTERVAL_MINUTES` controls the cheap definitions/node
+state cadence (default 1 minute), while
+`STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES` controls the more expensive content
+inventory (default 5 minutes). Accepted operations refresh affected state directly;
+destructive preflight does not rely on the periodic age alone.
+
 pve-helper listens over HTTP. A certificate
 is neither provisioned nor required; an external reverse proxy may terminate
 HTTPS if your environment needs it.
 
 ## Enabling storage writes
 
-The default is read-only twice: `STORAGE_WRITE_ENABLED=false` and
-`STORAGE_MOUNT_MODE=ro`. Verify host mounts, ACLs and the expected storage IDs
-first. To allow upload, trash and restore operations, create a temporary upload
-directory on real writable storage, then set all three values and recreate the
-affected services:
+The default application policy is read-only (`STORAGE_WRITE_ENABLED=false`). nginx
+receives a private, recursively read-only `/storages` snapshot; web and workers
+receive the dynamically propagated root read-write so the application can authorize
+an operation after checking the specific live mount. A newly added mount uses the
+safe streaming download fallback until nginx next restarts. Verify the host mount
+and ACLs first. To allow upload, trash and restore operations, create a temporary
+upload directory on real writable storage, then set:
 
 ```env
 STORAGE_WRITE_ENABLED=true
-STORAGE_MOUNT_MODE=rw
 FILE_UPLOAD_TEMP_DIR=/storages/truenas-fs/.pve-helper-upload-tmp
 ```
 

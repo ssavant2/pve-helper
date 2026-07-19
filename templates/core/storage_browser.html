@@ -1,6 +1,12 @@
 {% extends "core/storage_base.html" %}
 
 {% block storage_content %}
+  {% if not storage.mount_health.available %}
+    <section class="panel notice notice-warning">
+      <strong>File access unavailable</strong>
+      <p>{{ storage.mount_health.reason }}</p>
+    </section>
+  {% endif %}
   <section
     class="datastore-file-manager"
     data-storage-file-manager
@@ -38,7 +44,7 @@
             {% endif %}
             <a
               class="folder-tree-link"
-              href="{% url 'core:storage_browser' storage.storage_id %}{% if node.path %}?path={{ node.path|urlencode }}{% endif %}"
+              href="{% url 'core:storage_browser' storage.mount_ref %}{% if node.path %}?path={{ node.path|urlencode }}{% endif %}"
             >
               <span class="folder-tree-icon">
                 {% if node.depth == 0 %}
@@ -64,7 +70,7 @@
               <form
                 class="vs-toolbar-form"
                 method="post"
-                action="{% url 'core:storage_create_folder' storage.storage_id %}"
+                action="{% url 'core:storage_create_folder' storage.mount_ref %}"
                 data-confirm-file-action
                 data-action-kind="new-folder"
               >
@@ -78,7 +84,7 @@
               <button class="vs-toolbar-button" type="button" disabled>New Folder</button>
             {% endif %}
             {% if storage.storage_actions_enabled %}
-              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload' storage.storage_id %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-on-file-select>
+              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload' storage.mount_ref %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-on-file-select>
                 {% csrf_token %}
                 <input type="hidden" name="path" value="{{ current_path }}">
                 <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -91,7 +97,7 @@
               <button class="vs-toolbar-button" type="button" disabled>Upload Files</button>
             {% endif %}
             {% if storage.storage_actions_enabled %}
-              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload_folder' storage.storage_id %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-folder-on-file-select>
+              <form class="vs-toolbar-form" method="post" action="{% url 'core:storage_upload_folder' storage.mount_ref %}" enctype="multipart/form-data" data-no-soft-navigation data-upload-folder-on-file-select>
                 {% csrf_token %}
                 <input type="hidden" name="path" value="{{ current_path }}">
                 <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -115,7 +121,7 @@
             <form
               class="vs-toolbar-form"
               method="post"
-              action="{% url 'core:storage_move_file' storage.storage_id %}"
+              action="{% url 'core:storage_move_file' storage.mount_ref %}"
               data-confirm-file-action
               data-action-kind="move"
               data-selected-file-action
@@ -134,7 +140,7 @@
             <form
               class="vs-toolbar-form"
               method="post"
-              action="{% url 'core:storage_copy_file' storage.storage_id %}"
+              action="{% url 'core:storage_copy_file' storage.mount_ref %}"
               data-confirm-file-action
               data-action-kind="copy"
               data-selected-file-action
@@ -150,7 +156,7 @@
             <form
               class="vs-toolbar-form"
               method="post"
-              action="{% url 'core:storage_rename_file' storage.storage_id %}"
+              action="{% url 'core:storage_rename_file' storage.mount_ref %}"
               data-confirm-file-action
               data-action-kind="rename"
               data-selected-file-action
@@ -166,7 +172,7 @@
             <form
               class="vs-toolbar-form"
               method="post"
-              action="{% url 'core:storage_trash_file' storage.storage_id %}"
+              action="{% url 'core:storage_trash_file' storage.mount_ref %}"
               data-confirm-file-action
               data-action-kind="trash"
               data-selected-file-action
@@ -182,7 +188,7 @@
             <form
               class="vs-toolbar-form"
               method="post"
-              action="{% url 'core:storage_inflate_file' storage.storage_id %}"
+              action="{% url 'core:storage_inflate_file' storage.mount_ref %}"
               data-confirm-file-action
               data-action-kind="inflate"
               data-inflate-mode="metadata"
@@ -206,7 +212,7 @@
             <form
               class="vs-toolbar-form"
               method="post"
-              action="{% url 'core:storage_inflate_file' storage.storage_id %}"
+              action="{% url 'core:storage_inflate_file' storage.mount_ref %}"
               data-confirm-file-action
               data-action-kind="inflate"
               data-inflate-mode="full"
@@ -228,7 +234,7 @@
               >Inflate Full</button>
             </form>
           {% endif %}
-          <a class="vs-toolbar-button" href="{% url 'core:storage_trash' storage.storage_id %}">View Recycle Bin</a>
+          <a class="vs-toolbar-button" href="{% url 'core:storage_trash' storage.mount_ref %}">View Recycle Bin</a>
         </div>
         <label class="datastore-search">
           <i data-lucide="search" aria-hidden="true"></i>
@@ -249,7 +255,7 @@
             <label class="dest-picker-field">
               <span>Destination storage</span>
               <select data-dest-picker-storage>
-                {% for s in dest_storages %}<option value="{{ s.storage_id }}" data-folders-url="{% url 'core:storage_folders' s.storage_id %}">{{ s.display_name }}</option>{% endfor %}
+                {% for s in dest_storages %}<option value="{{ s.mount_ref }}" data-folders-url="{% url 'core:storage_folders' s.mount_ref %}">{{ s.display_name }}</option>{% endfor %}
               </select>
             </label>
             <label class="dest-picker-field">

@@ -455,6 +455,10 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Recycle Bin purge schedule updated"
     if event.action == "storage.content.updated":
         return "Update storage content"
+    if event.action == "storage.mount.registered":
+        return "Register storage mount"
+    if event.action == "storage.mount.unregistered":
+        return "Remove storage mount association"
     if event.action == "audit.retention.purge":
         return "Audit retention purge"
     if event.action == "audit.retention.schedule.updated":

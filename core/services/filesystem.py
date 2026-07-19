@@ -5,6 +5,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.models import StorageMount
+from core.services.storage_paths import storage_mount_root
+
 
 @dataclass(frozen=True)
 class MountInfo:
@@ -32,9 +35,9 @@ class StorageSpaceInfo:
     error: str = ""
 
 
-def storage_space_info(path: str) -> StorageSpaceInfo:
+def storage_space_info(storage: StorageMount) -> StorageSpaceInfo:
     try:
-        storage_path = Path(path).resolve(strict=True)
+        storage_path = storage_mount_root(storage).resolve(strict=True)
         stats = os.statvfs(storage_path)
     except OSError as exc:
         return StorageSpaceInfo(ok=False, error=exc.__class__.__name__)

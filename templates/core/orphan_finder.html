@@ -42,7 +42,7 @@
                 <form
                   class="inline-action-form"
                   method="post"
-                  action="{% url 'core:storage_trash_file' file.storage.storage_id %}"
+                  action="{% url 'core:storage_trash_file' file.storage.mount_ref %}"
                   data-confirm-file-action
                   data-action-kind="trash"
                   data-file-name="{{ file.path }}"

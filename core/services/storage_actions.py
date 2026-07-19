@@ -15,6 +15,13 @@ from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
 
 from core.models import AuditEvent, FileInventory, ProxmoxCluster, StorageMount, TrashItem
+from core.services.storage_mounts import (
+    registered_mount_health,
+    resolve_storage_mount,
+    storage_mount_root,
+    storage_trash_root,
+)
+from core.services.storage_catalog import UsageState, usage_preflight
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     ConfinedPathExistsError,
@@ -173,11 +180,11 @@ def require_storage_write_enabled() -> None:
 
 def require_storage_write_access(storage: StorageMount) -> None:
     require_storage_write_enabled()
-    info = storage_space_info(storage.path)
-    if not info.ok:
-        raise StorageActionError("Storage path is not available.")
-    if not info.can_write:
-        raise StorageActionError("PVE-helper storage mount is read-only.")
+    health = registered_mount_health(storage)
+    if not health.available:
+        raise StorageActionError(health.reason or "Storage path is not available.")
+    if not health.writable:
+        raise StorageActionError(health.reason or "PVE-helper storage mount is read-only.")
 
 
 def upload_to_storage(
@@ -323,7 +330,7 @@ def adopt_discovered_trash_items(*, storage: StorageMount, scan) -> int:
     discovered = 0
     known_trash_paths = set(
         TrashItem.objects.filter(
-            storage_id=storage.storage_id,
+            mount=storage,
         ).values_list("trash_path", flat=True)
     )
     entries = FileInventory.objects.filter(
@@ -344,10 +351,12 @@ def adopt_discovered_trash_items(*, storage: StorageMount, scan) -> int:
         TrashItem.objects.create(
             original_path=original_path,
             trash_path=entry.path,
+            mount=storage,
             storage_id=storage.storage_id,
             moved_at=entry.modified_at,
             metadata={
                 "storage_id": storage.storage_id,
+                "mount_ref": storage.mount_ref,
                 "storage_name": storage.display_name,
                 "original_size_bytes": entry.size_bytes,
                 "original_classification": entry.classification,
@@ -372,7 +381,7 @@ def cleanup_empty_app_trash_directories(*, storage: StorageMount) -> int:
     protected_paths = {
         _storage_child_path(item.trash_path, root=root)
         for item in TrashItem.objects.filter(
-            storage_id=storage.storage_id,
+            mount=storage,
             restore_status=TrashItem.RestoreStatus.TRASHED,
         )
         if item.trash_path
@@ -428,11 +437,13 @@ def move_file_to_trash(
     return TrashItem.objects.create(
         original_path=entry.path,
         trash_path=trash_relative,
+        mount=storage,
         storage_id=storage.storage_id,
         moved_by=user if getattr(user, "is_authenticated", False) else None,
         moved_at=timezone.now(),
         metadata={
             "storage_id": storage.storage_id,
+            "mount_ref": storage.mount_ref,
             "storage_name": storage.display_name,
             "original_size_bytes": entry.size_bytes,
             "original_classification": entry.classification,
@@ -857,6 +868,30 @@ def _require_file_not_blocked(entry: FileInventory, *, block_running_guests: boo
     risk = file_action_risk(entry, block_running_guests=block_running_guests)
     if risk.blocked:
         raise StorageActionError(risk.warning_message)
+    if entry.content_category in {"vm_disk", "base_image", "ct_private"}:
+        bindings = entry.storage.cluster_bindings.select_related(
+            "cluster_storage", "cluster_storage__cluster"
+        )
+        if not bindings.exists():
+            if settings.PVE_TEST_NETWORK_DISABLED:
+                require_live_guest_stopped(entry)
+                return
+            raise StorageActionError(
+                "The storage is not associated with the current API catalog; guest-file safety is unknown."
+            )
+        relative = str(entry.path).lstrip("/").removeprefix("images/")
+        for binding in bindings:
+            definition = binding.cluster_storage
+            result = usage_preflight(
+                definition,
+                volid=f"{definition.storage_id}:{relative}",
+                node=binding.node or "",
+                fresh=True,
+            )
+            if result.state is not UsageState.UNREFERENCED:
+                raise StorageActionError(
+                    f"Guest-file action blocked by fresh storage preflight: {result.reason}"
+                )
     require_live_guest_stopped(entry)
 
 
@@ -904,7 +939,7 @@ def _apply_proxmox_upload_metadata(path: Path, *, is_directory: bool) -> None:
 
 def _storage_root(storage: StorageMount) -> Path:
     try:
-        root = Path(storage.path).resolve(strict=True)
+        root = storage_mount_root(storage).resolve(strict=True)
     except OSError as exc:
         raise StorageActionError("Storage path is not available.") from exc
     if not root.is_dir():
@@ -1079,7 +1114,7 @@ def _trash_relative_path(storage: StorageMount, root: Path, original_path: str) 
 
 
 def _trash_root_relative(storage: StorageMount, root: Path) -> str:
-    trash_root = Path(storage.trash_path or root / ".trash" / "pve-helper").resolve(strict=False)
+    trash_root = storage_trash_root(storage).resolve(strict=False)
     if not trash_root.is_relative_to(root):
         raise StorageActionError("Trash path must be inside the storage root.")
     return trash_root.relative_to(root).as_posix()
@@ -1101,11 +1136,15 @@ def _original_path_from_trash_path(trash_path: str, trash_root_relative: str) ->
 
 
 def _storage_for_trash_item(item: TrashItem) -> StorageMount:
+    if item.mount_id:
+        if item.mount.enabled:
+            return item.mount
+        raise StorageActionError("Trash item storage is not available.")
     storage_id = item.storage_id or (item.metadata or {}).get("storage_id", "")
     if not storage_id:
         raise StorageActionError("Trash item is missing storage metadata.")
     try:
-        return StorageMount.objects.get(storage_id=storage_id, enabled=True)
+        return resolve_storage_mount(storage_id, enabled=True)
     except StorageMount.DoesNotExist as exc:
         raise StorageActionError("Trash item storage is not available.") from exc
 

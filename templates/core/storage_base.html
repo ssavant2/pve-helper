@@ -26,7 +26,7 @@
         </div>
         <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
           {% csrf_token %}
-          <input type="hidden" name="storage_id" value="{{ storage.storage_id }}">
+          <input type="hidden" name="storage_id" value="{{ storage.mount_ref }}">
           <input type="hidden" name="next" value="{{ request.get_full_path }}">
           <button class="vs-header-action {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
             <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
@@ -43,14 +43,14 @@
         </form>
       </div>
       <nav class="vs-tabs" aria-label="Datastore views">
-        <a href="{% url 'core:storage_summary' storage.storage_id %}" {% if active_storage_tab == 'summary' %}class="active"{% endif %}>Summary</a>
-        <a href="{% url 'core:storage_monitor' storage.storage_id %}" {% if active_storage_tab == 'monitor' %}class="active"{% endif %}>Monitor</a>
-        <a href="{% url 'core:storage_configure' storage.storage_id %}" {% if active_storage_tab == 'configure' %}class="active"{% endif %}>Configuration</a>
-        <a href="{% url 'core:storage_content' storage.storage_id %}" {% if active_storage_tab == 'content' %}class="active"{% endif %}>Content Types</a>
-        <a href="{% url 'core:storage_permissions' storage.storage_id %}" {% if active_storage_tab == 'permissions' %}class="active"{% endif %}>Permissions</a>
-        <a href="{% url 'core:storage_browser' storage.storage_id %}" {% if active_storage_tab == 'files' %}class="active"{% endif %}>Files</a>
-        <a href="{% url 'core:storage_hosts' storage.storage_id %}" {% if active_storage_tab == 'hosts' %}class="active"{% endif %}>Nodes</a>
-        <a href="{% url 'core:storage_vms' storage.storage_id %}" {% if active_storage_tab == 'vms' %}class="active"{% endif %}>VMs/CTs</a>
+        <a href="{% url 'core:storage_summary' storage.mount_ref %}" {% if active_storage_tab == 'summary' %}class="active"{% endif %}>Summary</a>
+        <a href="{% url 'core:storage_monitor' storage.mount_ref %}" {% if active_storage_tab == 'monitor' %}class="active"{% endif %}>Monitor</a>
+        <a href="{% url 'core:storage_configure' storage.mount_ref %}" {% if active_storage_tab == 'configure' %}class="active"{% endif %}>Configuration</a>
+        <a href="{% url 'core:storage_content' storage.mount_ref %}" {% if active_storage_tab == 'content' %}class="active"{% endif %}>Content Types</a>
+        <a href="{% url 'core:storage_permissions' storage.mount_ref %}" {% if active_storage_tab == 'permissions' %}class="active"{% endif %}>Permissions</a>
+        <a href="{% url 'core:storage_browser' storage.mount_ref %}" {% if active_storage_tab == 'files' %}class="active"{% endif %}>Files</a>
+        <a href="{% url 'core:storage_hosts' storage.mount_ref %}" {% if active_storage_tab == 'hosts' %}class="active"{% endif %}>Nodes</a>
+        <a href="{% url 'core:storage_vms' storage.mount_ref %}" {% if active_storage_tab == 'vms' %}class="active"{% endif %}>VMs/CTs</a>
       </nav>
     </section>
 

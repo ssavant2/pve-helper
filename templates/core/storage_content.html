@@ -2,7 +2,7 @@
 
 {% block storage_content %}
   <section class="storage-tab-content">
-    <form method="post" action="{% url 'core:storage_content_update' storage.storage_id %}" class="panel storage-content-panel">
+    <form method="post" action="{% url 'core:storage_content_update' storage.mount_ref %}" class="panel storage-content-panel">
       {% csrf_token %}
       {% if storage_cluster %}<input type="hidden" name="cluster" value="{{ storage_cluster.key }}">{% endif %}
       <div class="panel-heading">
@@ -19,8 +19,8 @@
         <label class="form-field">
           <span>Proxmox cluster</span>
           <select data-cluster-navigation>
-            <option value="{% url 'core:storage_content' storage.storage_id %}"{% if not storage_cluster %} selected{% endif %}>Select a cluster...</option>
-            {% for cluster in storage_clusters %}<option value="{% url 'core:storage_content' storage.storage_id %}?cluster={{ cluster.key|urlencode }}"{% if storage_cluster.key == cluster.key %} selected{% endif %}>{{ cluster.display_name }}</option>{% endfor %}
+            <option value="{% url 'core:storage_content' storage.mount_ref %}"{% if not storage_cluster %} selected{% endif %}>Select a cluster...</option>
+            {% for cluster in storage_clusters %}<option value="{% url 'core:storage_content' storage.mount_ref %}?cluster={{ cluster.key|urlencode }}"{% if storage_cluster.key == cluster.key %} selected{% endif %}>{{ cluster.display_name }}</option>{% endfor %}
           </select>
         </label>
       {% endif %}

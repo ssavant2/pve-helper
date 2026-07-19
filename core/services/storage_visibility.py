@@ -5,15 +5,16 @@ from pathlib import Path, PurePosixPath
 from django.conf import settings
 
 from core.models import StorageMount
+from core.services.storage_mounts import storage_mount_root, storage_trash_root
 
 
 def ignored_relative_paths_for_storage(storage: StorageMount) -> set[str]:
     ignored: set[str] = set()
     if settings.FILE_UPLOAD_TEMP_DIR:
-        relative = _relative_path_if_inside_storage(settings.FILE_UPLOAD_TEMP_DIR, storage.path)
+        relative = _relative_path_if_inside_storage(settings.FILE_UPLOAD_TEMP_DIR, str(storage_mount_root(storage)))
         if relative:
             ignored.add(relative)
-    trash_relative = _relative_path_if_inside_storage(_app_trash_path(storage), storage.path)
+    trash_relative = _relative_path_if_inside_storage(_app_trash_path(storage), str(storage_mount_root(storage)))
     if trash_relative:
         ignored.add(trash_relative)
         ignored.add(PurePosixPath(trash_relative).parts[0])
@@ -38,9 +39,7 @@ def _relative_path_if_inside_storage(path: str, storage_root: str) -> str:
 
 
 def _app_trash_path(storage: StorageMount) -> str:
-    if storage.trash_path:
-        return storage.trash_path
-    return (Path(storage.path) / ".trash" / "pve-helper").as_posix()
+    return storage_trash_root(storage).as_posix()
 
 
 def _normalize_relative_path(path: str) -> str:

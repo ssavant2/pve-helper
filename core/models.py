@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from django.conf import settings
 from django.core.validators import RegexValidator
 from django.db import models
@@ -394,23 +396,221 @@ class ConsoleSession(TimestampedModel):
 
 
 class StorageMount(TimestampedModel):
-    # NOTE: globally unique today = single-cluster only. The storage-model
-    # foundation re-keys storage identity to (cluster_key, storage_id); until then
-    # two clusters cannot both expose e.g. `nfs-fs`. Tracked open in
-    # docs/storage-model.local.md — do not treat this uniqueness as permanent.
-    storage_id = models.CharField(max_length=120, unique=True)
+    # Legacy display/import hint only. Durable identity is mount_key; PVE storage
+    # identity belongs to ClusterStorage and is qualified by cluster.
+    storage_id = models.CharField(max_length=120, db_index=True)
+    mount_key = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     display_name = models.CharField(max_length=160)
     export = models.CharField(max_length=512, blank=True)
     path = models.CharField(max_length=512)
+    relative_path = models.CharField(max_length=512, blank=True)
     trash_path = models.CharField(max_length=512, blank=True)
+    trash_relative_path = models.CharField(max_length=512, blank=True)
+    filesystem_type = models.CharField(max_length=40, blank=True)
+    backend_identity = models.CharField(max_length=512, blank=True)
     expected_consumers = models.JSONField(default=list, blank=True)
     enabled = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["display_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["relative_path"],
+                condition=~models.Q(relative_path=""),
+                name="unique_storage_mount_path",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.display_name} ({self.storage_id})"
+
+    @property
+    def mount_ref(self) -> str:
+        from core.services.refs import MountRef
+
+        return MountRef(str(self.mount_key)).serialize()
+
+
+class StorageCatalogState(TimestampedModel):
+    """Independent publication state for cheap metadata and expensive content."""
+
+    cluster = models.OneToOneField(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="storage_catalog_state",
+    )
+    metadata_generation = models.UUIDField(null=True, blank=True)
+    metadata_refreshed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    metadata_last_attempt_at = models.DateTimeField(null=True, blank=True)
+    metadata_complete = models.BooleanField(default=False)
+    metadata_errors = models.JSONField(default=dict, blank=True)
+    volume_generation = models.UUIDField(null=True, blank=True)
+    volume_based_on_metadata_generation = models.UUIDField(null=True, blank=True)
+    volume_refreshed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    volume_last_attempt_at = models.DateTimeField(null=True, blank=True)
+    volume_complete = models.BooleanField(default=False)
+    volume_errors = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["cluster__key"]
+
+    def __str__(self) -> str:
+        return f"Storage catalog [{self.cluster.key}]"
+
+
+class ClusterStorage(TimestampedModel):
+    """Current Proxmox-authoritative storage definition projection."""
+
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        on_delete=models.PROTECT,
+        related_name="storage_definitions",
+    )
+    storage_id = models.CharField(max_length=120)
+    storage_type = models.CharField(max_length=40)
+    content = models.JSONField(default=list, blank=True)
+    shared = models.BooleanField(default=False)
+    nodes = models.JSONField(default=list, blank=True)
+    disabled = models.BooleanField(default=False)
+    config = models.JSONField(default=dict, blank=True)
+    present = models.BooleanField(default=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
+    observed_metadata_generation = models.UUIDField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["cluster__key", "storage_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cluster", "storage_id"],
+                name="unique_cluster_storage_definition",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["cluster", "present", "disabled"], name="core_cstorage_state_idx"),
+            models.Index(fields=["cluster", "retired_at"], name="core_cstorage_retired_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.cluster.key}/{self.storage_id}"
+
+
+class ClusterStorageNodeState(TimestampedModel):
+    """Current state of one node's access to one cluster storage definition."""
+
+    cluster_storage = models.ForeignKey(
+        ClusterStorage,
+        on_delete=models.CASCADE,
+        related_name="node_states",
+    )
+    node = models.CharField(max_length=120)
+    active = models.BooleanField(default=False)
+    enabled = models.BooleanField(default=True)
+    total_bytes = models.BigIntegerField(null=True, blank=True)
+    used_bytes = models.BigIntegerField(null=True, blank=True)
+    available_bytes = models.BigIntegerField(null=True, blank=True)
+    present = models.BooleanField(default=True)
+    observed_metadata_generation = models.UUIDField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["cluster_storage__storage_id", "node"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cluster_storage", "node"],
+                name="unique_cluster_storage_node_state",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["cluster_storage", "present", "active"],
+                name="core_csnode_state_idx",
+            ),
+            models.Index(fields=["node", "active"], name="core_csnode_active_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.cluster_storage}@{self.node}"
+
+
+class ClusterStorageMount(TimestampedModel):
+    """Operator-owned binding from a PVE storage scope to a host mount."""
+
+    class Scope(models.TextChoices):
+        SHARED = "shared", "Shared"
+        NODE = "node", "Node"
+
+    cluster_storage = models.ForeignKey(
+        ClusterStorage,
+        on_delete=models.CASCADE,
+        related_name="mount_bindings",
+    )
+    mount = models.ForeignKey(
+        StorageMount,
+        on_delete=models.PROTECT,
+        related_name="cluster_bindings",
+    )
+    scope = models.CharField(max_length=12, choices=Scope.choices)
+    node = models.CharField(max_length=120, null=True, blank=True)
+
+    class Meta:
+        ordering = ["cluster_storage__cluster__key", "cluster_storage__storage_id", "node"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(models.Q(scope="shared", node__isnull=True) | models.Q(scope="node", node__isnull=False)),
+                name="storage_mount_scope_matches_node",
+            ),
+            models.UniqueConstraint(
+                fields=["cluster_storage", "node"],
+                name="unique_cluster_storage_mount_scope",
+                nulls_distinct=False,
+            ),
+        ]
+
+    def __str__(self) -> str:
+        scope = self.node or "shared"
+        return f"{self.cluster_storage}@{scope} -> {self.mount.mount_key}"
+
+
+class ClusterStorageVolumeObservation(TimestampedModel):
+    """Mutable current content observation, qualified by the answering node."""
+
+    cluster_storage = models.ForeignKey(
+        ClusterStorage,
+        on_delete=models.CASCADE,
+        related_name="volume_observations",
+    )
+    node = models.CharField(max_length=120)
+    volid = models.CharField(max_length=512)
+    vmid = models.PositiveIntegerField(null=True, blank=True)
+    content = models.CharField(max_length=40, blank=True)
+    volume_format = models.CharField(max_length=40, blank=True)
+    size_bytes = models.BigIntegerField(null=True, blank=True)
+    used_bytes = models.BigIntegerField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    observed_volume_generation = models.UUIDField()
+    based_on_metadata_generation = models.UUIDField()
+    last_seen_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["cluster_storage__storage_id", "node", "volid"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cluster_storage", "node", "volid"],
+                name="unique_cluster_storage_volume_observation",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["cluster_storage", "observed_volume_generation"],
+                name="core_csvol_generation_idx",
+            ),
+            models.Index(fields=["vmid"], name="core_csvol_vmid_idx"),
+            models.Index(fields=["content"], name="core_csvol_content_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.cluster_storage}@{self.node}: {self.volid}"
 
 
 class ScanRun(TimestampedModel):
@@ -954,6 +1154,13 @@ class TrashItem(TimestampedModel):
     original_path = models.CharField(max_length=1024)
     trash_path = models.CharField(max_length=1024)
     storage_id = models.CharField(max_length=120, blank=True)
+    mount = models.ForeignKey(
+        StorageMount,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="trash_items",
+    )
     moved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -979,8 +1186,14 @@ class TrashItem(TimestampedModel):
         return self.original_path
 
     def save(self, *args, **kwargs):
+        if self.mount_id and not self.storage_id:
+            self.storage_id = self.mount.storage_id
         if not self.storage_id and isinstance(self.metadata, dict):
             self.storage_id = _details_text(self.metadata, "storage_id", 120)
+        if not self.mount_id and self.storage_id:
+            matches = list(StorageMount.objects.filter(storage_id=self.storage_id)[:2])
+            if len(matches) == 1:
+                self.mount = matches[0]
         super().save(*args, **kwargs)
 
 

@@ -7,13 +7,15 @@ from pathlib import Path, PurePosixPath
 
 from ..common import *  # noqa: F401,F403
 from .. import common
-from core.models import ProxmoxCluster, StorageMount
+from core.models import ClusterStorageMount, ProxmoxCluster, StorageMount
 from core.services.public_errors import public_exception_message
 from core.services.refs import GuestRef
 from core.services.current_guest_inventory import (
     delete_current_guest,
     update_current_guest_config,
 )
+from core.services.storage_catalog import node_storage_rows, storage_volume_rows
+from core.services.storage_mounts import storage_mount_root
 from .operation_lifecycle import (
     _audit_guest,
     _guest_delete_wait_task,
@@ -100,34 +102,26 @@ def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[di
     """
     if not detail.node:
         return [], [], "The guest's node could not be resolved."
-    error = ""
-    for client in common.cluster_scoped_clients(detail.cluster):
-        try:
-            # A cheap live request also proves this configured endpoint owns the
-            # guest instead of accepting a same-named node on another endpoint.
-            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
-            storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
-        except ProxmoxAPIError as exc:
-            error = public_exception_message(
-                exc,
-                operation="guest_backup_inventory",
-                fallback="Proxmox backup data is temporarily unavailable.",
+    clients = common.cluster_scoped_clients(detail.cluster)
+    if not clients:
+        return [], [], "No Proxmox endpoint could read this guest's backup storage."
+    client = clients[0]
+    storages = node_storage_rows(detail.cluster, detail.node, content="backup")
+    backup_storages = [
+        {"id": str(storage.get("storage") or ""), "label": str(storage.get("storage") or "")}
+        for storage in storages
+        if storage.get("storage") and storage.get("active", 1)
+    ]
+    backups: list[dict] = []
+    incomplete_reason = ""
+    for storage in backup_storages:
+            content, complete, reason = storage_volume_rows(
+                detail.cluster, detail.node, storage["id"], content="backup", vmid=detail.vmid
             )
-            continue
-        backup_storages = [
-            {"id": str(storage.get("storage") or ""), "label": str(storage.get("storage") or "")}
-            for storage in (storages if isinstance(storages, list) else [])
-            if storage.get("storage") and _storage_supports_content(storage, "backup") and storage.get("active", 1)
-        ]
-        backups: list[dict] = []
-        for storage in backup_storages:
-            try:
-                content = client.get(
-                    f"nodes/{quote(detail.node, safe='')}/storage/{quote(storage['id'], safe='')}/content?content=backup&vmid={detail.vmid}"
-                )
-            except ProxmoxAPIError:
+            if not complete:
+                incomplete_reason = reason
                 continue
-            for entry in content if isinstance(content, list) else []:
+            for entry in content:
                 volid = str(entry.get("volid") or "")
                 if not volid:
                     continue
@@ -144,38 +138,23 @@ def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[di
                         "source_node": detail.node,
                     }
                 )
-        backups.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
-        return backups, backup_storages, ""
-    return [], [], error or "No Proxmox endpoint could read this guest's backup storage."
+    backups.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
+    return backups, backup_storages, incomplete_reason
 
 
 def _guest_backup_storages(detail: SimpleNamespace) -> tuple[list[dict], str]:
     """Return backup-capable storage without enumerating every archive."""
     if not detail.node:
         return [], "The guest's node could not be resolved."
-    error = ""
-    for client in common.cluster_scoped_clients(detail.cluster):
-        try:
-            client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
-            storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
-        except ProxmoxAPIError as exc:
-            error = public_exception_message(
-                exc,
-                operation="guest_backup_storage_options",
-                fallback="Proxmox backup storage data is temporarily unavailable.",
-            )
-            continue
-        return (
-            [
-                {"id": str(storage.get("storage") or ""), "label": str(storage.get("storage") or "")}
-                for storage in (storages if isinstance(storages, list) else [])
-                if storage.get("storage")
-                and _storage_supports_content(storage, "backup")
-                and storage.get("active", 1)
-            ],
-            "",
-        )
-    return [], error or "No Proxmox endpoint could read this guest's backup storage."
+    storages = node_storage_rows(detail.cluster, detail.node, content="backup")
+    return (
+        [
+            {"id": str(storage.get("storage") or ""), "label": str(storage.get("storage") or "")}
+            for storage in storages
+            if storage.get("storage") and storage.get("active", 1)
+        ],
+        "" if storages else "No active backup storage is present in the latest catalog.",
+    )
 
 
 def _backup_job_covers(job: dict, vmid: int) -> bool:
@@ -235,7 +214,7 @@ def _submit_guest_backup(request, detail: SimpleNamespace):
         try:
             # Resolve storage through the endpoint that currently owns the guest.
             client.guest_current(node=detail.node, object_type=detail.object_type, vmid=detail.vmid)
-            storages = client.get(f"nodes/{quote(detail.node, safe='')}/storage")
+            storages = node_storage_rows(detail.cluster, detail.node, content="backup")
             match = next(
                 (
                     item
@@ -410,18 +389,39 @@ def _migrate_not_allowed_reason(reason: object) -> str:
     return "not a valid target"
 
 
-def _template_storage_paths(disk_references: list[str]) -> tuple[dict[str, set[str]], str]:
+def _template_storage_paths(
+    disk_references: list[str],
+    *,
+    cluster: ProxmoxCluster,
+    node: str,
+) -> tuple[dict[str, set[str]], str]:
     """Return template-disk paths by storage, limited to app-mounted file storage."""
     mounted_storages = {
-        storage.storage_id: storage
-        for storage in StorageMount.objects.filter(enabled=True).only("storage_id", "path")
+        binding.cluster_storage.storage_id: binding.mount
+        for binding in ClusterStorageMount.objects.select_related(
+            "cluster_storage", "mount"
+        ).filter(
+            cluster_storage__cluster=cluster,
+            cluster_storage__present=True,
+            mount__enabled=True,
+        )
+        if binding.node is None or binding.node == node
     }
+    if not mounted_storages and settings.PVE_TEST_NETWORK_DISABLED:
+        mounted_storages = {
+            storage.storage_id: storage
+            for storage in StorageMount.objects.filter(enabled=True)
+            if StorageMount.objects.filter(
+                storage_id=storage.storage_id, enabled=True
+            ).count()
+            == 1
+        }
     paths: dict[str, set[str]] = {}
     for reference in disk_references:
         storage_id, separator, relative_path = str(reference).partition(":")
         normalized = _normalized_storage_relative_path(relative_path)
         storage = mounted_storages.get(storage_id)
-        if not separator or not normalized or storage is None or not Path(storage.path).is_dir():
+        if not separator or not normalized or storage is None or not storage_mount_root(storage).is_dir():
             return {}, (
                 "Template-to-VM conversion currently supports only disk volumes on configured, mounted file storage. "
                 f"Unsupported volume: {reference}."
@@ -430,22 +430,14 @@ def _template_storage_paths(disk_references: list[str]) -> tuple[dict[str, set[s
     return paths, ""
 
 
-def _template_linked_clone_children(client, node: str, storage_paths: dict[str, set[str]]) -> tuple[list[dict], str]:
+def _template_linked_clone_children(client, node: str, storage_paths: dict[str, set[str]], *, cluster=None) -> tuple[list[dict], str]:
     children: list[dict] = []
     for storage_id, template_paths in storage_paths.items():
-        try:
-            content = client.get(
-                f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content"
-            )
-        except ProxmoxAPIError as exc:
-            public_exception_message(
-                exc,
-                operation="linked_clone_verification",
-                fallback="Linked-clone verification failed.",
-            )
+        if cluster is None:
             return [], f"Could not verify linked clones on storage '{storage_id}'."
-        if not isinstance(content, list):
-            return [], f"Could not verify linked clones on storage '{storage_id}': unexpected Proxmox response."
+        content, complete, _reason = storage_volume_rows(cluster, node, storage_id)
+        if not complete:
+            return [], f"Could not verify linked clones on storage '{storage_id}'."
         for item in content:
             if not isinstance(item, dict):
                 continue
@@ -653,10 +645,7 @@ def _restore_options(cluster) -> tuple[list[dict], list[dict], dict[str, dict[st
             if node_key not in seen_nodes:
                 seen_nodes.add(node_key)
                 nodes.append({"key": node_key, "label": node, "node": node, "endpoint": endpoint})
-            try:
-                storages = client.get(f"nodes/{quote(node, safe='')}/storage")
-            except ProxmoxAPIError:
-                continue
+            storages = node_storage_rows(cluster, node)
             node_types = storage_options.setdefault(node_key, {"vm": [], "ct": []})
             for storage in storages if isinstance(storages, list) else []:
                 storage_id = str(storage.get("storage") or "")
@@ -668,13 +657,12 @@ def _restore_options(cluster) -> tuple[list[dict], list[dict], dict[str, dict[st
                     node_types["ct"].append(storage_id)
                 if not _storage_supports_content(storage, "backup"):
                     continue
-                try:
-                    entries = client.get(
-                        f"nodes/{quote(node, safe='')}/storage/{quote(storage_id, safe='')}/content?content=backup"
-                    )
-                except ProxmoxAPIError:
+                entries, complete, _reason = storage_volume_rows(
+                    cluster, node, storage_id, content="backup"
+                )
+                if not complete:
                     continue
-                for entry in entries if isinstance(entries, list) else []:
+                for entry in entries:
                     volid = str(entry.get("volid") or "")
                     object_type = _backup_archive_type(volid)
                     # Shared backup storage exposes the same archive through
@@ -773,7 +761,7 @@ def _queue_guest_backup_restore(request, archives: list[dict], *, cluster) -> st
     if target_endpoint != str(getattr(client, "endpoint", "")):
         return "The target node must belong to the Proxmox endpoint that exposes the backup archive."
     try:
-        target_storages = client.get(f"nodes/{quote(target_node, safe='')}/storage")
+        target_storages = node_storage_rows(cluster, target_node)
         target_match = next(
             (item for item in (target_storages if isinstance(target_storages, list) else []) if str(item.get("storage") or "") == target_storage),
             None,
@@ -781,10 +769,10 @@ def _queue_guest_backup_restore(request, archives: list[dict], *, cluster) -> st
         content_type = "images" if archive["object_type"] == ProxmoxInventory.ObjectType.VM else "rootdir"
         if not target_match or not target_match.get("active", 1) or not _storage_supports_content(target_match, content_type):
             return f"Storage '{target_storage}' cannot hold {archive['type_label']} disks on {target_node}."
-        archive_entries = client.get(
-            f"nodes/{quote(target_node, safe='')}/storage/{quote(str(archive['storage']), safe='')}/content?content=backup"
+        archive_entries, complete, _reason = storage_volume_rows(
+            cluster, target_node, str(archive["storage"]), content="backup"
         )
-        if not any(str(entry.get("volid") or "") == archive["volid"] for entry in archive_entries if isinstance(entry, dict)):
+        if not complete or not any(str(entry.get("volid") or "") == archive["volid"] for entry in archive_entries):
             return f"Archive {archive['volid']} is not accessible from {target_node}."
     except ProxmoxAPIError as exc:
         return public_exception_message(

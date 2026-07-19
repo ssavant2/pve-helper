@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from django.conf import settings
 from django.urls import reverse
 from django.utils.http import urlencode
 
-from core.models import StorageMount
+from core.models import ClusterStorageMount, StorageMount
 from core.services.classification import extract_disk_references
 
 
@@ -18,20 +19,38 @@ NIC_MODELS = {
 }
 
 
-def _mounted_storage_ids() -> set[str]:
-    return set(StorageMount.objects.filter(enabled=True).values_list("storage_id", flat=True))
+def _mounted_storage_refs(cluster_key: str, node: str) -> dict[str, str]:
+    bindings = (
+        ClusterStorageMount.objects.select_related("cluster_storage", "mount")
+        .filter(
+            cluster_storage__cluster__key=cluster_key,
+            cluster_storage__present=True,
+            mount__enabled=True,
+        )
+        .order_by("cluster_storage__storage_id")
+    )
+    result = {
+        binding.cluster_storage.storage_id: binding.mount.mount_ref
+        for binding in bindings
+        if binding.node is None or binding.node == node
+    }
+    if not result and settings.PVE_TEST_NETWORK_DISABLED:
+        for mount in StorageMount.objects.filter(enabled=True):
+            if StorageMount.objects.filter(storage_id=mount.storage_id, enabled=True).count() == 1:
+                result[mount.storage_id] = mount.mount_ref
+    return result
 
 
 def _storage_link(
     storage_id: str,
     node: str,
     vmid: int,
-    mounted_ids: set[str],
+    mounted_refs: dict[str, str],
     *,
     cluster_key: str,
 ) -> tuple[bool, str, str]:
-    if storage_id in mounted_ids:
-        return True, reverse("core:storage_browser", args=[storage_id]), "Browse files"
+    if storage_id in mounted_refs:
+        return True, reverse("core:storage_browser", args=[mounted_refs[storage_id]]), "Browse files"
     if node:
         base = reverse("core:storage_api_inventory", args=[cluster_key, node, storage_id])
         return False, f"{base}?{urlencode({'vmid': vmid})}", "Storage inventory"
@@ -47,7 +66,7 @@ def guest_disks(
 ) -> tuple[list[dict], list[dict]]:
     """Return (disks, cdroms) parsed from the guest config, each disk carrying a
     storage link (mounted browser vs read-only API inventory)."""
-    mounted_ids = _mounted_storage_ids()
+    mounted_refs = _mounted_storage_refs(cluster_key, node)
     disks: list[dict] = []
     cdroms: list[dict] = []
     for key in sorted(config or {}):
@@ -70,7 +89,7 @@ def guest_disks(
             storage_id,
             node,
             vmid,
-            mounted_ids,
+            mounted_refs,
             cluster_key=cluster_key,
         )
         if mounted and url and "/" in volume:
@@ -143,9 +162,7 @@ def guest_volume_links(
     *,
     cluster_key: str,
 ) -> list[GuestVolumeLink]:
-    mounted_ids = set(
-        StorageMount.objects.filter(enabled=True).values_list("storage_id", flat=True)
-    )
+    mounted_refs = _mounted_storage_refs(cluster_key, node)
     links: list[GuestVolumeLink] = []
     seen: set[str] = set()
     for volid in extract_disk_references(config or {}):
@@ -155,14 +172,14 @@ def guest_volume_links(
         storage_id, _, volume = volid.partition(":")
         if not storage_id:
             continue
-        if storage_id in mounted_ids:
+        if storage_id in mounted_refs:
             links.append(
                 GuestVolumeLink(
                     volid=volid,
                     storage_id=storage_id,
                     volume=volume,
                     mounted=True,
-                    url=reverse("core:storage_browser", args=[storage_id]),
+                    url=reverse("core:storage_browser", args=[mounted_refs[storage_id]]),
                     link_label="Browse files",
                 )
             )

@@ -160,9 +160,10 @@ serves HTTP and neither provisions nor requires a certificate. HTTPS is strongly
 recommended whenever the administration network is not already trusted.
 
 The `nginx` service owns the public app port and proxies normal requests to the
-internal Django/Gunicorn `web` service. Authorized datastore downloads are served
-directly by nginx from read-only storage mounts after Django has performed auth,
-path validation, and audit logging.
+internal Django/Gunicorn `web` service. Authorized datastore downloads use nginx
+only when the mount was captured in nginx's read-only startup manifest; Django
+performs auth, live-mount/path validation and audit first, and transparently streams
+the file itself when a newly propagated mount is not in that manifest yet.
 
 ### Worker topology and resources
 
@@ -251,11 +252,12 @@ The examples use two storages:
 These names are only examples. Use storage IDs that match your Proxmox storage
 configuration.
 
-Recommended initial `/etc/fstab` entries:
+Recommended `/etc/fstab` entries (use `ro` instead of `rw` when the host itself
+must enforce read-only access):
 
 ```fstab
-truenas.example.com:/mnt/tank/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
-truenas.example.com:/mnt/tank/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 ro,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600,x-systemd.requires=network-online.target,x-systemd.after=network-online.target 0 0
+truenas.example.com:/mnt/tank/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 rw,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail 0 0
+truenas.example.com:/mnt/tank/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 rw,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail 0 0
 ```
 
 Apply and verify:
@@ -268,18 +270,43 @@ findmnt -T /mnt/pve-helper/truenas-fs
 findmnt -T /mnt/pve-helper/truenas-vm
 ```
 
-Then recreate the web and worker containers so Docker binds the mounted NFS
-trees, not the empty underlying directories. `worker-bulk` needs the same
-mounts as `worker` because it performs scans and other storage-heavy work:
+Compose binds the single host root from `PVE_HELPER_STORAGE_ROOT` to `/storages`.
+Web, worker and worker-bulk use `rslave`, so a submount added or remounted after
+container start is immediately visible without recreating containers. nginx uses
+a private recursively read-only snapshot; `STORAGE_WRITE_ENABLED` remains the
+operation-level policy gate for the application processes.
+
+The app discovers Proxmox storage definitions from its API catalog independently
+of these mounts. After a file-tree submount exists, register it from **Datastores →
+Register mount** and select the cluster storage plus shared or node-local scope.
+The association is explicit so equal storage IDs in different clusters cannot
+silently collide. The legacy `TRUENAS_*` variables are retained only for one-time
+upgrade import; leave their storage IDs blank on a new installation.
+
+Definitions/node state and volume content have separate periodic costs. The public
+defaults are one and five minutes respectively via
+`STORAGE_METADATA_REFRESH_INTERVAL_MINUTES` and
+`STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES`. Successful storage-affecting operations
+queue an immediate catalog refresh, and a destructive preflight performs a fresh
+scoped read, so operation correctness is not delayed by the slower interval.
+
+After the first deployment, verify propagation by mounting a harmless temporary
+filesystem beneath the host root. It must appear in web/worker without recreation,
+must not enter nginx's private namespace, and nginx's underlying root must remain
+read-only. Remove the temporary mount afterwards. Failure means the deployment
+must not enable storage writes.
+
+For an existing deployment that changed from individual binds to the generic root,
+recreate the services once:
 
 ```bash
 docker compose up -d --force-recreate nginx web worker worker-bulk
 ```
 
-Keep both the host NFS mounts and the Docker bind mounts read-only until you are ready
-to allow upload/trash/restore on a specific storage. When writes are allowed for that
-storage, change both the host mount and the compose bind mount for the affected storage
-to read-write.
+The app checks `/proc/self/mountinfo` for NFS/CIFS/CephFS/GlusterFS registrations.
+If such a submount disappears, the still-present backing directory is rejected as
+`mount unavailable`; the browser and writes never fall through into it. A deliberate
+`dir` registration has a separate profile and does not require a submount.
 
 `nconnect=4` is a good starting point on modern Ubuntu kernels. It lets one NFS mount
 use multiple TCP connections, which can help throughput and parallel directory walks
@@ -299,11 +326,10 @@ To allow writes for a storage:
 
 1. Change the affected host NFS mount from `ro` to `rw`.
 
-2. Change the affected Docker bind mount from `:ro` to `:rw`, then recreate `web` and
-   `worker`. The `nginx` storage mounts should stay read-only; nginx only serves
-   authorized downloads and proxies write requests to Django.
+2. Set `STORAGE_WRITE_ENABLED=true`. The Compose contract already keeps nginx
+   read-only and gives web/workers the access needed for an authorized operation.
 
-`STORAGE_WRITE_ENABLED=false` is still available as a global emergency brake. It hides
+`STORAGE_WRITE_ENABLED=false` is the global emergency brake. It hides
 write controls and rejects write requests even if a storage is mounted read-write.
 `STORAGE_UPLOAD_MAX_SIZE_MB` controls the upload limit; `0` means no app-level limit.
 `FILE_UPLOAD_TEMP_DIR` controls where Django stores multipart upload chunks before the
@@ -319,11 +345,17 @@ FILE_UPLOAD_TEMP_DIR=/storages/truenas-fs/.pve-helper-upload-tmp
 Create that directory on the writable storage and make sure the app UID/GID can write
 to it before testing large uploads.
 
-By default, authorized datastore downloads use `X-Accel-Redirect`:
+By default, authorized datastore downloads use `X-Accel-Redirect` when the mount is
+listed in nginx's read-only startup manifest:
 
 - Django validates the requested storage/path and writes the audit event.
 - The pve-helper nginx sidecar serves the file bytes from a read-only mount.
 - The visible download URL stays the same.
+
+A mount added after nginx started uses Django streaming immediately and becomes
+accelerated after the next ordinary nginx restart/deployment. This fallback is a
+security boundary: Linux/Docker do not force a later `rslave` submount read-only in
+an already-running namespace, even with recursive read-only requested.
 
 Set `STORAGE_DOWNLOAD_ACCEL_ENABLED=false` to fall back to Django/Gunicorn streaming.
 When fallback streaming is used, keep `GUNICORN_TIMEOUT` high enough for the largest

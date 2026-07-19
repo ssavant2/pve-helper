@@ -39,16 +39,19 @@ services:
       NGINX_SEND_TIMEOUT: ${NGINX_SEND_TIMEOUT:-86400s}
       # Optional IP/CIDR of the external reverse proxy trusted for XFF/proto.
       NGINX_TRUSTED_PROXY: ${NGINX_TRUSTED_PROXY:-127.0.0.1}
-      TRUENAS_FS_STORAGE_ID: ${TRUENAS_FS_STORAGE_ID:-nfs-fs}
-      TRUENAS_VM_STORAGE_ID: ${TRUENAS_VM_STORAGE_ID:-nfs-vm}
-      TRUENAS_FS_CONTAINER_PATH: ${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}
-      TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
     ports:
       - "${APP_PORT:-21080}:80"
     volumes:
       - ./docker/nginx/templates:/etc/nginx/templates:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}:ro
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}:ro
+      - ./docker/nginx/15-storage-accel-manifest.sh:/docker-entrypoint.d/15-storage-accel-manifest.sh:ro
+      - storage_accel_state:/storage-accel-state
+      - type: bind
+        source: ${PVE_HELPER_STORAGE_ROOT:-./dev-storage}
+        target: /storages
+        read_only: true
+        bind:
+          propagation: rprivate
+          recursive: readonly
     read_only: true
     tmpfs:
       - /etc/nginx/conf.d
@@ -125,13 +128,15 @@ services:
       SCHEDULED_ACTION_POLL_INTERVAL_SECONDS: ${SCHEDULED_ACTION_POLL_INTERVAL_SECONDS:-5}
       SCHEDULED_ACTION_RUN_RETENTION_DAYS: ${SCHEDULED_ACTION_RUN_RETENTION_DAYS:-90}
       CONSOLE_SESSION_RETENTION_HOURS: ${CONSOLE_SESSION_RETENTION_HOURS:-24}
-      TRUENAS_FS_STORAGE_ID: ${TRUENAS_FS_STORAGE_ID:-nfs-fs}
-      TRUENAS_VM_STORAGE_ID: ${TRUENAS_VM_STORAGE_ID:-nfs-vm}
+      TRUENAS_FS_STORAGE_ID: ${TRUENAS_FS_STORAGE_ID:-}
+      TRUENAS_VM_STORAGE_ID: ${TRUENAS_VM_STORAGE_ID:-}
       TRUENAS_FS_EXPORT: ${TRUENAS_FS_EXPORT:-}
       TRUENAS_VM_EXPORT: ${TRUENAS_VM_EXPORT:-}
       TRUENAS_FS_CONTAINER_PATH: ${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}
       TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
       STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-true}
+      STORAGE_METADATA_REFRESH_INTERVAL_MINUTES: ${STORAGE_METADATA_REFRESH_INTERVAL_MINUTES:-1}
+      STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES: ${STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES:-5}
       STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
       FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:-/storages/truenas-fs/.pve-helper-upload-tmp}
       STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
@@ -149,8 +154,12 @@ services:
       TZ: ${TZ:-Europe/Stockholm}
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
+      - storage_accel_state:/storage-accel-state:ro
+      - type: bind
+        source: ${PVE_HELPER_STORAGE_ROOT:-./dev-storage}
+        target: /storages
+        bind:
+          propagation: rslave
     read_only: true
     tmpfs:
       - /tmp
@@ -272,13 +281,15 @@ services:
       SCHEDULED_ACTION_POLL_INTERVAL_SECONDS: ${SCHEDULED_ACTION_POLL_INTERVAL_SECONDS:-5}
       SCHEDULED_ACTION_RUN_RETENTION_DAYS: ${SCHEDULED_ACTION_RUN_RETENTION_DAYS:-90}
       CONSOLE_SESSION_RETENTION_HOURS: ${CONSOLE_SESSION_RETENTION_HOURS:-24}
-      TRUENAS_FS_STORAGE_ID: ${TRUENAS_FS_STORAGE_ID:-nfs-fs}
-      TRUENAS_VM_STORAGE_ID: ${TRUENAS_VM_STORAGE_ID:-nfs-vm}
+      TRUENAS_FS_STORAGE_ID: ${TRUENAS_FS_STORAGE_ID:-}
+      TRUENAS_VM_STORAGE_ID: ${TRUENAS_VM_STORAGE_ID:-}
       TRUENAS_FS_EXPORT: ${TRUENAS_FS_EXPORT:-}
       TRUENAS_VM_EXPORT: ${TRUENAS_VM_EXPORT:-}
       TRUENAS_FS_CONTAINER_PATH: ${TRUENAS_FS_CONTAINER_PATH:-/storages/truenas-fs}
       TRUENAS_VM_CONTAINER_PATH: ${TRUENAS_VM_CONTAINER_PATH:-/storages/truenas-vm}
       STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-true}
+      STORAGE_METADATA_REFRESH_INTERVAL_MINUTES: ${STORAGE_METADATA_REFRESH_INTERVAL_MINUTES:-1}
+      STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES: ${STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES:-5}
       STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
       FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:-/storages/truenas-fs/.pve-helper-upload-tmp}
       STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
@@ -296,8 +307,11 @@ services:
       - "10001"
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
-      - ${TRUENAS_FS_HOST_PATH:-./dev-storage/truenas-fs}:/storages/truenas-fs:ro
-      - ${TRUENAS_VM_HOST_PATH:-./dev-storage/truenas-vm}:/storages/truenas-vm:ro
+      - type: bind
+        source: ${PVE_HELPER_STORAGE_ROOT:-./dev-storage}
+        target: /storages
+        bind:
+          propagation: rslave
     healthcheck:
       test: ["CMD", "python", "/app/scripts/worker_healthcheck.py"]
       interval: 30s
@@ -335,6 +349,7 @@ services:
 
 volumes:
   postgres_data:
+  storage_accel_state:
 
 networks:
   default:

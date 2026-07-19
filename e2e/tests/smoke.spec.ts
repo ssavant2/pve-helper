@@ -14,6 +14,7 @@ const PAGES = [
   { name: "Add cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
+  { name: "Datastores", path: "/datastores/" },
   { name: "Audit log", path: "/audit/" },
 ];
 

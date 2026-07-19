@@ -58,15 +58,10 @@ server {
         return 200 "ok\n";
     }
 
-    location /_pve_helper_download/${TRUENAS_FS_STORAGE_ID}/ {
+    location /_pve_helper_download/ {
         internal;
-        alias ${TRUENAS_FS_CONTAINER_PATH}/;
-        add_header X-Accel-Buffering no always;
-    }
-
-    location /_pve_helper_download/${TRUENAS_VM_STORAGE_ID}/ {
-        internal;
-        alias ${TRUENAS_VM_CONTAINER_PATH}/;
+        alias /storages/;
+        disable_symlinks on from=/storages;
         add_header X-Accel-Buffering no always;
     }
 

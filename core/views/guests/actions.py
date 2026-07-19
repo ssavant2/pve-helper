@@ -551,11 +551,17 @@ def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str,
     disk_references = extract_disk_references(fresh_config)
     if not disk_references:
         return "This template has no supported disk volumes to validate.", audit_details, None, client
-    storage_paths, storage_error = _template_storage_paths(disk_references)
+    storage_paths, storage_error = _template_storage_paths(
+        disk_references,
+        cluster=detail.cluster,
+        node=detail.node,
+    )
     if storage_error:
         return storage_error, audit_details, None, client
 
-    children, child_error = _template_linked_clone_children(client, detail.node, storage_paths)
+    children, child_error = _template_linked_clone_children(
+        client, detail.node, storage_paths, cluster=detail.cluster
+    )
     if child_error:
         return child_error, audit_details, None, client
     if children:

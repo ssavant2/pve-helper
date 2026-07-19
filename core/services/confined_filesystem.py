@@ -80,6 +80,15 @@ def regular_file_exists(root: str | Path, relative_path: str) -> bool:
 @contextmanager
 def open_regular_file(root: str | Path, relative_path: str) -> Iterator[BinaryIO]:
     """Open one regular file without following any untrusted symlink."""
+    handle = open_regular_file_handle(root, relative_path)
+    try:
+        yield handle
+    finally:
+        handle.close()
+
+
+def open_regular_file_handle(root: str | Path, relative_path: str) -> BinaryIO:
+    """Open one regular file beneath root; the caller owns the returned handle."""
     parts = PurePosixPath(normalized_relative_path(relative_path)).parts
     parent_fd = _open_parent(root, parts[:-1])
     file_fd = -1
@@ -91,9 +100,9 @@ def open_regular_file(root: str | Path, relative_path: str) -> Iterator[BinaryIO
         file_stat = os.fstat(file_fd)
         if not stat.S_ISREG(file_stat.st_mode):
             raise ConfinedFilesystemError("Path does not identify a regular file.")
-        with os.fdopen(file_fd, "rb", closefd=True) as handle:
-            file_fd = -1
-            yield handle
+        handle = os.fdopen(file_fd, "rb", closefd=True)
+        file_fd = -1
+        return handle
     finally:
         if file_fd >= 0:
             os.close(file_fd)

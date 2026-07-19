@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Register host mount</h1>
+      <p>Associate an existing directory below <code>/storages</code> with one Proxmox datastore.</p>
+    </div>
+    <div class="page-actions"><a class="button button-secondary" href="{% url 'core:datastores' %}">Back</a></div>
+  </section>
+
+  {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
+  {% if registered %}<section class="panel notice notice-success"><p>Mount <strong>{{ registered.display_name }}</strong> is registered. The event is recorded in Audit.</p></section>{% endif %}
+  {% if removed %}<section class="panel notice notice-success"><p>The mount association was removed. The event is recorded in Audit.</p></section>{% endif %}
+
+  <section class="panel">
+    <h2>Registered associations</h2>
+    <table class="data-table compact-table">
+      <thead><tr><th>Cluster</th><th>Datastore</th><th>Scope</th><th>Host mount</th><th></th></tr></thead>
+      <tbody>
+        {% for binding in bindings %}
+          <tr>
+            <td>{{ binding.cluster_storage.cluster.display_name }}</td>
+            <td>{{ binding.cluster_storage.storage_id }}</td>
+            <td>{{ binding.node|default:"Shared" }}</td>
+            <td>{{ binding.mount.display_name }} <span class="subline">/storages/{{ binding.mount.relative_path }}</span></td>
+            <td class="row-actions">
+              <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="remove_binding">
+                <input type="hidden" name="binding_id" value="{{ binding.pk }}">
+                <button class="icon-button danger" type="submit" title="Remove association" aria-label="Remove mount association"><i data-lucide="unlink" aria-hidden="true"></i></button>
+              </form>
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5" class="empty-state">No host mounts are associated yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel form-panel">
+    <form method="post" class="stacked-form">
+      {% csrf_token %}
+      <div class="form-grid two-column">
+        <label>Cluster datastore
+          <select name="cluster_storage" required>
+            <option value="">Choose a datastore…</option>
+            {% for definition in definitions %}<option value="{{ definition.pk }}">{{ definition.cluster.display_name }} · {{ definition.storage_id }} ({{ definition.storage_type }})</option>{% endfor %}
+          </select>
+        </label>
+        <label>Visible host mount
+          <select name="relative_path" required>
+            <option value="">Choose a directory…</option>
+            {% for candidate in candidates %}<option value="{{ candidate.relative_path }}">/storages/{{ candidate.relative_path }} · {{ candidate.filesystem_type }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Display name<input name="display_name" required placeholder="Production NFS"></label>
+        <label>Node (node-local storage only)<input name="node" placeholder="pve1"></label>
+        <label class="form-span-2">Backend/export identity<input name="backend_identity" required placeholder="server:/export or other operator-verified identity"><span class="field-help">Required for safe cross-cluster checks. Use the same normalized value only when two definitions genuinely expose the same backend.</span></label>
+      </div>
+      <div class="form-actions"><button class="button" type="submit">Register mount</button></div>
+    </form>
+  </section>
+{% endblock %}

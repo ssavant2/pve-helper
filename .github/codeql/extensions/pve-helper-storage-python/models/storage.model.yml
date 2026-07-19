@@ -1,0 +1,29 @@
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      # These functions accept only ordinary relative components and resolve
+      # them beneath the fixed /storages container root. Files below that root
+      # are opened descriptor-relatively by confined_filesystem.py.
+      - ["core", "Member[services].Member[storage_mounts].Member[normalized_relative_path].ReturnValue", "path-injection"]
+      - ["core", "Member[services].Member[storage_mounts].Member[storage_mount_root].ReturnValue", "path-injection"]
+      - ["core", "Member[services].Member[storage_mounts].Member[storage_mount_root].Argument[0,mount:]", "path-injection"]
+      - ["core", "Member[services].Member[storage_mounts].Member[storage_trash_root].ReturnValue", "path-injection"]
+      - ["core", "Member[services].Member[storage_paths].Member[normalized_relative_path].ReturnValue", "path-injection"]
+      - ["core", "Member[services].Member[storage_paths].Member[storage_mount_root].ReturnValue", "path-injection"]
+      - ["core", "Member[services].Member[storage_paths].Member[storage_trash_root].ReturnValue", "path-injection"]
+      - ["core", "Member[services].Member[confined_filesystem].Member[normalized_relative_path].ReturnValue", "path-injection"]
+      - ["core", "Member[services].Member[confined_filesystem].Member[confined_relative_path].ReturnValue", "path-injection"]
+      - ["core.services.storage_mounts", "Member[storage_mount_root].ReturnValue", "path-injection"]
+      - ["core.services.storage_mounts", "Member[storage_mount_root].Argument[0,mount:]", "path-injection"]
+      - ["core.services.storage_mounts", "Member[storage_trash_root].ReturnValue", "path-injection"]
+      - ["core.services.storage_paths", "Member[normalized_relative_path].ReturnValue", "path-injection"]
+      - ["core.services.storage_paths", "Member[storage_mount_root].ReturnValue", "path-injection"]
+      - ["core.services.storage_paths", "Member[storage_trash_root].ReturnValue", "path-injection"]
+      - ["core.services.filesystem", "Member[storage_space_info].Argument[0,path:]", "path-injection"]
+      - ["core", "Member[services].Member[filesystem].Member[storage_space_info].Argument[0,path:]", "path-injection"]
+      # qemu-img is always executed without a shell. The only modeled value is
+      # a file path already confined below a validated storage mount.
+      - ["core", "Member[services].Member[storage_mounts].Member[storage_mount_root].ReturnValue", "command-injection"]
+      - ["core.services.storage_mounts", "Member[storage_mount_root].ReturnValue", "command-injection"]

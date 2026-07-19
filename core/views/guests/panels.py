@@ -1,6 +1,7 @@
 """Guest read-only tabs: datastores, networks, agent — extracted from _core."""
 from ..common import *  # noqa: F401,F403
 from .. import common
+from core.models import ClusterStorageMount
 from .presenters import _config_ip_addresses, _with_network_ip_addresses
 from .read_model_support import (_guest_agent_summary,_guest_api_get,_guest_tab_context,_require_guest)
 
@@ -14,7 +15,17 @@ def guest_datastores(request, cluster_key: str, object_type: str, vmid: int):
         detail.vmid,
         cluster_key=detail.cluster_key,
     )
-    mounts = {m.storage_id: m for m in StorageMount.objects.all()}
+    mounts = {
+        binding.cluster_storage.storage_id: binding.mount
+        for binding in ClusterStorageMount.objects.select_related(
+            "cluster_storage", "mount"
+        ).filter(
+            cluster_storage__cluster__key=detail.cluster_key,
+            cluster_storage__present=True,
+            mount__enabled=True,
+        )
+        if binding.node is None or binding.node == detail.node
+    }
     by_storage: dict[str, dict] = {}
     for disk in disks:
         entry = by_storage.setdefault(

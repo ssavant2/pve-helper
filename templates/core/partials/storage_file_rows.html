@@ -3,7 +3,7 @@
   <tr class="file-row parent-row" data-file-search="..">
     <td class="select-column"></td>
     <td class="browser-name">
-      <a href="{% url 'core:storage_browser' storage.storage_id %}{% if parent_path %}?path={{ parent_path|urlencode }}{% endif %}">
+      <a href="{% url 'core:storage_browser' storage.mount_ref %}{% if parent_path %}?path={{ parent_path|urlencode }}{% endif %}">
         <span class="file-icon"><i data-lucide="corner-up-left" aria-hidden="true"></i></span>
         <span>..</span>
       </a>
@@ -36,7 +36,7 @@
     data-requires-risk-confirmation="{% if entry.action_requires_extra_confirmation %}true{% else %}false{% endif %}"
     data-inflate-risk-message="{{ entry.inflate_warning_message }}"
     data-inflate-requires-risk-confirmation="{% if entry.inflate_requires_extra_confirmation %}true{% else %}false{% endif %}"
-    data-download-url="{% if entry.entry_type == 'file' %}{% url 'core:storage_download' storage.storage_id %}?path={{ entry.path|urlencode }}{% endif %}"
+    data-download-url="{% if entry.entry_type == 'file' %}{% url 'core:storage_download' storage.mount_ref %}?path={{ entry.path|urlencode }}{% endif %}"
     data-file-search="{{ entry.name|lower }} {{ entry.path|lower }} {{ entry.content_category|lower }} {{ entry.classification|lower }}"
   >
     <td class="select-column">
@@ -44,7 +44,7 @@
     </td>
     <td class="browser-name">
       {% if entry.entry_type == "directory" %}
-        <a href="{% url 'core:storage_browser' storage.storage_id %}?path={{ entry.path|urlencode }}">
+        <a href="{% url 'core:storage_browser' storage.mount_ref %}?path={{ entry.path|urlencode }}">
           <span class="file-icon directory"><i data-lucide="folder" aria-hidden="true"></i></span>
           <span>{{ entry.name }}</span>
         </a>
@@ -58,7 +58,7 @@
           <span class="file-icon"><i data-lucide="file" aria-hidden="true"></i></span>
           <span class="browser-entry-name">{{ entry.name }}</span>
           {% if entry.content_category == "backup" %}
-            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:guest_backup_restore' cluster.key %}?storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Restore this backup archive in {{ cluster.display_name }}" aria-label="Restore {{ entry.name }} in {{ cluster.display_name }}">
+            {% for cluster in storage.backup_restore_clusters %}<a class="browser-import-action" href="{% url 'core:guest_backup_restore' cluster.key %}?storage={{ cluster.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Restore this backup archive in {{ cluster.display_name }}" aria-label="Restore {{ entry.name }} in {{ cluster.display_name }}">
               <i data-lucide="rotate-ccw" aria-hidden="true"></i>
             </a>{% endfor %}
           {% endif %}
@@ -68,12 +68,12 @@
                 <i data-lucide="box" aria-hidden="true"></i>
               </a>{% endfor %}
             {% endif %}
-            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:register_vm' cluster.key %}?mode=import&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM in {{ cluster.display_name }} (copies the disk to a target storage)" aria-label="Import {{ entry.name }} as a new VM in {{ cluster.display_name }}">
+            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:register_vm' cluster.key %}?mode=import&amp;storage={{ storage.mount_ref|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import as a new VM in {{ cluster.display_name }} (copies the disk to a target storage)" aria-label="Import {{ entry.name }} as a new VM in {{ cluster.display_name }}">
               <i data-lucide="package-plus" aria-hidden="true"></i>
             </a>{% endfor %}
           {% endif %}
           {% if entry.name|is_ovf_package %}
-            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:register_vm' cluster.key %}?mode=ovf&amp;storage={{ storage.storage_id|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import OVA/OVF package as a new VM in {{ cluster.display_name }}" aria-label="Import {{ entry.name }} as a new VM in {{ cluster.display_name }}">
+            {% for cluster in app_enabled_clusters %}<a class="browser-import-action" href="{% url 'core:register_vm' cluster.key %}?mode=ovf&amp;storage={{ storage.mount_ref|urlencode }}&amp;path={{ entry.path|urlencode }}" title="Import OVA/OVF package as a new VM in {{ cluster.display_name }}" aria-label="Import {{ entry.name }} as a new VM in {{ cluster.display_name }}">
               <i data-lucide="package-plus" aria-hidden="true"></i>
             </a>{% endfor %}
           {% endif %}

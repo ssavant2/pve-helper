@@ -2,6 +2,10 @@ from django.contrib import admin
 
 from .models import (
     AuditEvent,
+    ClusterStorage,
+    ClusterStorageMount,
+    ClusterStorageNodeState,
+    ClusterStorageVolumeObservation,
     CurrentGuestInventory,
     CurrentGuestInventoryState,
     FileInventory,
@@ -13,8 +17,43 @@ from .models import (
     ScheduledAction,
     ScheduledActionRun,
     StorageMount,
+    StorageCatalogState,
     TrashItem,
 )
+
+
+@admin.register(ClusterStorage)
+class ClusterStorageAdmin(admin.ModelAdmin):
+    list_display = ("cluster", "storage_id", "storage_type", "shared", "disabled", "present", "last_seen_at")
+    list_filter = ("cluster", "storage_type", "shared", "disabled", "present")
+    search_fields = ("cluster__key", "storage_id")
+    readonly_fields = ("observed_metadata_generation", "last_seen_at", "created_at", "updated_at")
+
+
+@admin.register(ClusterStorageNodeState)
+class ClusterStorageNodeStateAdmin(admin.ModelAdmin):
+    list_display = ("cluster_storage", "node", "active", "enabled", "present", "available_bytes")
+    list_filter = ("active", "enabled", "present")
+    search_fields = ("cluster_storage__cluster__key", "cluster_storage__storage_id", "node")
+
+
+@admin.register(ClusterStorageMount)
+class ClusterStorageMountAdmin(admin.ModelAdmin):
+    list_display = ("cluster_storage", "scope", "node", "mount")
+    list_filter = ("scope",)
+
+
+@admin.register(ClusterStorageVolumeObservation)
+class ClusterStorageVolumeObservationAdmin(admin.ModelAdmin):
+    list_display = ("cluster_storage", "node", "volid", "vmid", "content", "last_seen_at")
+    list_filter = ("content",)
+    search_fields = ("cluster_storage__cluster__key", "cluster_storage__storage_id", "volid", "=vmid")
+
+
+@admin.register(StorageCatalogState)
+class StorageCatalogStateAdmin(admin.ModelAdmin):
+    list_display = ("cluster", "metadata_complete", "metadata_refreshed_at", "volume_complete", "volume_refreshed_at")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(OidcIdentity)

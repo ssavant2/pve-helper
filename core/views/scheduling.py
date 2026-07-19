@@ -7,6 +7,7 @@ from . import common
 from ..models import ProxmoxCluster
 from ..services.public_errors import public_exception_message
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
+from ..services.storage_mounts import resolve_storage_mount
 from ..services.refs import GuestRef, RefParseError
 from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
 
@@ -493,7 +494,10 @@ def _requested_scan_storage(request) -> StorageMount | None:
     storage_id = request.POST.get("storage_id", "").strip()
     if not storage_id:
         return None
-    return get_object_or_404(StorageMount, storage_id=storage_id, enabled=True)
+    try:
+        return resolve_storage_mount(storage_id, enabled=True)
+    except StorageMount.DoesNotExist as exc:
+        raise Http404("Storage mount not found.") from exc
 
 
 def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict, errors: list[str], mode: str) -> dict:

@@ -10,6 +10,7 @@ from core.services.durable_guest_operations import (
     client_for_audit_event,
 )
 from core.services.proxmox import clear_live_guest_caches
+from core.services.storage_mounts import resolve_storage_mount
 from core.services.vm_register import import_ovf_package_as_vm
 
 
@@ -17,8 +18,9 @@ def import_ovf_package_task(
     audit_event_id: int,
     node: str = "",
     params: dict | None = None,
-    source_storage_id: str = "",
+    source_mount_ref: str = "",
     source_path: str = "",
+    source_storage_id: str = "",
 ) -> None:
     """Import all OVF disks and keep one audit event current throughout."""
     event = AuditEvent.objects.filter(pk=audit_event_id).first()
@@ -34,7 +36,12 @@ def import_ovf_package_task(
         return
     node = node or ref.node
     params = params if isinstance(params, dict) else details.get("params", {})
-    source_storage_id = source_storage_id or str(details.get("source_storage_id") or "")
+    source_mount_ref = (
+        source_mount_ref
+        or str(details.get("source_mount_ref") or "")
+        or source_storage_id
+        or str(details.get("source_storage_id") or "")
+    )
     source_path = source_path or str(details.get("source_path") or "")
     if not node or not isinstance(params, dict):
         event.outcome = "failed"
@@ -51,8 +58,9 @@ def import_ovf_package_task(
         event.details = details
         event.save(update_fields=["details"])
 
-    storage = StorageMount.objects.filter(storage_id=source_storage_id, enabled=True).first()
-    if storage is None:
+    try:
+        storage = resolve_storage_mount(source_mount_ref, enabled=True)
+    except StorageMount.DoesNotExist:
         event.outcome = "failed"
         details.update({"error": "Source storage is no longer available.", "finished_at": timezone.now().isoformat()})
         event.details = details

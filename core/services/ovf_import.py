@@ -17,6 +17,7 @@ from pathlib import PurePosixPath
 from typing import BinaryIO
 
 from core.models import StorageMount
+from core.services.storage_mounts import storage_mount_root
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     confined_relative_path,
@@ -78,20 +79,22 @@ def parse_ovf_package(storage: StorageMount, source_path: str, *, validate_manif
     if suffix not in {".ovf", ".ova"}:
         raise OvfImportError("Select an .ova or .ovf package.")
     if suffix == ".ova":
+        root = str(storage_mount_root(storage))
         metadata, members, manifest = _read_ova(
-            storage.path,
+            root,
             relative_source,
             validate_manifest=validate_manifest,
         )
         kind = "ova"
     else:
-        metadata, manifest = _read_ovf(storage.path, relative_source)
+        root = str(storage_mount_root(storage))
+        metadata, manifest = _read_ovf(root, relative_source)
         kind = "ovf"
     package = _parse_ovf_xml(metadata)
     if kind == "ovf":
-        members = _directory_disk_members(storage.path, relative_source, package.disks)
+        members = _directory_disk_members(root, relative_source, package.disks)
         if validate_manifest and manifest is not None:
-            _validate_directory_manifest(storage.path, relative_source, manifest)
+            _validate_directory_manifest(root, relative_source, manifest)
     _validate_disks(package.disks, members)
     package_name = package.name
     if package_name == "imported-vm":

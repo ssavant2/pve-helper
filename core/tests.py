@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import threading
+import uuid
 import zipfile
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -35,6 +36,9 @@ from core.auth import PveHelperOIDCBackend
 from core.checks import production_startup_errors
 from core.models import (
     AuditEvent,
+    ClusterStorage,
+    ClusterStorageNodeState,
+    ClusterStorageVolumeObservation,
     ConsoleSession,
     CurrentGuestInventory,
     FileInventory,
@@ -48,6 +52,7 @@ from core.models import (
     ScheduledAction,
     ScheduledActionRun,
     StorageMount,
+    StorageCatalogState,
     StorageSpaceSnapshot,
     TrashItem,
 )
@@ -65,6 +70,7 @@ from core.services import runtime_bootstrap
 from core.services.refs import GuestRef, NodeRef, RefParseError
 from core.services.runtime_bootstrap import ensure_bootstrap
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
+from core.services.storage_mounts import MountHealth
 from core.services.proxmox import (
     LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS,
     LIVE_GUEST_INVENTORY_CACHE_SECONDS,
@@ -1208,7 +1214,12 @@ class ClassificationTests(SimpleTestCase):
 
     def test_storage_space_info_reads_capacity_for_existing_path(self):
         with TemporaryDirectory() as tmp:
-            info = storage_space_info(tmp)
+            storage = StorageMount(
+                storage_id="space-info",
+                display_name="space-info",
+                path=tmp,
+            )
+            info = storage_space_info(storage)
 
         self.assertTrue(info.ok)
         self.assertGreater(info.total_bytes or 0, 0)
@@ -1595,8 +1606,7 @@ class ConcurrentBootstrapTests(TransactionTestCase):
 
 
 class LocalDatastoreNavTests(TestCase):
-    """Sidebar 'Local Datastores' tree is built from the latest scan's
-    non-shared storage inventory, grouped by node."""
+    """Sidebar local datastores come from the current catalog projection."""
 
     def test_groups_local_storages_by_node_and_excludes_shared(self):
         from core.services.local_datastores import local_datastore_nav
@@ -1605,24 +1615,13 @@ class LocalDatastoreNavTests(TestCase):
         cluster = ProxmoxCluster.objects.create(
             key="local-storage", display_name="Local storage", enabled=True
         )
-        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-        ProxmoxInventory.objects.create(
-            scan_run=scan, cluster=cluster, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
-            name="local-lvm", config={"type": "lvmthin", "shared": 0, "total": 100, "used": 40, "avail": 60, "active": 1},
-        )
-        ProxmoxInventory.objects.create(
-            scan_run=scan, cluster=cluster, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
-            name="local", config={"type": "dir", "shared": 0, "total": 200, "used": 50, "avail": 150},
-        )
-        ProxmoxInventory.objects.create(
-            scan_run=scan, cluster=cluster, node="pve2", object_type=ProxmoxInventory.ObjectType.STORAGE,
-            name="local", config={"type": "dir", "shared": 0, "total": 0},
-        )
-        # Shared storage must NOT appear under Local Datastores.
-        ProxmoxInventory.objects.create(
-            scan_run=scan, cluster=cluster, node="pve1", object_type=ProxmoxInventory.ObjectType.STORAGE,
-            name="TrueNAS-VM", config={"type": "nfs", "shared": 1},
-        )
+        local_lvm = ClusterStorage.objects.create(cluster=cluster, storage_id="local-lvm", storage_type="lvmthin")
+        local = ClusterStorage.objects.create(cluster=cluster, storage_id="local", storage_type="dir")
+        shared = ClusterStorage.objects.create(cluster=cluster, storage_id="TrueNAS-VM", storage_type="nfs", shared=True)
+        ClusterStorageNodeState.objects.create(cluster_storage=local_lvm, node="pve1", total_bytes=100, used_bytes=40, available_bytes=60, active=True)
+        ClusterStorageNodeState.objects.create(cluster_storage=local, node="pve1", total_bytes=200, used_bytes=50, available_bytes=150, active=True)
+        ClusterStorageNodeState.objects.create(cluster_storage=local, node="pve2", total_bytes=0, active=True)
+        ClusterStorageNodeState.objects.create(cluster_storage=shared, node="pve1", active=True)
 
         tree = local_datastore_nav(use_cache=False, cluster=cluster)
         nodes = {entry["node"]: entry["storages"] for entry in tree}
@@ -2476,6 +2475,7 @@ class ScanTaskTests(TestCase):
             patch("core.tasks.client_for_endpoint", lambda ep: FakeProxmoxClient(ep.url)),
             patch("core.tasks._verify_scan_cluster_identities", return_value=set()),
             patch("core.tasks.StorageScanner", EmptyScanner),
+            patch("core.tasks.registered_mount_health", return_value=Mock(available=True)),
             patch("core.tasks.ensure_bootstrap"),
             patch("core.tasks._prune_scan_history_after_success"),
         ):
@@ -2558,6 +2558,7 @@ class ScanTaskTests(TestCase):
             patch("core.tasks.client_for_endpoint", lambda ep: FakeProxmoxClient(ep.url)),
             patch("core.tasks._verify_scan_cluster_identities", return_value=set()),
             patch("core.tasks.StorageScanner", SingleDiskScanner),
+            patch("core.tasks.registered_mount_health", return_value=Mock(available=True)),
             patch("core.tasks.probe_qemu_image_info", return_value=None),
             patch("core.tasks.ensure_bootstrap"),
             patch("core.tasks._prune_scan_history_after_success"),
@@ -2803,6 +2804,47 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         guest.cluster_key = self.cluster.key
         return guest
 
+    def _seed_volume_catalog(self, storage_id: str, rows: list[dict], *, node: str = "pve1") -> None:
+        metadata_generation = uuid.uuid4()
+        volume_generation = uuid.uuid4()
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id=storage_id,
+            storage_type="dir",
+            content=["images"],
+            shared=False,
+            present=True,
+            observed_metadata_generation=metadata_generation,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node=node,
+            active=True,
+            enabled=True,
+            present=True,
+            observed_metadata_generation=metadata_generation,
+        )
+        for row in rows:
+            ClusterStorageVolumeObservation.objects.create(
+                cluster_storage=definition,
+                node=node,
+                volid=row["volid"],
+                vmid=row.get("vmid"),
+                content="images",
+                metadata=row,
+                observed_volume_generation=volume_generation,
+                based_on_metadata_generation=metadata_generation,
+                last_seen_at=timezone.now(),
+            )
+        StorageCatalogState.objects.create(
+            cluster=self.cluster,
+            metadata_generation=metadata_generation,
+            metadata_complete=True,
+            volume_generation=volume_generation,
+            volume_based_on_metadata_generation=metadata_generation,
+            volume_complete=True,
+        )
+
     def _folder_node_tag(self, response, path: str) -> str:
         html = response.content.decode()
         marker = f'data-folder-path="{path}"'
@@ -3007,7 +3049,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         response = self.client.get(reverse("core:classified_files"), {"classification": "unknown"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "cirros-0.6.2-x86_64-disk.img")
-        browser_url = reverse("core:storage_browser", args=["nfs-vm"])
+        browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
         self.assertContains(response, f'href="{browser_url}?path=images"')
 
         # Likely orphans have their own workspace.
@@ -3258,7 +3300,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             AuditEvent.objects.filter(pk=old_event.pk).update(timestamp=now - timedelta(days=9))
             Schedule.objects.filter(name=SPACE_SNAPSHOT_SCHEDULE_NAME).delete()
 
-            monitor_url = reverse("core:storage_monitor", args=[storage.storage_id])
+            monitor_url = reverse("core:storage_monitor", args=[storage.mount_ref])
             response = self.client.get(monitor_url)
             invalid_page_response = self.client.get(
                 monitor_url,
@@ -3348,8 +3390,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             "core.views.common.fetch_live_guest_status",
             side_effect=AssertionError("storage views must not perform provider status reads"),
         ):
-            response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
-            second_response = self.client.get(reverse("core:storage_vms", args=[storage.storage_id]))
+            response = self.client.get(reverse("core:storage_vms", args=[storage.mount_ref]))
+            second_response = self.client.get(reverse("core:storage_vms", args=[storage.mount_ref]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
@@ -3894,7 +3936,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="vm_disk",
                 classification=FileInventory.Classification.REFERENCED,
             )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=images%2F501"
+            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=images%2F501"
 
             with (
                 patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
@@ -3903,7 +3945,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 patch("core.views.common.async_task", return_value="inflate-task-1") as async_task_mock,
             ):
                 response = self.client.post(
-                    reverse("core:storage_inflate_file", args=[storage.storage_id]),
+                    reverse("core:storage_inflate_file", args=[storage.mount_ref]),
                     {
                         "path": "images/501/vm-501-disk-0.qcow2",
                         "confirm_basic": "yes",
@@ -4405,7 +4447,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             ]
         )
 
-        response = self.client.get(reverse("core:storage_browser", args=[storage.storage_id]))
+        response = self.client.get(reverse("core:storage_browser", args=[storage.mount_ref]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "file-000.iso")
@@ -4415,7 +4457,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "200 of 205")
 
         response = self.client.get(
-            reverse("core:storage_browser", args=[storage.storage_id]),
+            reverse("core:storage_browser", args=[storage.mount_ref]),
             {"file_offset": "200", "file_partial": "1"},
         )
 
@@ -4426,7 +4468,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertFalse(payload["has_next"])
 
         response = self.client.get(
-            reverse("core:storage_browser", args=[storage.storage_id]),
+            reverse("core:storage_browser", args=[storage.mount_ref]),
             {"q": "file-204"},
         )
 
@@ -4829,7 +4871,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         event = AuditEvent.objects.get(action="file.downloaded")
         self.assertEqual(event.username, "viewer")
-        self.assertEqual(event.object_id, "nfs-vm:dump/vzdump-qemu-100.vma.zst")
+        self.assertEqual(event.object_id, f"{storage.mount_ref}:dump/vzdump-qemu-100.vma.zst")
 
     @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=False)
     def test_storage_file_download_supports_http_ranges(self):
@@ -4900,11 +4942,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="backup",
                 classification=FileInventory.Classification.UNKNOWN,
             )
+            manifest = root / "accel-mounts"
+            manifest.write_text("nfs-vm\n", encoding="utf-8")
 
-            response = self.client.get(
-                reverse("core:storage_download", args=["nfs-vm"]),
-                {"path": "dump/backup with space.vma.zst"},
-            )
+            with override_settings(STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH=manifest):
+                response = self.client.get(
+                    reverse("core:storage_download", args=["nfs-vm"]),
+                    {"path": "dump/backup with space.vma.zst"},
+                )
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response["X-Accel-Redirect"], "/_pve_helper_download/nfs-vm/dump/backup%20with%20space.vma.zst")
@@ -5004,12 +5049,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertNotContains(response, "Move to Recycle Bin")
 
             response = self.client.post(
-                reverse("core:storage_upload", args=[storage.storage_id]),
+                reverse("core:storage_upload", args=[storage.mount_ref]),
                 {"file": SimpleUploadedFile("test.txt", b"blocked")},
             )
 
             content_response = self.client.post(
-                reverse("core:storage_content_update", args=[storage.storage_id]),
+                reverse("core:storage_content_update", args=[storage.mount_ref]),
                 {"content": ["images"]},
             )
 
@@ -5029,7 +5074,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
             read_only_info = StorageSpaceInfo(
                 ok=True,
                 access_mode="read_only",
@@ -5038,7 +5083,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 can_write=False,
             )
 
-            with patch("core.views.common.storage_space_info", return_value=read_only_info):
+            read_only_health = MountHealth(True, False, "Mount is read-only.")
+            with (
+                patch("core.views.common.storage_space_info", return_value=read_only_info),
+                patch("core.views.storage.registered_mount_health", return_value=read_only_health),
+            ):
                 response = self.client.get(browser_url)
 
             self.assertEqual(response.status_code, 200)
@@ -5046,9 +5095,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertContains(response, "Read-only")
             self.assertContains(response, "Upload Files")
 
-            with patch("core.services.storage_actions.storage_space_info", return_value=read_only_info):
+            with patch(
+                "core.services.storage_actions.registered_mount_health",
+                return_value=read_only_health,
+            ):
                 response = self.client.post(
-                    reverse("core:storage_upload", args=[storage.storage_id]),
+                    reverse("core:storage_upload", args=[storage.mount_ref]),
                     {
                         "next": browser_url,
                         "file": SimpleUploadedFile("test.txt", b"blocked"),
@@ -5073,7 +5125,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.get(browser_url)
             self.assertContains(response, "Upload")
@@ -5082,7 +5134,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertContains(response, "Upload Folder")
 
             response = self.client.post(
-                reverse("core:storage_upload", args=[storage.storage_id]),
+                reverse("core:storage_upload", args=[storage.mount_ref]),
                 {
                     "path": "",
                     "next": browser_url,
@@ -5094,11 +5146,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertEqual((root / "upload.txt").read_bytes(), b"hello")
             self.assertTrue(FileInventory.objects.filter(scan_run__status=ScanRun.Status.COMPLETED, path="upload.txt").exists())
             event = AuditEvent.objects.get(action="file.uploaded")
-            self.assertEqual(event.object_id, "nfs-vm:upload.txt")
+            self.assertEqual(event.object_id, f"{storage.mount_ref}:upload.txt")
             self.assertIn("Upload file", [task["name"] for task in recent_task_page(limit=10).tasks])
 
             response = self.client.post(
-                reverse("core:storage_upload", args=[storage.storage_id]),
+                reverse("core:storage_upload", args=[storage.mount_ref]),
                 {
                     "path": "",
                     "next": browser_url,
@@ -5124,10 +5176,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_upload_folder", args=[storage.storage_id]),
+                reverse("core:storage_upload_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
                     "next": browser_url,
@@ -5168,10 +5220,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_upload_folder", args=[storage.storage_id]),
+                reverse("core:storage_upload_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
                     "next": browser_url,
@@ -5199,10 +5251,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_upload_folder", args=[storage.storage_id]),
+                reverse("core:storage_upload_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
                     "next": browser_url,
@@ -5233,10 +5285,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_create_folder", args=[storage.storage_id]),
+                reverse("core:storage_create_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
                     "folder_name": "iso-imports",
@@ -5256,7 +5308,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 ).exists()
             )
             event = AuditEvent.objects.get(action="file.folder_created")
-            self.assertEqual(event.object_id, "nfs-vm:iso-imports")
+            self.assertEqual(event.object_id, f"{storage.mount_ref}:iso-imports")
             self.assertIn("Create folder", [task["name"] for task in recent_task_page(limit=10).tasks])
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
@@ -5286,7 +5338,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="trash",
             )
 
-            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            trash_url = reverse("core:storage_trash", args=[storage.mount_ref])
             response = self.client.get(trash_url)
 
             self.assertEqual(response.status_code, 200)
@@ -5336,7 +5388,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="trash",
             )
 
-            response = self.client.get(reverse("core:storage_trash", args=[storage.storage_id]))
+            response = self.client.get(reverse("core:storage_trash", args=[storage.mount_ref]))
 
             self.assertEqual(response.status_code, 200)
             self.assertContains(response, "No restorable files in the Recycle Bin.")
@@ -5359,7 +5411,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
 
-            response = self.client.get(reverse("core:storage_trash", args=[storage.storage_id]))
+            response = self.client.get(reverse("core:storage_trash", args=[storage.mount_ref]))
 
             self.assertEqual(response.status_code, 200)
             self.assertContains(response, "No restorable files in the Recycle Bin.")
@@ -5389,7 +5441,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 moved_at=timezone.now(),
                 metadata={"storage_id": storage.storage_id},
             )
-            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            trash_url = reverse("core:storage_trash", args=[storage.mount_ref])
 
             response = self.client.post(
                 reverse("core:purge_trash_item", args=[trash_item.id]),
@@ -5400,7 +5452,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             trash_item.refresh_from_db()
             self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.PURGED)
             self.assertFalse(trash_file.exists())
-            self.assertEqual(AuditEvent.objects.get(action="file.purged").object_id, "nfs-vm:dump/old.vma.zst")
+            self.assertEqual(AuditEvent.objects.get(action="file.purged").object_id, f"{storage.mount_ref}:dump/old.vma.zst")
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_trash_item_purge_requires_confirmation(self):
@@ -5425,7 +5477,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 moved_at=timezone.now(),
                 metadata={"storage_id": storage.storage_id},
             )
-            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            trash_url = reverse("core:storage_trash", args=[storage.mount_ref])
 
             response = self.client.post(
                 reverse("core:purge_trash_item", args=[trash_item.id]),
@@ -5463,7 +5515,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 moved_at=timezone.now(),
                 metadata={"storage_id": storage.storage_id},
             )
-            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            trash_url = reverse("core:storage_trash", args=[storage.mount_ref])
 
             response = self.client.post(
                 reverse("core:purge_trash_item", args=[trash_item.id]),
@@ -5536,10 +5588,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.LIKELY_ORPHAN,
                 classification_reason="No matching Proxmox disk reference.",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {"path": "dump/orphan.vma.zst", "confirm_basic": "yes", "next": browser_url},
             )
 
@@ -5549,9 +5601,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             trash_path = root / trash_item.trash_path
             self.assertTrue(trash_path.exists())
             self.assertEqual(trash_path.read_bytes(), b"orphan")
-            self.assertEqual(AuditEvent.objects.get(action="file.trashed").object_id, "nfs-vm:dump/orphan.vma.zst")
+            self.assertEqual(AuditEvent.objects.get(action="file.trashed").object_id, f"{storage.mount_ref}:dump/orphan.vma.zst")
 
-            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            trash_url = reverse("core:storage_trash", args=[storage.mount_ref])
             response = self.client.get(trash_url)
             self.assertContains(response, "dump/orphan.vma.zst")
 
@@ -5566,7 +5618,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertTrue(original.exists())
             self.assertEqual(original.read_bytes(), b"orphan")
             self.assertFalse(trash_path.exists())
-            self.assertEqual(AuditEvent.objects.get(action="file.restored").object_id, "nfs-vm:dump/orphan.vma.zst")
+            self.assertEqual(AuditEvent.objects.get(action="file.restored").object_id, f"{storage.mount_ref}:dump/orphan.vma.zst")
             task_names = [task["name"] for task in recent_task_page(limit=10).tasks]
             self.assertIn("Move file to trash", task_names)
             self.assertIn("Restore file", task_names)
@@ -5597,10 +5649,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.UNKNOWN,
                 content_category="unknown",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": "template/iso/upload-folder",
                     "confirm_basic": "yes",
@@ -5616,7 +5668,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertTrue((trash_path / "disk.qcow2").exists())
             self.assertEqual(trash_item.metadata["original_entry_type"], FileInventory.EntryType.DIRECTORY)
 
-            trash_url = reverse("core:storage_trash", args=[storage.storage_id])
+            trash_url = reverse("core:storage_trash", args=[storage.mount_ref])
             response = self.client.post(
                 reverse("core:storage_restore_file", args=[trash_item.id]),
                 {"next": trash_url},
@@ -5652,10 +5704,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.UNKNOWN,
                 content_category="vm_image_directory",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": "images/505",
                     "confirm_basic": "yes",
@@ -5703,10 +5755,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.UNKNOWN,
                 content_category="vm_disk",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": "images/505",
                     "confirm_basic": "yes",
@@ -5749,10 +5801,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     entry_type=FileInventory.EntryType.FILE,
                     classification=FileInventory.Classification.LIKELY_ORPHAN,
                 )
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": ["dump/first.vma.zst", "dump/second.vma.zst"],
                     "confirm_basic": "yes",
@@ -5813,10 +5865,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="vm_disk",
                 classification=FileInventory.Classification.REFERENCED,
             )
-            browser_url = reverse("core:storage_browser", args=[storage.storage_id])
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
 
             response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": "images/100/vm-100-disk-0.qcow2",
                     "confirm_basic": "yes",
@@ -5830,7 +5882,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"):
                 response = self.client.post(
-                    reverse("core:storage_trash_file", args=[storage.storage_id]),
+                    reverse("core:storage_trash_file", args=[storage.mount_ref]),
                     {
                         "path": "images/100/vm-100-disk-0.qcow2",
                         "confirm_basic": "yes",
@@ -5884,12 +5936,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
 
             response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.storage_id]),
+                reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": "images/100/vm-100-disk-0.qcow2",
                     "confirm_basic": "yes",
                     "confirm_risk": "yes",
-                    "next": reverse("core:storage_browser", args=[storage.storage_id]),
+                    "next": reverse("core:storage_browser", args=[storage.mount_ref]),
                 },
             )
 
@@ -5941,10 +5993,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="iso",
                 classification=FileInventory.Classification.UNKNOWN,
             )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=template%2Fiso"
+            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=template%2Fiso"
 
             response = self.client.post(
-                reverse("core:storage_rename_file", args=[storage.storage_id]),
+                reverse("core:storage_rename_file", args=[storage.mount_ref]),
                 {
                     "path": "template/iso/old.iso",
                     "new_name": "new.iso",
@@ -6012,10 +6064,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="iso",
                 classification=FileInventory.Classification.UNKNOWN,
             )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=template%2Fiso"
+            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=template%2Fiso"
 
             response = self.client.post(
-                reverse("core:storage_move_file", args=[storage.storage_id]),
+                reverse("core:storage_move_file", args=[storage.mount_ref]),
                 {
                     "path": "template/iso/move-me.iso",
                     "new_path": "snippets",
@@ -6071,10 +6123,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     content_category=category,
                     classification=FileInventory.Classification.UNKNOWN,
                 )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.storage_id])}?path=template%2Fiso"
+            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=template%2Fiso"
 
             response = self.client.post(
-                reverse("core:storage_move_file", args=[storage.storage_id]),
+                reverse("core:storage_move_file", args=[storage.mount_ref]),
                 {
                     "path": ["template/iso/first.iso", "template/iso/second.iso"],
                     "new_path": "snippets",
@@ -6841,6 +6893,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 raise ProxmoxAPIError(path)
 
         fake_client = self._patch_provider_client(FakeClient())
+        self._seed_volume_catalog("nfs-vm", [])
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         CurrentGuestInventory.objects.filter(object_type="vm", vmid=500).update(
             config=fake_client.guest_config(node="pve1", object_type="vm", vmid=500),
@@ -6925,6 +6978,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 return None
 
         fake_client = self._patch_provider_client(FakeClient())
+        self._seed_volume_catalog("nfs-vm", [])
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -7361,6 +7415,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 path=storage_path,
                 enabled=True,
             )
+            self._seed_volume_catalog(
+                "nfs-vm",
+                [{"vmid": 500, "volid": "nfs-vm:500/base-500-disk-0.qcow2"}],
+            )
 
             class FakeClient:
                 def __init__(self):
@@ -7423,6 +7481,17 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 display_name="NFS VM",
                 path=storage_path,
                 enabled=True,
+            )
+            self._seed_volume_catalog(
+                "nfs-vm",
+                [
+                    {"vmid": 500, "volid": "nfs-vm:500/base-500-disk-0.qcow2"},
+                    {
+                        "vmid": 600,
+                        "volid": "nfs-vm:600/vm-600-disk-0.qcow2",
+                        "parent": "../500/base-500-disk-0.qcow2",
+                    },
+                ],
             )
 
             class FakeClient:
@@ -7690,6 +7759,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 raise ProxmoxAPIError(path)
 
         fake_client = self._patch_provider_client(FakeClient())
+        self._seed_volume_catalog("nfs-vm", [])
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         with (
             patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
@@ -8478,19 +8548,40 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertFalse(StorageSpaceSnapshot.objects.filter(storage=disabled_storage).exists())
 
     def test_record_storage_space_snapshots_records_local_api_storages(self):
-        class FakeClient:
-            def get(self, path, *, timeout=None):
-                if path == "nodes":
-                    return [{"node": "pve1"}]
-                if path == "nodes/pve1/storage":
-                    return [
-                        {"storage": "local-lvm", "shared": 0, "total": 1000, "used": 400, "avail": 600},
-                        {"storage": "cephfs", "shared": 1, "total": 5000, "used": 100, "avail": 4900},
-                    ]
-                raise AssertionError(path)
+        local = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="local-lvm",
+            storage_type="lvmthin",
+            shared=False,
+            present=True,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=local,
+            node="pve1",
+            present=True,
+            active=True,
+            total_bytes=1000,
+            used_bytes=400,
+            available_bytes=600,
+        )
+        shared = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="cephfs",
+            storage_type="cephfs",
+            shared=True,
+            present=True,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=shared,
+            node="pve1",
+            present=True,
+            active=True,
+            total_bytes=5000,
+            used_bytes=100,
+            available_bytes=4900,
+        )
 
-        with patch("core.tasks.cluster_clients", return_value=[FakeClient()]):
-            created = record_storage_space_snapshots()
+        created = record_storage_space_snapshots()
 
         locals_ = StorageSpaceSnapshot.objects.filter(storage__isnull=True)
         self.assertEqual(created, 1)  # only the non-shared storage; shared is skipped
@@ -8542,11 +8633,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             reverse("core:start_scan"),
             {
                 "storage_id": storage.storage_id,
-                "next": reverse("core:storage_browser", args=[storage.storage_id]),
+                "next": reverse("core:storage_browser", args=[storage.mount_ref]),
             },
         )
 
-        self.assertRedirects(response, reverse("core:storage_browser", args=[storage.storage_id]))
+        self.assertRedirects(response, reverse("core:storage_browser", args=[storage.mount_ref]))
         scan = ScanRun.objects.latest("created_at")
         self.assertEqual(scan.target_storage, storage)
         self.assertEqual(scan.target_label, "nfs-fs")
@@ -8677,6 +8768,52 @@ class GuestBackupRestoreTests(TestCase):
             runtime_observed_at=timezone.now(),
         )
 
+    def _seed_storage_catalog(self, *archives: str, nodes=("pve1", "pve2")):
+        metadata_generation = uuid.uuid4()
+        volume_generation = uuid.uuid4()
+        backup = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="backup",
+            storage_type="pbs",
+            content=["backup"],
+            shared=True,
+            observed_metadata_generation=metadata_generation,
+        )
+        images = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="images",
+            storage_type="lvmthin",
+            content=["images"],
+            observed_metadata_generation=metadata_generation,
+        )
+        for node in nodes:
+            ClusterStorageNodeState.objects.create(
+                cluster_storage=backup, node=node, active=True, enabled=True,
+                observed_metadata_generation=metadata_generation,
+            )
+            ClusterStorageNodeState.objects.create(
+                cluster_storage=images, node=node, active=True, enabled=True,
+                observed_metadata_generation=metadata_generation,
+            )
+            for archive in archives:
+                ClusterStorageVolumeObservation.objects.create(
+                    cluster_storage=backup,
+                    node=node,
+                    volid=archive,
+                    content="backup",
+                    observed_volume_generation=volume_generation,
+                    based_on_metadata_generation=metadata_generation,
+                    last_seen_at=timezone.now(),
+                )
+        StorageCatalogState.objects.create(
+            cluster=self.cluster,
+            metadata_generation=metadata_generation,
+            metadata_complete=True,
+            volume_generation=volume_generation,
+            volume_based_on_metadata_generation=metadata_generation,
+            volume_complete=True,
+        )
+
     @staticmethod
     def _guest(*, vmid=500, object_type="vm", node="pve1", name="Lab VM", status="stopped"):
         guest = Mock()
@@ -8688,6 +8825,7 @@ class GuestBackupRestoreTests(TestCase):
         return guest
 
     def test_backup_now_tracks_the_vzdump_upid(self):
+        self._seed_storage_catalog(nodes=("pve1",))
         class FakeClient:
             endpoint = "https://pve1.invalid:8006"
 
@@ -8729,6 +8867,7 @@ class GuestBackupRestoreTests(TestCase):
 
     def test_restore_queues_a_worker_for_a_new_vmid(self):
         archive = "backup:vzdump-qemu-500-2026_07_11-12_00_00.vma.zst"
+        self._seed_storage_catalog(archive, nodes=("pve1",))
 
         class FakeClient:
             endpoint = "https://pve1.invalid:8006"
@@ -8777,6 +8916,7 @@ class GuestBackupRestoreTests(TestCase):
     def test_restore_page_embeds_parseable_storage_options(self):
         archive = "backup:vzdump-qemu-500-2026_07_11-12_00_00.vma.zst"
         other_archive = "backup:vzdump-qemu-507-2026_07_11-12_00_00.vma.zst"
+        self._seed_storage_catalog(archive, other_archive)
 
         class FakeClient:
             endpoint = "https://pve1.invalid:8006"
@@ -8813,6 +8953,7 @@ class GuestBackupRestoreTests(TestCase):
 
     def test_overwrite_uses_fresh_power_state(self):
         archive = "backup:vzdump-qemu-500-2026_07_11-12_00_00.vma.zst"
+        self._seed_storage_catalog(archive, nodes=("pve1",))
 
         class FakeClient:
             endpoint = "https://pve1.invalid:8006"

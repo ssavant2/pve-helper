@@ -31,7 +31,7 @@ class MulticlusterRouteInventoryTests(SimpleTestCase):
         self.assertEqual(source.count('path("vms/<str:cluster_key>/<str:object_type>'), 37)
         self.assertEqual(source.count('path("vms/<str:cluster_key>/'), 40)
         self.assertEqual(source.count('path("vms/<str:object_type>'), 37)
-        self.assertEqual(source.count('path("clusters/<str:cluster_key>/storage-api/'), 8)
+        self.assertEqual(source.count('path("clusters/<str:cluster_key>/storage-api/'), 9)
         self.assertEqual(source.count('path("storage-api/<str:node>/<str:storage>/'), 8)
 
     def test_cluster_scope_is_not_read_from_session_state(self):

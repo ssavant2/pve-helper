@@ -17,6 +17,7 @@ from django_q.tasks import async_task
 
 from .models import (
     AuditEvent,
+    ClusterStorageNodeState,
     FileInventory,
     ProxmoxCluster,
     ProxmoxEndpoint,
@@ -68,6 +69,13 @@ from .services.storage_actions import (
     purge_trash_item,
 )
 from .services.storage_visibility import ignored_relative_paths_for_storage
+from .services.storage_mounts import registered_mount_health, resolve_storage_mount, storage_mount_root
+from .services.storage_catalog import (
+    classify_mounted_volume,
+    refresh_storage_catalog,
+    refresh_storage_metadata,
+    refresh_storage_volumes,
+)
 from .services.task_queues import BULK_QUEUE_NAME, queued_task_ids
 
 
@@ -76,6 +84,40 @@ SPACE_SNAPSHOT_RETENTION_DAYS = 8
 logger = logging.getLogger(__name__)
 
 CURRENT_GUEST_REFRESH_LOCK_ID = 0x50564547554501
+
+
+def refresh_all_storage_metadata() -> dict[str, object]:
+    rows = []
+    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
+        state = refresh_storage_metadata(cluster)
+        rows.append({
+            "cluster_key": cluster.key,
+            "complete": state.metadata_complete,
+            "errors": state.metadata_errors,
+        })
+    return {"clusters": rows, "complete": all(row["complete"] for row in rows) if rows else False}
+
+
+def refresh_all_storage_volumes() -> dict[str, object]:
+    rows = []
+    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
+        state = refresh_storage_volumes(cluster)
+        rows.append({
+            "cluster_key": cluster.key,
+            "complete": state.volume_complete,
+            "errors": state.volume_errors,
+        })
+    return {"clusters": rows, "complete": all(row["complete"] for row in rows) if rows else False}
+
+
+def refresh_storage_catalog_for_cluster(cluster_key: str) -> dict[str, object]:
+    cluster = ProxmoxCluster.objects.get(key=cluster_key, enabled=True)
+    state = refresh_storage_catalog(cluster)
+    return {
+        "cluster_key": cluster.key,
+        "metadata_complete": state.metadata_complete,
+        "volume_complete": state.volume_complete,
+    }
 
 
 def _durable_or_legacy_guest_operation(
@@ -256,10 +298,11 @@ def poll_guest_audit_task(
 
     clear_live_guest_caches(cluster=cluster)
     if event.outcome == "success":
-        enqueue_storage_rescan(details.get("rescan_storage_ids") or [])
+        enqueue_storage_rescan(details.get("rescan_storage_ids") or [], cluster=event.cluster)
+        async_task("core.tasks.refresh_storage_catalog_for_cluster", cluster.key)
 
 
-def enqueue_storage_rescan(storage_ids: list[str]) -> None:
+def enqueue_storage_rescan(storage_ids: list[str], *, cluster: ProxmoxCluster | None = None) -> None:
     """Kick a storage scan scoped to each affected storage so freshly created or
     destroyed guest disks reclassify immediately instead of lingering as orphans
     until the next scheduled scan. Skips storages that already have a scan queued
@@ -270,19 +313,28 @@ def enqueue_storage_rescan(storage_ids: list[str]) -> None:
         if not storage_id or storage_id in seen:
             continue
         seen.add(storage_id)
-        storage = StorageMount.objects.filter(storage_id=storage_id, enabled=True).first()
-        if storage is None:
-            continue
-        if ScanRun.objects.filter(target_storage=storage, status__in=active).exists():
-            continue
-        scan = ScanRun.objects.create(
-            progress_message="Auto-scan after clone/destroy",
-            target_storage=storage,
-            target_label=storage.display_name,
-        )
-        task_id = async_task("core.tasks.run_scan", scan.id, q_options={"cluster": BULK_QUEUE_NAME})
-        scan.queued_task_id = task_id
-        scan.save(update_fields=["queued_task_id", "updated_at"])
+        if cluster is not None:
+            storages = StorageMount.objects.filter(
+                enabled=True,
+                cluster_bindings__cluster_storage__cluster=cluster,
+                cluster_bindings__cluster_storage__storage_id=storage_id,
+            ).distinct()
+        else:
+            # Bounded legacy caller support: only an unambiguous display hint may
+            # resolve without explicit cluster scope.
+            matches = list(StorageMount.objects.filter(storage_id=storage_id, enabled=True)[:2])
+            storages = matches if len(matches) == 1 else []
+        for storage in storages:
+            if ScanRun.objects.filter(target_storage=storage, status__in=active).exists():
+                continue
+            scan = ScanRun.objects.create(
+                progress_message="Auto-scan after clone/destroy",
+                target_storage=storage,
+                target_label=storage.display_name,
+            )
+            task_id = async_task("core.tasks.run_scan", scan.id, q_options={"cluster": BULK_QUEUE_NAME})
+            scan.queued_task_id = task_id
+            scan.save(update_fields=["queued_task_id", "updated_at"])
 
 
 # A guest audit event stuck at outcome="running" longer than this, with no live
@@ -850,9 +902,10 @@ def register_import_vm_task(
     audit_event_id: int,
     node: str = "",
     params: dict | None = None,
-    source_storage_id: str = "",
+    source_mount_ref: str = "",
     source_path: str = "",
     source_volid: str = "",
+    source_storage_id: str = "",
 ) -> None:
     """Worker task: import a disk image into a new VM and record the outcome.
 
@@ -875,7 +928,12 @@ def register_import_vm_task(
         return
     node = node or ref.node
     params = params if isinstance(params, dict) else details.get("params", {})
-    source_storage_id = source_storage_id or str(details.get("source_storage_id") or "")
+    source_mount_ref = (
+        source_mount_ref
+        or str(details.get("source_mount_ref") or "")
+        or source_storage_id
+        or str(details.get("source_storage_id") or "")
+    )
     source_path = source_path or str(details.get("source_path") or "")
     source_volid = source_volid or str(details.get("source_volid") or "")
     if not node or not isinstance(params, dict):
@@ -898,7 +956,7 @@ def register_import_vm_task(
                 cluster=cluster,
             )
         else:
-            storage = StorageMount.objects.get(storage_id=source_storage_id, enabled=True)
+            storage = resolve_storage_mount(source_mount_ref, enabled=True)
             upid, error = import_disk_as_vm(
                 node,
                 params,
@@ -950,7 +1008,16 @@ def _refresh_import_target_inventory(
     new disk before that run's stored Proxmox inventory knows about the VM. That
     briefly and incorrectly classifies the freshly imported disk as an orphan.
     """
-    storage = StorageMount.objects.filter(storage_id=target_storage_id, enabled=True).first()
+    storage = (
+        StorageMount.objects.filter(
+            enabled=True,
+            cluster_bindings__cluster_storage__cluster=cluster,
+            cluster_bindings__cluster_storage__storage_id=target_storage_id,
+        )
+        .filter(Q(cluster_bindings__node=node) | Q(cluster_bindings__node__isnull=True))
+        .distinct()
+        .first()
+    )
     if storage is None:
         return
     scan = (
@@ -1136,59 +1203,32 @@ def _record_local_space_snapshots(recorded_at: datetime) -> int:
     the local-storage Monitor tab gets the same 2x/day time series as the
     mounted ones. Cheap: a couple of calls per node, deduped across endpoints."""
     created = 0
-    seen: set[tuple[str, str, str]] = set()
-    truthy = {"1", "true", "yes", "on"}
-    # `nodes` is cluster-wide, so one answering member covers the cluster and the
-    # per-node reads ride on the endpoint that proved reachable. The old loop asked
-    # every endpoint and deduped the overlap by hand.
-    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
-        clients = cluster_clients(cluster)
-        client = clients[0] if clients else None
-        if client is None:
+    states = ClusterStorageNodeState.objects.select_related(
+        "cluster_storage", "cluster_storage__cluster"
+    ).filter(
+        cluster_storage__cluster__enabled=True,
+        cluster_storage__present=True,
+        cluster_storage__shared=False,
+        present=True,
+    )
+    for state in states:
+        total = state.total_bytes
+        if total is None:
             continue
-        try:
-            nodes = client.get("nodes")
-        except ProxmoxAPIError:
-            nodes = []
-        if not isinstance(nodes, list):
-            nodes = []
-        for node_entry in nodes:
-            node = str((node_entry or {}).get("node") or "")
-            if not node:
-                continue
-            try:
-                storages = client.get(f"nodes/{quote(node, safe='')}/storage")
-            except ProxmoxAPIError:
-                continue
-            for entry in storages or []:
-                if not isinstance(entry, dict):
-                    continue
-                sid = str(entry.get("storage") or "")
-                if not sid or str(entry.get("shared") or "0").lower() in truthy:
-                    continue
-                key = (cluster.key, node, sid)
-                if key in seen:
-                    continue
-                seen.add(key)
-                total = _snapshot_int(entry.get("total"))
-                if total is None:
-                    continue
-                avail = _snapshot_int(entry.get("avail"))
-                used = _snapshot_int(entry.get("used"))
-                if used is None and avail is not None:
-                    used = total - avail
-                StorageSpaceSnapshot.objects.create(
-                    storage=None,
-                    cluster=cluster,
-                    node=node,
-                    api_storage_id=sid,
-                    scan_run=None,
-                    recorded_at=recorded_at,
-                    total_bytes=total,
-                    available_bytes=avail if avail is not None else 0,
-                    used_bytes=used if used is not None else 0,
-                )
-                created += 1
+        avail = state.available_bytes
+        used = state.used_bytes if state.used_bytes is not None else total - (avail or 0)
+        StorageSpaceSnapshot.objects.create(
+            storage=None,
+            cluster=state.cluster_storage.cluster,
+            node=state.node,
+            api_storage_id=state.cluster_storage.storage_id,
+            scan_run=None,
+            recorded_at=recorded_at,
+            total_bytes=total,
+            available_bytes=avail or 0,
+            used_bytes=used,
+        )
+        created += 1
     return created
 
 
@@ -1205,10 +1245,11 @@ def normalize_uploaded_proxmox_image_paths_task(
             username=username,
             action="file.upload_normalized",
             object_type="file",
-            object_id=f"{storage.storage_id}:{', '.join(normalized) if normalized else '-'}",
+            object_id=f"{storage.mount_ref}:{', '.join(normalized) if normalized else '-'}",
             outcome="success" if normalized else "skipped",
             details={
                 "storage_id": storage.storage_id,
+                "mount_ref": storage.mount_ref,
                 "storage_name": storage.display_name,
                 "paths": paths,
                 "normalized": normalized,
@@ -1221,10 +1262,11 @@ def normalize_uploaded_proxmox_image_paths_task(
             username=username,
             action="file.upload_normalize_failed",
             object_type="file",
-            object_id=f"{storage.storage_id}:{', '.join(paths)}",
+            object_id=f"{storage.mount_ref}:{', '.join(paths)}",
             outcome="failed",
             details={
                 "storage_id": storage.storage_id,
+                "mount_ref": storage.mount_ref,
                 "storage_name": storage.display_name,
                 "paths": paths,
                 "error": exc.__class__.__name__,
@@ -1275,10 +1317,11 @@ def inflate_storage_file_task(
             username=username,
             action="file.inflated",
             object_type="file",
-            object_id=f"{storage.storage_id}:{result['path']}",
+            object_id=f"{storage.mount_ref}:{result['path']}",
             outcome="success",
             details={
                 "storage_id": storage.storage_id,
+                "mount_ref": storage.mount_ref,
                 "storage_name": storage.display_name,
                 "path": result["path"],
                 "target_preallocation": result["target_preallocation"],
@@ -1293,10 +1336,11 @@ def inflate_storage_file_task(
             username=username,
             action="file.inflate_failed",
             object_type="file",
-            object_id=f"{storage.storage_id}:{entry.path}",
+            object_id=f"{storage.mount_ref}:{entry.path}",
             outcome="failed",
             details={
                 "storage_id": storage.storage_id,
+                "mount_ref": storage.mount_ref,
                 "storage_name": storage.display_name,
                 "path": entry.path,
                 "target_preallocation": target_preallocation,
@@ -1568,9 +1612,15 @@ def _run_scan(scan: ScanRun) -> None:
         gate_ok = bool(status.get("ok"))
         missing_consumers = list(status.get("missing_consumers") or [])
 
+        health = registered_mount_health(storage)
+        if not health.available:
+            storage_errors[storage.storage_id] = [
+                {"path": "/", "error": health.reason or "Mount unavailable."}
+            ]
+            continue
         scanner = StorageScanner(
             storage.storage_id,
-            storage.path,
+            str(storage_mount_root(storage)),
             ignored_paths=ignored_relative_paths_for_storage(storage),
         )
         for entry in scanner.iter_entries():
@@ -1584,6 +1634,25 @@ def _run_scan(scan: ScanRun) -> None:
                 gate_ok=gate_ok,
                 missing_consumers=missing_consumers,
             )
+            legacy_classification = classification
+            if entry.content_category in {"vm_disk", "base_image"}:
+                catalog_classification = classify_mounted_volume(storage, entry.relative_path)
+                if catalog_classification is not None:
+                    classification = catalog_classification
+                    classification.evidence["comparison"] = {
+                        "legacy": legacy_classification.classification,
+                        "catalog": catalog_classification.classification,
+                        "matched": legacy_classification.classification
+                        == catalog_classification.classification,
+                    }
+                    if legacy_classification.classification != catalog_classification.classification:
+                        logger.info(
+                            "Storage classification comparison differs: mount=%s path=%s legacy=%s catalog=%s",
+                            storage.mount_ref,
+                            entry.relative_path,
+                            legacy_classification.classification,
+                            catalog_classification.classification,
+                        )
             image_info = probe_qemu_image_info(
                 path=entry.full_path,
                 entry_type=entry.entry_type,
@@ -1718,7 +1787,7 @@ def _record_space_snapshots(
 ) -> int:
     created = 0
     for storage in storages:
-        space = storage_space_info(storage.path)
+        space = storage_space_info(storage)
         if space.ok:
             StorageSpaceSnapshot.objects.create(
                 storage=storage,

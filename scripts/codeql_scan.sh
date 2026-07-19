@@ -13,6 +13,8 @@ readonly INSTALL_PATH="${CACHE_ROOT}/codeql-${CODEQL_VERSION}"
 readonly INSTALL_MARKER="${INSTALL_PATH}/.pve-helper-bundle-sha256"
 readonly THREADS="${CODEQL_THREADS:-2}"
 readonly RAM_MB="${CODEQL_RAM_MB:-3072}"
+readonly MODEL_PACK="ssavant2/pve-helper-storage-python"
+readonly MODEL_PACK_ROOT="/workspace/.github/codeql/extensions"
 
 for command in curl docker flock sha256sum tar; do
     if ! command -v "${command}" >/dev/null 2>&1; then
@@ -71,11 +73,16 @@ run_language() {
             sarif="$5"
             threads="$6"
             ram="$7"
+            model_pack_root="$8"
+            model_pack="$9"
             "${codeql}" database create "${database}" \
                 --language="${language}" \
                 --source-root=/workspace \
+                --codescanning-config=/workspace/.github/codeql/codeql-config.yml \
                 --threads="${threads}"
             "${codeql}" database analyze "${database}" "${suite}" \
+                --additional-packs="${model_pack_root}" \
+                --model-packs="${model_pack}" \
                 --format=sarif-latest \
                 --output="${sarif}" \
                 --threads="${threads}" \
@@ -101,7 +108,9 @@ NODE
         "${suite}" \
         "${sarif}" \
         "${THREADS}" \
-        "${RAM_MB}" >"${log_path}" 2>&1; then
+        "${RAM_MB}" \
+        "${MODEL_PACK_ROOT}" \
+        "${MODEL_PACK}" >"${log_path}" 2>&1; then
         grep -F "${language}: " "${log_path}" | tail -n 1
     else
         echo "CodeQL ${language} analysis failed; final log output follows:" >&2
@@ -110,7 +119,22 @@ NODE
     fi
 }
 
-run_language "python" "python-code-scanning.qls"
-run_language "javascript-typescript" "javascript-code-scanning.qls"
+if (( $# == 0 )); then
+    set -- python javascript-typescript
+fi
+for language in "$@"; do
+    case "${language}" in
+        python)
+            run_language "python" "python-code-scanning.qls"
+            ;;
+        javascript-typescript)
+            run_language "javascript-typescript" "javascript-code-scanning.qls"
+            ;;
+        *)
+            echo "Unsupported CodeQL language: ${language}" >&2
+            exit 2
+            ;;
+    esac
+done
 
 echo "CodeQL passed with no findings."

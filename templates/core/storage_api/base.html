@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block content %}
   <div class="storage-object-view">
@@ -9,16 +10,20 @@
           <div>
             <h1>{{ storage }}</h1>
             <p>
-              Local storage on node <strong>{{ node }}</strong>
+              Datastore on node <strong>{{ node }}</strong>
               {% if storage_type %} &middot; {{ storage_type }}{% endif %}
             </p>
           </div>
           <span class="vs-divider"></span>
           <span class="vs-access">
             <span class="vs-access-label">PVE-helper access</span>
-            <span class="badge" title="Local storage cannot be mounted by pve-helper; shown read-only via the Proxmox API">Read-only (API)</span>
+            {% if catalog_view.capabilities.can_browse_files %}<span class="badge completed">Files available</span>{% else %}<span class="badge" title="{{ catalog_view.capabilities.browse_files_reason }}">API inventory</span>{% endif %}
           </span>
         </div>
+        <form method="post" action="{% url 'core:storage_catalog_refresh' cluster_key storage %}" data-storage-catalog-refresh>
+          {% csrf_token %}<button class="vs-header-action" type="submit">Refresh</button>
+          <span class="muted" data-refresh-status aria-live="polite"></span>
+        </form>
       </div>
       <nav class="vs-tabs" aria-label="Datastore views">
         {% for tab in api_storage_tabs %}
@@ -38,4 +43,5 @@
 
     {% block api_storage_content %}{% endblock %}
   </div>
+  <script src="{% static 'js/app/storage-catalog.js' %}" defer></script>
 {% endblock %}

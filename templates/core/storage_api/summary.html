@@ -19,11 +19,12 @@
         <div><dt>Node</dt><dd>{{ node }}</dd></div>
         {% if storage_type %}<div><dt>Type</dt><dd>{{ storage_type }}</dd></div>{% endif %}
         {% if content_types %}<div><dt>Content</dt><dd>{% for c in content_types %}<span class="badge">{{ c }}</span> {% endfor %}</dd></div>{% endif %}
-        <div><dt>Shared</dt><dd>No (local to node)</dd></div>
+        <div><dt>Shared</dt><dd>{{ storage_shared|yesno:"Yes,No" }}</dd></div>
         <div><dt>Active</dt><dd>{% if storage_active %}<span class="badge completed">Active</span>{% else %}<span class="badge">Inactive</span>{% endif %}</dd></div>
         <div><dt>Enabled</dt><dd>{{ storage_enabled|yesno:"Yes,No" }}</dd></div>
         <div><dt>Volumes</dt><dd>{{ volume_count }}</dd></div>
         <div><dt>Guests using it</dt><dd>{{ guest_count }}</dd></div>
+        <div><dt>File browser</dt><dd>{% if catalog_view.capabilities.can_browse_files %}<span class="badge completed">Available</span>{% else %}{{ catalog_view.capabilities.browse_files_reason }}{% endif %}</dd></div>
       </dl>
     </div>
   </section>

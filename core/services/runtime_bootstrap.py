@@ -20,12 +20,18 @@ import json
 from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 
-from core.models import ProxmoxCluster, ProxmoxEndpoint, RuntimeConfigurationState, StorageMount
+from core.models import (
+    ProxmoxCluster,
+    ProxmoxEndpoint,
+    RuntimeConfigurationState,
+    StorageMount,
+)
 from core.services.config import (
     configured_endpoint_definitions,
     configured_storage_definitions,
     sync_storage_consumers,
 )
+from core.services.storage_mounts import normalized_backend_identity
 
 
 DEFAULT_CLUSTER_KEY = "default"
@@ -125,7 +131,10 @@ def _import_environment(state: RuntimeConfigurationState) -> None:
                 "display_name": definition.display_name,
                 "export": definition.export,
                 "path": definition.path,
+                "relative_path": definition.relative_path,
                 "trash_path": definition.trash_path,
+                "trash_relative_path": definition.trash_relative_path,
+                "backend_identity": normalized_backend_identity(definition.export),
                 "expected_consumers": definition.expected_consumers,
                 "enabled": True,
             },
