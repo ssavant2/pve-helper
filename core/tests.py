@@ -6398,6 +6398,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         page = self.client.get(reverse("core:settings_storage"))
         self.assertContains(page, 'data-derived-identity="nas.hq.local:/mnt/tank/vm"')
+        # Scope and node instances are stated before the choice, not after submit.
+        self.assertContains(page, "(nfs) — Shared")
+        self.assertContains(page, 'data-nodes="pve1"')
 
         candidates = [{"relative_path": "nas", "filesystem_type": "nfs4"}]
         payload = {
@@ -6430,6 +6433,31 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         binding = ClusterStorageMount.objects.get()
         self.assertEqual(binding.cluster_storage, definition)
         self.assertEqual(binding.mount.identity_source, StorageMount.IdentitySource.DERIVED)
+
+    def test_node_local_datastore_without_an_active_instance_cannot_be_chosen(self):
+        metadata_generation = uuid.uuid4()
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="local-dir",
+            storage_type="dir",
+            shared=False,
+            present=True,
+            config={"path": "/var/lib/vz"},
+            observed_metadata_generation=metadata_generation,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            present=True,
+            active=False,
+            enabled=True,
+            observed_metadata_generation=metadata_generation,
+        )
+
+        page = self.client.get(reverse("core:settings_storage"))
+
+        self.assertContains(page, "no active node instance")
+        self.assertContains(page, "(dir) — Node-local")
 
     def test_recent_tasks_endpoint_paginates_scans(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

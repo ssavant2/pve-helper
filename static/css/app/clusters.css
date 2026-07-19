@@ -98,13 +98,6 @@
   line-height: 1.15;
 }
 
-.cluster-wizard-panel > .panel-heading .panel-meta {
-  padding: 2px 0 0;
-  border-bottom: 0;
-  line-height: 1.2;
-  text-align: left;
-}
-
 .cluster-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

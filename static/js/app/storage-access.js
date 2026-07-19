@@ -15,6 +15,9 @@ export const initStorageAccessForm = (root = document) => {
   const datastore = form.querySelector("select[name='cluster_storage']");
   const identity = form.querySelector("input[name='backend_identity']");
   const source = form.querySelector("[data-identity-source]");
+  const nodeField = form.querySelector("[data-node-field]");
+  const nodeSelect = form.querySelector("[data-node-select]");
+  const selectedNode = nodeSelect?.dataset.selectedNode || "";
   if (!datastore || !identity) return;
 
   const selected = () => datastore.selectedOptions[0] || null;
@@ -34,6 +37,33 @@ export const initStorageAccessForm = (root = document) => {
     }
   };
 
+  // The node is a property of the chosen datastore, not something to be recalled
+  // and typed: shared storage has no node at all, and a node-local one can only
+  // be bound to an instance the catalog actually published.
+  const applyNodes = () => {
+    if (!nodeField || !nodeSelect) return;
+    const option = selected();
+    const shared = option?.dataset.shared === "true";
+    const nodes = (option?.dataset.nodes || "").split(",").filter(Boolean);
+    nodeField.hidden = shared || !option || !nodes.length;
+    nodeSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose the node instance…";
+    nodeSelect.append(placeholder);
+    for (const node of nodes) {
+      const item = document.createElement("option");
+      item.value = node;
+      item.textContent = node;
+      item.selected = node === selectedNode;
+      nodeSelect.append(item);
+    }
+    if (nodeField.hidden) {
+      nodeSelect.value = "";
+    }
+    nodeSelect.required = !nodeField.hidden;
+  };
+
   const applyDatastore = () => {
     const derived = selected()?.dataset.derivedIdentity || "";
     const previousDerived = identity.dataset.derivedValue || "";
@@ -43,6 +73,7 @@ export const initStorageAccessForm = (root = document) => {
       identity.value = derived;
     }
     identity.dataset.derivedValue = derived;
+    applyNodes();
     renderSource();
   };
 

@@ -209,16 +209,27 @@ def storage_mount_register(request):
         .order_by("cluster__display_name", "storage_id")
     )
     definitions = [row for row in definitions if backend_profile(row.storage_type).filesystem_eligible]
-    definition_options = [
-        {
-            "pk": row.pk,
-            "label": f"{row.cluster.display_name} \u00b7 {row.storage_id} ({row.storage_type})",
-            "shared": bool(row.shared),
-            "derived_identity": derived_backend_identity(row),
-            "nodes": sorted(state.node for state in row.node_states.all() if state.present),
-        }
-        for row in definitions
-    ]
+    definition_options = []
+    for row in definitions:
+        scope = "Shared" if row.shared else "Node-local"
+        # Only an instance that is present, active and enabled can be the one a
+        # host mount represents; anything else would fail the same server-side
+        # check the operator is trying to satisfy.
+        nodes = sorted(
+            state.node for state in row.node_states.all() if state.present and state.active and state.enabled
+        )
+        definition_options.append(
+            {
+                "pk": row.pk,
+                "label": f"{row.cluster.display_name} \u00b7 {row.storage_id} ({row.storage_type}) \u2014 {scope}",
+                "shared": bool(row.shared),
+                "derived_identity": derived_backend_identity(row),
+                "nodes": nodes,
+                # Node-local storage with no usable instance cannot be bound at
+                # all; say so in the option rather than on submit.
+                "unavailable_reason": "" if (row.shared or nodes) else "no active node instance",
+            }
+        )
     errors: list[str] = []
     warnings: list[str] = []
     registered = None

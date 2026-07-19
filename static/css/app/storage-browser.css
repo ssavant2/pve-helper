@@ -235,14 +235,6 @@
   line-height: 1.15;
 }
 
-.settings-storage-panel > .panel-heading .panel-meta {
-  margin-top: 2px;
-  padding: 0;
-  border: 0;
-  line-height: 1.25;
-  text-align: left;
-}
-
 .storage-access-form {
   padding: 16px 18px 18px;
 }
@@ -258,6 +250,12 @@
   min-width: 0;
   flex-direction: column;
   gap: 6px;
+}
+
+/* The node field only applies to node-local storage; `display: flex` above would
+   otherwise defeat the [hidden] attribute that hides it for shared storage. */
+.storage-access-form-grid label[hidden] {
+  display: none;
 }
 
 .storage-access-form-grid label > span {

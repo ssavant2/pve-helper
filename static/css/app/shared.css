@@ -46,13 +46,6 @@
   line-height: 1.15;
 }
 
-.storage-content-panel .panel-heading .panel-meta {
-  padding: 2px 0 0;
-  border-bottom: 0;
-  line-height: 1.2;
-  text-align: left;
-}
-
 .storage-content-list {
   display: flex;
   flex-direction: column;
@@ -190,6 +183,19 @@
   border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 13px;
+}
+
+/* A meta line inside the heading is the heading's own second row, not a
+   separate bordered strip: it aligns with the <h2> above it rather than being
+   inset by the panel padding a second time. Global on purpose — every two-line
+   panel heading in the app must look the same, and per-page copies of this rule
+   were how they silently drifted apart. */
+.panel-heading .panel-meta {
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  line-height: 1.25;
+  text-align: left;
 }
 
 .panel-heading-controls {

@@ -59,7 +59,7 @@
         <label><span>Cluster datastore</span>
           <select name="cluster_storage" required>
             <option value="">Choose a datastore…</option>
-            {% for option in definition_options %}<option value="{{ option.pk }}" data-derived-identity="{{ option.derived_identity }}" data-shared="{{ option.shared|yesno:'true,false' }}"{% if form_values.cluster_storage == option.pk|stringformat:'s' %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+            {% for option in definition_options %}<option value="{{ option.pk }}" data-derived-identity="{{ option.derived_identity }}" data-shared="{{ option.shared|yesno:'true,false' }}" data-nodes="{{ option.nodes|join:',' }}"{% if option.unavailable_reason %} disabled{% endif %}{% if form_values.cluster_storage == option.pk|stringformat:'s' %} selected{% endif %}>{{ option.label }}{% if option.unavailable_reason %} — {{ option.unavailable_reason }}{% endif %}</option>{% endfor %}
           </select>
         </label>
         <label><span>Visible host mount</span>
@@ -69,7 +69,12 @@
           </select>
         </label>
         <label><span>Display name</span><input name="display_name" required placeholder="Production NFS" value="{{ form_values.display_name|default:'' }}"></label>
-        <label><span>Node (node-local storage only)</span><input name="node" placeholder="pve1" value="{{ form_values.node|default:'' }}"></label>
+        <label data-node-field{% if not form_values.node %} hidden{% endif %}><span>Node</span>
+          <select name="node" data-node-select data-selected-node="{{ form_values.node|default:'' }}">
+            <option value="">Choose the node instance…</option>
+          </select>
+          <small>Which node-local instance of this datastore the mount represents.</small>
+        </label>
         <label class="storage-access-identity"><span>Backend/export identity</span><input name="backend_identity" required placeholder="server:/export or other operator-verified identity" value="{{ form_values.backend_identity|default:'' }}"><small data-identity-source>Filled from the Proxmox definition where the backend publishes one. Two clusters using the same export must end up with the identical value, or the cross-cluster in-use check cannot fire.</small></label>
       </div>
       <div class="storage-access-form-actions">

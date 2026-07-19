@@ -77,6 +77,32 @@ test("storage overview contains the catalog and links to application storage set
   await expect(page.locator("#storage-catalog")).toBeVisible();
 });
 
+test("mount registration derives identity and offers the node instances of the chosen datastore", async ({
+  page,
+}) => {
+  await page.goto("/settings/storage/");
+  const datastore = page.locator("select[name='cluster_storage']");
+  const identity = page.locator("input[name='backend_identity']");
+  const nodeField = page.locator("[data-node-field]");
+
+  // Shared storage: identity comes from the Proxmox definition, node does not apply.
+  await datastore.selectOption({ label: "E2E cluster · e2e-nfs (nfs) — Shared" });
+  await expect(identity).toHaveValue("nas.e2e.local:/mnt/tank/vm");
+  await expect(page.locator("[data-identity-source]")).toContainText("Derived from the Proxmox definition");
+  await expect(nodeField).toBeHidden();
+
+  // An operator edit is kept and labelled as an override of the derived value.
+  await identity.fill("other.example:/export");
+  await expect(page.locator("[data-identity-source]")).toContainText("Overridden");
+
+  // Node-local storage: the node becomes a choice between published instances,
+  // and a backend that publishes no identity says so instead of guessing.
+  await datastore.selectOption({ label: "E2E cluster · e2e-dir (dir) — Node-local" });
+  await expect(nodeField).toBeVisible();
+  await expect(page.locator("[data-node-select] option")).toHaveText(["Choose the node instance…", "pve1"]);
+  await expect(page.locator("[data-identity-source]")).toContainText("does not publish its identity");
+});
+
 test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {
   await page.goto("/clusters/");
   await expect(page.getByRole("heading", { name: "Cluster connections" })).toBeVisible();

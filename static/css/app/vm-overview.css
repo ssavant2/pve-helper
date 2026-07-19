@@ -21,13 +21,6 @@
   padding: 14px 16px 6px;
 }
 
-/* The "N running ..." line is a sub-line under the heading, not its own bordered
-   strip — drop the panel-meta border/inset so it sits neatly under "N guests". */
-.vm-overview-heading .panel-meta {
-  padding: 2px 0 0;
-  border-bottom: none;
-}
-
 .vm-overview-toolbar {
   display: flex;
   align-items: center;
