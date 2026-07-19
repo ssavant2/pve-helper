@@ -604,6 +604,10 @@ class ClusterStorageVolumeCoverage(TimestampedModel):
     complete = models.BooleanField(default=False)
     error_code = models.CharField(max_length=64, blank=True)
     error_reason = models.CharField(max_length=255, blank=True)
+    # Which nodes answered identically for a shared definition. The agreement is
+    # the proof, so it is recorded once per scope rather than by storing one
+    # duplicate copy of the whole volume list per answering node.
+    agreeing_nodes = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ["cluster_storage__cluster__key", "cluster_storage__storage_id", "node"]
@@ -652,8 +656,13 @@ class ClusterStorageVolumeObservation(TimestampedModel):
     class Meta:
         ordering = ["cluster_storage__storage_id", "node", "volid"]
         constraints = [
+            # Column order is deliberate: the tuple is what must be unique, but
+            # the backing index also has to serve the classification hot path
+            # (cluster_storage + volid) and the refresh diff, which match on the
+            # same prefix. Reordering costs nothing and avoids a fourth index on
+            # the most write-heavy table in the app.
             models.UniqueConstraint(
-                fields=["cluster_storage", "node", "volid"],
+                fields=["cluster_storage", "volid", "node"],
                 name="unique_cluster_storage_volume_observation",
             )
         ]

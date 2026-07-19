@@ -106,7 +106,7 @@ from core.services.storage_actions import (
     normalize_uploaded_proxmox_image_paths,
     validate_inflate_storage_file,
 )
-from core.services.storage_catalog import storage_view
+from core.services.storage_catalog import SHARED_OBSERVATION_NODE, storage_view
 from core.services.storage_details import storage_details
 from core.services.storage_mounts import MountHealth, bind_storage_mount
 from core.services.trash_schedule import TRASH_PURGE_SCHEDULE_NAME, trash_purge_schedule_state
@@ -9192,16 +9192,18 @@ class GuestBackupRestoreTests(TestCase):
                 last_attempt_at=timezone.now(),
                 complete=True,
             )
-            for archive in archives:
-                ClusterStorageVolumeObservation.objects.create(
-                    cluster_storage=backup,
-                    node=node,
-                    volid=archive,
-                    content="backup",
-                    observed_volume_generation=volume_generation,
-                    based_on_metadata_generation=metadata_generation,
-                    last_seen_at=timezone.now(),
-                )
+        # A shared definition publishes one logical set under the empty node; the
+        # per-node agreement lives on the coverage row.
+        for archive in archives:
+            ClusterStorageVolumeObservation.objects.create(
+                cluster_storage=backup,
+                node=SHARED_OBSERVATION_NODE,
+                volid=archive,
+                content="backup",
+                observed_volume_generation=volume_generation,
+                based_on_metadata_generation=metadata_generation,
+                last_seen_at=timezone.now(),
+            )
         ClusterStorageVolumeCoverage.objects.create(
             cluster_storage=backup,
             scope=ClusterStorageVolumeCoverage.Scope.SHARED,
@@ -9210,6 +9212,7 @@ class GuestBackupRestoreTests(TestCase):
             refreshed_at=timezone.now(),
             last_attempt_at=timezone.now(),
             complete=True,
+            agreeing_nodes=sorted(nodes),
         )
         StorageCatalogState.objects.create(
             cluster=self.cluster,

@@ -38,6 +38,10 @@ from core.services.storage_backends import ContentListMode, backend_profile
 from core.services.storage_mounts import backend_identity_from_definition, mount_health, scope_conflict
 
 logger = logging.getLogger(__name__)
+# A shared definition's volumes exist once, not once per node that can see them.
+# The empty node is that single logical scope; node-local instances keep their
+# own node name.
+SHARED_OBSERVATION_NODE = ""
 _METADATA_LOCK_BASE = 0x50564553544D01
 _VOLUME_LOCK_BASE = 0x50564553545601
 
@@ -181,6 +185,20 @@ def _node_inventory(clients, nodes: list[dict[str, Any]]) -> tuple[dict[str, lis
     return answers, errors
 
 
+def _canonical_config(config: Any) -> dict[str, Any]:
+    """Config with order-volatile values normalized.
+
+    Proxmox returns `content` as a comma-separated list whose order varies
+    between responses for the same unchanged storage. Comparing it verbatim made
+    every metadata refresh look like a semantic change, which invalidated volume
+    coverage and forced a full republish on every cycle.
+    """
+    raw = dict(config or {})
+    if "content" in raw:
+        raw["content"] = ",".join(sorted(set(_list(raw.get("content")))))
+    return raw
+
+
 def _metadata_semantics(cluster: ProxmoxCluster) -> dict[str, tuple[Any, ...]]:
     """Return the storage semantics that can invalidate volume absence proof.
 
@@ -197,7 +215,7 @@ def _metadata_semantics(cluster: ProxmoxCluster) -> dict[str, tuple[Any, ...]]:
             tuple(definition.nodes or ()),
             definition.disabled,
             definition.present,
-            json.dumps(definition.config or {}, sort_keys=True, separators=(",", ":")),
+            json.dumps(_canonical_config(definition.config), sort_keys=True, separators=(",", ":")),
             tuple(
                 (state.node, state.present, state.active, state.enabled)
                 for state in definition.node_states.all().order_by("node")
@@ -253,7 +271,9 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
                 storage_id=storage_id,
                 defaults={
                     "storage_type": str(raw.get("type") or "unknown").lower(),
-                    "content": _list(raw.get("content")),
+                    # Proxmox returns the content list in arbitrary order; store it
+                    # canonically so an unchanged definition compares equal.
+                    "content": sorted(set(_list(raw.get("content")))),
                     "shared": _bool(raw.get("shared")),
                     "nodes": _list(raw.get("nodes")),
                     "disabled": _bool(raw.get("disable")),
@@ -304,13 +324,12 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
             storage_id = coverage.cluster_storage.storage_id
             semantics_unchanged = previous_semantics.get(storage_id) == current_semantics.get(storage_id)
             if semantics_unchanged and coverage.complete and coverage.volume_generation is not None:
-                observations = ClusterStorageVolumeObservation.objects.filter(
-                    cluster_storage=coverage.cluster_storage,
-                    observed_volume_generation=coverage.volume_generation,
-                )
-                if coverage.scope == ClusterStorageVolumeCoverage.Scope.NODE:
-                    observations = observations.filter(node=coverage.node)
-                observations.update(based_on_metadata_generation=generation)
+                # The coverage row is what binds a published volume set to the
+                # metadata generation it is still valid under, and it is what
+                # every reader checks. Re-stamping each observation as well wrote
+                # the whole table on every metadata cycle for a value nothing
+                # reads; the per-row field stays as evidence of the generation
+                # the observation was made under.
                 coverage.based_on_metadata_generation = generation
                 coverage.save(update_fields=["based_on_metadata_generation", "updated_at"])
             elif not semantics_unchanged:
@@ -542,28 +561,38 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
                 defaults={"scope": scope},
             )
             coverage.scope = scope
-            observations = ClusterStorageVolumeObservation.objects.filter(cluster_storage=definition)
-            if scope == ClusterStorageVolumeCoverage.Scope.NODE:
-                observations = observations.filter(node=node)
-            observations.delete()
-            rows: list[ClusterStorageVolumeObservation] = []
-            for node, volumes in answers.items():
-                rows.extend(
-                    ClusterStorageVolumeObservation(
-                        cluster_storage=definition,
-                        node=node,
-                        observed_volume_generation=generation,
-                        based_on_metadata_generation=metadata_generation,
-                        last_seen_at=observed_at,
-                        **volume,
-                    )
+            shared = scope == ClusterStorageVolumeCoverage.Scope.SHARED
+            # A shared definition publishes one logical set. Every candidate node
+            # had to answer identically for it to get here, so the agreement is
+            # recorded on the coverage row instead of as one duplicate copy of
+            # the whole volume list per node.
+            if shared:
+                agreeing_nodes = sorted(answers)
+                desired = {
+                    (SHARED_OBSERVATION_NODE, volume["volid"]): volume for volume in next(iter(answers.values()), [])
+                }
+            else:
+                agreeing_nodes = []
+                desired = {
+                    (answer_node, volume["volid"]): volume
+                    for answer_node, volumes in answers.items()
                     for volume in volumes
-                )
-            ClusterStorageVolumeObservation.objects.bulk_create(rows, batch_size=500)
-            coverage.volume_generation = generation
+                }
+            changed = _apply_volume_diff(
+                definition,
+                scope=scope,
+                node=node,
+                desired=desired,
+                generation=generation,
+                metadata_generation=metadata_generation,
+                observed_at=observed_at,
+                published_generation=coverage.volume_generation if coverage.complete else None,
+            )
+            coverage.volume_generation = generation if changed else (coverage.volume_generation or generation)
             coverage.based_on_metadata_generation = metadata_generation
             coverage.refreshed_at = observed_at
             coverage.last_attempt_at = attempted_at
+            coverage.agreeing_nodes = agreeing_nodes
             coverage.complete = True
             coverage.error_code = ""
             coverage.error_reason = ""
@@ -591,6 +620,93 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
         state.volume_errors = errors
         state.save()
     return state
+
+
+_VOLUME_PAYLOAD_FIELDS = ("vmid", "content", "volume_format", "size_bytes", "used_bytes", "metadata")
+
+
+def _apply_volume_diff(
+    definition: ClusterStorage,
+    *,
+    scope: str,
+    node: str | None,
+    desired: dict[tuple[str, str], dict[str, Any]],
+    generation: uuid.UUID,
+    metadata_generation: uuid.UUID,
+    observed_at,
+    published_generation: uuid.UUID | None,
+) -> bool:
+    """Converge one storage scope's observations, writing only what differs.
+
+    The previous implementation deleted and re-created every observation of the
+    cluster on every cycle, which is a steady dead-tuple stream for data that
+    mostly does not change. A published generation identifies a *set*, not a
+    refresh attempt: when the set is byte-identical to the one already published,
+    nothing is written at all and the generation stands. Returns whether the set
+    changed and therefore needs a new generation.
+    """
+    existing_rows = ClusterStorageVolumeObservation.objects.filter(cluster_storage=definition)
+    if scope == ClusterStorageVolumeCoverage.Scope.NODE:
+        existing_rows = existing_rows.filter(node=node)
+    else:
+        existing_rows = existing_rows.filter(node=SHARED_OBSERVATION_NODE)
+    existing = {(row.node, row.volid): row for row in existing_rows}
+
+    def payload(source) -> tuple:
+        if isinstance(source, dict):
+            return tuple(source.get(field) for field in _VOLUME_PAYLOAD_FIELDS)
+        return tuple(getattr(source, field) for field in _VOLUME_PAYLOAD_FIELDS)
+
+    removed = [row.pk for key, row in existing.items() if key not in desired]
+    added = [key for key in desired if key not in existing]
+    modified = [key for key, row in existing.items() if key in desired and payload(row) != payload(desired[key])]
+
+    # The generation proves *which volumes exist*, which is what an absence proof
+    # needs. A volume's used size changes on every thin-provisioned refresh and
+    # changes no membership fact, so payload drift is written in place and the
+    # published generation stands.
+    membership_changed = bool(removed or added)
+    if modified:
+        for key in modified:
+            row = existing[key]
+            for field in _VOLUME_PAYLOAD_FIELDS:
+                setattr(row, field, desired[key][field])
+            row.last_seen_at = observed_at
+        ClusterStorageVolumeObservation.objects.bulk_update(
+            [existing[key] for key in modified], fields=[*_VOLUME_PAYLOAD_FIELDS, "last_seen_at"]
+        )
+    if not membership_changed and published_generation is not None:
+        # Scope-level freshness lives on the coverage row; re-stamping every
+        # unchanged observation would recreate the churn this diff removes.
+        return False
+
+    if removed:
+        ClusterStorageVolumeObservation.objects.filter(pk__in=removed).delete()
+    if added:
+        ClusterStorageVolumeObservation.objects.bulk_create(
+            [
+                ClusterStorageVolumeObservation(
+                    cluster_storage=definition,
+                    node=key[0],
+                    observed_volume_generation=generation,
+                    based_on_metadata_generation=metadata_generation,
+                    last_seen_at=observed_at,
+                    **desired[key],
+                )
+                for key in added
+            ],
+            batch_size=500,
+        )
+    # Every surviving row must carry the newly published generation, or
+    # storage_view would hide it as belonging to an older set.
+    survivors = [existing[key].pk for key in existing if key in desired]
+    if survivors:
+        ClusterStorageVolumeObservation.objects.filter(pk__in=survivors).update(
+            observed_volume_generation=generation,
+            based_on_metadata_generation=metadata_generation,
+            last_seen_at=observed_at,
+        )
+    return True
 
 
 def refresh_storage_catalog(cluster: ProxmoxCluster) -> StorageCatalogState:
@@ -683,8 +799,7 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         observation_scope |= scope
     observations = definition.volume_observations.filter(observation_scope).order_by("node", "volid")
     if definition.shared:
-        first = active_nodes[0].node if active_nodes else ""
-        observations = observations.filter(node=first)
+        observations = observations.filter(node=SHARED_OBSERVATION_NODE)
     volumes = tuple(
         CatalogVolume(
             node=row.node,

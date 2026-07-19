@@ -202,6 +202,115 @@ class StorageCatalogTests(TestCase):
         self.assertEqual(len(storage_view(shared).volumes), 1)
         self.assertEqual(len(storage_view(local, node="pve2").volumes), 1)
 
+    def test_steady_state_refresh_writes_no_observation_rows(self):
+        """The projection must stop rewriting itself to prove nothing changed."""
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        stamps = dict(shared.volume_observations.values_list("pk", "updated_at"))
+
+        for _ in range(3):
+            self._metadata()
+            self._volumes()
+
+        self.assertEqual(dict(shared.volume_observations.values_list("pk", "updated_at")), stamps)
+
+    def test_content_list_order_is_not_a_semantic_change(self):
+        """Proxmox reorders the content list between responses; that changes nothing."""
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        coverage = shared.volume_coverages.get(node__isnull=True)
+        generation = coverage.volume_generation
+
+        self.responses["storage"] = [
+            {"storage": "shared", "type": "nfs", "shared": 1, "content": "iso,images"},
+            {"storage": "local", "type": "lvmthin", "shared": 0, "content": "rootdir,images"},
+        ]
+        self._metadata()
+
+        coverage.refresh_from_db()
+        self.assertEqual(coverage.volume_generation, generation)
+        self.assertTrue(coverage.complete)
+        self.assertEqual(ClusterStorage.objects.get(pk=shared.pk).content, ["images", "iso"])
+
+    def test_unchanged_volume_refresh_writes_nothing_and_keeps_the_generation(self):
+        """A published generation identifies a set, not a refresh attempt."""
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        coverage = shared.volume_coverages.get(node__isnull=True)
+        generation = coverage.volume_generation
+        pks = set(shared.volume_observations.values_list("pk", flat=True))
+
+        self._volumes()
+
+        coverage.refresh_from_db()
+        self.assertEqual(coverage.volume_generation, generation)
+        # Same rows, not re-created: nothing observable changed.
+        self.assertEqual(set(shared.volume_observations.values_list("pk", flat=True)), pks)
+
+    def test_shared_storage_publishes_one_logical_set_with_recorded_agreement(self):
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+
+        rows = list(shared.volume_observations.values_list("node", "volid"))
+
+        # Two nodes answered identically; the agreement is the proof, so it is
+        # recorded once rather than duplicated per node.
+        self.assertEqual(rows, [("", "shared:100/vm-100-disk-0.qcow2")])
+        coverage = shared.volume_coverages.get(node__isnull=True)
+        self.assertEqual(coverage.agreeing_nodes, ["pve1", "pve2"])
+        self.assertEqual(len(storage_view(shared).volumes), 1)
+
+    def test_size_drift_alone_does_not_republish_the_generation(self):
+        """A thin volume's used size changes constantly and changes no membership fact."""
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        generation = shared.volume_coverages.get(node__isnull=True).volume_generation
+
+        for node in ("pve1", "pve2"):
+            self.responses[f"nodes/{node}/storage/shared/content"] = [
+                {"volid": "shared:100/vm-100-disk-0.qcow2", "vmid": 100, "content": "images", "size": 99},
+            ]
+        self._volumes()
+
+        coverage = shared.volume_coverages.get(node__isnull=True)
+        row = shared.volume_observations.get()
+        self.assertEqual(coverage.volume_generation, generation)
+        self.assertEqual(row.size_bytes, 99)
+        self.assertEqual(row.observed_volume_generation, generation)
+
+    def test_changed_volume_set_is_diffed_onto_a_new_generation(self):
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        first_generation = shared.volume_coverages.get(node__isnull=True).volume_generation
+        kept = shared.volume_observations.get(volid="shared:100/vm-100-disk-0.qcow2")
+
+        added = {"volid": "shared:101/vm-101-disk-0.qcow2", "vmid": 101, "content": "images", "size": 20}
+        for node in ("pve1", "pve2"):
+            self.responses[f"nodes/{node}/storage/shared/content"] = [
+                {"volid": "shared:100/vm-100-disk-0.qcow2", "vmid": 100, "content": "images", "size": 11},
+                added,
+            ]
+        self._volumes()
+
+        coverage = shared.volume_coverages.get(node__isnull=True)
+        self.assertNotEqual(coverage.volume_generation, first_generation)
+        # The surviving row is updated in place and re-bound to the new
+        # generation rather than deleted and re-inserted.
+        kept.refresh_from_db()
+        self.assertEqual(kept.size_bytes, 11)
+        self.assertEqual(kept.observed_volume_generation, coverage.volume_generation)
+        self.assertEqual(
+            set(shared.volume_observations.values_list("volid", flat=True)),
+            {"shared:100/vm-100-disk-0.qcow2", "shared:101/vm-101-disk-0.qcow2"},
+        )
+        self.assertEqual(len(storage_view(shared).volumes), 2)
+
     def test_unchanged_metadata_refresh_preserves_volume_coverage(self):
         self._metadata()
         self._volumes()
@@ -214,12 +323,12 @@ class StorageCatalogTests(TestCase):
 
         self.assertTrue(refreshed.volume_complete)
         self.assertEqual(coverage.volume_generation, volume_generation)
+        # The coverage row carries the binding to the metadata generation the
+        # published set is still valid under; that is what every reader checks,
+        # and re-stamping each observation as well would rewrite the whole table
+        # every cycle for a value nothing reads.
         self.assertEqual(coverage.based_on_metadata_generation, refreshed.metadata_generation)
-        self.assertFalse(
-            ClusterStorageVolumeObservation.objects.exclude(
-                based_on_metadata_generation=refreshed.metadata_generation
-            ).exists()
-        )
+        self.assertTrue(storage_view(shared).coverage_complete)
 
     def test_changed_metadata_invalidates_volume_coverage(self):
         self._metadata()
