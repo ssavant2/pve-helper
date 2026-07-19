@@ -408,6 +408,19 @@ class StorageMount(TimestampedModel):
     trash_relative_path = models.CharField(max_length=512, blank=True)
     filesystem_type = models.CharField(max_length=40, blank=True)
     backend_identity = models.CharField(max_length=512, blank=True)
+
+    class IdentitySource(models.TextChoices):
+        DERIVED = "derived", "Derived from the Proxmox definition"
+        MANUAL = "manual", "Entered by an operator"
+
+    # Whether backend_identity was composed from ClusterStorage.config or typed
+    # by hand. A hand-typed identity is the one that can silently disagree with
+    # another cluster's spelling of the same export.
+    identity_source = models.CharField(
+        max_length=16,
+        choices=IdentitySource.choices,
+        default=IdentitySource.MANUAL,
+    )
     expected_consumers = models.JSONField(default=list, blank=True)
     enabled = models.BooleanField(default=True)
 

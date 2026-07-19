@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,10 +11,12 @@ from django.utils import timezone
 from core.models import (
     ClusterStorage,
     ClusterStorageMount,
+    ClusterStorageNodeState,
     ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
     CurrentGuestInventory,
     ProxmoxCluster,
+    StorageCatalogState,
     StorageMount,
 )
 from core.services.proxmox import _fetch_live_guest_lineage_uncached
@@ -25,6 +28,8 @@ from core.services.refs import (
 )
 from core.services.storage_backends import backend_profile
 from core.services.storage_catalog import (
+    StorageCatalogChanged,
+    StorageOperationScope,
     UsageState,
     refresh_storage_metadata,
     refresh_storage_volumes,
@@ -34,7 +39,9 @@ from core.services.storage_catalog import (
 from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
+    derived_backend_identity,
     mount_health,
+    near_match_mounts,
     normalized_backend_identity,
     resolve_storage_mount,
 )
@@ -86,6 +93,17 @@ class StorageReadModelSourceInvariantTests(SimpleTestCase):
             self.assertIn("recursive: readonly", source)
             self.assertIn("storage_accel_state:/storage-accel-state", source)
             self.assertNotIn("TRUENAS_FS_HOST_PATH", source)
+
+    def test_catalog_refresh_is_owned_by_the_operation_scope(self):
+        """Preflight is an operation-grain contract; no fan-out may refresh per file."""
+        root = Path(__file__).resolve().parent
+        actions = (root / "services" / "storage_actions.py").read_text(encoding="utf-8")
+        self.assertNotIn("fresh=True", actions)
+        self.assertIn("scope: StorageOperationScope | None = None", actions)
+
+        views = (root / "views" / "storage.py").read_text(encoding="utf-8")
+        for marker in ("scope = StorageOperationScope()", "scope=scope"):
+            self.assertIn(marker, views)
 
     def test_cluster_volume_summary_is_never_an_authorization_input(self):
         root = Path(__file__).resolve().parent
@@ -382,11 +400,140 @@ class StorageCatalogTests(TestCase):
         )
 
         referenced = usage_preflight(shared, fresh=False)
-        unknown = usage_preflight(local, node="", fresh=False)
+        node_local = usage_preflight(local, node="", fresh=False)
 
         self.assertEqual(referenced.state, UsageState.REFERENCED)
         self.assertTrue(referenced.token)
-        self.assertEqual(unknown.state, UsageState.UNKNOWN)
+        # A node-local block storage has no host mount to register, ever; a node
+        # belongs to one cluster, so its identity is settled, not unknown.
+        self.assertEqual(node_local.state, UsageState.UNREFERENCED)
+
+    def test_unmounted_file_tree_storage_stays_unknown(self):
+        """The fail-closed rule that still applies: a browsable backend needs its mount."""
+        self._metadata()
+        self._volumes()
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="dir-store",
+            storage_type="dir",
+            shared=False,
+            present=True,
+            config={"path": "/var/lib/vz"},
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            present=True,
+            active=True,
+            enabled=True,
+            observed_metadata_generation=definition.observed_metadata_generation,
+        )
+
+        result = usage_preflight(definition, node="pve1", fresh=False)
+
+        self.assertEqual(result.state, UsageState.UNKNOWN)
+
+    def test_shared_block_storage_uses_its_own_definition_for_identity(self):
+        """Module 5's storage deletes need a preflight that can say yes for rbd/iscsi."""
+        self._metadata()
+        self._volumes()
+        config = {"monhost": "ceph1.hq.local,ceph2.hq.local", "pool": "vmpool"}
+        rbd_a = self._published_block_storage(self.cluster, "rbd-a", config)
+
+        cluster_b = ProxmoxCluster.objects.create(key="cluster-b", display_name="Cluster B")
+        rbd_b = self._published_block_storage(
+            cluster_b, "rbd-b", {**config, "monhost": "ceph2.hq.local,ceph1.hq.local"}
+        )
+
+        clean = usage_preflight(rbd_a, volid="rbd-a:vm-100-disk-0", fresh=False)
+        self.assertEqual(clean.state, UsageState.UNREFERENCED)
+
+        CurrentGuestInventory.objects.create(
+            cluster=cluster_b,
+            node="pve9",
+            object_type="vm",
+            vmid=100,
+            disk_references=[f"{rbd_b.storage_id}:vm-100-disk-0"],
+            observed_at=timezone.now(),
+        )
+
+        elsewhere = usage_preflight(rbd_a, volid="rbd-a:vm-100-disk-0", fresh=False)
+        self.assertEqual(elsewhere.state, UsageState.REFERENCED_ELSEWHERE)
+        self.assertEqual(elsewhere.references, ("cluster-b:vm:100",))
+
+    def test_shared_block_storage_without_a_publishable_identity_stays_unknown(self):
+        self._metadata()
+        self._volumes()
+        definition = self._published_block_storage(self.cluster, "iscsi-a", {"target": "iqn.2026-01.local:lun0"})
+
+        result = usage_preflight(definition, fresh=False)
+
+        self.assertEqual(result.state, UsageState.UNKNOWN)
+        self.assertIn("does not publish", result.reason)
+
+    def _published_block_storage(self, cluster, storage_id, config, storage_type=""):
+        """A shared block storage with complete coverage and no volumes of its own."""
+        state = StorageCatalogState.objects.filter(cluster=cluster).first()
+        if state is None:
+            state = StorageCatalogState.objects.create(
+                cluster=cluster,
+                metadata_generation=uuid.uuid4(),
+                metadata_complete=True,
+                metadata_refreshed_at=timezone.now(),
+            )
+        definition = ClusterStorage.objects.create(
+            cluster=cluster,
+            storage_id=storage_id,
+            storage_type=storage_type or ("iscsi" if "target" in config and "monhost" not in config else "rbd"),
+            shared=True,
+            present=True,
+            config=config,
+            observed_metadata_generation=state.metadata_generation,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1" if cluster == self.cluster else "pve9",
+            present=True,
+            active=True,
+            enabled=True,
+            observed_metadata_generation=state.metadata_generation,
+        )
+        ClusterStorageVolumeCoverage.objects.create(
+            cluster_storage=definition,
+            node=None,
+            scope=ClusterStorageVolumeCoverage.Scope.SHARED,
+            volume_generation=uuid.uuid4(),
+            based_on_metadata_generation=state.metadata_generation,
+            complete=True,
+            refreshed_at=timezone.now(),
+        )
+        return definition
+
+    def test_operation_scope_refreshes_once_and_pins_the_generation(self):
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        scope = StorageOperationScope()
+
+        with patch("core.services.storage_catalog.refresh_storage_catalog") as refresh:
+            for index in range(12):
+                scope.preflight(shared, volid=f"shared:100/vm-100-disk-{index}.qcow2")
+
+        self.assertEqual(refresh.call_count, 1)
+
+    def test_operation_scope_refuses_to_mix_republished_generations(self):
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        scope = StorageOperationScope()
+
+        with patch("core.services.storage_catalog.refresh_storage_catalog"):
+            scope.preflight(shared)
+            coverage = shared.volume_coverages.get(node__isnull=True)
+            coverage.volume_generation = uuid.uuid4()
+            coverage.save()
+            with self.assertRaises(StorageCatalogChanged):
+                scope.preflight(shared)
 
     def test_usage_preflight_detects_same_verified_mount_across_clusters(self):
         self._metadata()
@@ -465,7 +612,52 @@ class StorageCatalogTests(TestCase):
         result = usage_preflight(shared, fresh=False)
 
         self.assertEqual(result.state, UsageState.UNKNOWN)
-        self.assertIn("not been explicitly verified", result.reason)
+        self.assertIn("no verified backend identity", result.reason)
+
+
+class BackendIdentityAssistanceTests(TestCase):
+    """The identity that decides cross-cluster deletion safety must not depend on typing."""
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="cluster-a", display_name="Cluster A")
+
+    def _definition(self, storage_type, config, storage_id="nas"):
+        return ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id=storage_id,
+            storage_type=storage_type,
+            shared=True,
+            present=True,
+            config=config,
+        )
+
+    def test_identity_is_derived_from_the_proxmox_definition(self):
+        nfs = self._definition("nfs", {"server": "NAS.hq.local", "export": "/mnt/tank/vm"})
+        cifs = self._definition("cifs", {"server": "nas", "share": "vm"}, storage_id="smb")
+
+        self.assertEqual(derived_backend_identity(nfs), "nas.hq.local:/mnt/tank/vm")
+        self.assertEqual(derived_backend_identity(cifs), "//nas/vm")
+
+    def test_identity_is_not_invented_for_backends_that_do_not_publish_one(self):
+        local_dir = self._definition("dir", {"path": "/var/lib/vz"}, storage_id="local")
+        incomplete = self._definition("nfs", {"server": "nas"}, storage_id="broken")
+
+        self.assertEqual(derived_backend_identity(local_dir), "")
+        self.assertEqual(derived_backend_identity(incomplete), "")
+
+    def test_same_export_under_a_different_host_spelling_is_a_near_match(self):
+        StorageMount.objects.create(
+            storage_id="mount-a",
+            display_name="NAS via short name",
+            path="/storages/nas",
+            relative_path="nas",
+            backend_identity="nas:/mnt/tank/vm",
+        )
+
+        matches = near_match_mounts("nas.hq.local:/mnt/tank/vm")
+        self.assertEqual([mount.display_name for mount in matches], ["NAS via short name"])
+        self.assertEqual(near_match_mounts("nas:/mnt/tank/vm"), [])
+        self.assertEqual(near_match_mounts("nas.hq.local:/mnt/tank/iso"), [])
 
 
 class StorageMountIdentityTests(TestCase):

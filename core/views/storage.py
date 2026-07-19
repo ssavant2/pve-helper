@@ -8,12 +8,14 @@ from typing import BinaryIO
 from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.storage_backends import backend_profile
-from core.services.storage_catalog import refresh_storage_catalog, storage_view
+from core.services.storage_catalog import StorageOperationScope, refresh_storage_catalog, storage_view
 from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
+    derived_backend_identity,
     mount_health,
     mountinfo_entries,
+    near_match_mounts,
     normalized_backend_identity,
     registered_mount_health,
     resolve_storage_mount,
@@ -207,8 +209,21 @@ def storage_mount_register(request):
         .order_by("cluster__display_name", "storage_id")
     )
     definitions = [row for row in definitions if backend_profile(row.storage_type).filesystem_eligible]
+    definition_options = [
+        {
+            "pk": row.pk,
+            "label": f"{row.cluster.display_name} \u00b7 {row.storage_id} ({row.storage_type})",
+            "shared": bool(row.shared),
+            "derived_identity": derived_backend_identity(row),
+            "nodes": sorted(state.node for state in row.node_states.all() if state.present),
+        }
+        for row in definitions
+    ]
     errors: list[str] = []
+    warnings: list[str] = []
     registered = None
+    form_values: dict[str, str] = {}
+    confirm_distinct_backend = False
     if request.method == "POST":
         if request.POST.get("action") == "remove_binding":
             binding = (
@@ -250,14 +265,29 @@ def storage_mount_register(request):
             relative = str(request.POST.get("relative_path") or "")
             node = str(request.POST.get("node") or "").strip()
             display_name = str(request.POST.get("display_name") or "").strip()
+            submitted_identity = str(request.POST.get("backend_identity") or "").strip()
+            confirmed_distinct = request.POST.get("confirm_distinct_backend") == "1"
+            form_values = {
+                "cluster_storage": str(request.POST.get("cluster_storage") or ""),
+                "relative_path": relative,
+                "node": node,
+                "display_name": display_name,
+                "backend_identity": submitted_identity,
+            }
             try:
-                backend_identity = normalized_backend_identity(request.POST.get("backend_identity") or "")
+                backend_identity = normalized_backend_identity(submitted_identity)
             except StorageMountError as exc:
                 backend_identity = ""
                 backend_identity_error = True
                 errors.append(str(exc))
             else:
                 backend_identity_error = False
+            derived = derived_backend_identity(definition) if definition is not None else ""
+            identity_source = (
+                StorageMount.IdentitySource.DERIVED
+                if derived and backend_identity == derived
+                else StorageMount.IdentitySource.MANUAL
+            )
             candidates = {item["relative_path"]: item for item in _mount_candidates()}
             if definition is None:
                 errors.append("Choose a current file-based cluster storage.")
@@ -273,6 +303,20 @@ def storage_mount_register(request):
                     errors.append("Choose the node-local storage instance this mount represents.")
             elif definition is not None:
                 node = ""
+            if not errors and backend_identity and not confirmed_distinct:
+                near_matches = near_match_mounts(backend_identity)
+                if near_matches:
+                    confirm_distinct_backend = True
+                    for other in near_matches:
+                        warnings.append(
+                            f"'{other.backend_identity}' ({other.display_name}) exports the same path under a "
+                            "different host spelling. If that is the same physical backend, register it with the "
+                            "identical identity — otherwise the cross-cluster in-use check cannot fire."
+                        )
+                    errors.append(
+                        "Backend identity looks like an existing backend spelled differently. "
+                        "Use the identical value, or confirm that these are genuinely different backends."
+                    )
             if not errors and definition is not None:
                 profile = backend_profile(definition.storage_type)
                 candidate = candidates[relative]
@@ -291,12 +335,14 @@ def storage_mount_register(request):
                     trash_relative_path=f"{relative}/.pve-helper-trash",
                     filesystem_type=candidate["filesystem_type"],
                     backend_identity=backend_identity,
+                    identity_source=identity_source,
                     enabled=True,
                 )
                 if not errors:
                     if existing:
                         mount.display_name = display_name
                         mount.backend_identity = backend_identity
+                        mount.identity_source = identity_source
                         mount.filesystem_type = candidate["filesystem_type"]
                         mount.enabled = True
                     health = mount_health(mount, profile)
@@ -333,9 +379,12 @@ def storage_mount_register(request):
         {
             **navigation_context("pve_settings"),
             "active_settings_tab": "storage",
-            "definitions": definitions,
+            "definition_options": definition_options,
             "candidates": _mount_candidates(),
             "errors": errors,
+            "warnings": warnings,
+            "form_values": form_values,
+            "confirm_distinct_backend": confirm_distinct_backend,
             "registered": registered if registered != "removed" else None,
             "removed": registered == "removed",
             "bindings": ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount").order_by(
@@ -1749,7 +1798,11 @@ def trash_storage_file(request, storage_id: str):
 
     try:
         _require_file_action_confirmations_for_entries(request, entries)
-        results = [(entry, move_file_to_trash(storage=storage, entry=entry, user=request.user)) for entry in entries]
+        scope = StorageOperationScope()
+        results = [
+            (entry, move_file_to_trash(storage=storage, entry=entry, user=request.user, scope=scope))
+            for entry in entries
+        ]
     except PermissionDenied:
         raise
     except StorageActionError as exc:
@@ -1799,6 +1852,7 @@ def move_storage_file_view(request, storage_id: str):
 
     try:
         _require_file_action_confirmations_for_entries(request, entries)
+        scope = StorageOperationScope()
         if dest_storage_id:
             dest_directory = request.POST.get("dest_directory", "")
             results = [
@@ -1808,12 +1862,13 @@ def move_storage_file_view(request, storage_id: str):
                     dest_storage=dest_storage,
                     dest_directory=dest_directory,
                     keep_source=False,
+                    scope=scope,
                 )
                 for entry in entries
             ]
         else:
             results = [
-                move_storage_file(storage=storage, entry=entry, new_path=request.POST.get("new_path", ""))
+                move_storage_file(storage=storage, entry=entry, new_path=request.POST.get("new_path", ""), scope=scope)
                 for entry in entries
             ]
     except PermissionDenied:

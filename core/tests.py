@@ -37,6 +37,7 @@ from core.checks import production_startup_errors
 from core.models import (
     AuditEvent,
     ClusterStorage,
+    ClusterStorageMount,
     ClusterStorageNodeState,
     ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
@@ -6292,6 +6293,68 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(storage_settings, "PVE-helper Settings", count=2)
         self.assertContains(storage_settings, f"{reverse('core:dashboard')}#storage-catalog")
         self.assertNotContains(storage_settings, "Storage definitions")
+
+    def test_mount_registration_derives_identity_and_refuses_a_silent_near_match(self):
+        metadata_generation = uuid.uuid4()
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="shared-nfs",
+            storage_type="nfs",
+            shared=True,
+            present=True,
+            config={"server": "nas.hq.local", "export": "/mnt/tank/vm"},
+            observed_metadata_generation=metadata_generation,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            active=True,
+            enabled=True,
+            present=True,
+            observed_metadata_generation=metadata_generation,
+        )
+        StorageMount.objects.create(
+            storage_id="mount-existing",
+            display_name="Same NAS, short name",
+            path="/storages/other",
+            relative_path="other",
+            backend_identity="nas:/mnt/tank/vm",
+        )
+
+        page = self.client.get(reverse("core:settings_storage"))
+        self.assertContains(page, 'data-derived-identity="nas.hq.local:/mnt/tank/vm"')
+
+        candidates = [{"relative_path": "nas", "filesystem_type": "nfs4"}]
+        payload = {
+            "cluster_storage": str(definition.pk),
+            "relative_path": "nas",
+            "display_name": "Production NFS",
+            "backend_identity": "nas.hq.local:/mnt/tank/vm",
+        }
+        with patch("core.views.storage._mount_candidates", return_value=candidates):
+            blocked = self.client.post(reverse("core:settings_storage"), payload)
+
+        self.assertContains(blocked, "spelled differently")
+        self.assertContains(blocked, "Same NAS, short name")
+        self.assertContains(blocked, "Register as a different backend")
+        # The rejected values survive so the operator can correct rather than retype.
+        self.assertContains(blocked, 'value="nas.hq.local:/mnt/tank/vm"')
+        self.assertFalse(ClusterStorageMount.objects.exists())
+
+        health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
+        with (
+            patch("core.views.storage._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mount_health", return_value=health),
+        ):
+            confirmed = self.client.post(
+                reverse("core:settings_storage"),
+                {**payload, "confirm_distinct_backend": "1"},
+            )
+
+        self.assertEqual(confirmed.status_code, 200)
+        binding = ClusterStorageMount.objects.get()
+        self.assertEqual(binding.cluster_storage, definition)
+        self.assertEqual(binding.mount.identity_source, StorageMount.IdentitySource.DERIVED)
 
     def test_recent_tasks_endpoint_paginates_scans(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")

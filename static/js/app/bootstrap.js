@@ -35,6 +35,7 @@ import {
   sortGuestList,
   taskbarKey,
 } from "./shell.js";
+import { initStorageAccessForm } from "./storage-access.js";
 import { initConfirmedFileActions, initStorageFileManagers } from "./storage-browser.js";
 import {
   initColumnPickers,
@@ -75,6 +76,7 @@ const initPage = (root = document) => {
   initScanActions(root);
   initStorageFileManagers(root);
   initConfirmedFileActions(root);
+  initStorageAccessForm(root);
   initConfirmForms(root);
   initScheduledTaskForms(root);
   initScheduledRuns(root);

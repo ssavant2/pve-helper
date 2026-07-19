@@ -61,6 +61,118 @@ def normalized_backend_identity(value: str) -> str:
     return raw
 
 
+def _identity_parts(identity: str) -> tuple[str, str]:
+    """Split a normalized identity into its host and its export path."""
+    raw = str(identity or "").strip()
+    if raw.startswith("//"):
+        server, _separator, share = raw[2:].partition("/")
+        return server, share.strip("/")
+    server, separator, path = raw.partition(":")
+    if not separator:
+        return "", raw.strip("/")
+    return server, path.strip("/")
+
+
+def _hosts(value: str) -> str:
+    """Canonicalize a possibly multi-valued Proxmox host list."""
+    hosts = sorted({part.strip().lower() for part in str(value or "").replace(";", ",").split(",") if part.strip()})
+    return ",".join(hosts)
+
+
+def backend_identity_from_definition(definition: ClusterStorage) -> str:
+    """Compose the cross-cluster backend identity from the Proxmox definition.
+
+    Returns "" when the configuration genuinely does not carry one — a `dir`
+    path says nothing about which physical backend is behind it, and an
+    internally hyperconverged Ceph pool is only addressable inside its own
+    cluster. "Not stated" must stay distinguishable from "not the same".
+    """
+    storage_type = str(definition.storage_type or "").strip().lower()
+    config = definition.config or {}
+
+    def value(*names: str) -> str:
+        for name in names:
+            found = str(config.get(name) or "").strip()
+            if found:
+                return found
+        return ""
+
+    if storage_type in {"nfs", "cifs", "glusterfs"}:
+        server = value("server")
+        export = value("export", "share", "volume")
+        if not server or not export:
+            return ""
+        if storage_type == "cifs":
+            raw = f"//{server}/{export.lstrip('/')}"
+        elif storage_type == "glusterfs":
+            raw = f"{server}:{export.lstrip('/')}"
+        else:
+            raw = f"{server}:/{export.lstrip('/')}"
+        try:
+            return normalized_backend_identity(raw)
+        except StorageMountError:
+            return ""
+    if storage_type in {"cephfs", "rbd"}:
+        monitors = _hosts(value("monhost"))
+        target = value("pool", "subdir") or "/"
+        if not monitors:
+            # Hyperconverged Ceph: reachable only from its own cluster, so the
+            # cluster key is the identity rather than an unknown.
+            return f"{storage_type}://cluster:{definition.cluster.key}/{target.strip('/')}"
+        namespace = value("namespace")
+        suffix = f"/{namespace}" if namespace else ""
+        return f"{storage_type}://{monitors}/{target.strip('/')}{suffix}"
+    if storage_type in {"iscsi", "iscsidirect", "zfs"}:
+        portal = _hosts(value("portal"))
+        target = value("target")
+        if not portal or not target:
+            return ""
+        pool = value("pool")
+        return f"iscsi://{portal}/{target.lower()}" + (f"/{pool}" if pool else "")
+    if storage_type == "pbs":
+        server = value("server").lower()
+        datastore = value("datastore")
+        if not server or not datastore:
+            return ""
+        return f"pbs://{server}/{datastore}"
+    if storage_type == "lvm":
+        vgname = value("vgname")
+        return f"lvm://{vgname}" if vgname else ""
+    return ""
+
+
+def derived_backend_identity(definition: ClusterStorage) -> str:
+    """The identity the mount-registration form prefills.
+
+    This is the value the operator should almost never have to type: the same
+    NAS export registered in two clusters derives byte-identically in both,
+    which is exactly what the cross-cluster reference check requires. Limited to
+    the backends whose identity is also a valid ``server:/export`` mount value;
+    the block backends carry their identity in a scheme this field cannot hold.
+    """
+    if str(definition.storage_type or "").strip().lower() not in {"nfs", "cifs", "glusterfs"}:
+        return ""
+    return backend_identity_from_definition(definition)
+
+
+def near_match_mounts(identity: str) -> list[StorageMount]:
+    """Registered mounts exporting the same path under a differently spelled host.
+
+    A short hostname in one cluster and its FQDN in another are the common human
+    variation, and they defeat the byte-equality the cross-cluster check relies
+    on — silently, and in the direction that offers an in-use disk for deletion.
+    """
+    server, path = _identity_parts(identity)
+    if not path:
+        return []
+    matches = []
+    for mount in StorageMount.objects.exclude(backend_identity="").exclude(backend_identity=identity):
+        other_server, other_path = _identity_parts(mount.backend_identity)
+        if other_path == path and other_server != server:
+            matches.append(mount)
+    return matches
+
+
 def _unescape_mountinfo(value: str) -> str:
     for encoded, decoded in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
         value = value.replace(encoded, decoded)

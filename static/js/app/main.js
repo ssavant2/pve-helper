@@ -9,6 +9,7 @@ export * from "./recent-tasks.js";
 export * from "./register.js";
 export * from "./scheduling.js";
 export * from "./shell.js";
+export * from "./storage-access.js";
 export * from "./storage-browser.js";
 export * from "./tables.js";
 export * from "./vm-overview.js";

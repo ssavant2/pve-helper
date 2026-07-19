@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import shutil
 import stat
@@ -23,7 +24,7 @@ from core.services.confined_filesystem import (
 )
 from core.services.file_actions import ReferencedObject, file_action_risk, guest_objects_for_entry
 from core.services.image_info import probe_qemu_image_info
-from core.services.storage_catalog import UsageState, usage_preflight
+from core.services.storage_catalog import StorageCatalogChanged, StorageOperationScope, UsageState
 from core.services.storage_mounts import (
     registered_mount_health,
     resolve_storage_mount,
@@ -32,6 +33,8 @@ from core.services.storage_paths import (
     storage_mount_root,
     storage_trash_root,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class StorageActionError(Exception):
@@ -409,11 +412,12 @@ def move_file_to_trash(
     storage: StorageMount,
     entry: FileInventory,
     user,
+    scope: StorageOperationScope | None = None,
 ) -> TrashItem:
     require_storage_write_access(storage)
     if entry.entry_type not in {FileInventory.EntryType.FILE, FileInventory.EntryType.DIRECTORY}:
         raise StorageActionError("Only files and directories can be moved to trash.")
-    _require_file_not_blocked(entry)
+    _require_file_not_blocked(entry, scope=scope)
 
     root = _storage_root(storage)
     original_path = _storage_existing_entry(entry.path, root=root)
@@ -464,11 +468,12 @@ def rename_storage_file(
     storage: StorageMount,
     entry: FileInventory,
     new_name: str,
+    scope: StorageOperationScope | None = None,
 ) -> dict[str, object]:
     require_storage_write_access(storage)
     if entry.entry_type != FileInventory.EntryType.FILE:
         raise StorageActionError("Only files can be renamed.")
-    _require_file_not_blocked(entry)
+    _require_file_not_blocked(entry, scope=scope)
 
     safe_name = _safe_upload_filename(new_name)
     root = _storage_root(storage)
@@ -492,11 +497,12 @@ def move_storage_file(
     storage: StorageMount,
     entry: FileInventory,
     new_path: str,
+    scope: StorageOperationScope | None = None,
 ) -> dict[str, object]:
     require_storage_write_access(storage)
     if entry.entry_type != FileInventory.EntryType.FILE:
         raise StorageActionError("Only files can be moved.")
-    _require_file_not_blocked(entry)
+    _require_file_not_blocked(entry, scope=scope)
 
     old_path = _normalize_relative_path(entry.path)
     target_relative = _normalize_move_target(old_path, new_path)
@@ -537,6 +543,7 @@ def transfer_storage_file(
     dest_directory: str,
     dest_name: str = "",
     keep_source: bool,
+    scope: StorageOperationScope | None = None,
 ) -> dict[str, object]:
     """Copy (``keep_source``) or move a file to any storage/folder.
 
@@ -549,7 +556,7 @@ def transfer_storage_file(
         raise StorageActionError("Only files can be copied or moved.")
     if not keep_source:
         require_storage_write_access(source_storage)
-        _require_file_not_blocked(entry)
+        _require_file_not_blocked(entry, scope=scope)
 
     source_root = _storage_root(source_storage)
     source_path = _storage_existing_file(_normalize_relative_path(entry.path), root=source_root)
@@ -607,6 +614,7 @@ def validate_inflate_storage_file(
     entry: FileInventory,
     target_preallocation: str = INFLATE_PREALLOCATION_FULL,
     validate_owner_locally: bool = True,
+    scope: StorageOperationScope | None = None,
 ) -> dict[str, object]:
     if target_preallocation not in INFLATE_PREALLOCATION_MODES:
         raise StorageActionError("Unknown inflate target.")
@@ -616,7 +624,7 @@ def validate_inflate_storage_file(
         raise StorageActionError("Only regular files can be inflated.")
     if entry.content_category != "vm_disk":
         raise StorageActionError("Only VM qcow2 disk images can be inflated.")
-    _require_file_not_blocked(entry, block_running_guests=False)
+    _require_file_not_blocked(entry, block_running_guests=False, scope=scope)
 
     qemu_img = shutil.which("qemu-img")
     if not qemu_img:
@@ -865,11 +873,17 @@ def normalize_uploaded_proxmox_image_paths(
     }
 
 
-def _require_file_not_blocked(entry: FileInventory, *, block_running_guests: bool = True) -> None:
+def _require_file_not_blocked(
+    entry: FileInventory,
+    *,
+    block_running_guests: bool = True,
+    scope: StorageOperationScope | None = None,
+) -> None:
     risk = file_action_risk(entry, block_running_guests=block_running_guests)
     if risk.blocked:
         raise StorageActionError(risk.warning_message)
     if entry.content_category in {"vm_disk", "base_image", "ct_private"}:
+        scope = scope or StorageOperationScope()
         bindings = entry.storage.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster")
         if not bindings.exists():
             if settings.PVE_TEST_NETWORK_DISABLED:
@@ -881,12 +895,17 @@ def _require_file_not_blocked(entry: FileInventory, *, block_running_guests: boo
         relative = str(entry.path).lstrip("/").removeprefix("images/")
         for binding in bindings:
             definition = binding.cluster_storage
-            result = usage_preflight(
-                definition,
-                volid=f"{definition.storage_id}:{relative}",
-                node=binding.node or "",
-                fresh=True,
-            )
+            try:
+                result = scope.preflight(
+                    definition,
+                    volid=f"{definition.storage_id}:{relative}",
+                    node=binding.node or "",
+                )
+            except StorageCatalogChanged as exc:
+                logger.warning("Storage catalog changed during a file operation: %s", exc)
+                raise StorageActionError(
+                    "The storage catalog was republished while this operation was running; retry the remaining files."
+                ) from exc
             if result.state is not UsageState.UNREFERENCED:
                 raise StorageActionError(f"Guest-file action blocked by fresh storage preflight: {result.reason}")
     require_live_guest_stopped(entry)

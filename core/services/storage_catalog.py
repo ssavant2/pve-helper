@@ -35,7 +35,7 @@ from core.services.cluster_resolver import ClusterResolutionError, cluster_clien
 from core.services.cluster_state_identity import cluster_advisory_lock_id
 from core.services.proxmox import ProxmoxAPIError
 from core.services.storage_backends import ContentListMode, backend_profile
-from core.services.storage_mounts import mount_health, scope_conflict
+from core.services.storage_mounts import backend_identity_from_definition, mount_health, scope_conflict
 
 logger = logging.getLogger(__name__)
 _METADATA_LOCK_BASE = 0x50564553544D01
@@ -777,6 +777,47 @@ def storage_volume_rows(
     return rows, view.coverage_complete, view.coverage_reason
 
 
+class StorageCatalogChanged(Exception):
+    """A published generation moved while one operator action was still running."""
+
+
+class StorageOperationScope:
+    """One catalog refresh shared by every preflight of a single operator action.
+
+    The preflight contract is correct at the *operation* grain: refresh the
+    catalog once, then evaluate every affected object against that published
+    generation. Callers that fan out over many files must therefore share one
+    scope instead of asking each file to refresh the whole cluster again.
+
+    The scope refreshes lazily, once per cluster, and holds the per-storage
+    coverage token every preflight evaluated against. If a background refresh
+    republishes a generation mid-operation the next preflight raises rather than
+    silently mixing snapshots.
+    """
+
+    def __init__(self) -> None:
+        self._refreshed: set[str] = set()
+        self._tokens: dict[tuple[str, str, str], str] = {}
+
+    def ensure_fresh(self, cluster: ProxmoxCluster) -> None:
+        if cluster.key in self._refreshed:
+            return
+        refresh_storage_catalog(cluster)
+        self._refreshed.add(cluster.key)
+
+    def preflight(self, definition: ClusterStorage, *, volid: str = "", node: str = "") -> UsagePreflight:
+        self.ensure_fresh(definition.cluster)
+        definition.refresh_from_db()
+        result = usage_preflight(definition, volid=volid, node=node, fresh=False)
+        key = (definition.cluster.key, definition.storage_id, node)
+        previous = self._tokens.setdefault(key, result.token)
+        if previous != result.token:
+            raise StorageCatalogChanged(
+                f"{definition.cluster.key}:{definition.storage_id} republished its coverage mid-operation"
+            )
+        return result
+
+
 def usage_preflight(
     definition: ClusterStorage,
     *,
@@ -821,61 +862,96 @@ def usage_preflight(
             UsageState.REFERENCED, "Storage content is referenced by guests.", token, tuple(sorted(references))
         )
 
-    bindings = list(definition.mount_bindings.select_related("mount"))
-    binding_ids = [binding.mount_id for binding in bindings]
-    if binding_ids:
-        backend_identities = {binding.mount.backend_identity for binding in bindings if binding.mount.backend_identity}
-        if any(not binding.mount.backend_identity for binding in bindings):
+    candidates, unknown_reason = _cross_cluster_candidates(definition)
+    if unknown_reason:
+        return UsagePreflight(UsageState.UNKNOWN, unknown_reason, token)
+
+    relative = volid.split(":", 1)[1] if ":" in volid else ""
+    for other, other_node in candidates:
+        other_view = storage_view(other, node=other_node)
+        if not other_view.coverage_complete:
             return UsagePreflight(
                 UsageState.UNKNOWN,
-                "Cross-cluster backend identity has not been explicitly verified.",
+                "The same backend has incomplete coverage in another cluster.",
                 token,
             )
-        elsewhere = list(
+        other_volid = f"{other.storage_id}:{relative}" if relative else ""
+        other_prefix = f"{other.storage_id}:"
+        guests = CurrentGuestInventory.objects.filter(cluster=other.cluster)
+        if other_node and not other.shared:
+            guests = guests.filter(node=other_node)
+        for guest in guests.only("object_type", "vmid", "disk_references"):
+            if any(
+                str(ref).startswith(other_prefix) and (not other_volid or str(ref) == other_volid)
+                for ref in guest.disk_references or []
+            ):
+                return UsagePreflight(
+                    UsageState.REFERENCED_ELSEWHERE,
+                    "The same backend is referenced by another cluster.",
+                    token,
+                    (f"{other.cluster.key}:{guest.object_type}:{guest.vmid}",),
+                )
+    return UsagePreflight(UsageState.UNREFERENCED, "Complete coverage found no references.", token)
+
+
+def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[ClusterStorage, str]], str]:
+    """Storage instances in other clusters that may be the same physical backend.
+
+    Two questions used to be conflated here: "is this the same backend as some
+    other cluster's storage?" and "does pve-helper have a host mount for it?".
+    Only a file-tree backend can answer the first with the second. A block
+    backend has no mount to register, ever, so its identity comes from its own
+    definition — or, when it is node-local, from the fact that a node belongs to
+    exactly one cluster and therefore cannot be reached from another.
+
+    Returns the candidate ``(storage, node)`` pairs, or a reason why the question
+    is genuinely unanswerable.
+    """
+    profile = backend_profile(definition.storage_type)
+    bindings = list(definition.mount_bindings.select_related("mount"))
+    if bindings:
+        if any(not binding.mount.backend_identity for binding in bindings):
+            return [], "A registered host mount has no verified backend identity."
+        binding_ids = [binding.mount_id for binding in bindings]
+        identities = {binding.mount.backend_identity for binding in bindings}
+        pairs: list[tuple[ClusterStorage, str]] = []
+        others = (
             ClusterStorage.objects.filter(present=True)
             .filter(
                 models.Q(mount_bindings__mount_id__in=binding_ids)
-                | models.Q(mount_bindings__mount__backend_identity__in=backend_identities)
+                | models.Q(mount_bindings__mount__backend_identity__in=identities)
             )
             .exclude(pk=definition.pk)
             .distinct()
         )
-        relative = volid.split(":", 1)[1] if ":" in volid else ""
-        for other in elsewhere:
-            matching_bindings = other.mount_bindings.select_related("mount").filter(
-                models.Q(mount_id__in=binding_ids) | models.Q(mount__backend_identity__in=backend_identities)
+        for other in others:
+            matching = other.mount_bindings.select_related("mount").filter(
+                models.Q(mount_id__in=binding_ids) | models.Q(mount__backend_identity__in=identities)
             )
-            for other_node in {binding.node or "" for binding in matching_bindings}:
-                other_view = storage_view(other, node=other_node)
-                if not other_view.coverage_complete:
-                    return UsagePreflight(
-                        UsageState.UNKNOWN,
-                        "The same verified mount has incomplete coverage in another cluster.",
-                        token,
-                    )
-                other_volid = f"{other.storage_id}:{relative}" if relative else ""
-                other_prefix = f"{other.storage_id}:"
-                guests = CurrentGuestInventory.objects.filter(cluster=other.cluster)
-                if other_node and not other.shared:
-                    guests = guests.filter(node=other_node)
-                for guest in guests.only("object_type", "vmid", "disk_references"):
-                    if any(
-                        str(ref).startswith(other_prefix) and (not other_volid or str(ref) == other_volid)
-                        for ref in guest.disk_references or []
-                    ):
-                        return UsagePreflight(
-                            UsageState.REFERENCED_ELSEWHERE,
-                            "The same verified mount is referenced by another cluster.",
-                            token,
-                            (f"{other.cluster.key}:{guest.object_type}:{guest.vmid}",),
-                        )
-    elif not binding_ids:
-        return UsagePreflight(
-            UsageState.UNKNOWN,
-            "Cross-cluster backend identity has not been explicitly verified.",
-            token,
+            pairs.extend((other, binding.node or "") for binding in {row.node: row for row in matching}.values())
+        return pairs, ""
+
+    if profile.filesystem_eligible:
+        return [], "No host mount is registered for this storage, so its backend identity is unproven."
+    if not definition.shared:
+        # A node-local block storage is addressable only through its own node,
+        # and a node belongs to exactly one cluster.
+        return [], ""
+
+    identity = backend_identity_from_definition(definition)
+    if not identity:
+        return [], (
+            f"The {definition.storage_type or 'unknown'} definition does not publish a cross-cluster backend identity."
         )
-    return UsagePreflight(UsageState.UNREFERENCED, "Complete coverage found no references.", token)
+    pairs = []
+    for other in (
+        ClusterStorage.objects.select_related("cluster")
+        .filter(present=True, shared=True, storage_type=definition.storage_type)
+        .exclude(pk=definition.pk)
+    ):
+        if backend_identity_from_definition(other) == identity:
+            pairs.append((other, ""))
+    return pairs, ""
 
 
 def classify_mounted_volume(mount: StorageMount, relative_path: str) -> ClassificationResult | None:

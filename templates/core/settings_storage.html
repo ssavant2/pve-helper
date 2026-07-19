@@ -10,6 +10,7 @@
   </section>
 
   {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
+  {% if warnings %}<section class="panel notice notice-warning"><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
   {% if registered %}<section class="panel notice notice-success"><p>Mount <strong>{{ registered.display_name }}</strong> is registered. The event is recorded in Audit.</p></section>{% endif %}
   {% if removed %}<section class="panel notice notice-success"><p>The mount association was removed. The event is recorded in Audit.</p></section>{% endif %}
 
@@ -52,26 +53,33 @@
         <p class="panel-meta">The directory must already be mounted below <code>/storages</code> by the Docker host.</p>
       </div>
     </div>
-    <form method="post" class="storage-access-form">
+    <form method="post" class="storage-access-form" data-storage-access-form>
       {% csrf_token %}
       <div class="storage-access-form-grid">
         <label><span>Cluster datastore</span>
           <select name="cluster_storage" required>
             <option value="">Choose a datastore…</option>
-            {% for definition in definitions %}<option value="{{ definition.pk }}">{{ definition.cluster.display_name }} · {{ definition.storage_id }} ({{ definition.storage_type }})</option>{% endfor %}
+            {% for option in definition_options %}<option value="{{ option.pk }}" data-derived-identity="{{ option.derived_identity }}" data-shared="{{ option.shared|yesno:'true,false' }}"{% if form_values.cluster_storage == option.pk|stringformat:'s' %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
           </select>
         </label>
         <label><span>Visible host mount</span>
           <select name="relative_path" required>
             <option value="">Choose a directory…</option>
-            {% for candidate in candidates %}<option value="{{ candidate.relative_path }}">/storages/{{ candidate.relative_path }} · {{ candidate.filesystem_type }}</option>{% endfor %}
+            {% for candidate in candidates %}<option value="{{ candidate.relative_path }}"{% if form_values.relative_path == candidate.relative_path %} selected{% endif %}>/storages/{{ candidate.relative_path }} · {{ candidate.filesystem_type }}</option>{% endfor %}
           </select>
         </label>
-        <label><span>Display name</span><input name="display_name" required placeholder="Production NFS"></label>
-        <label><span>Node (node-local storage only)</span><input name="node" placeholder="pve1"></label>
-        <label class="storage-access-identity"><span>Backend/export identity</span><input name="backend_identity" required placeholder="server:/export or other operator-verified identity"><small>Required for safe cross-cluster checks. Use the same normalized value only when two definitions genuinely expose the same backend.</small></label>
+        <label><span>Display name</span><input name="display_name" required placeholder="Production NFS" value="{{ form_values.display_name|default:'' }}"></label>
+        <label><span>Node (node-local storage only)</span><input name="node" placeholder="pve1" value="{{ form_values.node|default:'' }}"></label>
+        <label class="storage-access-identity"><span>Backend/export identity</span><input name="backend_identity" required placeholder="server:/export or other operator-verified identity" value="{{ form_values.backend_identity|default:'' }}"><small data-identity-source>Filled from the Proxmox definition where the backend publishes one. Two clusters using the same export must end up with the identical value, or the cross-cluster in-use check cannot fire.</small></label>
       </div>
-      <div class="storage-access-form-actions"><button class="primary-action" type="submit">Register mount</button></div>
+      <div class="storage-access-form-actions">
+        {% if confirm_distinct_backend %}
+          <button class="primary-action" type="submit" name="confirm_distinct_backend" value="1">Register as a different backend</button>
+          <button class="button button-secondary" type="submit">Re-check identity</button>
+        {% else %}
+          <button class="primary-action" type="submit">Register mount</button>
+        {% endif %}
+      </div>
     </form>
   </section>
 {% endblock %}
