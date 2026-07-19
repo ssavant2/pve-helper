@@ -48,6 +48,32 @@ The sequence pulls `latest`, starts/waits for Postgres, stops application
 services, runs migrations with the newly pulled image and recreates the complete
 stack. Pulling `latest` alone never updates an already-running container.
 
+### Platform version requirements
+
+| Component | Minimum | Why |
+|---|---|---|
+| Proxmox VE | 9.2 on every managed node | pve-helper targets the PVE 9.2 API/HA baseline. The Dynamic Load Balancer — the dynamic Cluster Resource Scheduler (CRS) mode used as the DRS-equivalent in the Hosts & Clusters module — was introduced in 9.2. PVE 8.x is unsupported. |
+| Docker Engine | 25.0 | Docker 25 introduced recursive read-only bind-mount support. |
+| Docker-host kernel | Linux 5.12 | Kernel 5.12 is the minimum for nested bind mounts to remain recursively read-only instead of exposing a writable submount beneath a read-only parent. |
+| Docker Compose | v2 | The distributed deployment is a Compose v2 application. |
+
+Check the baseline before installation or upgrade:
+
+```bash
+# On every Proxmox node
+pveversion
+
+# On the Docker host
+uname -r
+docker version --format '{{.Server.Version}}'
+docker compose version
+```
+
+These are compatibility requirements rather than best-effort recommendations.
+Do not onboard a PVE 8.x cluster because the currently implemented inventory
+views happen to answer successfully, and do not rely on a pre-5.12 kernel for a
+read-only storage boundary around nested or propagated mounts.
+
 ### CPU and memory requirements
 
 These figures cover the complete stack — nginx, web, control worker, bulk worker,

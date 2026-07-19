@@ -12,13 +12,24 @@ Git, Python, Node.js or a source checkout. No development image is published.
 
 ## Requirements
 
-- Docker Engine with Docker Compose v2
+- Proxmox VE 9.2 or later on every managed node. Proxmox VE 8.x is not
+  supported; pve-helper targets the 9.2 API and HA/Cluster Resource Scheduler
+  baseline, including the Dynamic Load Balancer introduced in 9.2.
+- A Linux Docker host with kernel 5.12 or later. This is the minimum kernel for
+  recursive read-only protection of nested storage bind mounts.
+- Docker Engine 25.0 or later with Docker Compose v2. Docker 25 added the
+  recursive read-only bind-mount support used with the kernel requirement above.
 - 2 vCPU and 2 GB RAM minimum; 2 vCPU and 4 GB RAM recommended
 - Network access from the containers to the Proxmox API
 - Host mounts for any Proxmox storage that pve-helper should browse
 - A base64-encoded 32-byte encryption key, backed up separately from the database
 - A Proxmox API token with the permissions described in
   `docs/proxmox-api-token.md`
+
+Treat these as compatibility requirements, not merely recommendations. An older
+PVE release may appear to work with today's simpler views while lacking APIs and
+CRS behavior required by later modules; an older Docker host may fail to preserve
+read-only semantics across nested or propagated storage mounts.
 
 ## Install
 

@@ -93,6 +93,52 @@ class ClusterOnboardingTests(TestCase):
                 expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
             )
 
+    def test_rejects_proxmox_older_than_supported_baseline(self):
+        class OldVersionClient(_CandidateClient):
+            def get(self, path):
+                if path == "version":
+                    return {"version": "8.4.14"}
+                return super().get(path)
+
+        with (
+            patch(
+                "core.services.cluster_onboarding.inspect_transport",
+                return_value=self.certificate,
+            ),
+            patch("core.services.cluster_onboarding.ProxmoxClient", OldVersionClient),
+        ):
+            with self.assertRaisesMessage(
+                ClusterOnboardingError,
+                "Proxmox VE 9.2 or later is required; the endpoint reports 8.4.14.",
+            ):
+                verify_new_cluster(
+                    self.candidate,
+                    expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
+                )
+
+    def test_rejects_unverifiable_proxmox_version(self):
+        class MissingVersionClient(_CandidateClient):
+            def get(self, path):
+                if path == "version":
+                    return {}
+                return super().get(path)
+
+        with (
+            patch(
+                "core.services.cluster_onboarding.inspect_transport",
+                return_value=self.certificate,
+            ),
+            patch("core.services.cluster_onboarding.ProxmoxClient", MissingVersionClient),
+        ):
+            with self.assertRaisesMessage(
+                ClusterOnboardingError,
+                "Could not verify the Proxmox VE version.",
+            ):
+                verify_new_cluster(
+                    self.candidate,
+                    expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
+                )
+
     def test_verification_uses_ephemeral_secret_and_persists_nothing(self):
         candidate, verified = self._verify()
 

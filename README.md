@@ -31,6 +31,11 @@ reverse proxy; pve-helper neither provisions nor requires a certificate.
 Native OIDC login and group authorization can be enabled independently of the
 chosen reverse proxy.
 
+The supported platform baseline is **Proxmox VE 9.2+**, **Docker Engine 25+**
+with Compose v2, and a **Linux 5.12+ kernel** on the Docker host. PVE 8.x and
+older Docker/kernel combinations are unsupported; see the installation guide
+for the feature and storage-safety reasons behind these minimums.
+
 Storage inventory requires the relevant Proxmox datastores to be mounted on the
 Docker host. Production starts read-only and storage writes must be enabled
 deliberately. This project targets internal homelab and small-operations use; it

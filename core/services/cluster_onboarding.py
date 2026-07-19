@@ -55,6 +55,8 @@ from core.services.proxmox import ProxmoxAPIError, ProxmoxClient
 
 
 _ENDPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$")
+_MINIMUM_PROXMOX_VERSION = (9, 2)
+_PROXMOX_VERSION_RE = re.compile(r"^\s*(\d+)\.(\d+)(?:[.\-]|$)")
 
 
 class ClusterOnboardingError(RuntimeError):
@@ -516,6 +518,10 @@ def _verify_connection(
         trust_profile.build_verify()
         client = ProxmoxClient(endpoint_url, credential=credential, trust_profile=trust_profile)
         version_data = client.get("version")
+        version = ""
+        if isinstance(version_data, dict):
+            version = str(version_data.get("version") or version_data.get("release") or "")
+        _assert_supported_proxmox_version(version)
         nodes_data = client.get("nodes")
         permissions = client.get("access/permissions")
         administrator_role = client.get("access/roles/Administrator")
@@ -552,9 +558,6 @@ def _verify_connection(
     except ProxmoxAPIError as exc:
         raise ClusterOnboardingError(f"Could not read Proxmox cluster metadata: {exc}") from exc
 
-    version = ""
-    if isinstance(version_data, dict):
-        version = str(version_data.get("version") or version_data.get("release") or "")
     discovered_name = ""
     if isinstance(status, list):
         discovered_name = next(
@@ -574,6 +577,19 @@ def _verify_connection(
         discovered_name=discovered_name,
         administrator_privileges=required,
     )
+
+
+def _assert_supported_proxmox_version(version: str) -> None:
+    match = _PROXMOX_VERSION_RE.match(str(version or ""))
+    if match is None:
+        raise ClusterOnboardingError(
+            "Could not verify the Proxmox VE version. Proxmox VE 9.2 or later is required."
+        )
+    observed = (int(match.group(1)), int(match.group(2)))
+    if observed < _MINIMUM_PROXMOX_VERSION:
+        raise ClusterOnboardingError(
+            f"Proxmox VE 9.2 or later is required; the endpoint reports {version}."
+        )
 
 
 def _assert_administrator_permissions(permissions, administrator_role) -> None:
