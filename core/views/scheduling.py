@@ -251,21 +251,28 @@ def retry_recent_task(request):
 @require_POST
 @app_login_required
 def dismiss_task_question(request):
-    """Mark a task's actionable question (e.g. a timed-out shutdown's force-stop
-    offer) as answered so it stops pulsing/pinning — the user either acted on it
-    or actively chose to ignore it."""
+    """Mark a task's actionable question as answered so it stops pulsing/pinning.
+
+    Two kinds exist: a timed-out shutdown's force-stop offer, and a destructive
+    file fan-out that only half happened. Either way the user acted on it or
+    actively chose to accept it — until then the question outlives the ordinary
+    Recent Tasks retention window on purpose."""
     task_id = request.POST.get("task_id", "").strip()
-    if not task_id.startswith("guest:"):
+    kind, _separator, raw_id = task_id.partition(":")
+    if kind not in {"guest", "file"}:
         return JsonResponse({"ok": False, "error": "Unsupported task."}, status=400)
     try:
-        event_id = int(task_id.split(":", 1)[1])
+        event_id = int(raw_id)
     except ValueError:
         return JsonResponse({"ok": False, "error": "Invalid task id."}, status=400)
-    event = AuditEvent.objects.filter(pk=event_id, action="guest.power.shutdown").first()
+    actions = ["guest.power.shutdown"] if kind == "guest" else ["file.bulk_operation"]
+    event = AuditEvent.objects.filter(pk=event_id, action__in=actions).first()
     if event is None:
         return JsonResponse({"ok": False, "error": "Task not found."}, status=404)
     details = dict(event.details) if isinstance(event.details, dict) else {}
-    details["force_stop_dismissed"] = True
+    details["question_dismissed"] = True
+    if kind == "guest":
+        details["force_stop_dismissed"] = True
     event.details = details
     event.save(update_fields=["details"])
     return JsonResponse({"ok": True})

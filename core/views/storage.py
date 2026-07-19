@@ -1798,20 +1798,27 @@ def trash_storage_file(request, storage_id: str):
 
     try:
         _require_file_action_confirmations_for_entries(request, entries)
-        scope = StorageOperationScope()
-        results = [
-            (entry, move_file_to_trash(storage=storage, entry=entry, user=request.user, scope=scope))
-            for entry in entries
-        ]
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        # A whole-selection precondition; nothing was attempted.
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
+    scope = StorageOperationScope()
+    outcome = BulkFileOutcome()
     refresh_directories = set()
     pruned_paths = set()
-    for entry, trash_item in results:
+    for index, entry in enumerate(entries):
+        try:
+            trash_item = move_file_to_trash(storage=storage, entry=entry, user=request.user, scope=scope)
+        except StorageActionError as exc:
+            outcome.record_failure(entry, exc, remaining=entries[index + 1 :])
+            if outcome.aborted:
+                break
+            continue
+        # Audit each success as it happens: a later failure must never be able to
+        # erase the record of what has already been done on disk.
         _audit_file_action(
             request,
             action="file.trashed",
@@ -1819,6 +1826,7 @@ def trash_storage_file(request, storage_id: str):
             path=entry.path,
             details={"trash_item": trash_item.id, "trash_path": trash_item.trash_path},
         )
+        outcome.record_success(entry)
         if entry.entry_type == FileInventory.EntryType.DIRECTORY:
             pruned_paths.add(entry.path)
         refresh_directories.add(_parent_path(entry.path))
@@ -1826,6 +1834,14 @@ def trash_storage_file(request, storage_id: str):
         _prune_latest_storage_path(storage, path)
     for directory_path in refresh_directories:
         _refresh_latest_storage_directory(storage, directory_path)
+    _report_bulk_file_outcome(
+        request,
+        outcome,
+        storage=storage,
+        operation="trash",
+        verb="moved to trash",
+        destructive=True,
+    )
     return redirect(redirect_to)
 
 
@@ -1852,11 +1868,20 @@ def move_storage_file_view(request, storage_id: str):
 
     try:
         _require_file_action_confirmations_for_entries(request, entries)
-        scope = StorageOperationScope()
-        if dest_storage_id:
-            dest_directory = request.POST.get("dest_directory", "")
-            results = [
-                transfer_storage_file(
+    except PermissionDenied:
+        raise
+    except StorageActionError as exc:
+        messages.error(request, str(exc))
+        return redirect(redirect_to)
+
+    scope = StorageOperationScope()
+    outcome = BulkFileOutcome()
+    dest_directory = request.POST.get("dest_directory", "")
+    refresh: dict[tuple[str, str], tuple[StorageMount, str]] = {}
+    for index, entry in enumerate(entries):
+        try:
+            if dest_storage_id:
+                result = transfer_storage_file(
                     source_storage=storage,
                     entry=entry,
                     dest_storage=dest_storage,
@@ -1864,21 +1889,16 @@ def move_storage_file_view(request, storage_id: str):
                     keep_source=False,
                     scope=scope,
                 )
-                for entry in entries
-            ]
-        else:
-            results = [
-                move_storage_file(storage=storage, entry=entry, new_path=request.POST.get("new_path", ""), scope=scope)
-                for entry in entries
-            ]
-    except PermissionDenied:
-        raise
-    except StorageActionError as exc:
-        messages.error(request, str(exc))
-        return redirect(redirect_to)
-
-    refresh: dict[tuple[str, str], tuple[StorageMount, str]] = {}
-    for result in results:
+            else:
+                result = move_storage_file(
+                    storage=storage, entry=entry, new_path=request.POST.get("new_path", ""), scope=scope
+                )
+        except StorageActionError as exc:
+            outcome.record_failure(entry, exc, remaining=entries[index + 1 :])
+            if outcome.aborted:
+                break
+            continue
+        outcome.record_success(entry)
         if dest_storage_id:
             _audit_file_action(
                 request,
@@ -1913,6 +1933,14 @@ def move_storage_file_view(request, storage_id: str):
             )
     for st, directory_path in refresh.values():
         _refresh_latest_storage_directory(st, directory_path)
+    _report_bulk_file_outcome(
+        request,
+        outcome,
+        storage=storage,
+        operation="move",
+        verb="moved",
+        destructive=True,
+    )
     return redirect(redirect_to)
 
 
@@ -2414,6 +2442,121 @@ def _storage_directory_or_404(storage: StorageMount, latest_scan: ScanRun | None
     ).exists()
     if not exists:
         raise Http404("Directory not found in latest scan.")
+
+
+class BulkFileOutcome:
+    """Per-object outcome of one fan-out over selected files.
+
+    A fan-out is not atomic and must not be reported as if it were. Each entry
+    keeps its own verdict so the operator can be told exactly what happened,
+    what did not, and what is safe to retry.
+    """
+
+    def __init__(self) -> None:
+        self.succeeded: list[FileInventory] = []
+        self.failed: list[tuple[FileInventory, str]] = []
+        self.skipped: list[FileInventory] = []
+        self.aborted = False
+
+    def record_success(self, entry: FileInventory) -> None:
+        self.succeeded.append(entry)
+
+    def record_failure(self, entry: FileInventory, exc: Exception, *, remaining: list[FileInventory]) -> None:
+        self.failed.append((entry, str(exc)))
+        if isinstance(exc, StorageOperationAborted):
+            # The snapshot every preflight was evaluated against is gone; the
+            # remaining entries were deliberately not attempted.
+            self.aborted = True
+            self.skipped = list(remaining)
+
+    @property
+    def attempted(self) -> int:
+        return len(self.succeeded) + len(self.failed)
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.succeeded) and bool(self.failed or self.skipped)
+
+
+# How many individual failures are named in the operator-facing message before
+# it defers to Audit for the rest.
+_BULK_FAILURE_DETAIL_LIMIT = 5
+
+
+def _report_bulk_file_outcome(
+    request,
+    outcome: BulkFileOutcome,
+    *,
+    storage: StorageMount,
+    operation: str,
+    verb: str,
+    destructive: bool,
+) -> None:
+    """Report a fan-out honestly, and leave a durable record when it was not clean.
+
+    A clean run stays silent: the per-file audit rows already tell that story and
+    the browser refreshes. Anything else writes one ``file.bulk_operation`` event
+    that owns the whole operation, so Recent Tasks and Audit can show a single
+    row for "seven of twelve" instead of a scatter of unrelated lines.
+    """
+    if not outcome.failed and not outcome.skipped:
+        return
+
+    total = outcome.attempted + len(outcome.skipped)
+    if total == 1:
+        # A selection of one is not a fan-out: report the reason plainly and let
+        # the single failed action speak for itself.
+        messages.error(request, outcome.failed[0][1])
+        return
+    failures = [
+        {"path": entry.path, "error": message} for entry, message in outcome.failed[:_BULK_FAILURE_DETAIL_LIMIT]
+    ]
+    summary = f"{len(outcome.succeeded)} of {total} {verb}"
+    if outcome.succeeded:
+        messages.success(request, f"{summary}.")
+    detail = "; ".join(f"{item['path']}: {item['error']}" for item in failures)
+    remaining = len(outcome.failed) - len(failures)
+    if remaining > 0:
+        detail += f"; and {remaining} more — see Audit"
+    if outcome.skipped:
+        detail += f"; {len(outcome.skipped)} not attempted"
+    messages.error(request, f"{summary}. {detail}" if outcome.succeeded else detail)
+
+    question = destructive and outcome.partial
+    record_audit_event(
+        request,
+        action="file.bulk_operation",
+        object_type="file",
+        object_id=f"{storage.mount_ref}:{operation}",
+        outcome="warning" if outcome.succeeded else "failed",
+        details={
+            "operation": operation,
+            "verb": verb,
+            "storage_id": storage.storage_id,
+            "mount_ref": storage.mount_ref,
+            "storage_name": storage.display_name,
+            "summary": summary,
+            "total": total,
+            "succeeded": [entry.path for entry in outcome.succeeded],
+            "failed": [{"path": entry.path, "error": message} for entry, message in outcome.failed],
+            "skipped": [entry.path for entry in outcome.skipped],
+            "aborted": outcome.aborted,
+            # A destructive fan-out that half-happened is a decision the operator
+            # still owes an answer to: retry the rest, or accept this state.
+            "question": question,
+            "retry": {
+                "url": request.path,
+                "paths": [entry.path for entry, _message in outcome.failed] + [e.path for e in outcome.skipped],
+            },
+        },
+    )
+    request.bulk_file_outcome = {
+        "partial": outcome.partial,
+        "summary": summary,
+        "succeeded": len(outcome.succeeded),
+        "failed": len(outcome.failed),
+        "skipped": len(outcome.skipped),
+    }
 
 
 def _audit_file_action(request, *, action: str, storage: StorageMount, path: str, details: dict[str, object]) -> None:

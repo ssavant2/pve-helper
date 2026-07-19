@@ -78,7 +78,9 @@ FILE_TASK_ACTIONS = [
     "file.inflate_queued",
     "file.inflated",
     "file.inflate_failed",
+    "file.bulk_operation",
 ]
+BULK_FILE_ACTION = "file.bulk_operation"
 INFLATE_QUEUED_ACTION = "file.inflate_queued"
 INFLATE_TERMINAL_ACTIONS = {"file.inflated", "file.inflate_failed"}
 
@@ -89,6 +91,9 @@ class RecentTaskPage:
     page: int
     limit: int
     total: int
+    # Unanswered questions across every page: the taskbar must be able to say so
+    # even while collapsed, or an open decision can sit unseen indefinitely.
+    questions_pending: int = 0
 
     @property
     def has_previous(self) -> bool:
@@ -145,12 +150,19 @@ def recent_task_page(
     # Pin unanswered "needs a decision" tasks (e.g. a force-stop offer) to the top
     # of page 0 so a short visible window can't push them off before they are
     # answered. (We assume only a handful are ever pending at once.)
+    questions_pending = sum(1 for task in tasks if task.get("question"))
     if page == 0:
-        pinned = [task for task in tasks if task.get("offer_force_stop")]
+        pinned = [task for task in tasks if task.get("question")]
         if pinned:
-            tasks = pinned + [task for task in tasks if not task.get("offer_force_stop")]
+            tasks = pinned + [task for task in tasks if not task.get("question")]
     total = len(tasks)
-    return RecentTaskPage(tasks=tasks[offset : offset + limit], page=page, limit=limit, total=total)
+    return RecentTaskPage(
+        tasks=tasks[offset : offset + limit],
+        page=page,
+        limit=limit,
+        total=total,
+        questions_pending=questions_pending,
+    )
 
 
 def _task_timeline_sort_at(task: dict[str, object]):
@@ -170,7 +182,10 @@ def _visible_scan_tasks():
 def _visible_file_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
     events = list(
-        AuditEvent.objects.filter(action__in=FILE_TASK_ACTIONS, timestamp__gte=cutoff)
+        AuditEvent.objects.filter(action__in=FILE_TASK_ACTIONS)
+        .filter(
+            Q(timestamp__gte=cutoff) | (Q(action=BULK_FILE_ACTION, details__question=True) & _unanswered_question_q())
+        )
         .select_related("user", "cluster")
         .order_by("-timestamp")
     )
@@ -225,6 +240,7 @@ def serialize_task_page(task_page: RecentTaskPage) -> dict[str, object]:
         "total": task_page.total,
         "has_previous": task_page.has_previous,
         "has_next": task_page.has_next,
+        "questions_pending": task_page.questions_pending,
         "start_index": task_page.start_index,
         "end_index": task_page.end_index,
     }
@@ -258,6 +274,7 @@ def serialize_task(task: dict[str, object]) -> dict[str, object]:
         "retry_label": str(task.get("retry_label", "")),
         "offer_force_stop": bool(task.get("offer_force_stop")),
         "force_stop_target": str(task.get("force_stop_target", "")),
+        "question": task.get("question") or None,
     }
 
 
@@ -289,12 +306,25 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
     }
 
 
+def _unanswered_question_q() -> Q:
+    """An open question outlives the retention window; it is not history yet."""
+    return ~Q(details__question_dismissed=True) & ~Q(details__force_stop_dismissed=True)
+
+
+def _open_force_stop_question_q() -> Q:
+    """The database-side shape of the timed-out shutdown offer built in `_guest_task`."""
+    return (
+        Q(action="guest.power.shutdown", outcome="failed")
+        & (Q(details__error__icontains="timeout") | Q(details__error__icontains="powerdown failed"))
+        & ~Q(details__has_key="force_stop_resolved_at")
+    )
+
+
 def _visible_guest_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
     return list(
-        AuditEvent.objects.filter(
-            Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS), timestamp__gte=cutoff
-        )
+        AuditEvent.objects.filter(Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS))
+        .filter(Q(timestamp__gte=cutoff) | (_open_force_stop_question_q() & _unanswered_question_q()))
         .select_related("user", "cluster")
         .order_by("-timestamp")
     )
@@ -405,10 +435,20 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
     retryable = event.action == "tag.bulk_operation" and event.outcome == "failed" and details.get("retryable") is True
     if retryable:
         status = "Failed — right-click for options"
+    question = (
+        {
+            "kind": "force_stop",
+            "label": "A question — click to answer",
+            "payload": {"target": force_stop_target, "label": identity.full_label_with_type},
+        }
+        if offer_force_stop
+        else None
+    )
     return {
         "id": f"guest:{event.id}",
         "kind": "guest",
         "action": event.action,
+        "question": question,
         "offer_force_stop": offer_force_stop,
         "force_stop_target": force_stop_target,
         "name": GUEST_TASK_NAMES.get(event.action, event.action),
@@ -467,6 +507,9 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
         name = f"{name} ({target_preallocation})"
     storage_id = event.storage_id or str(details.get("storage_id") or "")
     path = event.path or str(details.get("path") or "")
+    question = None
+    if event.action == BULK_FILE_ACTION:
+        return _bulk_file_task(event, details, storage_id)
     if event.action == INFLATE_QUEUED_ACTION:
         status = "Queued"
         status_class = "queued"
@@ -500,7 +543,73 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
         "path": path,
         "path_parent": _parent_path(path),
         "cancelable": False,
+        "question": question,
     }
+
+
+def _bulk_file_task(event: AuditEvent, details: dict, storage_id: str) -> dict[str, object]:
+    """One row that owns a whole fan-out, so "seven of twelve" is a single fact."""
+    failed = details.get("failed") if isinstance(details.get("failed"), list) else []
+    skipped = details.get("skipped") if isinstance(details.get("skipped"), list) else []
+    summary = str(details.get("summary") or "")
+    answered = bool(details.get("question_dismissed"))
+    open_question = bool(details.get("question")) and not answered
+    if event.outcome == "failed":
+        status, status_class = "Failed", "failed"
+    elif answered:
+        status, status_class = "Completed with warnings", "warning"
+    else:
+        status, status_class = "Partly completed", "warning"
+    extra = summary or event.object_id
+    if failed:
+        extra += f" — {len(failed)} failed"
+    if skipped:
+        extra += f", {len(skipped)} not attempted"
+    return {
+        "id": f"file:{event.id}",
+        "kind": "file",
+        "action": event.action,
+        "name": _bulk_file_task_name(str(details.get("operation") or "")),
+        "target": details.get("storage_name") or storage_id or "-",
+        "cluster_key": event.cluster.key if event.cluster_id else event.cluster_key_snapshot or "",
+        "cluster": event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-",
+        "status": status,
+        "status_class": status_class,
+        "details": extra or "-",
+        "initiator": event.username or (event.user.get_username() if event.user else "system"),
+        "queued_for": "-",
+        "started_at": event.timestamp,
+        "finished_at": event.timestamp,
+        "server": storage_id or "-",
+        "sort_at": event.timestamp,
+        "storage_id": storage_id,
+        "path": "",
+        "path_parent": "",
+        "cancelable": False,
+        "question": {
+            "kind": "bulk_file_partial",
+            "label": f"{summary} — click to answer",
+            "payload": {
+                "summary": summary,
+                "operation": str(details.get("operation") or ""),
+                "verb": str(details.get("verb") or "completed"),
+                "storage_id": storage_id,
+                "succeeded": details.get("succeeded") or [],
+                "failed": failed,
+                "skipped": skipped,
+                "retry": details.get("retry") or {},
+            },
+        }
+        if open_question
+        else None,
+    }
+
+
+def _bulk_file_task_name(operation: str) -> str:
+    return {
+        "trash": "Move files to trash",
+        "move": "Move files",
+    }.get(operation, "Bulk file operation")
 
 
 def _file_task_name(action: str) -> str:

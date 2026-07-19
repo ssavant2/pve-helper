@@ -145,6 +145,28 @@ and relevant failure is recorded. Use the two views for different questions:
 - **Audit** answers “what happened and who did it?” It is the durable event log
   for logins, changes, scans, and file actions, with an optional cluster filter.
 
+### When part of a multi-file action succeeds
+
+Selecting several files and trashing or moving them is a fan-out, not one
+atomic operation. If some files succeed and others are refused, PVE-helper does
+not roll the successful ones back and does not report the whole action as a
+single failure. Instead:
+
+- every file that succeeded is audited individually, as it happens;
+- one **Partly completed** row owns the operation and names how many of how many
+  succeeded, plus each failure and its reason;
+- that row asks a question — *“2 of 3 moved to trash — click to answer”* — and
+  keeps pulsing and pinned to the top of Recent Tasks until you answer it. It is
+  deliberately exempt from the normal one-hour Recent Tasks retention: an
+  unanswered question is not history yet.
+- Answering it opens a dialog offering to **retry** the files that failed, or to
+  **accept** the outcome. Either choice resolves the question; closing the dialog
+  counts as accepting.
+
+If Recent Tasks is collapsed, an **Attention needed (N)** indicator appears in
+its header and expands the list when clicked, so an open question cannot sit
+unseen behind a hidden panel.
+
 Do not treat a browser redirect or a queued banner as completion. For any
 background operation, wait for its terminal Recent Tasks row and inspect a
 failure before retrying. Retrying a still-running backup, import, migration, or

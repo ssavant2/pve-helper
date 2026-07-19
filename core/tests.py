@@ -102,6 +102,7 @@ from core.services.storage import StorageEntry, StorageScanner
 from core.services.storage_actions import (
     StorageActionError,
     inflate_storage_file,
+    move_file_to_trash,
     normalize_uploaded_proxmox_image_paths,
     validate_inflate_storage_file,
 )
@@ -5838,6 +5839,77 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertFalse(second.exists())
             self.assertEqual(TrashItem.objects.count(), 2)
             self.assertEqual(AuditEvent.objects.filter(action="file.trashed").count(), 2)
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_partial_bulk_trash_keeps_successes_audited_and_asks_the_operator(self):
+        """A fan-out is not atomic: what happened must be recorded and reported."""
+        user = get_user_model().objects.create_user(username="bulk-viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump_dir = root / "dump"
+            dump_dir.mkdir()
+            paths = []
+            for index in range(3):
+                target = dump_dir / f"file{index}.vma.zst"
+                target.write_bytes(b"payload")
+                paths.append(f"dump/file{index}.vma.zst")
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+            for path in paths:
+                FileInventory.objects.create(
+                    scan_run=scan,
+                    storage=storage,
+                    path=path,
+                    entry_type=FileInventory.EntryType.FILE,
+                    classification=FileInventory.Classification.LIKELY_ORPHAN,
+                )
+            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+
+            real_trash = move_file_to_trash
+
+            def fail_the_second(*args, **kwargs):
+                if kwargs["entry"].path == paths[1]:
+                    raise StorageActionError("Blocked by preflight.")
+                return real_trash(*args, **kwargs)
+
+            with patch("core.views.storage.move_file_to_trash", side_effect=fail_the_second):
+                response = self.client.post(
+                    reverse("core:storage_trash_file", args=[storage.mount_ref]),
+                    {"path": paths, "confirm_basic": "yes", "next": browser_url},
+                )
+
+            self.assertRedirects(response, browser_url)
+            # The two that worked really happened, and are recorded as such.
+            self.assertEqual(TrashItem.objects.count(), 2)
+            self.assertEqual(AuditEvent.objects.filter(action="file.trashed").count(), 2)
+
+            bulk = AuditEvent.objects.get(action="file.bulk_operation")
+            self.assertEqual(bulk.outcome, "warning")
+            self.assertEqual(bulk.details["succeeded"], [paths[0], paths[2]])
+            self.assertEqual(bulk.details["failed"], [{"path": paths[1], "error": "Blocked by preflight."}])
+            self.assertTrue(bulk.details["question"])
+            self.assertEqual(bulk.details["retry"]["paths"], [paths[1]])
+
+            reported = [str(message) for message in get_messages(response.wsgi_request)]
+            self.assertTrue(any("2 of 3 moved to trash" in message for message in reported))
+            self.assertTrue(any(paths[1] in message for message in reported))
+
+            # The unanswered question is pinned, counted and outlives retention.
+            page = recent_task_page(limit=5)
+            self.assertEqual(page.questions_pending, 1)
+            self.assertEqual(page.tasks[0]["question"]["kind"], "bulk_file_partial")
+
+            self.client.post(reverse("core:dismiss_task_question"), {"task_id": f"file:{bulk.id}"})
+            bulk.refresh_from_db()
+            self.assertTrue(bulk.details["question_dismissed"])
+            self.assertEqual(recent_task_page(limit=5).questions_pending, 0)
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_referenced_stopped_file_requires_double_confirmation_then_moves_to_trash(self):

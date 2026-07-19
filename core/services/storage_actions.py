@@ -41,6 +41,10 @@ class StorageActionError(Exception):
     pass
 
 
+class StorageOperationAborted(StorageActionError):
+    """The published generation moved, so the remaining objects were not attempted."""
+
+
 def public_storage_upload_error(exc: StorageActionError) -> str:
     """Map internal upload failures to an explicit user-safe message set."""
     message = str(exc)
@@ -903,7 +907,7 @@ def _require_file_not_blocked(
                 )
             except StorageCatalogChanged as exc:
                 logger.warning("Storage catalog changed during a file operation: %s", exc)
-                raise StorageActionError(
+                raise StorageOperationAborted(
                     "The storage catalog was republished while this operation was running; retry the remaining files."
                 ) from exc
             if result.state is not UsageState.UNREFERENCED:

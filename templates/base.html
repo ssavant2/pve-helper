@@ -275,6 +275,12 @@
           <div class="taskbar-tabs" role="tablist" aria-label="Operations">
             <button class="taskbar-tab active" type="button" role="tab" aria-selected="true">Recent Tasks</button>
           </div>
+          <button
+            class="taskbar-attention"
+            type="button"
+            data-task-attention
+            {% if not app_recent_tasks_page.questions_pending %}hidden{% endif %}
+          >Attention needed (<span data-task-attention-count>{{ app_recent_tasks_page.questions_pending|default:0 }}</span>)</button>
           <div class="taskbar-controls">
             {% if app_multiple_clusters %}
               <label class="taskbar-cluster-filter">

@@ -10,6 +10,7 @@ import {
   refreshGuestStateAfterTaskTransitions,
   renderGuestLabel,
 } from "./shell.js";
+import { openBulkFilePartialDialog } from "./storage-browser.js";
 
 const initRecentTasks = () => {
   const recentTasks = document.querySelector("[data-recent-tasks]");
@@ -19,16 +20,25 @@ const initRecentTasks = () => {
 
   recentTasks.dataset.initialized = "true";
   recentTasks.addEventListener("click", (event) => {
-    const question = event.target.closest("[data-force-stop-target]");
+    const question = event.target.closest("[data-task-question]");
     if (!question || !recentTasks.contains(question)) {
       return;
     }
     event.preventDefault();
-    openForceStopDialog(
-      question.dataset.forceStopTarget || "",
-      question.dataset.forceStopLabel || "",
-      question.dataset.forceStopTaskId || ""
-    );
+    const taskId = question.dataset.taskQuestionId || "";
+    let payload = {};
+    try {
+      payload = JSON.parse(question.dataset.taskQuestionPayload || "{}");
+    } catch (_error) {
+      payload = {};
+    }
+    if (question.dataset.taskQuestion === "force_stop") {
+      openForceStopDialog(payload.target || "", payload.label || "", taskId);
+      return;
+    }
+    if (question.dataset.taskQuestion === "bulk_file_partial") {
+      openBulkFilePartialDialog(payload, taskId);
+    }
   });
   const rows = recentTasks.querySelector("[data-task-rows]");
   const previousButton = recentTasks.querySelector("[data-task-prev]");
@@ -443,8 +453,8 @@ const initRecentTasks = () => {
         <td data-column="target" data-sort-value="${escapeHtml(taskTargetSortValue(task))}">${task.target_guest ? renderGuestLabel(task.target_guest) : escapeHtml(task.target)}</td>
         <td data-column="cluster" data-sort-value="${escapeHtml(task.cluster || "-")}">${escapeHtml(task.cluster || "-")}</td>
         <td data-column="status" data-sort-value="${escapeHtml(task.status)}">${
-          task.offer_force_stop
-            ? `<button type="button" class="task-question-badge" data-force-stop-target="${escapeHtml(task.force_stop_target)}" data-force-stop-label="${escapeHtml(task.target)}" data-force-stop-task-id="${escapeHtml(task.id || "")}">A question — click to answer</button>`
+          task.question
+            ? `<button type="button" class="task-question-badge" data-task-question="${escapeHtml(task.question.kind)}" data-task-question-id="${escapeHtml(task.id || "")}" data-task-question-payload="${escapeHtml(JSON.stringify(task.question.payload || {}))}">${escapeHtml(task.question.label || "A question — click to answer")}</button>`
             : `<span class="badge ${escapeHtml(task.status_class)}"${task.retryable ? ` title="${escapeHtml(task.retry_label)}; right-click for actions"` : ""}>${escapeHtml(task.status)}</span>`
         }</td>
         <td data-column="details" data-sort-value="${escapeHtml(task.details)}">${taskDetailsHtml(task)}</td>
@@ -561,9 +571,31 @@ const initRecentTasks = () => {
     renderTaskBody(mergedTasks);
   };
 
+  // An unanswered question must be visible even when the taskbar is collapsed,
+  // otherwise a half-finished destructive operation can sit unnoticed forever.
+  const attention = recentTasks.querySelector("[data-task-attention]");
+  const attentionCount = recentTasks.querySelector("[data-task-attention-count]");
+  const updateAttention = (pending) => {
+    if (!attention) return;
+    const count = Number(pending || 0);
+    attention.hidden = count <= 0;
+    if (attentionCount) {
+      attentionCount.textContent = String(count);
+    }
+  };
+  attention?.addEventListener("click", () => {
+    // Expand the taskbar so the pinned question rows are actually reachable.
+    const appShell = document.querySelector(".app-shell");
+    if (appShell?.classList.contains("tasks-collapsed")) {
+      document.querySelector("[data-taskbar-toggle]")?.click();
+    }
+    recentTasks.querySelector("[data-task-question]")?.focus();
+  });
+
   const updateTaskControls = (data) => {
     taskPage = data.page || 0;
     recentTasks.dataset.taskPage = String(taskPage);
+    updateAttention(data.questions_pending);
 
     if (previousButton) {
       previousButton.disabled = !data.has_previous;

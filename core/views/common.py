@@ -80,6 +80,7 @@ from ..services.storage_actions import (
     INFLATE_PREALLOCATION_MODES,
     MIN_INFLATE_ALLOCATED_PERCENT,
     StorageActionError,
+    StorageOperationAborted,
     adopt_discovered_trash_items,
     cleanup_empty_app_trash_directories,
     create_storage_directory,
@@ -166,7 +167,14 @@ def json_task_response(view_func):
         if request.headers.get("X-Requested-With") != "fetch":
             return response
         errors = [m.message for m in messages.get_messages(request) if m.level >= messages.ERROR]
-        return JsonResponse({"ok": not errors, "errors": errors})
+        # A fan-out that half-succeeded is neither ok nor a plain failure: the
+        # caller must still refresh, because part of the operation did happen.
+        partial = getattr(request, "bulk_file_outcome", None)
+        payload = {"ok": not errors, "errors": errors}
+        if partial:
+            payload["partial"] = bool(partial.get("partial"))
+            payload["summary"] = partial
+        return JsonResponse(payload)
 
     return wrapper
 

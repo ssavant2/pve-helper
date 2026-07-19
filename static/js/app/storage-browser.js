@@ -1,5 +1,6 @@
 import { openConfirmDialog, openInputDialog } from "./dialogs.js";
 import { clearLocalError, showLocalError } from "./feedback.js";
+import { dismissTaskQuestion } from "./guest-actions.js";
 import { loadSoftNavigation } from "./navigation.js";
 import { FILE_ACTION_META } from "./scheduling.js";
 import {
@@ -77,8 +78,26 @@ const runFileActionForm = async (form) => {
       headers: { Accept: "application/json", "X-Requested-With": "fetch" },
     });
     const payload = await response.json().catch(() => ({}));
-    if (!payload.ok) {
+    if (!payload.ok && !payload.partial) {
       fail((payload.errors || [`File action failed: HTTP ${response.status}.`]).join("; "));
+      return;
+    }
+    if (payload.partial) {
+      // Part of the fan-out really happened: report it honestly and still
+      // refresh, or the listing would keep showing files that are already gone.
+      settled = true;
+      const summary = payload.summary || {};
+      updatePendingRecentTask({
+        id: pending.id,
+        status: "Partly completed",
+        status_class: "warning",
+        details: summary.summary || (payload.errors || []).join("; "),
+        finished_at: taskDateLabel(new Date()),
+        finished_at_ms: Date.now(),
+      });
+      showLocalError(form, (payload.errors || []).join("; "));
+      window.pveHelperRefreshRecentTasks?.();
+      loadSoftNavigation(new URL(window.location.href), { push: false });
       return;
     }
     settled = true;
@@ -887,12 +906,69 @@ const initStorageFileManagers = (root = document) => {
   });
 };
 
+/**
+ * The follow-up to a destructive fan-out that only half happened.
+ *
+ * The operation is over, but the operator still owes it an answer: retry the
+ * files that failed, or accept this state. Until one of those is chosen the
+ * question keeps pulsing and stays pinned in Recent Tasks — closing the dialog
+ * any other way counts as accepting it, exactly like the force-stop offer.
+ */
+const openBulkFilePartialDialog = async (payload, taskId) => {
+  const failed = Array.isArray(payload.failed) ? payload.failed : [];
+  const skipped = Array.isArray(payload.skipped) ? payload.skipped : [];
+  const retry = payload.retry || {};
+  const retryPaths = Array.isArray(retry.paths) ? retry.paths : [];
+  const listed = failed
+    .slice(0, 10)
+    .map((item) => `<li><code>${escapeHtml(item.path || "")}</code> — ${escapeHtml(item.error || "")}</li>`)
+    .join("");
+  const body = `
+      <p><strong>${escapeHtml(payload.summary || "")}.</strong> The rest did not happen.</p>
+      ${listed ? `<ul class="dialog-list">${listed}</ul>` : ""}
+      ${failed.length > 10 ? `<p>and ${failed.length - 10} more — see Audit.</p>` : ""}
+      ${skipped.length ? `<p>${skipped.length} file(s) were not attempted because the storage catalog changed while the operation was running.</p>` : ""}
+      <p>Retry the ${retryPaths.length} remaining file(s), or accept this outcome.</p>
+    `;
+  const retryRequested = await openConfirmDialog({
+    title: "Partly completed",
+    body,
+    confirmLabel: `Retry ${retryPaths.length} file(s)`,
+    danger: false,
+  });
+  await dismissTaskQuestion(taskId);
+  if (!retryRequested || !retry.url || !retryPaths.length) {
+    return;
+  }
+  const taskbar = document.querySelector("[data-recent-tasks]");
+  const retryBody = new FormData();
+  retryBody.append("csrfmiddlewaretoken", taskbar?.dataset.csrfToken || "");
+  retryBody.append("confirm_basic", "yes");
+  retryBody.append("confirm_risk", "yes");
+  for (const path of retryPaths) {
+    retryBody.append("path", path);
+  }
+  try {
+    const response = await fetch(new URL(retry.url, window.location.origin), {
+      method: "POST",
+      body: retryBody,
+      headers: { Accept: "application/json", "X-Requested-With": "fetch" },
+    });
+    await response.json().catch(() => ({}));
+  } catch (_error) {
+    // The next poll shows the durable outcome either way.
+  }
+  window.pveHelperRefreshRecentTasks?.();
+  loadSoftNavigation(new URL(window.location.href), { push: false });
+};
+
 export {
   _openMovePicker,
   completeConfirmedFileAction,
   createPendingFileTask,
   initConfirmedFileActions,
   initStorageFileManagers,
+  openBulkFilePartialDialog,
   openDestPicker,
   runFileActionForm,
 };

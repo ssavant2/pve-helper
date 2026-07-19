@@ -57,7 +57,28 @@
   display: flex;
   align-items: stretch;
   align-self: stretch;
-  margin-right: auto;
+}
+
+/* Stays visible while the taskbar is collapsed: an unanswered question must be
+   impossible to miss, but must not steal focus like a modal would. */
+.taskbar-attention {
+  margin-left: 12px;
+  align-self: center;
+  border: 1px solid var(--amber);
+  border-radius: 999px;
+  padding: 2px 12px;
+  background: var(--warning-bg);
+  color: var(--amber);
+  font-size: 0.85em;
+  font-weight: 600;
+  cursor: pointer;
+  animation: task-question-pulse 1.6s ease-in-out infinite;
+}
+.taskbar-attention:hover {
+  filter: brightness(1.08);
+}
+.taskbar-attention[hidden] {
+  display: none;
 }
 
 .taskbar-tab {
@@ -86,6 +107,7 @@
   align-items: center;
   gap: 8px;
   padding: 0 10px;
+  margin-left: auto;
 }
 
 .taskbar-cluster-filter select {
