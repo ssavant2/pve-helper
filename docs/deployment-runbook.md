@@ -223,6 +223,10 @@ external proxy supplies additional access-control policy, use a host firewall
 or network ACL to prevent clients from deliberately bypassing it; that
 restriction is deployment-specific rather than an application requirement.
 
+The application emits its own enforced Content-Security-Policy. A reverse proxy should
+pass that response header through unchanged; do not replace it with a broader policy or
+add inline-script exceptions in NPM.
+
 ## NFS mounts
 
 For production, mount the NFS exports on the Docker host before starting the app.

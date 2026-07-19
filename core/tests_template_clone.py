@@ -3,16 +3,14 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from core.models import AuditEvent, ProxmoxCluster, ProxmoxEndpoint
-from core.services.refs import GuestRef
 from core.services.proxmox import ProxmoxTaskResult
+from core.services.refs import GuestRef
 from core.template_clone_tasks import clone_guest_to_template_task
 
 
 class TemplateCloneTaskTests(TestCase):
     def test_clone_to_template_waits_for_clone_then_converts_result(self):
-        cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
+        cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
         ProxmoxEndpoint.objects.create(
             cluster=cluster,
             name="pve3",

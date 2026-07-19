@@ -1,8 +1,28 @@
 """Guest read models: overview, status, enrichment APIs, summary (from _core)."""
+
 from __future__ import annotations
+
 from ..common import *  # noqa: F401,F403
-from .. import common
-from .read_model_support import (_display_lock,_guest_agent_summary,_guest_cpu_label,_guest_cpu_topology,_guest_ha_summary,_guest_health,_guest_lineage,_guest_os_label,_guest_pool_label,_guest_rows,_guest_state_label,_guest_tab_context,_guest_target_value,_guest_usage,_guest_vm_details,_live_guest_has_snapshot,_resolve_guest_detail,_vms_workspace_context)
+from .read_model_support import (
+    _display_lock,
+    _guest_agent_summary,
+    _guest_cpu_label,
+    _guest_cpu_topology,
+    _guest_ha_summary,
+    _guest_health,
+    _guest_lineage,
+    _guest_os_label,
+    _guest_pool_label,
+    _guest_rows,
+    _guest_state_label,
+    _guest_tab_context,
+    _guest_target_value,
+    _guest_usage,
+    _guest_vm_details,
+    _live_guest_has_snapshot,
+    _resolve_guest_detail,
+    _vms_workspace_context,
+)
 
 
 @app_login_required
@@ -12,15 +32,11 @@ def vms_list(request):
     return render(request, "core/vms.html", context)
 
 
-
-
 @app_login_required
 def vms_overview(request):
     """vSphere-style, sortable overview table for all VMs and CTs."""
     context = _vms_workspace_context("vms_overview")
     return render(request, "core/vms_overview.html", context)
-
-
 
 
 @app_login_required
@@ -57,8 +73,6 @@ def vms_overview_agent_info(request):
     return JsonResponse({"guests": payload})
 
 
-
-
 @app_login_required
 def vms_overview_snapshot_info(request):
     rows, _live_available, _scan_at = _guest_rows()
@@ -76,8 +90,6 @@ def vms_overview_snapshot_info(request):
             }
         )
     return JsonResponse({"guests": payload})
-
-
 
 
 @app_login_required
@@ -115,8 +127,6 @@ def vms_status(request):
     )
 
 
-
-
 @app_login_required
 def guest_summary(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
@@ -127,9 +137,7 @@ def guest_summary(request, cluster_key: str, object_type: str, vmid: int):
 
     config = detail.config
     current = detail.current
-    disks, cdroms = guest_disks(
-        config, detail.node, detail.vmid, cluster_key=detail.cluster_key
-    )
+    disks, cdroms = guest_disks(config, detail.node, detail.vmid, cluster_key=detail.cluster_key)
     nets = guest_networks(config)
 
     related_storages = []
@@ -174,10 +182,7 @@ def guest_summary(request, cluster_key: str, object_type: str, vmid: int):
             # lock=suspended + a saved vmstate; Power On resumes it. The live
             # inventory may already surface it as 'hibernated'.
             "guest_is_hibernated": detail.status == "hibernated"
-            or (
-                detail.status == "stopped"
-                and ((current or {}).get("lock") or config.get("lock")) == "suspended"
-            ),
+            or (detail.status == "stopped" and ((current or {}).get("lock") or config.get("lock")) == "suspended"),
         }
     )
     return render(request, "core/guest_summary.html", context)

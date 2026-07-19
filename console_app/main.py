@@ -67,7 +67,9 @@ async def console_ws(websocket: WebSocket):
                 await websocket.accept()
                 await _mark_session(session.id, ConsoleSession.Status.CONNECTED, connected_at=timezone.now())
                 await _relay(websocket, upstream)
-            await _mark_session(session.id, ConsoleSession.Status.CLOSED, closed_at=timezone.now(), close_reason="closed")
+            await _mark_session(
+                session.id, ConsoleSession.Status.CLOSED, closed_at=timezone.now(), close_reason="closed"
+            )
             await _audit_session(session.id, "guest.console.closed", "success")
             marked_closed = True
     except Exception as exc:

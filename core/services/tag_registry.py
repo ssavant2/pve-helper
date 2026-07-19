@@ -7,12 +7,12 @@ from contextlib import contextmanager
 from django.core.cache import cache
 from django.db import connection
 
-from core.services.proxmox import ProxmoxAPIError
 from core.services.cluster_state_identity import (
     cluster_advisory_lock_id,
     cluster_cache_key,
     invalidate_cluster_cache,
 )
+from core.services.proxmox import ProxmoxAPIError
 from core.services.public_errors import public_exception_message
 from core.services.tags import (
     RegisteredTag,
@@ -23,7 +23,6 @@ from core.services.tags import (
     serialize_color_map,
     serialize_tag_style,
 )
-
 
 TAG_REGISTRY_CACHE_NAMESPACE = "tag-registry:v2"
 TAG_REGISTRY_CACHE_SECONDS = 60

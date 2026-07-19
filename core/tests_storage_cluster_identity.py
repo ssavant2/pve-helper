@@ -10,12 +10,8 @@ from core.services.storage_actions import StorageActionError, _live_guest_status
 
 class StorageFileGuestIdentityTests(TestCase):
     def setUp(self):
-        self.cluster_a = ProxmoxCluster.objects.create(
-            key="a", display_name="A", enabled=True
-        )
-        self.cluster_b = ProxmoxCluster.objects.create(
-            key="b", display_name="B", enabled=True
-        )
+        self.cluster_a = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)
+        self.cluster_b = ProxmoxCluster.objects.create(key="b", display_name="B", enabled=True)
 
     def test_live_status_uses_the_referenced_cluster_when_vmid_and_node_overlap(self):
         guest = ReferencedObject(
@@ -34,9 +30,7 @@ class StorageFileGuestIdentityTests(TestCase):
             complete=True,
         )
 
-        with patch(
-            "core.services.storage_actions.cluster_wide_read", return_value=result
-        ) as read:
+        with patch("core.services.storage_actions.cluster_wide_read", return_value=result) as read:
             self.assertEqual(_live_guest_status(guest), "stopped")
 
         self.assertEqual(read.call_args.args[0], self.cluster_b)

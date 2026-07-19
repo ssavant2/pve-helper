@@ -1,6 +1,33 @@
 name: pve-helper-dev-tools
 
 services:
+  py-check:
+    image: ghcr.io/astral-sh/ruff:0.14.14@sha256:7e2b474dd2407be9928985d48a66863fd658c03c7dedfbde65595772de61f15d
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /workspace
+    network_mode: none
+    command: ["check", "."]
+    volumes:
+      - .:/workspace
+
+  py-format-check:
+    image: ghcr.io/astral-sh/ruff:0.14.14@sha256:7e2b474dd2407be9928985d48a66863fd658c03c7dedfbde65595772de61f15d
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /workspace
+    network_mode: none
+    command: ["format", "--check", "."]
+    volumes:
+      - .:/workspace
+
+  py-format:
+    image: ghcr.io/astral-sh/ruff:0.14.14@sha256:7e2b474dd2407be9928985d48a66863fd658c03c7dedfbde65595772de61f15d
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /workspace
+    network_mode: none
+    command: ["format", "."]
+    volumes:
+      - .:/workspace
+
   js-check:
     image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"

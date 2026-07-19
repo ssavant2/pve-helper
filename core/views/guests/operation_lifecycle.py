@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ..common import *  # noqa: F401,F403
-from .. import common
 from core.services.cluster_resolver import (
     cluster_write,
 )
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.public_errors import public_exception_message
 from core.services.refs import GuestRef, RefParseError
+
+from .. import common
+from ..common import *  # noqa: F401,F403
 
 # Sentinel returned by the multi-disk migration path when its worker owns the
 # running Audit event. Keeping it here makes ownership explicit for every view
@@ -54,9 +55,7 @@ def _guest_write(detail: SimpleNamespace, *, operation: str, fallback: str, call
         guest_cluster(detail),
         operation=operation,
         call=call,
-        error_message=lambda exc: public_exception_message(
-            exc, operation=operation, fallback=fallback
-        ),
+        error_message=lambda exc: public_exception_message(exc, operation=operation, fallback=fallback),
     )
 
 

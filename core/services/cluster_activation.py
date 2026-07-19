@@ -76,9 +76,7 @@ def activate_multicluster_identity() -> RuntimeConfigurationState:
         return state
     errors = _activation_data_errors()
     if errors:
-        raise ClusterActivationError(
-            "Multi-cluster identity activation was refused: " + "; ".join(errors) + "."
-        )
+        raise ClusterActivationError("Multi-cluster identity activation was refused: " + "; ".join(errors) + ".")
     state.identity_contract_version = 1
     details = dict(state.details or {})
     details["multicluster_identity_activated_at"] = timezone.now().isoformat()
@@ -159,9 +157,7 @@ def set_initial_cluster_key(new_key: str, *, current_key: str | None = None) -> 
             cluster = clusters[0]
         else:
             available = ", ".join(item.key for item in clusters)
-            raise ClusterActivationError(
-                f"Several clusters are configured ({available}); name which one to rekey."
-            )
+            raise ClusterActivationError(f"Several clusters are configured ({available}); name which one to rekey.")
 
         if cluster.key == normalized:
             return cluster

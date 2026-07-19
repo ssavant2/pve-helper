@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from django.utils import timezone
 from django.db import transaction
+from django.utils import timezone
 from django_q.tasks import async_task
 
 from core.models import AuditEvent, CurrentGuestInventory, ProxmoxCluster
@@ -19,9 +19,9 @@ from core.services.tag_registry import (
     registered_tags,
 )
 from core.services.tags import (
-    RegisteredTag,
     TAG_COLOR_ERROR,
     TAG_NAME_ERROR,
+    RegisteredTag,
     TagValidationError,
     join_tags,
     parse_tags,
@@ -169,16 +169,11 @@ def unregister_tag(tag: str, *, cluster) -> tuple[dict[str, RegisteredTag], str]
         names[:] = [name for name in names if name != tag]
         colors.pop(tag, None)
 
-    return mutate_registered_tags(
-        mutate, postcondition=lambda actual: tag not in actual, cluster=cluster
-    )
+    return mutate_registered_tags(mutate, postcondition=lambda actual: tag not in actual, cluster=cluster)
 
 
 def _target_from_guest(row, *, cluster) -> dict:
-    cluster_key = (
-        getattr(getattr(row, "cluster", None), "key", "")
-        or getattr(cluster, "key", "")
-    )
+    cluster_key = getattr(getattr(row, "cluster", None), "key", "") or getattr(cluster, "key", "")
     ref = GuestRef(cluster_key, row.object_type, row.vmid, row.node)
     return {
         "guest_ref": ref.serialize(),
@@ -313,11 +308,7 @@ def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> No
     event.outcome = "running"
     event.details = details
     event.save(update_fields=["details", "outcome"])
-    terminal = {
-        _target_key(item)
-        for bucket in ("succeeded", "skipped")
-        for item in details.get(bucket, [])
-    }
+    terminal = {_target_key(item) for bucket in ("succeeded", "skipped") for item in details.get(bucket, [])}
     details["failed"] = []
     cluster = ProxmoxCluster.objects.filter(key=str(details.get("cluster_key") or "")).first()
     if cluster is None:
@@ -329,10 +320,7 @@ def execute_tag_operation(event_id: int, retry_attempt: int | None = None) -> No
         event.save(update_fields=["details", "outcome"])
         return
     inventory = fetch_verified_guest_inventory(cluster=cluster)
-    live_by_identity = {
-        (item.node, item.object_type, item.vmid): item
-        for item in inventory.guests
-    }
+    live_by_identity = {(item.node, item.object_type, item.vmid): item for item in inventory.guests}
     live_by_guest: dict[tuple[str, int], list] = {}
     for item in inventory.guests:
         live_by_guest.setdefault((item.object_type, item.vmid), []).append(item)

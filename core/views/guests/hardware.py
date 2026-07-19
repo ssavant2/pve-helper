@@ -1,13 +1,29 @@
 """Guest hardware + config/notes edit (extracted from _core)."""
+
 from __future__ import annotations
-from ..common import *  # noqa: F401,F403
-from .. import common
-from .operation_lifecycle import _audit_guest
-from .presenters import (_config_enabled,_ct_features,_ct_mount_rows,_ct_network_rows,_ct_options,_format_kv_config,_next_device_index,_parse_net_value,_parse_startup_options,_set_param_bool,_set_param_text,_split_kv_config)
-from .read_model_support import (_cpu_count,_is_disk_device_key,_linked_clone_disk_edit_block,_resolve_guest_detail)
-from core.services.tags import TagValidationError, join_tags, parse_tags, validate_tag
-from core.services.tag_catalog import load_tag_catalog
+
 from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
+from core.services.tag_catalog import load_tag_catalog
+from core.services.tags import TagValidationError, join_tags, parse_tags, validate_tag
+
+from .. import common
+from ..common import *  # noqa: F401,F403
+from .operation_lifecycle import _audit_guest
+from .presenters import (
+    _config_enabled,
+    _ct_features,
+    _ct_mount_rows,
+    _ct_network_rows,
+    _ct_options,
+    _format_kv_config,
+    _next_device_index,
+    _parse_net_value,
+    _parse_startup_options,
+    _set_param_bool,
+    _set_param_text,
+    _split_kv_config,
+)
+from .read_model_support import _cpu_count, _is_disk_device_key, _linked_clone_disk_edit_block, _resolve_guest_detail
 
 
 def _advanced_device_label(key: str) -> str:
@@ -30,16 +46,12 @@ def _advanced_device_label(key: str) -> str:
     return key
 
 
-
-
 def _advanced_devices(config: dict) -> list[dict]:
     devices = []
     for key in sorted(config or {}):
         if ADVANCED_DEVICE_RE.match(key):
             devices.append({"key": key, "label": _advanced_device_label(key), "value": config[key]})
     return devices
-
-
 
 
 def _cpu_type_options(current: str) -> tuple[tuple[str, str], ...]:
@@ -49,15 +61,11 @@ def _cpu_type_options(current: str) -> tuple[tuple[str, str], ...]:
     return tuple(options)
 
 
-
-
 def _parse_boot_order(value: object) -> list[str]:
     text = str(value or "").strip()
     if not text.startswith("order="):
         return []
     return [item for item in text.split("=", 1)[1].split(";") if item]
-
-
 
 
 def _boot_device_sort_key(key: str) -> tuple[int, int, str]:
@@ -67,8 +75,6 @@ def _boot_device_sort_key(key: str) -> tuple[int, int, str]:
         return (99, 999, key)
     bus, index = match.groups()
     return (bus_order.get(bus, 90), int(index), key)
-
-
 
 
 def _boot_devices(config: dict, disks: list[dict], cdroms: list[dict], nics: list[dict]) -> list[dict]:
@@ -109,14 +115,10 @@ def _boot_devices(config: dict, disks: list[dict], cdroms: list[dict], nics: lis
     return rows
 
 
-
-
 def _hotplug_options(config: dict) -> list[dict]:
     raw_value = str(config.get("hotplug", HOTPLUG_DEFAULT) if "hotplug" not in config else config.get("hotplug") or "")
     enabled = {token.strip() for token in raw_value.split(",") if token.strip()}
     return [{"value": value, "label": label, "enabled": value in enabled} for value, label in HOTPLUG_OPTIONS]
-
-
 
 
 @app_login_required
@@ -162,8 +164,12 @@ def guest_hardware_edit(request, cluster_key: str, object_type: str, vmid: int):
                 {"value": value, "label": label, "enabled": _ct_features(config)["flags"].get(value, False)}
                 for value, label in CT_FEATURE_OPTIONS
             ],
-            "ct_ostype_label": CT_OSTYPE_LABELS.get(str(config.get("ostype", "") or ""), str(config.get("ostype", "") or "") or "Unknown"),
-            "ct_arch_label": CT_ARCH_LABELS.get(str(config.get("arch", "") or "amd64"), str(config.get("arch", "") or "amd64")),
+            "ct_ostype_label": CT_OSTYPE_LABELS.get(
+                str(config.get("ostype", "") or ""), str(config.get("ostype", "") or "") or "Unknown"
+            ),
+            "ct_arch_label": CT_ARCH_LABELS.get(
+                str(config.get("arch", "") or "amd64"), str(config.get("arch", "") or "amd64")
+            ),
         }
         return render(request, "core/guest_ct_hardware_edit.html", context)
 
@@ -179,9 +185,7 @@ def guest_hardware_edit(request, cluster_key: str, object_type: str, vmid: int):
         messages.error(request, error)
 
     config = detail.config
-    disks, cdroms = guest_disks(
-        config, detail.node, detail.vmid, cluster_key=detail.cluster_key
-    )
+    disks, cdroms = guest_disks(config, detail.node, detail.vmid, cluster_key=detail.cluster_key)
     disks = [disk for disk in disks if _is_disk_device_key(disk["label"])]
     nics = guest_networks(config)
     options = create_options(object_type, detail.node, cluster=detail.cluster)
@@ -242,8 +246,6 @@ def guest_hardware_edit(request, cluster_key: str, object_type: str, vmid: int):
     return render(request, "core/guest_hardware_edit.html", context)
 
 
-
-
 def _set_checkbox_update(
     updates: dict[str, str],
     config: dict,
@@ -254,8 +256,6 @@ def _set_checkbox_update(
 ) -> None:
     if enabled != _config_enabled(config, key, default=default):
         updates[key] = "1" if enabled else "0"
-
-
 
 
 def _set_text_update(
@@ -276,8 +276,6 @@ def _set_text_update(
         delete.append(key)
 
 
-
-
 def _startup_from_post(post) -> str | None:
     parts = []
     for form_key, startup_key in (
@@ -292,8 +290,6 @@ def _startup_from_post(post) -> str | None:
             return None
         parts.append(f"{startup_key}={raw}")
     return ",".join(parts)
-
-
 
 
 def _vm_settings_options(config: dict) -> dict[str, object]:
@@ -323,13 +319,13 @@ def _vm_settings_options(config: dict) -> dict[str, object]:
         "balloon_enabled": str(config.get("balloon", "") or "") != "0",
         "balloon": str(config.get("balloon", "") or ""),
         "shares": str(config.get("shares", "") or ""),
-        "hotplug": str(config.get("hotplug", HOTPLUG_DEFAULT) if "hotplug" not in config else config.get("hotplug") or ""),
+        "hotplug": str(
+            config.get("hotplug", HOTPLUG_DEFAULT) if "hotplug" not in config else config.get("hotplug") or ""
+        ),
         "startup_order": startup["order"],
         "startup_up": startup["up"],
         "startup_down": startup["down"],
     }
-
-
 
 
 def _field_lists(post, *names: str) -> Iterator[tuple[str, ...]]:
@@ -337,8 +333,6 @@ def _field_lists(post, *names: str) -> Iterator[tuple[str, ...]]:
     max_len = max((len(items) for items in values), default=0)
     for index in range(max_len):
         yield tuple((items[index].strip() if index < len(items) else "") for items in values)
-
-
 
 
 def _validate_positive_int(value: str, label: str, *, allow_zero: bool = False) -> str | None:
@@ -349,8 +343,6 @@ def _validate_positive_int(value: str, label: str, *, allow_zero: bool = False) 
     if int(value) < 0 or (int(value) == 0 and not allow_zero):
         return f"{label} must be a positive whole number."
     return None
-
-
 
 
 def _set_optional_number_update(
@@ -370,8 +362,6 @@ def _set_optional_number_update(
     return None
 
 
-
-
 def _set_optional_float_update(
     updates: dict[str, str],
     delete: list[str],
@@ -388,8 +378,6 @@ def _set_optional_float_update(
             return f"{label} must be a number."
     _set_text_update(updates, delete, config, key, value)
     return None
-
-
 
 
 def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
@@ -419,7 +407,9 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
     if not hostname:
         return "Hostname is required."
     _set_text_update(updates, delete, fresh, "hostname", hostname, allow_delete=False)
-    _set_text_update(updates, delete, fresh, "description", post.get("ct_description", "").replace("\r\n", "\n").strip())
+    _set_text_update(
+        updates, delete, fresh, "description", post.get("ct_description", "").replace("\r\n", "\n").strip()
+    )
     _set_text_update(updates, delete, fresh, "nameserver", post.get("ct_nameserver", "").strip())
     _set_text_update(updates, delete, fresh, "searchdomain", post.get("ct_searchdomain", "").strip())
     _set_checkbox_update(updates, fresh, "onboot", post.get("ct_onboot") == "on")
@@ -447,7 +437,9 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
         )
         if error:
             return error
-    error = _set_optional_float_update(updates, delete, fresh, "cpulimit", post.get("ct_cpulimit", "").strip(), "CPU limit")
+    error = _set_optional_float_update(
+        updates, delete, fresh, "cpulimit", post.get("ct_cpulimit", "").strip(), "CPU limit"
+    )
     if error:
         return error
 
@@ -615,8 +607,6 @@ def _apply_ct_hardware_edit(request, detail: SimpleNamespace):
         {"updated": list(updates.keys()), "removed": delete, "resized": [d for d, _ in resizes]},
     )
     return None
-
-
 
 
 def _apply_hardware_edit(request, detail: SimpleNamespace):
@@ -812,7 +802,9 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
             usb_value += ",usb3=1"
         updates[f"usb{_next_device_index(fresh, 'usb', updates)}"] = usb_value
 
-    for pci_target_type, pci_target, pci_pcie in _field_lists(post, "new_pci_target_type", "new_pci_target", "new_pci_pcie"):
+    for pci_target_type, pci_target, pci_pcie in _field_lists(
+        post, "new_pci_target_type", "new_pci_target", "new_pci_pcie"
+    ):
         if not pci_target:
             continue
         pci_key = "mapping" if pci_target_type == "mapping" else "host"
@@ -886,8 +878,6 @@ def _apply_hardware_edit(request, detail: SimpleNamespace):
     return None
 
 
-
-
 @app_login_required
 def guest_edit(request, cluster_key: str, object_type: str, vmid: int):
     if object_type not in GUEST_OBJECT_TYPES:
@@ -956,8 +946,6 @@ def guest_edit(request, cluster_key: str, object_type: str, vmid: int):
         "available_tags": available_tags,
     }
     return render(request, "core/guest_edit.html", context)
-
-
 
 
 def _apply_guest_edit(request, detail: SimpleNamespace, name_key: str):

@@ -6,26 +6,24 @@ from pathlib import PurePosixPath
 from typing import BinaryIO
 
 from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
+from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.storage_backends import backend_profile
 from core.services.storage_catalog import refresh_storage_catalog, storage_view
-from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
     mount_health,
     mountinfo_entries,
     normalized_backend_identity,
-    normalized_relative_path,
     registered_mount_health,
     resolve_storage_mount,
-    storage_mount_root,
     unbind_storage_mount,
 )
+from core.services.storage_paths import normalized_relative_path, storage_mount_root
 
-from .common import *  # noqa: F401,F403
-from . import common
 from ..services.storage import StorageScanner
-
+from . import common
+from .common import *  # noqa: F401,F403
 
 STORAGE_CONTENT_TYPES = [
     {
@@ -70,21 +68,20 @@ STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
 def _storage_clusters(storage: StorageMount):
     return list(
         ProxmoxCluster.objects.filter(enabled=True)
-        .filter(
-            Q(storage_consumers__storage=storage)
-            | Q(storage_definitions__mount_bindings__mount=storage)
-        )
+        .filter(Q(storage_consumers__storage=storage) | Q(storage_definitions__mount_bindings__mount=storage))
         .distinct()
         .order_by("display_name", "key")
     )
 
 
 def _cluster_storage_for_mount(storage: StorageMount, cluster: ProxmoxCluster):
-    matches = list(ClusterStorage.objects.filter(
-        cluster=cluster,
-        mount_bindings__mount=storage,
-        present=True,
-    ).distinct()[:2])
+    matches = list(
+        ClusterStorage.objects.filter(
+            cluster=cluster,
+            mount_bindings__mount=storage,
+            present=True,
+        ).distinct()[:2]
+    )
     return matches[0] if len(matches) == 1 else None
 
 
@@ -145,21 +142,12 @@ def dashboard(request):
 
 def _clusters_without_storage() -> list[ProxmoxCluster]:
     """Enabled clusters whose catalog has not published a current definition."""
-    represented = set(
-        ClusterStorage.objects.filter(present=True).values_list("cluster_id", flat=True)
-    )
-    return list(
-        ProxmoxCluster.objects.filter(enabled=True)
-        .exclude(pk__in=represented)
-        .order_by("key")
-    )
+    represented = set(ClusterStorage.objects.filter(present=True).values_list("cluster_id", flat=True))
+    return list(ProxmoxCluster.objects.filter(enabled=True).exclude(pk__in=represented).order_by("key"))
 
 
 @app_login_required
 def datastores(request):
-    result_scan = _latest_result_scan()
-    storages = list(StorageMount.objects.order_by("display_name"))
-    _decorate_storages_with_scan_state(storages, result_scan)
     catalog_rows = []
     definitions = (
         ClusterStorage.objects.select_related("cluster")
@@ -182,12 +170,15 @@ def datastores(request):
 
     context = {
         **navigation_context("datastores"),
-        "latest_scan": result_scan,
-        "storages": storages,
         "clusters_without_storage": _clusters_without_storage(),
         "catalog_rows": catalog_rows,
     }
     return render(request, "core/datastores.html", context)
+
+
+@app_login_required
+def pve_helper_settings(request):
+    return redirect("core:settings_storage")
 
 
 def _mount_candidates() -> list[dict[str, str]]:
@@ -219,9 +210,11 @@ def storage_mount_register(request):
     registered = None
     if request.method == "POST":
         if request.POST.get("action") == "remove_binding":
-            binding = ClusterStorageMount.objects.select_related(
-                "cluster_storage__cluster", "mount"
-            ).filter(pk=request.POST.get("binding_id")).first()
+            binding = (
+                ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount")
+                .filter(pk=request.POST.get("binding_id"))
+                .first()
+            )
             if binding is None:
                 errors.append("Mount association no longer exists.")
             else:
@@ -257,9 +250,7 @@ def storage_mount_register(request):
             node = str(request.POST.get("node") or "").strip()
             display_name = str(request.POST.get("display_name") or "").strip()
             try:
-                backend_identity = normalized_backend_identity(
-                    request.POST.get("backend_identity") or ""
-                )
+                backend_identity = normalized_backend_identity(request.POST.get("backend_identity") or "")
             except StorageMountError as exc:
                 backend_identity = ""
                 backend_identity_error = True
@@ -285,11 +276,7 @@ def storage_mount_register(request):
                 profile = backend_profile(definition.storage_type)
                 candidate = candidates[relative]
                 existing = StorageMount.objects.filter(relative_path=relative).first()
-                if (
-                    existing
-                    and existing.backend_identity != backend_identity
-                    and existing.cluster_bindings.exists()
-                ):
+                if existing and existing.backend_identity != backend_identity and existing.cluster_bindings.exists():
                     errors.append(
                         "This host path is registered with a different backend identity. "
                         "Remove its existing associations before remapping it."
@@ -317,9 +304,7 @@ def storage_mount_register(request):
                     else:
                         mount.save()
                         try:
-                            bind_storage_mount(
-                                cluster_storage=definition, mount=mount, node=node
-                            )
+                            bind_storage_mount(cluster_storage=definition, mount=mount, node=node)
                         except StorageMountError as exc:
                             if not existing:
                                 mount.delete()
@@ -343,17 +328,18 @@ def storage_mount_register(request):
                             )
     return render(
         request,
-        "core/storage_mount_register.html",
+        "core/settings_storage.html",
         {
-            **navigation_context("datastores"),
+            **navigation_context("pve_settings"),
+            "active_settings_tab": "storage",
             "definitions": definitions,
             "candidates": _mount_candidates(),
             "errors": errors,
             "registered": registered if registered != "removed" else None,
             "removed": registered == "removed",
-            "bindings": ClusterStorageMount.objects.select_related(
-                "cluster_storage__cluster", "mount"
-            ).order_by("cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"),
+            "bindings": ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount").order_by(
+                "cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"
+            ),
         },
     )
 
@@ -520,7 +506,14 @@ def api_storage_volumes(request, cluster_key: str, node: str, storage: str):
     highlight_vmid = _int_or_zero(request.GET.get("vmid")) or None
     volumes, found, error = _api_storage_volumes(cluster, node, storage, highlight_vmid)
     context = _api_storage_context(cluster, node, storage, "volumes")
-    context.update({"volumes": volumes, "found": found or context["found"], "error": error or context["error"], "highlight_vmid": highlight_vmid})
+    context.update(
+        {
+            "volumes": volumes,
+            "found": found or context["found"],
+            "error": error or context["error"],
+            "highlight_vmid": highlight_vmid,
+        }
+    )
     return render(request, "core/storage_api/volumes.html", context)
 
 
@@ -530,9 +523,7 @@ def api_storage_vms(request, cluster_key: str, node: str, storage: str):
     guests = []
     prefix = f"{storage}:"
     lineage = common.stored_guest_lineage(cluster)
-    for obj in CurrentGuestInventory.objects.filter(cluster=cluster, node=node).order_by(
-        "object_type", "vmid"
-    ):
+    for obj in CurrentGuestInventory.objects.filter(cluster=cluster, node=node).order_by("object_type", "vmid"):
         matching = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
         if matching:
             obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
@@ -545,9 +536,7 @@ def api_storage_vms(request, cluster_key: str, node: str, storage: str):
 
 
 def _api_live_content_values(cluster, storage: str) -> list[str]:
-    definition = ClusterStorage.objects.filter(
-        cluster=cluster, storage_id=storage, present=True
-    ).first()
+    definition = ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True).first()
     return list(definition.content) if definition else []
 
 
@@ -690,15 +679,13 @@ def api_storage_configure(request, cluster_key: str, node: str, storage: str):
     scan = _latest_result_scan()
     config = {}
     if scan:
-        row = (
-            ProxmoxInventory.objects.filter(
-                scan_run=scan,
-                cluster=cluster,
-                node=node,
-                object_type=ProxmoxInventory.ObjectType.STORAGE,
-                name=storage,
-            ).first()
-        )
+        row = ProxmoxInventory.objects.filter(
+            scan_run=scan,
+            cluster=cluster,
+            node=node,
+            object_type=ProxmoxInventory.ObjectType.STORAGE,
+            name=storage,
+        ).first()
         if row and isinstance(row.config, dict):
             config = row.config
     # Present the interesting config keys in a stable order; skip the nested
@@ -722,7 +709,9 @@ def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan
             else FileInventory.objects.none()
         )
         storage.latest_file_count = sum(storage.latest_counts.values())
-        storage.latest_gate_status = (result_scan.storage_gate_status or {}).get(storage.storage_id, {}) if result_scan else {}
+        storage.latest_gate_status = (
+            (result_scan.storage_gate_status or {}).get(storage.storage_id, {}) if result_scan else {}
+        )
         storage.latest_scan = storage_result_scan
         storage.latest_scan_at = _scan_timestamp(storage_result_scan)
         storage.space_info = common.storage_space_info(storage)
@@ -781,7 +770,8 @@ def storage_browser(request, storage_id: str):
         entries = [
             entry
             for entry in entries
-            if query in " ".join(
+            if query
+            in " ".join(
                 [
                     entry.name.lower(),
                     entry.path.lower(),
@@ -794,7 +784,7 @@ def storage_browser(request, storage_id: str):
         ]
 
     file_total = len(entries)
-    entries = entries[file_offset:file_offset + FILE_BROWSER_BATCH_SIZE]
+    entries = entries[file_offset : file_offset + FILE_BROWSER_BATCH_SIZE]
 
     # Link each referenced disk image to the current VM/CT that owns it.
     from core.services.classification import extract_vmid_from_image_path
@@ -814,11 +804,7 @@ def storage_browser(request, storage_id: str):
     from collections import Counter
 
     lineage_by_cluster = _lineage_by_cluster()
-    clone_counts = Counter(
-        parent
-        for lineage in lineage_by_cluster.values()
-        for parent in lineage.values()
-    )
+    clone_counts = Counter(parent for lineage in lineage_by_cluster.values() for parent in lineage.values())
     base_volume_re = re.compile(r"base-(\d+)-disk-")
 
     def _template_link(vmid: int) -> dict:
@@ -863,9 +849,7 @@ def storage_browser(request, storage_id: str):
                     ),
                     "guest_ref": guest.guest_ref().serialize() if guest.guest_ref() else "",
                     # If this disk belongs to a linked clone, name its base template.
-                    "linked_clone_of": _template_link(
-                        lineage_by_cluster.get(guest.cluster.key, {})[owner_vmid]
-                    )
+                    "linked_clone_of": _template_link(lineage_by_cluster.get(guest.cluster.key, {})[owner_vmid])
                     if owner_vmid in lineage_by_cluster.get(guest.cluster.key, {})
                     else None,
                 }
@@ -888,9 +872,9 @@ def storage_browser(request, storage_id: str):
             "display_name": binding.cluster_storage.cluster.display_name,
             "storage_id": binding.cluster_storage.storage_id,
         }
-        for binding in storage.cluster_bindings.select_related(
-            "cluster_storage__cluster"
-        ).filter(cluster_storage__cluster__enabled=True, cluster_storage__present=True)
+        for binding in storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
+            cluster_storage__cluster__enabled=True, cluster_storage__present=True
+        )
     }
     storage.backup_restore_clusters = list(restore_clusters.values())
 
@@ -1317,10 +1301,7 @@ def update_storage_content(request, storage_id: str):
         return redirect("core:storage_content", storage_id=storage.storage_id)
     current_content = _live_storage_content_values(storage, cluster=cluster)
     requested_content = _ordered_storage_content(request.POST.getlist("content"), current_content)
-    redirect_to = (
-        f"{reverse('core:storage_content', args=[storage.mount_ref])}?"
-        f"{urlencode({'cluster': cluster.key})}"
-    )
+    redirect_to = f"{reverse('core:storage_content', args=[storage.mount_ref])}?{urlencode({'cluster': cluster.key})}"
 
     if not requested_content:
         messages.error(request, "Select at least one content type.")
@@ -1430,11 +1411,7 @@ def _run_storage_content_preflight_scan(storage: StorageMount) -> ScanRun:
     scan.finished_at = tz.now()
     scan.filesystem_scan_at = scan.finished_at
     scan.summary_counts = {"files": len(rows), "proxmox_objects": 0, "classifications": {}}
-    scan.error_details = (
-        {"storage": {storage.storage_id: {"errors": scanner.errors}}}
-        if scanner.errors
-        else {}
-    )
+    scan.error_details = {"storage": {storage.storage_id: {"errors": scanner.errors}}} if scanner.errors else {}
     scan.progress_message = (
         f"Content preflight scan completed with {len(scanner.errors)} warning(s)."
         if scanner.errors
@@ -1588,7 +1565,9 @@ def _storage_content_usage(storage: StorageMount, latest_scan: ScanRun | None) -
             if content_key not in usage:
                 continue
             label = _guest_reference_label(obj, key)
-            _add_storage_content_usage(usage, content_key, f"{obj.node}:{obj.object_type}:{obj.vmid}:{key}:{volid}", label)
+            _add_storage_content_usage(
+                usage, content_key, f"{obj.node}:{obj.object_type}:{obj.vmid}:{key}:{volid}", label
+            )
 
     return _finalize_storage_content_usage(usage)
 
@@ -1716,11 +1695,7 @@ def _display_disk_references(vmid: int | None, matching: list[str], lineage: dic
     if parent is None:
         return [{"volid": ref, "backed_by": ""} for ref in matching]
     base_marker = f"base-{parent}-disk-"
-    return [
-        {"volid": ref, "backed_by": f"base-{parent}"}
-        for ref in matching
-        if base_marker not in ref
-    ]
+    return [{"volid": ref, "backed_by": f"base-{parent}"} for ref in matching if base_marker not in ref]
 
 
 @app_login_required
@@ -1773,10 +1748,7 @@ def trash_storage_file(request, storage_id: str):
 
     try:
         _require_file_action_confirmations_for_entries(request, entries)
-        results = [
-            (entry, move_file_to_trash(storage=storage, entry=entry, user=request.user))
-            for entry in entries
-        ]
+        results = [(entry, move_file_to_trash(storage=storage, entry=entry, user=request.user)) for entry in entries]
     except PermissionDenied:
         raise
     except StorageActionError as exc:
@@ -1859,7 +1831,10 @@ def move_storage_file_view(request, storage_id: str):
                 path=str(result["dest_path"]),
                 details={"old_path": result["source_path"], "source_storage": storage.storage_id},
             )
-            refresh[(storage.storage_id, str(result["source_directory_path"]))] = (storage, str(result["source_directory_path"]))
+            refresh[(storage.storage_id, str(result["source_directory_path"]))] = (
+                storage,
+                str(result["source_directory_path"]),
+            )
             dest_dir = str(result["dest_directory_path"])
             refresh[(dest_storage.storage_id, dest_dir)] = (dest_storage, dest_dir)
             dest_parent = dest_dir.rsplit("/", 1)[0] if "/" in dest_dir else ""
@@ -1872,8 +1847,14 @@ def move_storage_file_view(request, storage_id: str):
                 path=str(result["new_path"]),
                 details={"old_path": result["old_path"]},
             )
-            refresh[(storage.storage_id, str(result["source_directory_path"]))] = (storage, str(result["source_directory_path"]))
-            refresh[(storage.storage_id, str(result["target_directory_path"]))] = (storage, str(result["target_directory_path"]))
+            refresh[(storage.storage_id, str(result["source_directory_path"]))] = (
+                storage,
+                str(result["source_directory_path"]),
+            )
+            refresh[(storage.storage_id, str(result["target_directory_path"]))] = (
+                storage,
+                str(result["target_directory_path"]),
+            )
     for st, directory_path in refresh.values():
         _refresh_latest_storage_directory(st, directory_path)
     return redirect(redirect_to)
@@ -1898,9 +1879,7 @@ def copy_storage_file_view(request, storage_id: str):
         entry_type=FileInventory.EntryType.FILE,
     )
     try:
-        dest_storage = resolve_storage_mount(
-            request.POST.get("dest_storage", "").strip(), enabled=True
-        )
+        dest_storage = resolve_storage_mount(request.POST.get("dest_storage", "").strip(), enabled=True)
     except StorageMount.DoesNotExist:
         messages.error(request, "Unknown destination storage.")
         return redirect(redirect_to)
@@ -1931,7 +1910,9 @@ def copy_storage_file_view(request, storage_id: str):
     _refresh_latest_storage_directory(dest_storage, dest_directory)
     # Also refresh the parent so a newly created destination folder shows up.
     if "/" in dest_directory or dest_directory:
-        _refresh_latest_storage_directory(dest_storage, dest_directory.rsplit("/", 1)[0] if "/" in dest_directory else "")
+        _refresh_latest_storage_directory(
+            dest_storage, dest_directory.rsplit("/", 1)[0] if "/" in dest_directory else ""
+        )
     # No success toast — the outcome is recorded as file.copied in the audit log.
     return redirect(redirect_to)
 
@@ -2330,7 +2311,9 @@ def _prune_latest_storage_path(storage: StorageMount, path: str) -> None:
     if latest_scan is None:
         return
     prefix = f"{path}/"
-    FileInventory.objects.filter(scan_run=latest_scan, storage=storage).filter(Q(path=path) | Q(path__startswith=prefix)).delete()
+    FileInventory.objects.filter(scan_run=latest_scan, storage=storage).filter(
+        Q(path=path) | Q(path__startswith=prefix)
+    ).delete()
 
 
 def _decorate_orphan_files_with_action_state(files: list[FileInventory]) -> None:
@@ -2432,11 +2415,7 @@ def _require_linked_clone_base_unblocked(entries: list[FileInventory]) -> None:
     base_entries = [entry for entry in entries if entry.content_category == "base_image"]
     if not base_entries:
         return
-    clone_counts = Counter(
-        parent
-        for lineage in _lineage_by_cluster().values()
-        for parent in lineage.values()
-    )
+    clone_counts = Counter(parent for lineage in _lineage_by_cluster().values() for parent in lineage.values())
     if not clone_counts:
         return
     for entry in base_entries:
@@ -2577,9 +2556,7 @@ def _download_accel_available(storage: StorageMount) -> bool:
         relative = normalized_relative_path(relative).split("/", 1)[0]
         available = {
             line.strip()
-            for line in settings.STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH.read_text(
-                encoding="utf-8"
-            ).splitlines()
+            for line in settings.STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH.read_text(encoding="utf-8").splitlines()
             if line.strip()
         }
     except (OSError, StorageMountError):
@@ -2700,9 +2677,7 @@ def _browser_folder_tree(
     expanded_paths = {""}
     if current_path:
         current_parts = current_path.split("/")
-        expanded_paths.update(
-            "/".join(current_parts[:index]) for index in range(1, len(current_parts) + 1)
-        )
+        expanded_paths.update("/".join(current_parts[:index]) for index in range(1, len(current_parts) + 1))
 
     def has_children(path: str) -> bool:
         if not path:
@@ -2713,9 +2688,7 @@ def _browser_folder_tree(
         if not path:
             return True
         parts = path.split("/")
-        return all(
-            "/".join(parts[:index]) in expanded_paths for index in range(0, len(parts))
-        )
+        return all("/".join(parts[:index]) in expanded_paths for index in range(0, len(parts)))
 
     nodes = [
         {
@@ -2766,16 +2739,13 @@ def _decorate_browser_entry(entry: FileInventory) -> None:
         if isinstance(allocated_clusters, int) and isinstance(total_clusters, int):
             entry.qcow2_allocation_title = f"{allocated_clusters} of {total_clusters} qcow2 clusters mapped"
     entry.has_qcow2_full_allocation = (
-        entry.qcow2_allocation_percent is not None
-        and entry.qcow2_allocation_percent >= MIN_INFLATE_ALLOCATED_PERCENT
+        entry.qcow2_allocation_percent is not None and entry.qcow2_allocation_percent >= MIN_INFLATE_ALLOCATED_PERCENT
     )
     entry.full_inflate_already_recorded = (
         entry.entry_type == FileInventory.EntryType.FILE
         and full_inflate_already_recorded(
             entry,
-            current_virtual_size_bytes=entry.virtual_size_bytes
-            if isinstance(entry.virtual_size_bytes, int)
-            else None,
+            current_virtual_size_bytes=entry.virtual_size_bytes if isinstance(entry.virtual_size_bytes, int) else None,
         )
     )
     entry.has_thin_usage = (
@@ -2785,11 +2755,13 @@ def _decorate_browser_entry(entry: FileInventory) -> None:
     )
     entry.action_risk = file_action_risk(entry)
     entry.inflate_action_risk = file_action_risk(entry, block_running_guests=False)
-    entry.can_trash = entry.entry_type in {FileInventory.EntryType.FILE, FileInventory.EntryType.DIRECTORY} and not entry.action_risk.blocked
+    entry.can_trash = (
+        entry.entry_type in {FileInventory.EntryType.FILE, FileInventory.EntryType.DIRECTORY}
+        and not entry.action_risk.blocked
+    )
     entry.can_rename = entry.entry_type == FileInventory.EntryType.FILE and entry.can_trash
     entry.can_inflate_action = (
-        entry.entry_type == FileInventory.EntryType.FILE
-        and not entry.inflate_action_risk.blocked
+        entry.entry_type == FileInventory.EntryType.FILE and not entry.inflate_action_risk.blocked
     )
     entry.can_inflate_metadata = (
         entry.can_inflate_action
@@ -2808,7 +2780,10 @@ def _decorate_browser_entry(entry: FileInventory) -> None:
         and not entry.full_inflate_already_recorded
     )
     entry.can_inflate = entry.can_inflate_metadata or entry.can_inflate_full
-    entry.action_blocked = entry.entry_type in {FileInventory.EntryType.FILE, FileInventory.EntryType.DIRECTORY} and entry.action_risk.blocked
+    entry.action_blocked = (
+        entry.entry_type in {FileInventory.EntryType.FILE, FileInventory.EntryType.DIRECTORY}
+        and entry.action_risk.blocked
+    )
     entry.action_warning_message = entry.action_risk.warning_message
     entry.action_requires_extra_confirmation = entry.action_risk.requires_extra_confirmation
     entry.inflate_warning_message = entry.inflate_action_risk.warning_message

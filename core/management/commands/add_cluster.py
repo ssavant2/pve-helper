@@ -50,9 +50,7 @@ class Command(BaseCommand):
             cluster = ProxmoxCluster.objects.create(
                 key=key, display_name=options["display_name"].strip(), enabled=False
             )
-            endpoint = ProxmoxEndpoint.objects.create(
-                name=name, url=url, cluster=cluster, enabled=True
-            )
+            endpoint = ProxmoxEndpoint.objects.create(name=name, url=url, cluster=cluster, enabled=True)
 
         record_audit_event(
             action="cluster.add",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+
 from django.http import Http404, HttpResponse, HttpResponseRedirect, QueryDict
 from django.shortcuts import render
 from django.urls import reverse
@@ -16,7 +17,6 @@ from core.models import (
 )
 
 from .common import app_login_required
-
 
 SAFE_REDIRECT_METHODS = {"GET", "HEAD"}
 
@@ -75,9 +75,7 @@ def legacy_cluster_redirect(route_name: str) -> Callable:
         clusters = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
         if not clusters:
             destination = (
-                reverse("core:clusters_overview")
-                if ProxmoxCluster.objects.exists()
-                else reverse("core:cluster_add")
+                reverse("core:clusters_overview") if ProxmoxCluster.objects.exists() else reverse("core:cluster_add")
             )
             return HttpResponseRedirect(destination)
         if len(clusters) == 1:
@@ -187,9 +185,7 @@ def legacy_node_redirect(route_name: str) -> Callable:
                 expected_node_name=node,
             ).values_list("cluster_id", flat=True)
         )
-        clusters = list(
-            ProxmoxCluster.objects.filter(pk__in=cluster_ids).order_by("display_name", "key")
-        )
+        clusters = list(ProxmoxCluster.objects.filter(pk__in=cluster_ids).order_by("display_name", "key"))
         if not clusters:
             raise Http404("Node not found")
         common_kwargs = {"node": node, "storage": storage, **route_kwargs}

@@ -14,17 +14,29 @@ const PAGES = [
   { name: "Add cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
-  { name: "Datastores", path: "/datastores/" },
+  { name: "Storage Catalog", path: "/datastores/" },
+  { name: "PVE-helper Settings", path: "/settings/storage/" },
   { name: "Audit log", path: "/audit/" },
 ];
 
 for (const p of PAGES) {
   test(`${p.name} loads and app.js initialises`, async ({ page }) => {
     const jsErrors: string[] = [];
+    const cspErrors: string[] = [];
     page.on("pageerror", (err) => jsErrors.push(String(err)));
+    page.on("console", (message) => {
+      if (message.type() === "error" && message.text().includes("Content Security Policy")) {
+        cspErrors.push(message.text());
+      }
+    });
 
     const resp = await page.goto(p.path, { waitUntil: "load" });
     expect(resp?.status(), `${p.path} HTTP status`).toBeLessThan(400);
+    const csp = resp?.headers()["content-security-policy"] ?? "";
+    expect(csp, `${p.path} enforced Content-Security-Policy`).toContain("script-src 'self'");
+    // Django's json_script helper emits inert application/json data blocks;
+    // executable scripts must always come from same-origin static assets.
+    await expect(page.locator('script:not([src]):not([type="application/json"])')).toHaveCount(0);
 
     // app.js is deferred; give its init a beat, then confirm it ran.
     await expect
@@ -34,12 +46,25 @@ for (const p of PAGES) {
       .toBe("function");
 
     expect(jsErrors, `uncaught JS errors on ${p.path}`).toEqual([]);
+    expect(cspErrors, `CSP violations on ${p.path}`).toEqual([]);
   });
 }
 
 test("header displays the configured application version", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".brand-version")).toHaveText("DEV");
+});
+
+test("storage catalog and application storage settings are both reachable from navigation", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("link", { name: "Catalog", exact: true }).click();
+  await expect(page).toHaveURL(/\/datastores\/$/);
+  await expect(page.getByRole("heading", { name: "Storage Catalog", exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "PVE-helper Settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/storage\/$/);
+  await expect(page.getByRole("link", { name: "Storage access", exact: true })).toHaveClass(/active/);
+  await expect(page.getByRole("heading", { name: "Registered associations", exact: true })).toBeVisible();
 });
 
 test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {

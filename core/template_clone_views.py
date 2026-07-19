@@ -3,11 +3,11 @@ from __future__ import annotations
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 
-from core.views import common
 from core.models import ProxmoxInventory
 from core.services.guests import is_template
 from core.services.public_errors import public_exception_message
 from core.services.storage_catalog import node_storage_rows
+from core.views import common
 from core.views.guests.operation_lifecycle import _audit_guest, _guest_post_with_client
 from core.views.guests.read_model_support import _require_guest
 
@@ -92,7 +92,13 @@ def clone_guest_to_template(request, cluster_key: str, object_type: str, vmid: i
             request,
             detail,
             "guest.template.clone",
-            {"source_vmid": detail.vmid, "new_vmid": newid, "new_name": clone_name, "storage": storage, "stage": "clone"},
+            {
+                "source_vmid": detail.vmid,
+                "new_vmid": newid,
+                "new_name": clone_name,
+                "storage": storage,
+                "stage": "clone",
+            },
             outcome="failed",
         )
         event.details = {**event.details, "error": message}

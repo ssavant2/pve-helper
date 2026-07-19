@@ -17,9 +17,7 @@ class Command(BaseCommand):
         try:
             changed, message = complete_credential_cutover()
         except EncryptionConfigurationError as exc:
-            raise CommandError(
-                f"{exc} The cutover was not recorded, so the legacy token is still in use."
-            ) from exc
+            raise CommandError(f"{exc} The cutover was not recorded, so the legacy token is still in use.") from exc
 
         if not changed:
             raise CommandError(message)

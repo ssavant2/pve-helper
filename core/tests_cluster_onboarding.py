@@ -18,11 +18,10 @@ from core.services.cluster_onboarding import (
     ClusterOnboardingError,
     VerifiedConnection,
     persist_new_cluster,
-    verify_replacement_credential,
     verify_new_cluster,
+    verify_replacement_credential,
 )
-from core.services.cluster_trust import InspectedCertificate, TRUST_PUBLIC, approve_cluster_transport
-
+from core.services.cluster_trust import TRUST_PUBLIC, InspectedCertificate, approve_cluster_transport
 
 TEST_KEY = base64.b64encode(b"o" * 32).decode()
 

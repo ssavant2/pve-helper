@@ -10,10 +10,8 @@ from core.models import (
     ClusterTransportTrust,
     ConsoleSession,
     ProxmoxCluster,
-    ProxmoxEndpoint,
 )
 from core.services.cluster_credentials import set_cluster_credential
-
 
 KEY = f"k1:{base64.b64encode(b'K' * 32).decode()}"
 
@@ -100,9 +98,7 @@ class ConsoleGatewayClusterTests(TestCase):
     def test_ssl_context_uses_the_clusters_trust_profile(self):
         from console_app.main import _resolve_cluster_ssl_context
 
-        ClusterTransportTrust.objects.create(
-            cluster=self.cluster_a, mode=ClusterTransportTrust.Mode.PUBLIC
-        )
+        ClusterTransportTrust.objects.create(cluster=self.cluster_a, mode=ClusterTransportTrust.Mode.PUBLIC)
 
         context = async_to_sync(_resolve_cluster_ssl_context)(
             self._session(self.cluster_a), "wss://pve1.example.net:8006/x"
@@ -116,9 +112,7 @@ class ConsoleGatewayClusterTests(TestCase):
     def test_non_wss_needs_no_context(self):
         from console_app.main import _resolve_cluster_ssl_context
 
-        context = async_to_sync(_resolve_cluster_ssl_context)(
-            self._session(self.cluster_a), "ws://plain/x"
-        )
+        context = async_to_sync(_resolve_cluster_ssl_context)(self._session(self.cluster_a), "ws://plain/x")
 
         self.assertIsNone(context)
 

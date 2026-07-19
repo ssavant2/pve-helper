@@ -15,22 +15,23 @@ from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
 
 from core.models import AuditEvent, FileInventory, ProxmoxCluster, StorageMount, TrashItem
-from core.services.storage_mounts import (
-    registered_mount_health,
-    resolve_storage_mount,
-    storage_mount_root,
-    storage_trash_root,
-)
-from core.services.storage_catalog import UsageState, usage_preflight
+from core.services.cluster_resolver import ClusterResolutionError, cluster_wide_read
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     ConfinedPathExistsError,
     rename_regular_file_noreplace,
 )
 from core.services.file_actions import ReferencedObject, file_action_risk, guest_objects_for_entry
-from core.services.filesystem import storage_space_info
 from core.services.image_info import probe_qemu_image_info
-from core.services.cluster_resolver import ClusterResolutionError, cluster_wide_read
+from core.services.storage_catalog import UsageState, usage_preflight
+from core.services.storage_mounts import (
+    registered_mount_health,
+    resolve_storage_mount,
+)
+from core.services.storage_paths import (
+    storage_mount_root,
+    storage_trash_root,
+)
 
 
 class StorageActionError(Exception):
@@ -416,7 +417,11 @@ def move_file_to_trash(
 
     root = _storage_root(storage)
     original_path = _storage_existing_entry(entry.path, root=root)
-    if entry.entry_type == FileInventory.EntryType.DIRECTORY and _is_guest_directory(entry.path) and any(original_path.iterdir()):
+    if (
+        entry.entry_type == FileInventory.EntryType.DIRECTORY
+        and _is_guest_directory(entry.path)
+        and any(original_path.iterdir())
+    ):
         raise StorageActionError("Guest image/private directories must be empty before they can be moved to trash.")
     trash_relative = _trash_relative_path(storage, root, entry.path)
     trash_path = _storage_child_path(trash_relative, root=root)
@@ -643,14 +648,10 @@ def validate_inflate_storage_file(
         if allocation_error:
             raise StorageActionError(f"qemu-img check failed: {allocation_error}")
         raise StorageActionError("qemu-img check did not report qcow2 allocation.")
-    if (
-        target_preallocation == INFLATE_PREALLOCATION_METADATA
-        and allocation_percent >= MIN_INFLATE_ALLOCATED_PERCENT
-    ):
+    if target_preallocation == INFLATE_PREALLOCATION_METADATA and allocation_percent >= MIN_INFLATE_ALLOCATED_PERCENT:
         raise StorageActionError("Disk image already appears to have fully mapped qcow2 clusters.")
-    if (
-        target_preallocation == INFLATE_PREALLOCATION_FULL
-        and full_inflate_already_recorded(entry, current_virtual_size_bytes=virtual_size)
+    if target_preallocation == INFLATE_PREALLOCATION_FULL and full_inflate_already_recorded(
+        entry, current_virtual_size_bytes=virtual_size
     ):
         raise StorageActionError(
             "Disk image has already been full-inflated by pve-helper. "
@@ -869,9 +870,7 @@ def _require_file_not_blocked(entry: FileInventory, *, block_running_guests: boo
     if risk.blocked:
         raise StorageActionError(risk.warning_message)
     if entry.content_category in {"vm_disk", "base_image", "ct_private"}:
-        bindings = entry.storage.cluster_bindings.select_related(
-            "cluster_storage", "cluster_storage__cluster"
-        )
+        bindings = entry.storage.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster")
         if not bindings.exists():
             if settings.PVE_TEST_NETWORK_DISABLED:
                 require_live_guest_stopped(entry)
@@ -889,9 +888,7 @@ def _require_file_not_blocked(entry: FileInventory, *, block_running_guests: boo
                 fresh=True,
             )
             if result.state is not UsageState.UNREFERENCED:
-                raise StorageActionError(
-                    f"Guest-file action blocked by fresh storage preflight: {result.reason}"
-                )
+                raise StorageActionError(f"Guest-file action blocked by fresh storage preflight: {result.reason}")
     require_live_guest_stopped(entry)
 
 
@@ -920,8 +917,7 @@ def _apply_reference_file_metadata(*, source_path: Path, target_path: Path) -> N
         os.chown(target_path, source_stat.st_uid, source_stat.st_gid)
     except OSError as exc:
         raise StorageActionError(
-            "Cannot preserve original disk ownership and mode on the inflated image; "
-            "original file was left unchanged."
+            "Cannot preserve original disk ownership and mode on the inflated image; original file was left unchanged."
         ) from exc
 
 

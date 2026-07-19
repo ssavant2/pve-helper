@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Iterator
+from datetime import datetime, time, timedelta
+from datetime import timezone as dt_timezone
 from functools import wraps
-from datetime import datetime, time, timedelta, timezone as dt_timezone
-from time import monotonic
 from pathlib import Path, PurePosixPath
+from time import monotonic
 from types import SimpleNamespace
-from typing import Iterable, Iterator
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
@@ -19,8 +20,7 @@ from django.core.exceptions import PermissionDenied
 from django.db import connection
 from django.db.models import Count, F, Q
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseForbidden, JsonResponse, StreamingHttpResponse
-from django.shortcuts import get_object_or_404, redirect
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone as tz
@@ -41,11 +41,14 @@ from ..models import (
     StorageSpaceSnapshot,
     TrashItem,
 )
-from ..services.classification import extract_disk_references, parse_config_value_volid
-from ..services.file_actions import FileActionRisk, file_action_risk
-from ..services.audit_retention_schedule import audit_retention_schedule_state, update_audit_retention_schedule
 from ..services.audit_events import audit_module_key, record_audit_event
+from ..services.audit_retention_schedule import audit_retention_schedule_state, update_audit_retention_schedule
+from ..services.classification import extract_disk_references, parse_config_value_volid
+from ..services.current_guest_inventory import stored_guest_lineage
+from ..services.file_actions import FileActionRisk, file_action_risk
 from ..services.filesystem import storage_space_info
+from ..services.guest_create import create_ct, create_options, create_vm
+from ..services.guest_storage import DISK_BUS_RE, guest_disks, guest_networks
 from ..services.guests import (
     guest_identity,
     guest_identity_from_inventory,
@@ -53,8 +56,6 @@ from ..services.guests import (
     is_template,
     parse_guest_tags,
 )
-from ..services.guest_storage import DISK_BUS_RE, guest_disks, guest_networks
-from ..services.guest_create import create_ct, create_options, create_vm
 from ..services.partial_scan import refresh_storage_directory
 from ..services.permissions import storage_permissions as get_permissions
 from ..services.proxmox import (
@@ -68,10 +69,8 @@ from ..services.proxmox import (
     fetch_live_guest_locks,
     fetch_live_guest_status,
 )
-from ..services.current_guest_inventory import stored_guest_lineage
 from ..services.recent_tasks import recent_task_page, serialize_task_page
 from ..services.request_metadata import client_ip
-from ..services.task_queues import BULK_QUEUE_NAME
 from ..services.scan_schedule import scan_schedule_state, update_scan_schedule
 from ..services.scheduled_actions import ScheduledActionQueueError, queue_manual_scheduled_action_run
 from ..services.scheduled_recurrence import RecurrenceError, next_run_after
@@ -86,21 +85,23 @@ from ..services.storage_actions import (
     create_storage_directory,
     full_inflate_already_recorded,
     is_nfs_silly_rename_path,
-    validate_inflate_storage_file,
-    move_storage_file,
     move_file_to_trash,
+    move_storage_file,
     public_storage_upload_error,
-    purge_trash_item as purge_trash_item_action,
     rename_storage_file,
     restore_trash_item,
     transfer_storage_file,
-    upload_to_storage,
     upload_folder_to_storage,
+    upload_to_storage,
+    validate_inflate_storage_file,
+)
+from ..services.storage_actions import (
+    purge_trash_item as purge_trash_item_action,
 )
 from ..services.storage_details import storage_details
 from ..services.storage_visibility import ignored_relative_paths_for_storage, is_ignored_storage_path
+from ..services.task_queues import BULK_QUEUE_NAME
 from ..services.trash_schedule import trash_purge_schedule_state, update_trash_purge_schedule
-
 
 SPACE_CHART_DAYS = 7
 SPACE_CHART_BUCKET_HOURS = 12
@@ -227,12 +228,44 @@ CT_ARCH_LABELS = {
     "riscv32": "riscv32",
     "riscv64": "riscv64",
 }
-CT_NET_ORDER = ("name", "bridge", "firewall", "gw", "gw6", "hwaddr", "ip", "ip6", "link_down", "mtu", "rate", "tag", "trunks", "type")
+CT_NET_ORDER = (
+    "name",
+    "bridge",
+    "firewall",
+    "gw",
+    "gw6",
+    "hwaddr",
+    "ip",
+    "ip6",
+    "link_down",
+    "mtu",
+    "rate",
+    "tag",
+    "trunks",
+    "type",
+)
 CT_MOUNT_ORDER = ("mp", "acl", "backup", "quota", "replicate", "ro", "shared", "size", "mountoptions")
 
 
 CONFIG_SECTIONS = [
-    ("General", ["name", "hostname", "ostype", "arch", "bios", "machine", "boot", "onboot", "startup", "agent", "tablet", "protection", "hotplug"]),
+    (
+        "General",
+        [
+            "name",
+            "hostname",
+            "ostype",
+            "arch",
+            "bios",
+            "machine",
+            "boot",
+            "onboot",
+            "startup",
+            "agent",
+            "tablet",
+            "protection",
+            "hotplug",
+        ],
+    ),
     ("Processors", ["cores", "sockets", "vcpus", "cpu", "numa", "cpuunits", "cpulimit", "affinity"]),
     ("Memory", ["memory", "balloon", "shares", "swap"]),
 ]
@@ -240,11 +273,6 @@ CONFIG_HIDE = {"digest", "description", "tags", "meta", "smbios1", "vmgenid"}
 
 
 SNAPSHOT_TASK_WAIT_SECONDS = 60
-
-
-def _guest_destroy(detail: SimpleNamespace, query: str):
-    response, err, _client = _guest_destroy_with_client(detail, query)
-    return response, err
 
 
 GUEST_POWER_ACTIONS = {"start", "shutdown", "reboot", "stop", "reset", "suspend", "resume", "hibernate"}
@@ -582,8 +610,10 @@ def _inflate_action_label(base_label: str, details: dict) -> str:
 
 def _audit_object_label(event: AuditEvent) -> str:
     details = event.details if isinstance(event.details, dict) else {}
-    cluster_label = event.cluster.display_name if event.cluster_id else (
-        details.get("display_name") or event.cluster_key_snapshot or details.get("cluster_key")
+    cluster_label = (
+        event.cluster.display_name
+        if event.cluster_id
+        else (details.get("display_name") or event.cluster_key_snapshot or details.get("cluster_key"))
     )
     if event.object_type == "cluster":
         return str(cluster_label or event.object_id or "Cluster")
@@ -671,13 +701,16 @@ def _decorate_guests_with_scheduled_actions(guests: list) -> None:
     action_filter = Q()
     guest_keys: set[tuple[int, str, int]] = set()
     for guest in guests:
-        cluster_id = getattr(guest, "cluster_id", None) or getattr(
-            getattr(guest, "cluster", None), "pk", None
-        )
-        if cluster_id and guest.vmid and guest.object_type in {
-            ProxmoxInventory.ObjectType.VM,
-            ProxmoxInventory.ObjectType.CT,
-        }:
+        cluster_id = getattr(guest, "cluster_id", None) or getattr(getattr(guest, "cluster", None), "pk", None)
+        if (
+            cluster_id
+            and guest.vmid
+            and guest.object_type
+            in {
+                ProxmoxInventory.ObjectType.VM,
+                ProxmoxInventory.ObjectType.CT,
+            }
+        ):
             guest_keys.add((cluster_id, guest.object_type, guest.vmid))
             action_filter |= Q(
                 cluster_id=cluster_id,
@@ -687,22 +720,20 @@ def _decorate_guests_with_scheduled_actions(guests: list) -> None:
 
     actions_by_target: dict[tuple[int, str, int], list[ScheduledAction]] = {}
     if action_filter:
-        actions = ScheduledAction.objects.filter(action_filter, deleted_at__isnull=True).order_by("-enabled", "next_run_at", "name")
+        actions = ScheduledAction.objects.filter(action_filter, deleted_at__isnull=True).order_by(
+            "-enabled", "next_run_at", "name"
+        )
         for action in actions:
             action.display_schedule = _scheduled_action_schedule_label(action)
             action.display_status_class = _scheduled_action_status_class(action.last_status)
-            actions_by_target.setdefault(
-                (action.cluster_id, action.target_type, action.target_vmid), []
-            ).append(action)
+            actions_by_target.setdefault((action.cluster_id, action.target_type, action.target_vmid), []).append(action)
 
     for guest in guests:
         cluster = getattr(guest, "cluster", None)
         cluster_id = getattr(guest, "cluster_id", None) or getattr(cluster, "pk", None)
         ref = guest.guest_ref() if callable(getattr(guest, "guest_ref", None)) else getattr(guest, "guest_ref", None)
         target = ref.without_node().serialize() if ref is not None else ""
-        guest.scheduled_actions = actions_by_target.get(
-            (cluster_id, guest.object_type, guest.vmid), []
-        )
+        guest.scheduled_actions = actions_by_target.get((cluster_id, guest.object_type, guest.vmid), [])
         guest.scheduled_action_count = len(guest.scheduled_actions)
         guest.scheduled_action_search_text = " ".join(action.name for action in guest.scheduled_actions)
         guest.schedule_action_url = (
@@ -752,7 +783,11 @@ def _recurrence_values(
 
 def _scheduled_action_schedule_label(action: ScheduledAction) -> str:
     if action.schedule_type == ScheduledAction.ScheduleType.ONCE:
-        return f"Once at {tz.localtime(action.run_at or action.next_run_at).strftime('%Y-%m-%d %H:%M')}" if (action.run_at or action.next_run_at) else "Once"
+        return (
+            f"Once at {tz.localtime(action.run_at or action.next_run_at).strftime('%Y-%m-%d %H:%M')}"
+            if (action.run_at or action.next_run_at)
+            else "Once"
+        )
 
     recurrence = action.recurrence if isinstance(action.recurrence, dict) else {}
     time_label = _recurrence_time_label(recurrence)
@@ -837,15 +872,15 @@ def cluster_scoped_clients(cluster):
 
 
 _PATCHABLE_TEST_DEPS = {
-    'async_task',
-    'cluster_scoped_clients',
-    'fetch_live_guest_inventory',
-    'fetch_live_guest_lineage',
-    'fetch_live_guest_locks',
-    'fetch_live_guest_status',
-    'storage_space_info',
+    "async_task",
+    "cluster_scoped_clients",
+    "fetch_live_guest_inventory",
+    "fetch_live_guest_lineage",
+    "fetch_live_guest_locks",
+    "fetch_live_guest_status",
+    "storage_space_info",
 }
 # Export everything (including underscore helpers) to the domain modules,
 # except the mockable dependencies, which domain modules reach via
 # ``common.<name>`` so ``patch('core.views.common.<name>')`` works everywhere.
-__all__ = [name for name in dir() if not name.startswith('__') and name not in _PATCHABLE_TEST_DEPS]
+__all__ = [name for name in dir() if not name.startswith("__") and name not in _PATCHABLE_TEST_DEPS]

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-import re
 from typing import Any
 
 from core.models import FileInventory
@@ -237,8 +237,14 @@ def classify_entry(
         )
 
     KNOWN_DIRECTORY_CATEGORIES = {
-        "vm_images", "vm_image_directory", "backup", "iso",
-        "ct_template", "ct_private", "snippet", "template_directory",
+        "vm_images",
+        "vm_image_directory",
+        "backup",
+        "iso",
+        "ct_template",
+        "ct_private",
+        "snippet",
+        "template_directory",
         "import_directory",
     }
 
@@ -288,7 +294,12 @@ def classify_entry(
         )
 
     KNOWN_CONTENT_CATEGORIES = {
-        "backup", "iso", "ct_template", "ct_private", "snippet", "import_content",
+        "backup",
+        "iso",
+        "ct_template",
+        "ct_private",
+        "snippet",
+        "import_content",
     }
     if content_category in KNOWN_CONTENT_CATEGORIES:
         # Being in the right folder isn't enough: a stray file (e.g. a .txt in

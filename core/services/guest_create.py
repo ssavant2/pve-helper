@@ -6,7 +6,6 @@ from urllib.parse import quote
 from core.services.proxmox import ProxmoxAPIError
 from core.services.storage_catalog import node_storage_rows, storage_volume_rows
 
-
 VM_OSTYPES = [
     ("l26", "Linux (modern)"),
     ("l24", "Linux 2.4"),

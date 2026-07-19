@@ -4,7 +4,7 @@ import csv
 import io
 import json
 import zipfile
-from datetime import datetime, time, timezone as dt_timezone
+from datetime import UTC, datetime, time
 from xml.sax.saxutils import escape as xml_escape
 
 from django.utils import timezone
@@ -13,8 +13,6 @@ from django.utils.dateparse import parse_date, parse_datetime
 from core.models import ProxmoxCluster
 
 from .common import *  # noqa: F401,F403
-from . import common
-
 
 AUDIT_MODULE_FILTERS = [
     {"key": "all", "label": "All"},
@@ -54,7 +52,7 @@ def audit_log(request):
     max_page = (event_total - 1) // AUDIT_PAGE_SIZE if event_total else 0
     audit_page = min(audit_page, max_page)
     event_offset = audit_page * AUDIT_PAGE_SIZE
-    events = list(events_qs.order_by("-timestamp")[event_offset:event_offset + AUDIT_PAGE_SIZE])
+    events = list(events_qs.order_by("-timestamp")[event_offset : event_offset + AUDIT_PAGE_SIZE])
     _decorate_audit_events(events)
     context = {
         **navigation_context("audit"),
@@ -253,7 +251,9 @@ def _audit_csv_response(columns: list[str], events_qs, include_technical: bool, 
     return response
 
 
-def _audit_json_response(columns: list[str], events_qs, include_technical: bool, filename: str) -> StreamingHttpResponse:
+def _audit_json_response(
+    columns: list[str], events_qs, include_technical: bool, filename: str
+) -> StreamingHttpResponse:
     def stream():
         yield '{"columns":'
         yield json.dumps(columns, ensure_ascii=False)
@@ -272,7 +272,9 @@ def _audit_json_response(columns: list[str], events_qs, include_technical: bool,
 
 
 def _audit_xlsx_response(columns: list[str], rows: list[dict[str, str]], filename: str) -> HttpResponse:
-    workbook = _xlsx_workbook_bytes("Audit Log", [[column for column in columns], *[[row.get(column, "") for column in columns] for row in rows]])
+    workbook = _xlsx_workbook_bytes(
+        "Audit Log", [[column for column in columns], *[[row.get(column, "") for column in columns] for row in rows]]
+    )
     response = HttpResponse(workbook, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     response["Content-Disposition"] = content_disposition_header(as_attachment=True, filename=filename)
     return response
@@ -306,7 +308,9 @@ def _xlsx_workbook_bytes(sheet_name: str, rows: list[list[object]]) -> bytes:
         archive.writestr("xl/workbook.xml", _xlsx_workbook_xml(sheet_name))
         archive.writestr("xl/_rels/workbook.xml.rels", _xlsx_workbook_relationships())
         archive.writestr("xl/styles.xml", _xlsx_styles())
-        archive.writestr("xl/sharedStrings.xml", _xlsx_shared_strings(shared_strings, sum(len(row) for row in shared_rows)))
+        archive.writestr(
+            "xl/sharedStrings.xml", _xlsx_shared_strings(shared_strings, sum(len(row) for row in shared_rows))
+        )
         archive.writestr("xl/worksheets/sheet1.xml", _xlsx_worksheet(shared_rows, widths))
     return buffer.getvalue()
 
@@ -361,7 +365,7 @@ def _xlsx_app_properties(sheet_name: str) -> str:
 
 
 def _xlsx_core_properties() -> str:
-    created = timezone.now().astimezone(dt_timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = timezone.now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <dc:creator>pve-helper</dc:creator>
@@ -410,7 +414,10 @@ def _xlsx_worksheet(rows: list[list[int]], widths: list[int]) -> str:
             style = ' s="1"' if row_index == 1 else ""
             cells.append(f'<c r="{_xlsx_cell_ref(row_index, column_index)}" t="s"{style}><v>{shared_string_id}</v></c>')
         sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
-    cols = "".join(f'<col min="{idx}" max="{idx}" width="{max(10, width)}" customWidth="1"/>' for idx, width in enumerate(widths, start=1))
+    cols = "".join(
+        f'<col min="{idx}" max="{idx}" width="{max(10, width)}" customWidth="1"/>'
+        for idx, width in enumerate(widths, start=1)
+    )
     dimension = f"A1:{_xlsx_cell_ref(max(1, len(rows)), max(1, len(widths)))}"
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">

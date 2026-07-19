@@ -14,7 +14,6 @@ from core.services.ovf_import import OvfImportError, parse_ovf_package
 from core.services.proxmox import ProxmoxTaskResult
 from core.services.vm_register import import_ovf_package_as_vm
 
-
 OVF = """<?xml version="1.0"?>
 <Envelope xmlns="http://schemas.dmtf.org/ovf/envelope/1" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1" xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData">
   <References><File ovf:id="file1" ovf:href="boot.vmdk"/><File ovf:id="file2" ovf:href="data.vmdk"/></References>
@@ -158,13 +157,19 @@ class OvfImportTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ova = root / "appliance.ova"
-            metadata = OVF.replace("boot.vmdk", "disk.vmdk").replace('ovf:id="file2" ovf:href="data.vmdk"', 'ovf:id="file2" ovf:href="disk.vmdk"')
+            metadata = OVF.replace("boot.vmdk", "disk.vmdk").replace(
+                'ovf:id="file2" ovf:href="data.vmdk"', 'ovf:id="file2" ovf:href="disk.vmdk"'
+            )
             # This small package has duplicate disk references; it is enough to
             # exercise archive parsing and manifest verification.
             disk = b"disk"
             manifest = f"SHA1(disk.vmdk)= {hashlib.sha1(disk).hexdigest()}\n"
             with tarfile.open(ova, "w") as archive:
-                for name, payload in (("appliance.ovf", metadata.encode()), ("disk.vmdk", disk), ("appliance.mf", manifest.encode())):
+                for name, payload in (
+                    ("appliance.ovf", metadata.encode()),
+                    ("disk.vmdk", disk),
+                    ("appliance.mf", manifest.encode()),
+                ):
                     info = tarfile.TarInfo(name)
                     info.size = len(payload)
                     archive.addfile(info, io.BytesIO(payload))

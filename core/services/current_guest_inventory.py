@@ -19,7 +19,6 @@ from core.services.classification import extract_disk_references
 from core.services.proxmox import ProxmoxAPIError, ProxmoxGuestSummary, VerifiedGuestInventory
 from core.services.tags import join_tags
 
-
 GUEST_TYPES = (ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT)
 
 
@@ -101,7 +100,9 @@ def reconcile_scan_guest_inventory(
     observed_at=None,
 ) -> CurrentGuestInventoryState:
     observed_at = observed_at or timezone.now()
-    observations = [item for item in observations if item.guest.object_type in GUEST_TYPES and item.guest.vmid is not None]
+    observations = [
+        item for item in observations if item.guest.object_type in GUEST_TYPES and item.guest.vmid is not None
+    ]
     attempted = list(attempted_endpoints)
     succeeded = list(successful_endpoints)
 
@@ -245,11 +246,7 @@ def reconcile_live_guest_inventory(
         # already-refreshed config contains it. Runtime refreshes must enrich the
         # projection, never erase a known name with an empty summary field.
         config_name_key = "name" if guest.object_type == ProxmoxInventory.ObjectType.VM else "hostname"
-        resolved_name = str(
-            guest.name
-            or config.get(config_name_key)
-            or (existing.name if existing else "")
-        )
+        resolved_name = str(guest.name or config.get(config_name_key) or (existing.name if existing else ""))
         CurrentGuestInventory.objects.update_or_create(
             cluster=cluster,
             object_type=guest.object_type,
@@ -304,7 +301,9 @@ def _target_cluster(cluster=None, *, endpoint=None):
 
 
 @transaction.atomic
-def update_current_guest_config(*, object_type: str, vmid: int, cluster, node: str = "", updates=None, delete=None) -> None:
+def update_current_guest_config(
+    *, object_type: str, vmid: int, cluster, node: str = "", updates=None, delete=None
+) -> None:
     observed_at = timezone.now()
     guest, _created = CurrentGuestInventory.objects.select_for_update().get_or_create(
         cluster=_target_cluster(cluster),
@@ -373,9 +372,7 @@ def upsert_current_guest(
 
 
 def delete_current_guest(*, object_type: str, vmid: int, cluster) -> None:
-    CurrentGuestInventory.objects.filter(
-        cluster=_target_cluster(cluster), object_type=object_type, vmid=vmid
-    ).delete()
+    CurrentGuestInventory.objects.filter(cluster=_target_cluster(cluster), object_type=object_type, vmid=vmid).delete()
 
 
 def refresh_current_guest_from_client(
@@ -446,9 +443,7 @@ def refresh_current_guest_from_client(
 
     endpoint = ProxmoxEndpoint.objects.filter(url=getattr(client, "endpoint", "")).first()
     target_cluster = _target_cluster(cluster, endpoint=endpoint)
-    existing = CurrentGuestInventory.objects.filter(
-        cluster=target_cluster, object_type=object_type, vmid=vmid
-    ).first()
+    existing = CurrentGuestInventory.objects.filter(cluster=target_cluster, object_type=object_type, vmid=vmid).first()
     config = dict(existing.config or {}) if existing else {}
     config_complete = existing.config_complete if existing else False
     config_observed_at = existing.config_observed_at if existing else None

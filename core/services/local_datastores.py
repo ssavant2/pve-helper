@@ -7,7 +7,6 @@ from django.core.cache import cache
 from core.models import ClusterStorageNodeState
 from core.services.cluster_state_identity import cluster_cache_key
 
-
 _CACHE_NAMESPACE = "nav-local-datastores:v3"
 _CACHE_SECONDS = 60
 

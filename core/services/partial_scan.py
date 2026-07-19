@@ -12,8 +12,8 @@ from core.models import FileInventory, ProxmoxInventory, ScanRun, StorageMount
 from .classification import classify_entry
 from .image_info import probe_qemu_image_info
 from .storage import StorageScanner
+from .storage_paths import storage_mount_root
 from .storage_visibility import ignored_relative_paths_for_storage
-from .storage_mounts import storage_mount_root
 
 
 def refresh_storage_directory(

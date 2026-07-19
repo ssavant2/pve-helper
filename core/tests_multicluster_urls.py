@@ -26,13 +26,15 @@ class MulticlusterRouteInventoryTests(SimpleTestCase):
     """A new object/node route must join the qualification migration explicitly."""
 
     def test_cluster_qualified_route_inventory_is_complete_and_ratchets(self):
-        source = (Path(settings.BASE_DIR) / "core" / "urls.py").read_text()
+        from core.urls import urlpatterns
 
-        self.assertEqual(source.count('path("vms/<str:cluster_key>/<str:object_type>'), 37)
-        self.assertEqual(source.count('path("vms/<str:cluster_key>/'), 40)
-        self.assertEqual(source.count('path("vms/<str:object_type>'), 37)
-        self.assertEqual(source.count('path("clusters/<str:cluster_key>/storage-api/'), 9)
-        self.assertEqual(source.count('path("storage-api/<str:node>/<str:storage>/'), 8)
+        routes = [str(pattern.pattern) for pattern in urlpatterns]
+
+        self.assertEqual(sum(route.startswith("vms/<str:cluster_key>/<str:object_type>") for route in routes), 37)
+        self.assertEqual(sum(route.startswith("vms/<str:cluster_key>/") for route in routes), 40)
+        self.assertEqual(sum(route.startswith("vms/<str:object_type>") for route in routes), 37)
+        self.assertEqual(sum(route.startswith("clusters/<str:cluster_key>/storage-api/") for route in routes), 9)
+        self.assertEqual(sum(route.startswith("storage-api/<str:node>/<str:storage>/") for route in routes), 8)
 
     def test_cluster_scope_is_not_read_from_session_state(self):
         offenders = []
@@ -48,12 +50,8 @@ class MulticlusterRouteInventoryTests(SimpleTestCase):
 @override_settings(APP_REQUIRE_LOGIN=False)
 class LegacyClusterUrlTests(TestCase):
     def setUp(self):
-        self.cluster_a = ProxmoxCluster.objects.create(
-            key="a", display_name="Cluster A", enabled=True
-        )
-        self.cluster_b = ProxmoxCluster.objects.create(
-            key="b", display_name="Cluster B", enabled=True
-        )
+        self.cluster_a = ProxmoxCluster.objects.create(key="a", display_name="Cluster A", enabled=True)
+        self.cluster_b = ProxmoxCluster.objects.create(key="b", display_name="Cluster B", enabled=True)
         self._guest(self.cluster_a, vmid=500, node="pve1", name="a-500")
 
     def _guest(self, cluster, *, vmid, node, name):
@@ -85,9 +83,7 @@ class LegacyClusterUrlTests(TestCase):
     def test_ambiguous_legacy_guest_get_returns_cluster_chooser(self):
         self._guest(self.cluster_b, vmid=500, node="pve1", name="b-500")
 
-        response = self.client.get(
-            reverse("core:legacy_guest_summary", kwargs={"object_type": "vm", "vmid": 500})
-        )
+        response = self.client.get(reverse("core:legacy_guest_summary", kwargs={"object_type": "vm", "vmid": 500}))
 
         self.assertEqual(response.status_code, 409)
         self.assertContains(response, "/vms/a/vm/500/summary/", status_code=409)
@@ -161,9 +157,7 @@ class LegacyClusterUrlTests(TestCase):
     def test_guest_detail_sidebar_keeps_guests_from_every_cluster(self):
         self._guest(self.cluster_b, vmid=500, node="pve1", name="b-500")
 
-        response = self.client.get(
-            reverse("core:guest_summary", args=[self.cluster_a.key, "vm", 500])
-        )
+        response = self.client.get(reverse("core:guest_summary", args=[self.cluster_a.key, "vm", 500]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "a-500")
@@ -177,12 +171,8 @@ class MulticlusterActivationTests(TestCase):
             bootstrap_completed=True,
             identity_contract_version=0,
         )
-        self.cluster_a = ProxmoxCluster.objects.create(
-            key="a", display_name="Cluster A", enabled=True
-        )
-        self.cluster_b = ProxmoxCluster.objects.create(
-            key="b", display_name="Cluster B", enabled=False
-        )
+        self.cluster_a = ProxmoxCluster.objects.create(key="a", display_name="Cluster A", enabled=True)
+        self.cluster_b = ProxmoxCluster.objects.create(key="b", display_name="Cluster B", enabled=False)
 
     def test_activation_refuses_enabled_unqualified_scheduled_action(self):
         ScheduledAction.objects.create(

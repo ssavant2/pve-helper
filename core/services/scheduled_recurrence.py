@@ -5,11 +5,10 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from dateutil.rrule import DAILY, MONTHLY, WEEKLY, MO, TU, WE, TH, FR, SA, SU, rrule, rrulestr
+from dateutil.rrule import DAILY, FR, MO, MONTHLY, SA, SU, TH, TU, WE, WEEKLY, rrule, rrulestr
 from django.utils import timezone
 
 from core.models import ScheduledAction
-
 
 WEEKDAYS = [MO, TU, WE, TH, FR, SA, SU]
 WEEKDAY_NAMES = {
@@ -106,9 +105,7 @@ def _monthly_ordinal_rule(recurrence: dict[str, Any], dtstart: datetime):
     ordinals = _list_values(recurrence.get("ordinals", recurrence.get("ordinal", recurrence.get("week", "first"))))
     weekdays = _list_values(recurrence.get("weekdays", recurrence.get("weekday", "monday")))
     byweekday = [
-        WEEKDAYS[_weekday_number(weekday)](_ordinal_number(ordinal))
-        for ordinal in ordinals
-        for weekday in weekdays
+        WEEKDAYS[_weekday_number(weekday)](_ordinal_number(ordinal)) for ordinal in ordinals for weekday in weekdays
     ]
     return rrule(
         MONTHLY,

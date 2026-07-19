@@ -1,19 +1,53 @@
 """Guest bulk-action dispatcher (vms_bulk_action) + per-domain handlers (from _core)."""
+
 from __future__ import annotations
-from ..common import *  # noqa: F401,F403
-from .. import common
-from ._core import (MIGRATE_KINDS, SNAPSHOT_NAME_HELP, SNAPSHOT_NAME_RE, _MIGRATE_ACTIVE_STATES, _apply_migrate_net_remap, _backup_error, _delete_all_guest_snapshots, _guest_movable_disks, _snapshot_error, _split_tag_text, _submit_guest_backup, _template_linked_clone_children, _template_storage_paths, _unique_tags, _update_current_guest_config)
-from .operation_lifecycle import (_MIGRATE_ASYNC, _audit_guest, _finish_guest_running_audit, _guest_destroy_with_client, _guest_post_with_client, _guest_ref_from_target_value)
-from .presenters import _config_enabled
-from .read_model_support import (_config_storage_ids, _guest_agent_config_enabled, _guest_pool_memberships, _linked_clone_children, _require_guest)
+
 from core.services.public_errors import public_exception_message
 from core.services.tags import TagValidationError, validate_tag
+
+from .. import common
+from ..common import *  # noqa: F401,F403
+from ._core import (
+    _MIGRATE_ACTIVE_STATES,
+    MIGRATE_KINDS,
+    SNAPSHOT_NAME_HELP,
+    SNAPSHOT_NAME_RE,
+    _apply_migrate_net_remap,
+    _backup_error,
+    _delete_all_guest_snapshots,
+    _guest_movable_disks,
+    _snapshot_error,
+    _split_tag_text,
+    _submit_guest_backup,
+    _template_linked_clone_children,
+    _template_storage_paths,
+    _unique_tags,
+    _update_current_guest_config,
+)
+from .operation_lifecycle import (
+    _MIGRATE_ASYNC,
+    _audit_guest,
+    _finish_guest_running_audit,
+    _guest_destroy_with_client,
+    _guest_post_with_client,
+    _guest_ref_from_target_value,
+)
+from .presenters import _config_enabled
+from .read_model_support import (
+    _config_storage_ids,
+    _guest_agent_config_enabled,
+    _guest_pool_memberships,
+    _linked_clone_children,
+    _require_guest,
+)
 
 
 @require_POST
 @app_login_required
 def vms_bulk_action(request):
-    wants_json = request.headers.get("X-Requested-With") == "fetch" or "application/json" in request.headers.get("Accept", "")
+    wants_json = request.headers.get("X-Requested-With") == "fetch" or "application/json" in request.headers.get(
+        "Accept", ""
+    )
 
     def done(ok: bool = True, errors: list[str] | None = None):
         if wants_json:
@@ -185,7 +219,18 @@ def vms_bulk_action(request):
             _update_current_guest_config(detail, {"template": "1"}, [])
         if action == "untemplate":
             _update_current_guest_config(detail, {"template": "0"}, [])
-        if action in GUEST_POWER_ACTIONS or action in {"template", "untemplate", "pool", "migrate", "clone", "tags", "destroy", "agent_enable", "agent_disable", "backup"}:
+        if action in GUEST_POWER_ACTIONS or action in {
+            "template",
+            "untemplate",
+            "pool",
+            "migrate",
+            "clone",
+            "tags",
+            "destroy",
+            "agent_enable",
+            "agent_disable",
+            "backup",
+        }:
             clear_live_guest_caches(cluster=detail.cluster)
 
     response = done(not errors, errors)
@@ -200,8 +245,6 @@ def vms_bulk_action(request):
     ):
         return redirect(redirect_to)
     return redirect("core:vms_overview")
-
-
 
 
 def _bulk_action_initial_audit_details(
@@ -265,8 +308,6 @@ def _bulk_action_initial_audit_details(
     return f"guest.power.{action}", {}
 
 
-
-
 def _clone_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
     newid = request.POST.get("clone_newid", "").strip()
     clone_name = request.POST.get("clone_name", "").strip()
@@ -300,8 +341,6 @@ def _clone_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[st
         "rescan_storage_ids": rescan_storages,
     }
     return err or "", audit_details, response, client
-
-
 
 
 def _move_guest_to_pool_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict]:
@@ -376,9 +415,9 @@ def _move_guest_to_pool_from_bulk_request(request, detail: SimpleNamespace) -> t
     return "", audit_details
 
 
-
-
-def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_event) -> tuple[str, dict, object | None, object | None]:
+def _migrate_guest_from_bulk_request(
+    request, detail: SimpleNamespace, running_event
+) -> tuple[str, dict, object | None, object | None]:
     """Issue one Migrate operation (host / storage / both) for a single guest.
 
     host/both go through the cluster ``migrate`` endpoint (one UPID, so the same
@@ -479,8 +518,6 @@ def _migrate_guest_from_bulk_request(request, detail: SimpleNamespace, running_e
     return "", audit, _MIGRATE_ASYNC, None
 
 
-
-
 def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
     """Safely clear the QEMU template flag for a standalone template.
 
@@ -533,20 +570,31 @@ def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str,
     try:
         snapshots = client.get(f"nodes/{quote(detail.node, safe='')}/qemu/{detail.vmid}/snapshot")
     except ProxmoxAPIError as exc:
-        return public_exception_message(
-            exc,
-            operation="template_snapshot_preflight",
-            fallback="Could not verify template snapshots against Proxmox.",
-        ), audit_details, None, client
+        return (
+            public_exception_message(
+                exc,
+                operation="template_snapshot_preflight",
+                fallback="Could not verify template snapshots against Proxmox.",
+            ),
+            audit_details,
+            None,
+            client,
+        )
     if not isinstance(snapshots, list):
         return "Could not verify template snapshots: unexpected Proxmox response.", audit_details, None, client
     snapshot_names = [
         str(snapshot.get("name") or "")
-        for snapshot in snapshots if isinstance(snapshot, dict)
+        for snapshot in snapshots
+        if isinstance(snapshot, dict)
         if str(snapshot.get("name") or "") not in {"", "current"}
     ]
     if snapshot_names:
-        return "Remove template snapshots before converting it back to a VM.", {**audit_details, "snapshots": snapshot_names}, None, client
+        return (
+            "Remove template snapshots before converting it back to a VM.",
+            {**audit_details, "snapshots": snapshot_names},
+            None,
+            client,
+        )
 
     disk_references = extract_disk_references(fresh_config)
     if not disk_references:
@@ -559,9 +607,7 @@ def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str,
     if storage_error:
         return storage_error, audit_details, None, client
 
-    children, child_error = _template_linked_clone_children(
-        client, detail.node, storage_paths, cluster=detail.cluster
-    )
+    children, child_error = _template_linked_clone_children(client, detail.node, storage_paths, cluster=detail.cluster)
     if child_error:
         return child_error, audit_details, None, client
     if children:
@@ -584,17 +630,22 @@ def _convert_template_back_to_vm(request, detail: SimpleNamespace) -> tuple[str,
             digest=fresh_config.get("digest"),
         )
     except ProxmoxAPIError as exc:
-        return public_exception_message(
-            exc,
-            operation="template_conversion",
-            fallback="Proxmox could not convert the template back to a VM.",
-        ), audit_details, None, client
+        return (
+            public_exception_message(
+                exc,
+                operation="template_conversion",
+                fallback="Proxmox could not convert the template back to a VM.",
+            ),
+            audit_details,
+            None,
+            client,
+        )
     return "", audit_details, None, client
 
 
-
-
-def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict, object | None, object | None]:
+def _destroy_guest_from_bulk_request(
+    request, detail: SimpleNamespace
+) -> tuple[str, dict, object | None, object | None]:
     confirm_vmid = request.POST.get("destroy_confirm_vmid", "").strip()
     if confirm_vmid != str(detail.vmid):
         return "The confirmation VMID did not match.", {}, None, None
@@ -633,8 +684,6 @@ def _destroy_guest_from_bulk_request(request, detail: SimpleNamespace) -> tuple[
     )
 
 
-
-
 def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tuple[str, dict]:
     mode = request.POST.get("tags_mode", "").strip()
     requested_tags = _split_tag_text(request.POST.get("tags_value", ""))
@@ -659,7 +708,10 @@ def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tu
     if client is None:
         return "Could not read the current guest config from Proxmox.", {"mode": mode, "tags": requested_tags}
     if fresh.get("lock"):
-        return f"Guest is locked by another Proxmox operation ({fresh.get('lock')}).", {"mode": mode, "tags": requested_tags}
+        return f"Guest is locked by another Proxmox operation ({fresh.get('lock')}).", {
+            "mode": mode,
+            "tags": requested_tags,
+        }
 
     current_tags = parse_guest_tags(fresh)
     current_lookup = {tag.lower(): tag for tag in current_tags}
@@ -711,8 +763,6 @@ def _update_guest_tags_from_bulk_request(request, detail: SimpleNamespace) -> tu
     return "", audit_details
 
 
-
-
 def _set_guest_agent_from_bulk_request(
     detail: SimpleNamespace,
     *,
@@ -753,11 +803,16 @@ def _set_guest_agent_from_bulk_request(
             digest=fresh.get("digest"),
         )
     except ProxmoxAPIError as exc:
-        return public_exception_message(
-            exc,
-            operation="guest_agent_update",
-            fallback="Proxmox could not update the guest agent setting.",
-        ), audit_details, None, client
+        return (
+            public_exception_message(
+                exc,
+                operation="guest_agent_update",
+                fallback="Proxmox could not update the guest agent setting.",
+            ),
+            audit_details,
+            None,
+            client,
+        )
 
     _update_current_guest_config(detail, updates, [])
     return "", audit_details, None, client

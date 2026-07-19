@@ -3,26 +3,26 @@ from __future__ import annotations
 import json
 import posixpath
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
-from ..common import *  # noqa: F401,F403
-from .. import common
 from core.models import ClusterStorageMount, ProxmoxCluster, StorageMount
-from core.services.public_errors import public_exception_message
-from core.services.refs import GuestRef
 from core.services.current_guest_inventory import (
     delete_current_guest,
     update_current_guest_config,
 )
+from core.services.public_errors import public_exception_message
+from core.services.refs import GuestRef
 from core.services.storage_catalog import node_storage_rows, storage_volume_rows
-from core.services.storage_mounts import storage_mount_root
+from core.services.storage_paths import storage_mount_root
+
+from .. import common
+from ..common import *  # noqa: F401,F403
 from .operation_lifecycle import (
     _audit_guest,
     _guest_delete_wait_task,
     _guest_put,
 )
 from .read_model_support import _guest_api_get, _is_disk_device_key
-
 
 SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 SNAPSHOT_NAME_HELP = "Snapshot names must start with a letter and can then contain letters, digits, _ and -."
@@ -115,29 +115,31 @@ def _guest_backup_archives(detail: SimpleNamespace) -> tuple[list[dict], list[di
     backups: list[dict] = []
     incomplete_reason = ""
     for storage in backup_storages:
-            content, complete, reason = storage_volume_rows(
-                detail.cluster, detail.node, storage["id"], content="backup", vmid=detail.vmid
-            )
-            if not complete:
-                incomplete_reason = reason
+        content, complete, reason = storage_volume_rows(
+            detail.cluster, detail.node, storage["id"], content="backup", vmid=detail.vmid
+        )
+        if not complete:
+            incomplete_reason = reason
+            continue
+        for entry in content:
+            volid = str(entry.get("volid") or "")
+            if not volid:
                 continue
-            for entry in content:
-                volid = str(entry.get("volid") or "")
-                if not volid:
-                    continue
-                backups.append(
-                    {
-                        "volid": volid,
-                        "size": entry.get("size"),
-                        "ctime": datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc) if entry.get("ctime") else None,
-                        "notes": entry.get("notes", ""),
-                        "storage": storage["id"],
-                        "source_endpoint": str(getattr(client, "endpoint", "")),
-                        "source_type": detail.object_type,
-                        "source_vmid": detail.vmid,
-                        "source_node": detail.node,
-                    }
-                )
+            backups.append(
+                {
+                    "volid": volid,
+                    "size": entry.get("size"),
+                    "ctime": datetime.fromtimestamp(int(entry["ctime"]), dt_timezone.utc)
+                    if entry.get("ctime")
+                    else None,
+                    "notes": entry.get("notes", ""),
+                    "storage": storage["id"],
+                    "source_endpoint": str(getattr(client, "endpoint", "")),
+                    "source_type": detail.object_type,
+                    "source_vmid": detail.vmid,
+                    "source_node": detail.node,
+                }
+            )
     backups.sort(key=lambda item: item["ctime"] or datetime.min.replace(tzinfo=dt_timezone.utc), reverse=True)
     return backups, backup_storages, incomplete_reason
 
@@ -181,7 +183,12 @@ def _submit_guest_backup(request, detail: SimpleNamespace):
     if compress not in {"zstd", "gzip", "lzo", "0"}:
         return None, "Choose a valid compression mode.", None, {"storage": storage}
     if detail.config.get("lock") or detail.current.get("lock"):
-        return None, f"This guest is locked ({detail.config.get('lock') or detail.current.get('lock')}).", None, {"storage": storage}
+        return (
+            None,
+            f"This guest is locked ({detail.config.get('lock') or detail.current.get('lock')}).",
+            None,
+            {"storage": storage},
+        )
 
     body: dict[str, object] = {
         "vmid": detail.vmid,
@@ -224,7 +231,12 @@ def _submit_guest_backup(request, detail: SimpleNamespace):
                 None,
             )
             if not match or not match.get("active", 1) or not _storage_supports_content(match, "backup"):
-                return None, f"Storage '{storage}' is not an active backup storage on {detail.node}.", client, audit_details
+                return (
+                    None,
+                    f"Storage '{storage}' is not an active backup storage on {detail.node}.",
+                    client,
+                    audit_details,
+                )
             return client.post(f"nodes/{quote(detail.node, safe='')}/vzdump", data=body), None, client, audit_details
         except ProxmoxAPIError as exc:
             last_error = public_exception_message(
@@ -288,7 +300,11 @@ def _apply_migrate_net_remap(request, detail: SimpleNamespace) -> tuple[str, dic
         current = config.get(net_key)
         if not isinstance(current, str) or "bridge=" not in current:
             continue
-        new_value = re.sub(r"(^|,)bridge=[^,]+", lambda m: f"{m.group(1)}bridge={new_bridge}", current)
+        new_value = re.sub(
+            r"(^|,)bridge=[^,]+",
+            lambda match, bridge=new_bridge: f"{match.group(1)}bridge={bridge}",
+            current,
+        )
         if new_value == current:
             continue
         _response, err = _guest_put(detail, "config", {net_key: new_value})
@@ -398,9 +414,7 @@ def _template_storage_paths(
     """Return template-disk paths by storage, limited to app-mounted file storage."""
     mounted_storages = {
         binding.cluster_storage.storage_id: binding.mount
-        for binding in ClusterStorageMount.objects.select_related(
-            "cluster_storage", "mount"
-        ).filter(
+        for binding in ClusterStorageMount.objects.select_related("cluster_storage", "mount").filter(
             cluster_storage__cluster=cluster,
             cluster_storage__present=True,
             mount__enabled=True,
@@ -411,10 +425,7 @@ def _template_storage_paths(
         mounted_storages = {
             storage.storage_id: storage
             for storage in StorageMount.objects.filter(enabled=True)
-            if StorageMount.objects.filter(
-                storage_id=storage.storage_id, enabled=True
-            ).count()
-            == 1
+            if StorageMount.objects.filter(storage_id=storage.storage_id, enabled=True).count() == 1
         }
     paths: dict[str, set[str]] = {}
     for reference in disk_references:
@@ -430,7 +441,9 @@ def _template_storage_paths(
     return paths, ""
 
 
-def _template_linked_clone_children(client, node: str, storage_paths: dict[str, set[str]], *, cluster=None) -> tuple[list[dict], str]:
+def _template_linked_clone_children(
+    client, node: str, storage_paths: dict[str, set[str]], *, cluster=None
+) -> tuple[list[dict], str]:
     children: list[dict] = []
     for storage_id, template_paths in storage_paths.items():
         if cluster is None:
@@ -599,7 +612,12 @@ def _create_guest(request, object_type: str, options: dict, *, cluster):
         object_type="guest",
         cluster=cluster,
         guest_ref=ref,
-        details={"node": node, "vmid": vmid, "target_type": object_type, "name": post.get("name") or post.get("hostname") or ""},
+        details={
+            "node": node,
+            "vmid": vmid,
+            "target_type": object_type,
+            "name": post.get("name") or post.get("hostname") or "",
+        },
         system_username="system",
     )
     return None
@@ -657,9 +675,7 @@ def _restore_options(cluster) -> tuple[list[dict], list[dict], dict[str, dict[st
                     node_types["ct"].append(storage_id)
                 if not _storage_supports_content(storage, "backup"):
                     continue
-                entries, complete, _reason = storage_volume_rows(
-                    cluster, node, storage_id, content="backup"
-                )
+                entries, complete, _reason = storage_volume_rows(cluster, node, storage_id, content="backup")
                 if not complete:
                     continue
                 for entry in entries:
@@ -763,11 +779,19 @@ def _queue_guest_backup_restore(request, archives: list[dict], *, cluster) -> st
     try:
         target_storages = node_storage_rows(cluster, target_node)
         target_match = next(
-            (item for item in (target_storages if isinstance(target_storages, list) else []) if str(item.get("storage") or "") == target_storage),
+            (
+                item
+                for item in (target_storages if isinstance(target_storages, list) else [])
+                if str(item.get("storage") or "") == target_storage
+            ),
             None,
         )
         content_type = "images" if archive["object_type"] == ProxmoxInventory.ObjectType.VM else "rootdir"
-        if not target_match or not target_match.get("active", 1) or not _storage_supports_content(target_match, content_type):
+        if (
+            not target_match
+            or not target_match.get("active", 1)
+            or not _storage_supports_content(target_match, content_type)
+        ):
             return f"Storage '{target_storage}' cannot hold {archive['type_label']} disks on {target_node}."
         archive_entries, complete, _reason = storage_volume_rows(
             cluster, target_node, str(archive["storage"]), content="backup"
@@ -782,13 +806,16 @@ def _queue_guest_backup_restore(request, archives: list[dict], *, cluster) -> st
         )
 
     live_guests = [
-        guest
-        for guest in common.fetch_live_guest_inventory(use_cache=False, cluster=cluster)
-        if guest.vmid == vmid
+        guest for guest in common.fetch_live_guest_inventory(use_cache=False, cluster=cluster) if guest.vmid == vmid
     ]
-    existing = next((guest for guest in live_guests if guest.object_type == archive["object_type"] and guest.node == target_node), None)
+    existing = next(
+        (guest for guest in live_guests if guest.object_type == archive["object_type"] and guest.node == target_node),
+        None,
+    )
     if live_guests and not overwrite:
-        return f"VMID {vmid} is already in use. Enable overwrite only when replacing the existing {archive['type_label']}."
+        return (
+            f"VMID {vmid} is already in use. Enable overwrite only when replacing the existing {archive['type_label']}."
+        )
     if overwrite and existing is None:
         return f"No existing {archive['type_label']} with VMID {vmid} exists on {target_node} to overwrite."
     if existing:
@@ -804,7 +831,7 @@ def _queue_guest_backup_restore(request, archives: list[dict], *, cluster) -> st
         lock = (existing_config or {}).get("lock") or (existing_current or {}).get("lock")
         if lock:
             return f"The existing guest is locked ({lock})."
-        if (existing_config or {}).get("protection") in {1, "1", True}:
+        if (existing_config or {}).get("protection") in {1, "1"}:
             return "The existing guest is protected. Disable protection before overwriting it."
 
     existing_status = str((existing_current or {}).get("status") or "").lower() if existing else ""

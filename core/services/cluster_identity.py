@@ -32,12 +32,9 @@ from django.utils import timezone
 from core.services.cluster_resolver import client_for_endpoint, enabled_endpoints
 from core.services.proxmox import ProxmoxAPIError
 
-
 # The cluster CA subject looks like:
 #   OU=<uuid>,O=PVE Cluster Manager CA
-_CA_UUID_RE = re.compile(
-    r"OU\s*=\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
-)
+_CA_UUID_RE = re.compile(r"OU\s*=\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 
 
 class ClusterIdentityError(RuntimeError):
@@ -66,9 +63,13 @@ class ObservedClusterIdentity:
 def _assert_ca_uuid_is_unclaimed(cluster, observed: ObservedClusterIdentity) -> None:
     from core.models import ProxmoxCluster
 
-    owner = ProxmoxCluster.objects.filter(
-        discovered_ca_uuid=observed.ca_uuid,
-    ).exclude(pk=cluster.pk).first()
+    owner = (
+        ProxmoxCluster.objects.filter(
+            discovered_ca_uuid=observed.ca_uuid,
+        )
+        .exclude(pk=cluster.pk)
+        .first()
+    )
     if owner is not None:
         raise ClusterIdentityCollision(
             f"Cluster CA {observed.ca_uuid} is already registered as '{owner.key}'. "
@@ -102,9 +103,7 @@ def discover_cluster_identity(client, node: str) -> ObservedClusterIdentity:
     subject = str(root_ca.get("subject") or "")
     match = _CA_UUID_RE.search(subject)
     if not match:
-        raise ClusterIdentityError(
-            f"The cluster CA subject on {node} has no UUID: {subject!r}."
-        )
+        raise ClusterIdentityError(f"The cluster CA subject on {node} has no UUID: {subject!r}.")
     fingerprint = str(root_ca.get("fingerprint") or "").strip()
     return ObservedClusterIdentity(ca_uuid=match.group(1).lower(), ca_fingerprint=fingerprint)
 
@@ -167,9 +166,7 @@ def verify_or_bind_identity(cluster, observed: ObservedClusterIdentity) -> str:
         cluster.quarantine_reason = reason[:255]
         cluster.quarantined_at = timezone.now()
         cluster.save(update_fields=["ingestion_quarantined", "quarantine_reason", "quarantined_at", "updated_at"])
-        raise ClusterIdentityMismatch(
-            reason, observed_uuid=observed.ca_uuid, pinned_uuid=cluster.discovered_ca_uuid
-        )
+        raise ClusterIdentityMismatch(reason, observed_uuid=observed.ca_uuid, pinned_uuid=cluster.discovered_ca_uuid)
 
     # A rotated fingerprint under the same UUID is a legitimate CA renewal; keep the
     # UUID pinned and refresh the anchor. A UUID change is the dangerous case above.

@@ -6,7 +6,6 @@ from urllib.parse import urlparse
 from django.conf import settings
 from django.core.checks import Error, register
 
-
 DEV_SECRET_KEY = "dev-insecure-change-me"
 DEV_HOSTS = {"*", ".localhost"}
 DEV_BASE_HOSTS = {"localhost", "127.0.0.1", "pve-helper.example.com"}
@@ -137,9 +136,7 @@ def production_startup_errors():
                 )
             )
 
-    if getattr(settings, "STORAGE_WRITE_ENABLED", False) and not getattr(
-        settings, "FILE_UPLOAD_TEMP_DIR", None
-    ):
+    if getattr(settings, "STORAGE_WRITE_ENABLED", False) and not getattr(settings, "FILE_UPLOAD_TEMP_DIR", None):
         errors.append(
             Error(
                 "FILE_UPLOAD_TEMP_DIR is required when storage writes are enabled.",

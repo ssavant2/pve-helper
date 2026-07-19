@@ -1,0 +1,21 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+extend-exclude = ["core/migrations"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules deliberately consume the compatibility facade exported by
+# core.views.common. Removing the wildcard boundary is a separate architecture
+# refactor; keep the exception confined to that boundary rather than weakening
+# lint for the rest of the application.
+"core/views/*.py" = ["F403", "F405"]
+"core/views/common.py" = ["F401", "F403", "F405"]
+"pve_helper/test_settings.py" = ["F403", "F405"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

@@ -1,11 +1,13 @@
 """Guest create + configure tab + agent-summary enrichment API (from _core)."""
+
 from __future__ import annotations
+
 from core.models import ProxmoxCluster
+
 from ..common import *  # noqa: F401,F403
-from .. import common
 from ._core import _create_guest
 from .presenters import _guest_config_sections
-from .read_model_support import (_guest_agent_summary,_guest_os_label,_guest_tab_context,_require_guest)
+from .read_model_support import _guest_agent_summary, _guest_os_label, _guest_tab_context, _require_guest
 
 
 @app_login_required
@@ -44,16 +46,12 @@ def guest_create(request, cluster_key: str, object_type: str):
         **navigation_context("vms"),
         "object_type": object_type,
         "cluster_key": cluster.key,
-        "cluster_choices": list(
-            ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
-        ),
+        "cluster_choices": list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")),
         "is_vm": is_vm,
         "options": options,
         "form_values": form_values,
     }
     return render(request, "core/guest_create.html", context)
-
-
 
 
 @app_login_required
@@ -78,8 +76,6 @@ def guest_configure(request, cluster_key: str, object_type: str, vmid: int):
         f"{reverse('core:scheduled_task_create')}?{urlencode({'target': detail.guest_ref.without_node().serialize()})}"
     )
     return render(request, "core/guest_configure.html", context)
-
-
 
 
 @app_login_required

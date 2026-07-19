@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-
 from unittest.mock import Mock, patch
 
 from django.test import TestCase
@@ -74,7 +73,9 @@ class CurrentGuestInventoryTests(TestCase):
         )
 
         self.assertTrue(state.complete)
-        self.assertEqual(set(CurrentGuestInventory.objects.values_list("object_type", "vmid")), {("vm", 100), ("ct", 200)})
+        self.assertEqual(
+            set(CurrentGuestInventory.objects.values_list("object_type", "vmid")), {("vm", 100), ("ct", 200)}
+        )
         existing.refresh_from_db()
         self.assertEqual(existing.name, "new-name")
         self.assertEqual(CurrentGuestInventory.objects.get(vmid=100).config["tags"], "prod")
@@ -341,8 +342,13 @@ class DuplicateVmidAcrossClustersTests(TestCase):
     @staticmethod
     def _guest(node, name):
         return SimpleNamespace(
-            node=node, object_type="vm", vmid=500, name=name, status="running",
-            config={}, disk_references=[],
+            node=node,
+            object_type="vm",
+            vmid=500,
+            name=name,
+            status="running",
+            config={},
+            disk_references=[],
         )
 
     def test_both_clusters_keep_their_own_vm500(self):

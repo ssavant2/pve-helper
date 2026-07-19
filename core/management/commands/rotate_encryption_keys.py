@@ -50,9 +50,7 @@ class Command(BaseCommand):
             )
 
         if not options["apply"]:
-            self.stdout.write(
-                f"\nDry run: {len(pending)} credential(s) would be re-sealed. Re-run with --apply."
-            )
+            self.stdout.write(f"\nDry run: {len(pending)} credential(s) would be re-sealed. Re-run with --apply.")
             return
 
         rotated = []
@@ -64,8 +62,7 @@ class Command(BaseCommand):
                 # The old key is gone, so this secret cannot be read at all. Say so
                 # plainly rather than leaving a half-rotated keyring looking finished.
                 raise CommandError(
-                    f"Cannot rotate '{credential.cluster.key}': {exc} Restore that key from "
-                    "backup/escrow and re-run."
+                    f"Cannot rotate '{credential.cluster.key}': {exc} Restore that key from backup/escrow and re-run."
                 ) from exc
             rotated.append((credential.cluster.key, previous_key_id))
 

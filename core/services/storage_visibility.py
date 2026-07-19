@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 from django.conf import settings
 
 from core.models import StorageMount
-from core.services.storage_mounts import storage_mount_root, storage_trash_root
+from core.services.storage_paths import storage_mount_root, storage_trash_root
 
 
 def ignored_relative_paths_for_storage(storage: StorageMount) -> set[str]:

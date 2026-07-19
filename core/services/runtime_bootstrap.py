@@ -33,7 +33,6 @@ from core.services.config import (
 )
 from core.services.storage_mounts import normalized_backend_identity
 
-
 DEFAULT_CLUSTER_KEY = "default"
 DEFAULT_CLUSTER_DISPLAY_NAME = "Default cluster"
 
@@ -51,9 +50,7 @@ def _advisory_xact_lock(lock_id: int) -> None:
 def environment_fingerprint() -> str:
     """Stable digest of the environment configuration a bootstrap would import."""
     payload = {
-        "endpoints": sorted(
-            [definition.name, definition.url] for definition in configured_endpoint_definitions()
-        ),
+        "endpoints": sorted([definition.name, definition.url] for definition in configured_endpoint_definitions()),
         "storages": sorted(
             [
                 definition.storage_id,
@@ -86,9 +83,11 @@ def ensure_bootstrap() -> RuntimeConfigurationState:
 def _ensure_bootstrap_once() -> RuntimeConfigurationState:
     with transaction.atomic():
         _advisory_xact_lock(_BOOTSTRAP_LOCK_ID)
-        state = RuntimeConfigurationState.objects.select_for_update().filter(
-            pk=RuntimeConfigurationState.SINGLETON_PK
-        ).first()
+        state = (
+            RuntimeConfigurationState.objects.select_for_update()
+            .filter(pk=RuntimeConfigurationState.SINGLETON_PK)
+            .first()
+        )
         if state is not None and state.bootstrap_completed:
             return state
         if state is None:

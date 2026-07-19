@@ -22,11 +22,10 @@ from core.services.cluster_onboarding import (
     disable_cluster,
 )
 from core.services.cluster_trust import (
-    InspectedCertificate,
     TRUST_PUBLIC,
+    InspectedCertificate,
     approve_cluster_transport,
 )
-
 
 TEST_KEY = base64.b64encode(b"v" * 32).decode()
 

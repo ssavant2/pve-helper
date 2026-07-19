@@ -14,9 +14,7 @@ from core.services.refs import MountRef
 from core.services.storage_backends import StorageBackendProfile
 from core.services.storage_paths import (
     StorageMountError,
-    normalized_relative_path,
     storage_mount_root,
-    storage_trash_root,
 )
 
 
@@ -53,9 +51,7 @@ def normalized_backend_identity(value: str) -> str:
     """Normalize the host part without changing case-sensitive export paths."""
     raw = str(value or "").strip()
     if "://" in raw or "@" in raw:
-        raise StorageMountError(
-            "Backend identity must use a credential-free server:/export or //server/share value."
-        )
+        raise StorageMountError("Backend identity must use a credential-free server:/export or //server/share value.")
     if raw.startswith("//"):
         server, separator, suffix = raw[2:].partition("/")
         return f"//{server.lower()}{separator}{suffix}" if server else ""
@@ -110,8 +106,10 @@ def mount_health(mount: StorageMount, profile: StorageBackendProfile) -> MountHe
         if expected and exact.lower() not in expected:
             return MountHealth(False, False, f"Unexpected filesystem type: {exact}.", exact)
     writable = bool(settings.STORAGE_WRITE_ENABLED and os.access(root, os.W_OK))
-    reason = "" if writable else (
-        "Storage writes are disabled." if not settings.STORAGE_WRITE_ENABLED else "Mount is read-only."
+    reason = (
+        ""
+        if writable
+        else ("Storage writes are disabled." if not settings.STORAGE_WRITE_ENABLED else "Mount is read-only.")
     )
     return MountHealth(True, writable, reason, fs_type)
 
@@ -120,8 +118,7 @@ def registered_mount_health(mount: StorageMount) -> MountHealth:
     from core.services.storage_backends import backend_profile
 
     definitions = [
-        binding.cluster_storage
-        for binding in mount.cluster_bindings.select_related("cluster_storage").all()
+        binding.cluster_storage for binding in mount.cluster_bindings.select_related("cluster_storage").all()
     ]
     if not definitions:
         # Transitional legacy mounts are still treated as explicit directory
@@ -167,10 +164,14 @@ def bind_storage_mount(*, cluster_storage: ClusterStorage, mount: StorageMount, 
 @transaction.atomic
 def unbind_storage_mount(binding: ClusterStorageMount) -> None:
     definition = ClusterStorage.objects.select_for_update().get(pk=binding.cluster_storage_id)
-    locked = ClusterStorageMount.objects.select_for_update().filter(
-        pk=binding.pk,
-        cluster_storage=definition,
-    ).first()
+    locked = (
+        ClusterStorageMount.objects.select_for_update()
+        .filter(
+            pk=binding.pk,
+            cluster_storage=definition,
+        )
+        .first()
+    )
     if locked is None:
         raise StorageMountError("Mount association no longer exists.")
     locked.delete()
@@ -179,5 +180,8 @@ def unbind_storage_mount(binding: ClusterStorageMount) -> None:
 def scope_conflict(definition: ClusterStorage) -> bool:
     scopes = set(definition.mount_bindings.values_list("scope", "node"))
     if definition.shared:
-        return any(scope != ClusterStorageMount.Scope.SHARED or node is not None for scope, node in scopes) or len(scopes) > 1
+        return (
+            any(scope != ClusterStorageMount.Scope.SHARED or node is not None for scope, node in scopes)
+            or len(scopes) > 1
+        )
     return any(scope != ClusterStorageMount.Scope.NODE or not node for scope, node in scopes)

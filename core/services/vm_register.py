@@ -24,12 +24,12 @@ import re
 import secrets
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO
 from urllib.parse import quote
 
 from core.models import StorageMount
-from core.services.storage_mounts import storage_mount_root
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     ConfinedPathExistsError,
@@ -40,6 +40,7 @@ from core.services.confined_filesystem import (
 )
 from core.services.ovf_import import OvfImportError, OvfPackage, package_disk_volids, parse_ovf_package
 from core.services.proxmox import ProxmoxAPIError
+from core.services.storage_paths import storage_mount_root
 
 # Disk bus -> config key prefix. The default bus is SATA (boots almost any image
 # without extra guest drivers); virtio-scsi is faster but needs drivers.
@@ -274,9 +275,7 @@ def _create_vm_importing(
     if params.get("disk_bus") == "scsi":
         params.setdefault("scsihw", "virtio-scsi-single")
     body = _base_body(params)
-    body[bus_key] = (
-        f"{params['target_storage']}:0,import-from={import_volid},format={params.get('format', 'qcow2')}"
-    )
+    body[bus_key] = f"{params['target_storage']}:0,import-from={import_volid},format={params.get('format', 'qcow2')}"
     body["boot"] = f"order={bus_key}"
     if params.get("start"):
         body["start"] = 1
@@ -325,7 +324,9 @@ def import_volid_as_vm(
 # --------------------------------------------------------------------------- #
 # OVA / OVF import: parser metadata plus one import-from action per disk.
 # --------------------------------------------------------------------------- #
-def _stage_ovf_package_sources(storage: StorageMount, source_path: str, package: OvfPackage) -> tuple[list[str], list[Path]]:
+def _stage_ovf_package_sources(
+    storage: StorageMount, source_path: str, package: OvfPackage
+) -> tuple[list[str], list[Path]]:
     """Return Proxmox import volids, hard-linking non-import sources temporarily.
 
     A source already under ``import/`` is directly usable by Proxmox.  Browser
@@ -429,7 +430,9 @@ def import_ovf_package_as_vm(
         if bus == "scsi":
             params.setdefault("scsihw", "virtio-scsi-single")
         body = _base_body(params)
-        body[disk_keys[0]] = f"{params['target_storage']}:0,import-from={source_volids[0]},format={params.get('format', 'qcow2')}"
+        body[disk_keys[0]] = (
+            f"{params['target_storage']}:0,import-from={source_volids[0]},format={params.get('format', 'qcow2')}"
+        )
         body["boot"] = f"order={disk_keys[0]}"
         if progress:
             progress("create and import boot disk", 1, len(source_volids))
@@ -445,7 +448,11 @@ def import_ovf_package_as_vm(
                 progress(f"import disk {index + 1} of {len(source_volids)}", index + 1, len(source_volids))
             upid = client.put(
                 f"nodes/{quote(node, safe='')}/qemu/{params['vmid']}/config",
-                data={disk_keys[index]: f"{params['target_storage']}:0,import-from={source_volid},format={params.get('format', 'qcow2')}"},
+                data={
+                    disk_keys[
+                        index
+                    ]: f"{params['target_storage']}:0,import-from={source_volid},format={params.get('format', 'qcow2')}"
+                },
             )
             if isinstance(upid, str):
                 upids.append(upid)

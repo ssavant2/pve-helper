@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterator
 
 from .classification import categorize_proxmox_path, derive_volid
 
@@ -140,7 +140,9 @@ class StorageScanner:
         return "other"
 
     def _is_ignored(self, relative_path: str) -> bool:
-        return any(relative_path == ignored or relative_path.startswith(f"{ignored}/") for ignored in self.ignored_paths)
+        return any(
+            relative_path == ignored or relative_path.startswith(f"{ignored}/") for ignored in self.ignored_paths
+        )
 
     def _error(self, path: Path, exc: OSError) -> dict[str, str]:
         try:

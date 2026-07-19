@@ -1,19 +1,16 @@
 """Guest firewall: tab render + rule add/delete/toggle (extracted from _core)."""
+
 from ..common import *  # noqa: F401,F403
-from .. import common
+from .operation_lifecycle import (
+    _guest_delete,
+    _guest_post,
+    _guest_put,
+    _write_result,
+)
 from .read_model_support import (
     _guest_api_get,
     _guest_tab_context,
     _require_guest,
-    _resolve_guest_detail,
-)
-from .operation_lifecycle import (
-    _guest_action_response,
-    _guest_delete,
-    _guest_post,
-    _guest_put,
-    _wants_task_json,
-    _write_result,
 )
 
 
@@ -24,7 +21,17 @@ def guest_firewall(request, cluster_key: str, object_type: str, vmid: int):
     rules, rules_err = _guest_api_get(detail, "firewall/rules")
     option_rows = []
     if isinstance(opts, dict):
-        for key in ("enable", "dhcp", "macfilter", "ndp", "ipfilter", "policy_in", "policy_out", "log_level_in", "log_level_out"):
+        for key in (
+            "enable",
+            "dhcp",
+            "macfilter",
+            "ndp",
+            "ipfilter",
+            "policy_in",
+            "policy_out",
+            "log_level_in",
+            "log_level_out",
+        ):
             if key in opts:
                 option_rows.append({"label": key, "value": opts[key]})
     rule_list = []
@@ -58,7 +65,6 @@ def guest_firewall(request, cluster_key: str, object_type: str, vmid: int):
         }
     )
     return render(request, "core/guest_firewall.html", context)
-
 
 
 @require_POST
@@ -105,4 +111,6 @@ def guest_firewall_rule_toggle(request, cluster_key, object_type, vmid, pos):
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     enable = "1" if request.POST.get("enable") == "1" else "0"
     _d, err = _guest_put(detail, f"firewall/rules/{pos}", {"enable": enable})
-    return _write_result(request, detail, "core:guest_firewall", err, "guest.firewall.rule_toggle", {"pos": pos, "enable": enable})
+    return _write_result(
+        request, detail, "core:guest_firewall", err, "guest.firewall.rule_toggle", {"pos": pos, "enable": enable}
+    )

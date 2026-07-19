@@ -15,7 +15,6 @@ from core.services.public_errors import public_exception_message
 from core.services.tag_registry import refresh_registered_tags, resolve_tag_registry_cluster
 from core.services.task_queues import BULK_QUEUE_NAME
 
-
 TAG_INVENTORY_REFRESH_ACTION = "tag.inventory.refresh"
 _QUEUE_LOCK_ID = 0x50564554414701
 _WORKER_LOCK_ID = 0x50564554414702
@@ -54,19 +53,21 @@ def _worker_lock(cluster):
                 cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
 
 
-def queue_tag_inventory_refresh(
-    *, cluster, request=None, user=None, username: str = ""
-) -> tuple[AuditEvent, str]:
+def queue_tag_inventory_refresh(*, cluster, request=None, user=None, username: str = "") -> tuple[AuditEvent, str]:
     cluster, cluster_error = resolve_tag_registry_cluster(cluster)
     if cluster is None:
         raise TagInventoryRefreshQueueError(cluster_error)
     with transaction.atomic():
         _advisory_xact_lock(cluster_advisory_lock_id(_QUEUE_LOCK_ID, cluster))
-        active = AuditEvent.objects.filter(
-            action=TAG_INVENTORY_REFRESH_ACTION,
-            outcome__in=("queued", "running"),
-            details__cluster_key=cluster.key,
-        ).order_by("-timestamp").first()
+        active = (
+            AuditEvent.objects.filter(
+                action=TAG_INVENTORY_REFRESH_ACTION,
+                outcome__in=("queued", "running"),
+                details__cluster_key=cluster.key,
+            )
+            .order_by("-timestamp")
+            .first()
+        )
         if active is not None:
             raise TagInventoryRefreshAlreadyActive("A tag inventory refresh is already queued or running.")
         event = record_audit_event(

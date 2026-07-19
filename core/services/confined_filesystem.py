@@ -15,9 +15,10 @@ import ctypes
 import errno
 import os
 import stat
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Iterator
+from typing import BinaryIO
 
 
 class ConfinedFilesystemError(Exception):

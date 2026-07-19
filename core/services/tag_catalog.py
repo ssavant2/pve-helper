@@ -54,9 +54,7 @@ class TagCatalog:
         return {
             "degraded": self.degraded,
             "errors": list(self.errors),
-            "inventory_refreshed_at": self.inventory_refreshed_at.isoformat()
-            if self.inventory_refreshed_at
-            else None,
+            "inventory_refreshed_at": self.inventory_refreshed_at.isoformat() if self.inventory_refreshed_at else None,
             "inventory_complete": self.inventory_complete,
             "endpoints_attempted": list(self.endpoints_attempted),
             "endpoints_succeeded": list(self.endpoints_succeeded),
@@ -66,20 +64,10 @@ class TagCatalog:
 def load_tag_catalog(*, cluster) -> TagCatalog:
     cluster, cluster_error = resolve_tag_registry_cluster(cluster)
     registered, registry_error = registered_tags(cluster=cluster) if cluster else ({}, cluster_error)
-    guests = tuple(
-        CurrentGuestInventory.objects.filter(cluster=cluster).order_by(
-            "node", "vmid"
-        )
-        if cluster
-        else ()
-    )
+    guests = tuple(CurrentGuestInventory.objects.filter(cluster=cluster).order_by("node", "vmid") if cluster else ())
     assigned = tuple(
         sorted(
-            {
-                name
-                for guest in guests
-                for name in parse_tags(guest.config)
-            },
+            {name for guest in guests for name in parse_tags(guest.config)},
             key=str.casefold,
         )
     )

@@ -9,9 +9,7 @@ from .services.recent_tasks import recent_task_page
 def app_settings(request):
     task_page = recent_task_page()
     has_configured_clusters = ProxmoxCluster.objects.exists()
-    enabled_clusters = list(
-        ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
-    )
+    enabled_clusters = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
     local_datastores = []
     for cluster in enabled_clusters:
         for host in local_datastore_nav(cluster=cluster):

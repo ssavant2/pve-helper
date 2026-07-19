@@ -10,12 +10,19 @@ from django.utils.http import urlencode
 from core.models import ClusterStorageMount, StorageMount
 from core.services.classification import extract_disk_references
 
-
 DISK_BUS_RE = re.compile(r"^(scsi|virtio|sata|ide|efidisk|tpmstate|rootfs|mp)\d*$")
 NIC_RE = re.compile(r"^net\d+$")
 NIC_MODELS = {
-    "virtio", "e1000", "e1000e", "rtl8139", "vmxnet3",
-    "ne2k_pci", "pcnet", "i82551", "i82557b", "i82559er",
+    "virtio",
+    "e1000",
+    "e1000e",
+    "rtl8139",
+    "vmxnet3",
+    "ne2k_pci",
+    "pcnet",
+    "i82551",
+    "i82557b",
+    "i82559er",
 }
 
 

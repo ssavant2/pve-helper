@@ -6,9 +6,9 @@ from pathlib import PurePosixPath
 from django.conf import settings
 
 from core.models import CurrentGuestInventory, FileInventory, ProxmoxCluster, ProxmoxInventory
-from core.services.refs import GuestRef
 from core.services.classification import extract_vmid_from_image_path
 from core.services.proxmox import fetch_live_guest_status
+from core.services.refs import GuestRef
 
 
 @dataclass(frozen=True)
@@ -54,11 +54,21 @@ class FileActionRisk:
 
 def file_action_risk(entry: FileInventory, *, block_running_guests: bool = True) -> FileActionRisk:
     if entry.classification == FileInventory.Classification.TRASH or entry.content_category == "trash":
-        return FileActionRisk(level="blocked", reason="Items already in trash are managed from the trash view.", referenced_objects=[], blocked=True)
+        return FileActionRisk(
+            level="blocked",
+            reason="Items already in trash are managed from the trash view.",
+            referenced_objects=[],
+            blocked=True,
+        )
     if entry.entry_type == FileInventory.EntryType.DIRECTORY:
         return _directory_action_risk(entry, block_running_guests=block_running_guests)
     if entry.entry_type != FileInventory.EntryType.FILE:
-        return FileActionRisk(level="blocked", reason="Only regular files and directories can be changed.", referenced_objects=[], blocked=True)
+        return FileActionRisk(
+            level="blocked",
+            reason="Only regular files and directories can be changed.",
+            referenced_objects=[],
+            blocked=True,
+        )
 
     referenced_objects = _referenced_objects(entry)
     running_objects = [item for item in referenced_objects if item.status == "running"]
@@ -157,9 +167,7 @@ def _referenced_objects(entry: FileInventory) -> list[ReferencedObject]:
     if not separator:
         return []
     objects: list[ReferencedObject] = []
-    bindings = list(entry.storage.cluster_bindings.select_related(
-        "cluster_storage__cluster"
-    ))
+    bindings = list(entry.storage.cluster_bindings.select_related("cluster_storage__cluster"))
     if not bindings and settings.PVE_TEST_NETWORK_DISABLED:
         return [
             _legacy_referenced_object(obj)
@@ -171,11 +179,7 @@ def _referenced_objects(entry: FileInventory) -> list[ReferencedObject]:
         query = CurrentGuestInventory.objects.filter(cluster=binding.cluster_storage.cluster)
         if binding.node:
             query = query.filter(node=binding.node)
-        objects.extend(
-            _referenced_object(obj)
-            for obj in query
-            if expected_volid in (obj.disk_references or [])
-        )
+        objects.extend(_referenced_object(obj) for obj in query if expected_volid in (obj.disk_references or []))
     return objects
 
 
@@ -184,9 +188,7 @@ def _vmid_objects(entry: FileInventory) -> list[ReferencedObject]:
     if vmid is None:
         return []
     objects: list[ReferencedObject] = []
-    bindings = list(entry.storage.cluster_bindings.select_related(
-        "cluster_storage__cluster"
-    ))
+    bindings = list(entry.storage.cluster_bindings.select_related("cluster_storage__cluster"))
     if not bindings and settings.PVE_TEST_NETWORK_DISABLED:
         return [
             _legacy_referenced_object(obj)
@@ -273,7 +275,12 @@ def _directory_action_risk(entry: FileInventory, *, block_running_guests: bool) 
         )
 
     if path.parts[:1] == (".trash",):
-        return FileActionRisk(level="blocked", reason="Trash directories are managed from the trash view.", referenced_objects=[], blocked=True)
+        return FileActionRisk(
+            level="blocked",
+            reason="Trash directories are managed from the trash view.",
+            referenced_objects=[],
+            blocked=True,
+        )
 
     return FileActionRisk(
         level="warning",

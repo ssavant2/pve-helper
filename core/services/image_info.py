@@ -3,11 +3,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from django.conf import settings
-
 
 IMAGE_INFO_CATEGORIES = {"vm_disk", "base_image"}
 

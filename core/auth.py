@@ -100,7 +100,7 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
         counter = 2
         while User.objects.filter(username=candidate).exists():
             suffix = f"-{counter}"
-            candidate = f"{base[:150 - len(suffix)]}{suffix}"
+            candidate = f"{base[: 150 - len(suffix)]}{suffix}"
             counter += 1
         return candidate
 

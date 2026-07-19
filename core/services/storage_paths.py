@@ -38,9 +38,7 @@ def storage_mount_root(mount: StorageMount) -> Path:
 
 def storage_trash_root(mount: StorageMount) -> Path:
     if getattr(mount, "trash_relative_path", ""):
-        return Path(settings.PVE_HELPER_STORAGE_CONTAINER_ROOT) / normalized_relative_path(
-            mount.trash_relative_path
-        )
+        return Path(settings.PVE_HELPER_STORAGE_CONTAINER_ROOT) / normalized_relative_path(mount.trash_relative_path)
     if getattr(mount, "trash_path", ""):
         legacy = Path(mount.trash_path)
         try:

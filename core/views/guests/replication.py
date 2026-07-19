@@ -1,6 +1,7 @@
 """Guest replication tab + create/delete (extracted from _core)."""
-from ..common import *  # noqa: F401,F403
+
 from .. import common
+from ..common import *  # noqa: F401,F403
 from .operation_lifecycle import _guest_write, _write_result
 from .read_model_support import _guest_tab_context, _require_guest
 
@@ -35,8 +36,6 @@ def guest_replication(request, cluster_key: str, object_type: str, vmid: int):
     return render(request, "core/guest_replication.html", context)
 
 
-
-
 @require_POST
 @app_login_required
 def guest_replication_create(request, cluster_key, object_type, vmid):
@@ -63,8 +62,6 @@ def guest_replication_create(request, cluster_key, object_type, vmid):
         call=lambda client: client.post("cluster/replication", data=body),
     ).error
     return _write_result(request, detail, "core:guest_replication", err, "guest.replication.create", {"target": target})
-
-
 
 
 @require_POST

@@ -1,8 +1,9 @@
 """Guest console (extracted from _core)."""
-from ..common import *  # noqa: F401,F403
-from .. import common
+
 from core.services.console_sessions import create_guest_console_session
 from core.services.public_errors import public_exception_message
+
+from ..common import *  # noqa: F401,F403
 from .operation_lifecycle import _audit_guest
 from .read_model_support import _guest_tab_context, _resolve_guest_detail
 
@@ -20,9 +21,7 @@ def guest_console(request, cluster_key: str, object_type: str, vmid: int):
         {
             "console_enabled": settings.CONSOLE_ENABLED,
             "console_supported": detail.object_type in {ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT},
-            "console_session_url": reverse(
-                "core:guest_console_session", args=[cluster_key, object_type, vmid]
-            ),
+            "console_session_url": reverse("core:guest_console_session", args=[cluster_key, object_type, vmid]),
             # Locally vendored (no CDN). Pinned versions + update steps:
             # static/vendor/README.md.
             "console_novnc_url": static("vendor/novnc/rfb.esm.js"),
@@ -33,8 +32,6 @@ def guest_console(request, cluster_key: str, object_type: str, vmid: int):
         }
     )
     return render(request, "core/guest_console.html", context)
-
-
 
 
 @require_POST

@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from core.models import ClusterTransportTrust, ProxmoxCluster
+from core.models import ProxmoxCluster
 from core.services.audit_events import record_audit_event
 from core.services.cluster_trust import (
     TransportTrustError,
@@ -43,7 +43,7 @@ class Command(BaseCommand):
             if not options["ca_file"]:
                 raise CommandError("ca_pem mode needs --ca-file.")
             try:
-                with open(options["ca_file"], "r", encoding="utf-8") as handle:
+                with open(options["ca_file"], encoding="utf-8") as handle:
                     ca_pem = handle.read()
             except OSError as exc:
                 raise CommandError(f"Could not read {options['ca_file']}: {exc}") from exc

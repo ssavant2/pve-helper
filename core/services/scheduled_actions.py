@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any
 
 from django.conf import settings
 from django.db import transaction
@@ -11,13 +12,12 @@ from django.utils import timezone
 from django_q.models import Schedule
 from django_q.tasks import async_task
 
-from core.models import AuditEvent, ProxmoxCluster, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
+from core.models import ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
 from core.services.audit_events import record_audit_event
 from core.services.cluster_resolver import cluster_clients
 from core.services.current_guest_inventory import refresh_current_guest_from_client
-from core.services.proxmox import clear_live_guest_caches, ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout
+from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout, clear_live_guest_caches
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
-
 
 SCHEDULED_ACTION_DISPATCH_SCHEDULE_NAME = "pve-helper scheduled action dispatcher"
 SCHEDULED_ACTION_DISPATCH_FUNC = "core.tasks.dispatch_scheduled_actions"
@@ -78,11 +78,7 @@ def ensure_scheduled_action_dispatch_schedule() -> Schedule:
     if created:
         return schedule
 
-    updates = {
-        key: value
-        for key, value in defaults.items()
-        if key != "next_run" and getattr(schedule, key) != value
-    }
+    updates = {key: value for key, value in defaults.items() if key != "next_run" and getattr(schedule, key) != value}
     if updates:
         for field, value in updates.items():
             setattr(schedule, field, value)
@@ -247,9 +243,7 @@ def prune_scheduled_action_runs(*, retention_days: int | None = None, now=None) 
     now = now or timezone.now()
     cutoff = now - timedelta(days=retention_days)
     deleted_count, _deleted_by_model = (
-        ScheduledActionRun.objects.exclude(status__in=IN_FLIGHT_RUN_STATUSES)
-        .filter(finished_at__lt=cutoff)
-        .delete()
+        ScheduledActionRun.objects.exclude(status__in=IN_FLIGHT_RUN_STATUSES).filter(finished_at__lt=cutoff).delete()
     )
 
     if deleted_count:
@@ -393,10 +387,7 @@ def _start_run(run_id: int) -> ScheduledActionRun | None:
     now = timezone.now()
     with transaction.atomic():
         run = (
-            ScheduledActionRun.objects.select_for_update()
-            .select_related("scheduled_action")
-            .filter(pk=run_id)
-            .first()
+            ScheduledActionRun.objects.select_for_update().select_related("scheduled_action").filter(pk=run_id).first()
         )
         if run is None or run.status != ScheduledActionRun.Status.QUEUED:
             return None
@@ -482,7 +473,10 @@ def _no_op_outcome(action: ScheduledAction, preflight: dict[str, Any]) -> str:
     status = str(preflight.get("status") or "")
     if action.action_type == ScheduledAction.ActionType.START and status == "running":
         return "Guest is already running."
-    if action.action_type in {ScheduledAction.ActionType.SHUTDOWN, ScheduledAction.ActionType.STOP} and status == "stopped":
+    if (
+        action.action_type in {ScheduledAction.ActionType.SHUTDOWN, ScheduledAction.ActionType.STOP}
+        and status == "stopped"
+    ):
         return "Guest is already stopped."
     return ""
 
@@ -556,7 +550,11 @@ def _finish_run(
         ScheduledActionRun.Status.STALE: "scheduled_action.run_failed",
         ScheduledActionRun.Status.CANCELLED: "scheduled_action.run_cancelled",
     }.get(status, "scheduled_action.run_completed")
-    audit_outcome = "success" if outcome in {ScheduledActionRun.Outcome.SUCCESS, ScheduledActionRun.Outcome.SUCCESS_NOOP} else outcome
+    audit_outcome = (
+        "success"
+        if outcome in {ScheduledActionRun.Outcome.SUCCESS, ScheduledActionRun.Outcome.SUCCESS_NOOP}
+        else outcome
+    )
     _audit_run(
         run,
         action=audit_action,

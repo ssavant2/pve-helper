@@ -7,7 +7,6 @@ from django.conf import settings
 from django.utils import timezone
 from django_q.models import Schedule
 
-
 SCAN_SCHEDULE_NAME = "pve-helper automatic storage scan"
 SCAN_SCHEDULE_FUNC = "core.tasks.enqueue_scheduled_scan"
 DEFAULT_SCAN_INTERVAL_MINUTES = 60

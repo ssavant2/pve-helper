@@ -71,6 +71,7 @@ The sidebar is the primary navigation. Its working areas are:
 | **Tags** | Create and color tags, inspect membership, assign or remove tags, and rename or delete them across guests. |
 | **Scheduled Tasks** | One-time and recurring guest power schedules, their runs, and history. |
 | **Audit** | Authentication and administration history, filters, search, and export. |
+| **PVE-helper Settings** | Application-specific integration settings, including host-mounted storage access. |
 
 **Network** remains reserved for a later module. Cluster **Connections** is the
 configuration surface; the broader host/cluster operations workspace arrives in
@@ -121,11 +122,11 @@ operator has independently verified the intended cluster and explicitly
 re-approved the new identity.
 
 An added cluster's Proxmox storage definitions and node state appear in
-**Datastores** after catalog refresh. This API inventory requires no host mount.
+**Storage → Catalog** after catalog refresh. This API inventory requires no host mount.
 If a file-tree datastore should also be browsable, mount it beneath the deployment's
-`/storages` host root and use **Register mount** to bind that existing directory to
-the correct cluster storage and, for node-local storage, node. Registration does
-not create or edit a Proxmox storage definition.
+`/storages` host root and use **PVE-helper Settings → Storage access** to bind that
+existing directory to the correct cluster storage and, for node-local storage,
+node. Registration does not create or edit a Proxmox storage definition.
 
 ## Recent Tasks and audit trail
 

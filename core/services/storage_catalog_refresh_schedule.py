@@ -6,7 +6,6 @@ from django.conf import settings
 from django.utils import timezone
 from django_q.models import Schedule
 
-
 METADATA_SCHEDULE_NAME = "pve-helper storage metadata refresh"
 VOLUME_SCHEDULE_NAME = "pve-helper storage volume refresh"
 
@@ -23,11 +22,7 @@ def _ensure(*, name: str, func: str, minutes: int, initial_delay: int) -> Schedu
     schedule, created = Schedule.objects.get_or_create(name=name, defaults=defaults)
     if created:
         return schedule
-    updates = {
-        key: value
-        for key, value in defaults.items()
-        if key != "next_run" and getattr(schedule, key) != value
-    }
+    updates = {key: value for key, value in defaults.items() if key != "next_run" and getattr(schedule, key) != value}
     if updates:
         for key, value in updates.items():
             setattr(schedule, key, value)

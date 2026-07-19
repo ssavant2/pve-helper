@@ -15,14 +15,14 @@ client. Before their cutovers both fall back to the global compatibility setting
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from django.db.models import Case, IntegerField, Value, When
 
 from core.models import ProxmoxCluster, ProxmoxEndpoint
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTransportError
-
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +130,7 @@ def client_for_endpoint(endpoint: ProxmoxEndpoint) -> ProxmoxClient:
     from core.services.cluster_trust import resolve_trust_profile
 
     if endpoint.cluster_id is None:
-        raise ClusterResolutionError(
-            f"Endpoint '{endpoint.name}' has no cluster identity and cannot be used."
-        )
+        raise ClusterResolutionError(f"Endpoint '{endpoint.name}' has no cluster identity and cannot be used.")
     credential = resolve_credential(endpoint.cluster)
     trust_profile = resolve_trust_profile(endpoint.cluster)
     return ProxmoxClient(endpoint.url, credential=credential, trust_profile=trust_profile)
@@ -202,9 +200,7 @@ def pin_cluster_write_client(cluster: ProxmoxCluster) -> tuple[ProxmoxEndpoint, 
     _require_acquirable(cluster)
     endpoints = enabled_endpoints(cluster)
     if not endpoints:
-        raise ClusterResolutionError(
-            f"Cluster '{cluster.key}' has no enabled endpoint to write through."
-        )
+        raise ClusterResolutionError(f"Cluster '{cluster.key}' has no enabled endpoint to write through.")
     endpoint = endpoints[0]
     return endpoint, client_for_endpoint(endpoint)
 
@@ -249,9 +245,7 @@ def cluster_write(
     attempts: list[EndpointAttempt] = []
     endpoints = enabled_endpoints(cluster)
     if not endpoints:
-        raise ClusterResolutionError(
-            f"Cluster '{cluster.key}' has no enabled endpoint to write through."
-        )
+        raise ClusterResolutionError(f"Cluster '{cluster.key}' has no enabled endpoint to write through.")
 
     error = ""
     for endpoint in endpoints:

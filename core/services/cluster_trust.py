@@ -29,10 +29,9 @@ from dataclasses import dataclass
 import httpx
 from django.conf import settings
 
-
 # Transport trust modes.
-TRUST_PUBLIC = "public"      # the system CA store (publicly trusted pveproxy cert)
-TRUST_CA_PEM = "ca_pem"      # a specific CA bundle, trusted exclusively
+TRUST_PUBLIC = "public"  # the system CA store (publicly trusted pveproxy cert)
+TRUST_CA_PEM = "ca_pem"  # a specific CA bundle, trusted exclusively
 TRUST_INSECURE = "insecure"  # no verification — only the credential-free inspection
 
 
@@ -80,7 +79,7 @@ class TrustProfile:
         raise TransportTrustError(f"Unknown transport trust mode {self.mode!r}.")
 
 
-def ssl_context_for(profile: TrustProfile) -> "ssl.SSLContext":
+def ssl_context_for(profile: TrustProfile) -> ssl.SSLContext:
     """An ssl.SSLContext for a trust profile, for the WebSocket console upstream.
 
     The HTTP path hands `verify` to httpx; the console gateway speaks raw
@@ -113,7 +112,7 @@ def legacy_trust_profile() -> TrustProfile:
     bundle = (settings.PVE_CA_BUNDLE or "").strip()
     if bundle:
         try:
-            with open(bundle, "r", encoding="utf-8") as handle:
+            with open(bundle, encoding="utf-8") as handle:
                 return TrustProfile(mode=TRUST_CA_PEM, ca_pem=handle.read())
         except OSError as exc:
             raise TransportTrustError(f"PVE_CA_BUNDLE {bundle!r} could not be read: {exc}") from exc
@@ -124,13 +123,7 @@ def trust_cutover_completed() -> bool:
     from core.models import RuntimeConfigurationState
 
     state = RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).first()
-    return bool(
-        state
-        and (
-            state.trust_cutover_completed_at
-            or state.identity_contract_version >= 1
-        )
-    )
+    return bool(state and (state.trust_cutover_completed_at or state.identity_contract_version >= 1))
 
 
 def resolve_trust_profile(cluster) -> TrustProfile:
@@ -284,9 +277,11 @@ def complete_trust_cutover() -> tuple[bool, str]:
 
     with transaction.atomic():
         _advisory_xact_lock(_TRUST_CUTOVER_LOCK_ID)
-        state = RuntimeConfigurationState.objects.select_for_update().filter(
-            pk=RuntimeConfigurationState.SINGLETON_PK
-        ).first()
+        state = (
+            RuntimeConfigurationState.objects.select_for_update()
+            .filter(pk=RuntimeConfigurationState.SINGLETON_PK)
+            .first()
+        )
         if state is None:
             return False, "The installation is not bootstrapped yet."
         if state.trust_cutover_completed_at:
@@ -299,9 +294,7 @@ def complete_trust_cutover() -> tuple[bool, str]:
         legacy = legacy_trust_profile()
         if not ClusterTransportTrust.objects.filter(cluster=cluster).exists():
             if legacy.mode == TRUST_CA_PEM:
-                approve_cluster_transport(
-                    cluster, mode=ClusterTransportTrust.Mode.CA_PEM, ca_pem=legacy.ca_pem
-                )
+                approve_cluster_transport(cluster, mode=ClusterTransportTrust.Mode.CA_PEM, ca_pem=legacy.ca_pem)
             else:
                 approve_cluster_transport(cluster, mode=ClusterTransportTrust.Mode.PUBLIC)
 

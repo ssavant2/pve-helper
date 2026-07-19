@@ -10,7 +10,6 @@ from django.utils import timezone
 from core.models import (
     ClusterStorage,
     ClusterStorageMount,
-    ClusterStorageNodeState,
     ClusterStorageVolumeObservation,
     CurrentGuestInventory,
     ProxmoxCluster,
@@ -70,7 +69,7 @@ class StorageReadModelSourceInvariantTests(SimpleTestCase):
             if path in allowed or path.name.startswith("tests") or "migrations" in path.parts:
                 continue
             source = path.read_text(encoding="utf-8")
-            if 'get(f"nodes/{quote(node, safe=\'\')}/storage' in source:
+            if "get(f\"nodes/{quote(node, safe='')}/storage" in source:
                 offenders.append(str(path.relative_to(root)))
             if "content?content=" in source and ".get(" in source:
                 offenders.append(str(path.relative_to(root)))
@@ -216,22 +215,16 @@ class StorageCatalogTests(TestCase):
         self.assertFalse(failed.volume_complete)
         self.assertEqual(failed.volume_generation, generation)
         self.assertEqual(
-            ClusterStorageVolumeObservation.objects.filter(
-                cluster_storage__cluster=self.cluster
-            ).count(),
+            ClusterStorageVolumeObservation.objects.filter(cluster_storage__cluster=self.cluster).count(),
             observation_count,
         )
 
     def test_complete_metadata_omission_retires_definition(self):
         self._metadata()
-        self.responses["storage"] = [
-            row for row in self.responses["storage"] if row["storage"] != "local"
-        ]
+        self.responses["storage"] = [row for row in self.responses["storage"] if row["storage"] != "local"]
         for node in ("pve1", "pve2"):
             key = f"nodes/{node}/storage"
-            self.responses[key] = [
-                row for row in self.responses[key] if row["storage"] != "local"
-            ]
+            self.responses[key] = [row for row in self.responses[key] if row["storage"] != "local"]
 
         state = self._metadata()
         local = ClusterStorage.objects.get(cluster=self.cluster, storage_id="local")
@@ -241,19 +234,13 @@ class StorageCatalogTests(TestCase):
         self.assertIsNotNone(local.retired_at)
 
     def test_unknown_plugin_does_not_poison_supported_storage_refresh(self):
-        self.responses["storage"].append(
-            {"storage": "vendor-store", "type": "vendor-plugin", "shared": 1}
-        )
+        self.responses["storage"].append({"storage": "vendor-store", "type": "vendor-plugin", "shared": 1})
         for node in ("pve1", "pve2"):
-            self.responses[f"nodes/{node}/storage"].append(
-                {"storage": "vendor-store", "active": 1, "enabled": 1}
-            )
+            self.responses[f"nodes/{node}/storage"].append({"storage": "vendor-store", "active": 1, "enabled": 1})
 
         self._metadata()
         state = self._volumes()
-        unknown = ClusterStorage.objects.get(
-            cluster=self.cluster, storage_id="vendor-store"
-        )
+        unknown = ClusterStorage.objects.get(cluster=self.cluster, storage_id="vendor-store")
 
         self.assertTrue(state.volume_complete)
         self.assertFalse(storage_view(unknown).capabilities.can_list_volumes)
@@ -299,7 +286,9 @@ class StorageCatalogTests(TestCase):
         shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
         local = ClusterStorage.objects.get(cluster=self.cluster, storage_id="local")
 
-        self.assertEqual(bind_storage_mount(cluster_storage=shared, mount=mount).scope, ClusterStorageMount.Scope.SHARED)
+        self.assertEqual(
+            bind_storage_mount(cluster_storage=shared, mount=mount).scope, ClusterStorageMount.Scope.SHARED
+        )
         with self.assertRaises(StorageMountError):
             bind_storage_mount(cluster_storage=shared, mount=mount, node="pve1")
         with self.assertRaises(StorageMountError):
@@ -343,13 +332,9 @@ class StorageCatalogTests(TestCase):
         cluster_b = ProxmoxCluster.objects.create(key="cluster-b", display_name="Cluster B")
         client_b = FakeStorageClient(
             {
-                "storage": [
-                    {"storage": "shared-b", "type": "nfs", "shared": 1, "content": "images"}
-                ],
+                "storage": [{"storage": "shared-b", "type": "nfs", "shared": 1, "content": "images"}],
                 "nodes": [{"node": "pve9", "status": "online"}],
-                "nodes/pve9/storage": [
-                    {"storage": "shared-b", "active": 1, "enabled": 1}
-                ],
+                "nodes/pve9/storage": [{"storage": "shared-b", "active": 1, "enabled": 1}],
                 "nodes/pve9/storage/shared-b/content": [
                     {
                         "volid": "shared-b:100/vm-100-disk-0.qcow2",
@@ -380,17 +365,13 @@ class StorageCatalogTests(TestCase):
             observed_at=timezone.now(),
         )
 
-        result = usage_preflight(
-            shared, volid="shared:100/vm-100-disk-0.qcow2", fresh=False
-        )
+        result = usage_preflight(shared, volid="shared:100/vm-100-disk-0.qcow2", fresh=False)
 
         self.assertEqual(result.state, UsageState.REFERENCED_ELSEWHERE)
         self.assertEqual(result.references, ("cluster-b:vm:100",))
 
         StorageCatalogState.objects.filter(cluster=cluster_b).update(volume_complete=False)
-        incomplete = usage_preflight(
-            shared, volid="shared:100/vm-100-disk-0.qcow2", fresh=False
-        )
+        incomplete = usage_preflight(shared, volid="shared:100/vm-100-disk-0.qcow2", fresh=False)
         self.assertEqual(incomplete.state, UsageState.UNKNOWN)
 
     def test_usage_preflight_refuses_unverified_mount_identity(self):

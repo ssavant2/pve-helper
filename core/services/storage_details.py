@@ -85,8 +85,8 @@ def _normalize_options(options: str) -> str:
 
 
 def _boolish_label(value) -> str:
-    if value in {True, 1, "1", "true", "True", "yes", "on"}:
+    if value in {True, "1", "true", "True", "yes", "on"}:
         return "yes"
-    if value in {False, 0, "0", "false", "False", "no", "off"}:
+    if value in {False, "0", "false", "False", "no", "off"}:
         return "no"
     return str(value or "")

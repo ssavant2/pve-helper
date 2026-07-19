@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from ..common import *  # noqa: F401,F403
-from .. import common
+from core.models import ProxmoxCluster
 from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_state_identity import cluster_cache_key
-from core.services.current_guest_inventory import current_inventory_state
 from core.services.public_errors import public_exception_message
 from core.services.refs import GuestRef
-from core.models import ProxmoxCluster
 from core.services.tag_catalog import load_tag_catalog
+
+from .. import common
+from ..common import *  # noqa: F401,F403
 from .presenters import (
     _config_ip_addresses,
     _fmt_bytes,
@@ -53,16 +53,12 @@ def _mark_linked_clones(
     for row in rows:
         cluster_key = str(getattr(row, "cluster_key", ""))
         cluster_lineage = lineage_by_cluster.get(cluster_key, {})
-        parent = (
-            cluster_lineage.get(row.vmid)
-            if row.object_type == ProxmoxInventory.ObjectType.VM
-            else None
-        )
+        parent = cluster_lineage.get(row.vmid) if row.object_type == ProxmoxInventory.ObjectType.VM else None
         if parent is not None and parent != row.vmid:
             row.is_linked_clone = True
             row.parent_vmid = parent
             parent_row = vm_rows.get((cluster_key, parent))
-            row.lineage_parent_name = (parent_row.name if parent_row and parent_row.name else str(parent))
+            row.lineage_parent_name = parent_row.name if parent_row and parent_row.name else str(parent)
         else:
             row.is_linked_clone = False
             row.parent_vmid = None
@@ -115,10 +111,7 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
         for _position, row in sorted(
             enumerate(rows),
             key=lambda item: (
-                (
-                    getattr(getattr(item[1], "cluster", None), "display_name", "")
-                    or ""
-                ).casefold(),
+                (getattr(getattr(item[1], "cluster", None), "display_name", "") or "").casefold(),
                 str(getattr(item[1], "cluster_key", "")),
                 item[0],
             ),
@@ -168,24 +161,11 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
 
 def _vms_workspace_context(active_nav: str) -> dict:
     rows, live_available, scan_at = _guest_rows()
-    cluster_choices = list(
-        ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
-    )
-    clusters = {
-        row.cluster_key: row.cluster
-        for row in rows
-        if row.cluster is not None and row.cluster_key
-    }
-    catalogs = {
-        cluster_key: load_tag_catalog(cluster=cluster)
-        for cluster_key, cluster in clusters.items()
-    }
+    cluster_choices = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
+    clusters = {row.cluster_key: row.cluster for row in rows if row.cluster is not None and row.cluster_key}
+    catalogs = {cluster_key: load_tag_catalog(cluster=cluster) for cluster_key, cluster in clusters.items()}
     available_user_tags = sorted(
-        {
-            tag
-            for catalog in catalogs.values()
-            for tag in catalog.available
-        },
+        {tag for catalog in catalogs.values() for tag in catalog.available},
         key=str.casefold,
     )
     for row in rows:
@@ -293,20 +273,20 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
     runtime = live_guest or current_obj
     cpu = _float_or_zero(getattr(runtime, "cpu", getattr(runtime, "cpu_usage", 0.0)))
     mem = _int_or_zero(getattr(runtime, "mem", getattr(runtime, "memory_used_bytes", 0)))
-    maxmem = _int_or_zero(getattr(runtime, "maxmem", getattr(runtime, "memory_max_bytes", 0))) or _config_mem_bytes(config)
+    maxmem = _int_or_zero(getattr(runtime, "maxmem", getattr(runtime, "memory_max_bytes", 0))) or _config_mem_bytes(
+        config
+    )
     used_disk = _int_or_zero(getattr(runtime, "disk", getattr(runtime, "disk_used_bytes", 0)))
-    provisioned_disk = _int_or_zero(getattr(runtime, "maxdisk", getattr(runtime, "disk_max_bytes", 0))) or _config_disk_bytes(config)
+    provisioned_disk = _int_or_zero(
+        getattr(runtime, "maxdisk", getattr(runtime, "disk_max_bytes", 0))
+    ) or _config_disk_bytes(config)
     uptime = _int_or_zero(getattr(runtime, "uptime", getattr(runtime, "uptime_seconds", 0)))
     cpus = _int_or_zero(config.get("vcpus")) or _cpu_count(config, object_type)
     macs = _config_mac_addresses(config)
     ips = _config_ip_addresses(config)
     storage_ids = _config_storage_ids(config)
     cluster = getattr(current_obj, "cluster", None)
-    ref = (
-        GuestRef(cluster.key, object_type, vmid, node or "")
-        if cluster is not None and vmid is not None
-        else None
-    )
+    ref = GuestRef(cluster.key, object_type, vmid, node or "") if cluster is not None and vmid is not None else None
     identity = guest_identity(object_type, vmid, name or "", ref=ref)
     return SimpleNamespace(
         cluster=cluster,
@@ -408,9 +388,7 @@ def _live_guest_has_snapshot(row: SimpleNamespace, *, allow_fetch: bool = True) 
     cluster = getattr(row, "cluster", None)
     if not row.node or row.vmid is None or not cluster:
         return None
-    cache_key = cluster_cache_key(
-        "guest-snapshot-present:v2", cluster, row.node, row.object_type, row.vmid
-    )
+    cache_key = cluster_cache_key("guest-snapshot-present:v2", cluster, row.node, row.object_type, row.vmid)
     cached = cache.get(cache_key)
     if cached is not None:
         return bool(cached)
@@ -426,8 +404,7 @@ def _live_guest_has_snapshot(row: SimpleNamespace, *, allow_fetch: bool = True) 
         if not isinstance(data, list):
             return None
         result = any(
-            isinstance(snapshot, dict) and str(snapshot.get("name") or "") not in {"", "current"}
-            for snapshot in data
+            isinstance(snapshot, dict) and str(snapshot.get("name") or "") not in {"", "current"} for snapshot in data
         )
         cache.set(cache_key, result, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
         return result
@@ -688,11 +665,7 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         type_label = "CT"
     else:
         type_label = "VM"
-    target = (
-        detail_ref.without_node().serialize()
-        if detail_ref is not None
-        else f"{detail.object_type}:{detail.vmid}"
-    )
+    target = detail_ref.without_node().serialize() if detail_ref is not None else f"{detail.object_type}:{detail.vmid}"
     active_target = _guest_target_value(
         detail.cluster_key,
         detail.object_type,
@@ -797,9 +770,7 @@ def _guest_agent_summary(detail: SimpleNamespace, *, allow_fetch: bool = True) -
     cluster = getattr(detail, "cluster", None)
     if not cluster:
         return _empty_guest_agent_summary(enabled=enabled, running=False)
-    cache_key = cluster_cache_key(
-        "guest-agent-summary:v2", cluster, detail.node, detail.object_type, detail.vmid
-    )
+    cache_key = cluster_cache_key("guest-agent-summary:v2", cluster, detail.node, detail.object_type, detail.vmid)
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached
@@ -832,7 +803,9 @@ def _guest_agent_summary(detail: SimpleNamespace, *, allow_fetch: bool = True) -
         result = host_data.get("result") if isinstance(host_data.get("result"), dict) else host_data
         if isinstance(result, dict):
             hostname = result.get("host-name", "")
-    net_data, _err = _guest_api_get(detail, "agent/network-get-interfaces", timeout_seconds=GUEST_AGENT_API_TIMEOUT_SECONDS)
+    net_data, _err = _guest_api_get(
+        detail, "agent/network-get-interfaces", timeout_seconds=GUEST_AGENT_API_TIMEOUT_SECONDS
+    )
     if isinstance(net_data, dict):
         for iface in net_data.get("result") or []:
             if not isinstance(iface, dict) or iface.get("name") == "lo":
@@ -893,9 +866,7 @@ def _guest_pool_label(detail: SimpleNamespace) -> str:
     cluster = getattr(detail, "cluster", None)
     if cluster is None:
         return ""
-    cache_key = cluster_cache_key(
-        "guest-pool-label:v2", cluster, detail.object_type, detail.vmid
-    )
+    cache_key = cluster_cache_key("guest-pool-label:v2", cluster, detail.object_type, detail.vmid)
     cached = cache.get(cache_key)
     if isinstance(cached, dict) and "label" in cached:
         return str(cached["label"] or "")
@@ -940,9 +911,7 @@ def _guest_ha_summary(detail: SimpleNamespace) -> dict:
     cluster = getattr(detail, "cluster", None)
     if not cluster:
         return unavailable
-    cache_key = cluster_cache_key(
-        "guest-ha-summary:v2", cluster, detail.node, detail.object_type, detail.vmid
-    )
+    cache_key = cluster_cache_key("guest-ha-summary:v2", cluster, detail.node, detail.object_type, detail.vmid)
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached

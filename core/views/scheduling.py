@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from .common import *  # noqa: F401,F403
-from . import common
 from ..models import ProxmoxCluster
 from ..services.public_errors import public_exception_message
+from ..services.refs import GuestRef, RefParseError
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
 from ..services.storage_mounts import resolve_storage_mount
-from ..services.refs import GuestRef, RefParseError
 from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
+from . import common
+from .common import *  # noqa: F401,F403
 
 
 @app_login_required
@@ -189,9 +189,7 @@ def recent_tasks(request):
     if cluster_key and not ProxmoxCluster.objects.filter(key=cluster_key, enabled=True).exists():
         return JsonResponse({"error": "Unknown or disabled cluster."}, status=400)
 
-    return JsonResponse(
-        serialize_task_page(recent_task_page(page=page, cluster_key=cluster_key))
-    )
+    return JsonResponse(serialize_task_page(recent_task_page(page=page, cluster_key=cluster_key)))
 
 
 @require_POST
@@ -621,13 +619,11 @@ def _live_guest_target_label(guest) -> str:
 def _scheduled_target_label(ref: GuestRef | None) -> str:
     if ref is None:
         return ""
-    obj = (
-        CurrentGuestInventory.objects.filter(
-            cluster__key=ref.cluster_key,
-            object_type=ref.object_type,
-            vmid=ref.vmid,
-        ).first()
-    )
+    obj = CurrentGuestInventory.objects.filter(
+        cluster__key=ref.cluster_key,
+        object_type=ref.object_type,
+        vmid=ref.vmid,
+    ).first()
     if obj:
         return _inventory_target_label(obj)
     type_label = "VM" if ref.object_type == ScheduledAction.TargetType.VM else "Container"
@@ -701,9 +697,7 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     action.recurrence_kind = recurrence_kind
     action.timezone = settings.TIME_ZONE
     action.catch_up_policy = (
-        ScheduledAction.CatchUpPolicy.RUN_ONCE_LATE
-        if catch_up_enabled
-        else ScheduledAction.CatchUpPolicy.SKIP_MISSED
+        ScheduledAction.CatchUpPolicy.RUN_ONCE_LATE if catch_up_enabled else ScheduledAction.CatchUpPolicy.SKIP_MISSED
     )
     action.max_lateness_minutes = max_lateness_hours * 60 if catch_up_enabled else 0
     action.parameters = {}
@@ -938,7 +932,9 @@ def _time_parts(value: str) -> tuple[str, str]:
     return f"{hour:02d}", f"{minute:02d}"
 
 
-def _posted_values(post, name: str, *, fallback_names: list[str] | None = None, default: list[str] | None = None) -> list[str]:
+def _posted_values(
+    post, name: str, *, fallback_names: list[str] | None = None, default: list[str] | None = None
+) -> list[str]:
     values = []
     if hasattr(post, "getlist"):
         values = [str(value) for value in post.getlist(name) if str(value) != ""]

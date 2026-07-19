@@ -35,7 +35,6 @@ from core.services.cluster_trust import (
     resolve_trust_profile,
 )
 
-
 # A syntactically valid self-signed CA is not needed for most tests; the ssl layer
 # only parses it in build_verify, which those tests exercise separately.
 FAKE_CA = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
@@ -90,7 +89,9 @@ class TrustResolutionTests(TestCase):
         self.cluster = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)
 
     def test_stored_trust_wins(self):
-        ClusterTransportTrust.objects.create(cluster=self.cluster, mode=ClusterTransportTrust.Mode.CA_PEM, ca_pem="CA-X")
+        ClusterTransportTrust.objects.create(
+            cluster=self.cluster, mode=ClusterTransportTrust.Mode.CA_PEM, ca_pem="CA-X"
+        )
 
         profile = resolve_trust_profile(self.cluster)
 
@@ -232,7 +233,13 @@ class IdentityDiscoveryFailoverTests(TestCase):
             def get(self, path):
                 if not self.ok:
                     raise ProxmoxAPIError("ConnectError")
-                return [{"filename": "pve-root-ca.pem", "subject": "OU=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,O=x", "fingerprint": "FP"}]
+                return [
+                    {
+                        "filename": "pve-root-ca.pem",
+                        "subject": "OU=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,O=x",
+                        "fingerprint": "FP",
+                    }
+                ]
 
         from core.services.cluster_identity import observe_cluster_identity
 
@@ -263,7 +270,10 @@ class IdentityDiscoveryFailoverTests(TestCase):
 class QuarantineBlocksAcquisitionTests(TestCase):
     def test_a_quarantined_cluster_refuses_reads(self):
         cluster = ProxmoxCluster.objects.create(
-            key="a", display_name="A", enabled=True, ingestion_quarantined=True,
+            key="a",
+            display_name="A",
+            enabled=True,
+            ingestion_quarantined=True,
             quarantine_reason="CA mismatch",
         )
         ProxmoxEndpoint.objects.create(name="a1", url="https://a1:8006", cluster=cluster, enabled=True)

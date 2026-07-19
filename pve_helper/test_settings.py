@@ -6,7 +6,6 @@ settings; they never belong in the default unit/view test command.
 
 from .settings import *  # noqa: F403
 
-
 PVE_ENDPOINTS = ["https://pve.test.invalid:8006"]
 PVE_API_TOKEN_ID = ""
 PVE_API_TOKEN_SECRET = ""

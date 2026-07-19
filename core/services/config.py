@@ -92,9 +92,7 @@ def configured_storage_definitions() -> list[StorageDefinition]:
         ),
     ]
     return [
-        storage
-        for storage in candidates
-        if storage.storage_id and not storage.storage_id.startswith("replace-with-")
+        storage for storage in candidates if storage.storage_id and not storage.storage_id.startswith("replace-with-")
     ]
 
 

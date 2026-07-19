@@ -9,7 +9,6 @@ from django.core import signing
 
 from core.services.refs import GuestRef, RefParseError
 
-
 TAG_OPERATION_CONFIRMATION_SALT = "pve-helper.tag-operation-confirmation.v1"
 TAG_OPERATION_CONFIRMATION_MAX_AGE_SECONDS = 15 * 60
 
@@ -36,10 +35,7 @@ def _target_identity(target) -> tuple[str, str, str, int]:
             int(target.get("vmid") or 0),
         )
     return (
-        str(
-            getattr(target, "cluster_key", "")
-            or getattr(getattr(target, "cluster", None), "key", "")
-        ),
+        str(getattr(target, "cluster_key", "") or getattr(getattr(target, "cluster", None), "key", "")),
         str(getattr(target, "node", "") or ""),
         str(getattr(target, "object_type", "") or ""),
         int(getattr(target, "vmid", 0) or 0),
@@ -61,9 +57,7 @@ class ConfirmedTagOperation:
     membership_fingerprint: str
 
 
-def issue_tag_operation_confirmation(
-    *, operation: str, tag: str, summary, user_id, cluster_key: str
-) -> str:
+def issue_tag_operation_confirmation(*, operation: str, tag: str, summary, user_id, cluster_key: str) -> str:
     if operation not in {"delete", "rename"}:
         raise ValueError("Unsupported tag operation confirmation")
     payload = {

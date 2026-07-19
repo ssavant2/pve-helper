@@ -8,7 +8,6 @@ from django.utils import timezone
 
 from core.models import FileInventory, ProxmoxCluster, ProxmoxInventory, ScanRun, StorageMount
 
-
 SCAN_METADATA_RETENTION_DAYS = 7
 
 

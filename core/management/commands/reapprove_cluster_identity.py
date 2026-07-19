@@ -18,9 +18,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("cluster_key", help="Cluster durable key.")
-        parser.add_argument(
-            "--yes", action="store_true", help="Confirm re-pinning the currently observed CA."
-        )
+        parser.add_argument("--yes", action="store_true", help="Confirm re-pinning the currently observed CA.")
 
     def handle(self, *args, **options):
         cluster = ProxmoxCluster.objects.filter(key=options["cluster_key"].strip().lower()).first()

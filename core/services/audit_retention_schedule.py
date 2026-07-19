@@ -8,7 +8,6 @@ from django.conf import settings
 from django.utils import timezone
 from django_q.models import Schedule
 
-
 AUDIT_RETENTION_SCHEDULE_NAME = "pve-helper automatic audit retention"
 AUDIT_RETENTION_FUNC = "core.tasks.purge_expired_audit_events"
 DEFAULT_AUDIT_RETENTION_DAYS = 90

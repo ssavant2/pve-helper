@@ -33,12 +33,8 @@ class ClusterStateIdentityTests(TestCase):
         guest_b = ProxmoxGuestSummary("pve1", "vm", 500, "b-500", "stopped")
         cache.set(cluster_cache_key(LIVE_GUEST_INVENTORY_CACHE_NAMESPACE, self.a), [guest_a], 60)
         cache.set(cluster_cache_key(LIVE_GUEST_INVENTORY_CACHE_NAMESPACE, self.b), [guest_b], 60)
-        cache_registered_tags(
-            {"prod": RegisteredTag("prod", "112233", "ffffff")}, cluster=self.a
-        )
-        cache_registered_tags(
-            {"prod": RegisteredTag("prod", "abcdef", "000000")}, cluster=self.b
-        )
+        cache_registered_tags({"prod": RegisteredTag("prod", "112233", "ffffff")}, cluster=self.a)
+        cache_registered_tags({"prod": RegisteredTag("prod", "abcdef", "000000")}, cluster=self.b)
 
         self.assertEqual(fetch_live_guest_inventory(cluster=self.a)[0].name, "a-500")
         self.assertEqual(fetch_live_guest_inventory(cluster=self.b)[0].name, "b-500")
@@ -53,12 +49,8 @@ class ClusterStateIdentityTests(TestCase):
         self.a.refresh_from_db()
         self.b.refresh_from_db()
 
-        self.assertNotEqual(
-            old_a, cluster_cache_key("guest-agent-summary:v2", self.a, "pve1", "vm", 500)
-        )
-        self.assertEqual(
-            old_b, cluster_cache_key("guest-agent-summary:v2", self.b, "pve1", "vm", 500)
-        )
+        self.assertNotEqual(old_a, cluster_cache_key("guest-agent-summary:v2", self.a, "pve1", "vm", 500))
+        self.assertEqual(old_b, cluster_cache_key("guest-agent-summary:v2", self.b, "pve1", "vm", 500))
 
     def test_cluster_operation_lock_ids_are_stable_and_distinct(self):
         base = 0x50564547554501

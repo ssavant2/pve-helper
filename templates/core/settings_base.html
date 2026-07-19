@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="vs-object-header">
+    <div class="vs-title-row">
+      <div class="vs-title">
+        <span class="vs-title-icon"><i data-lucide="settings" aria-hidden="true"></i></span>
+        <div>
+          <h1>PVE-helper Settings</h1>
+          <p>Application-specific configuration for this PVE-helper installation</p>
+        </div>
+      </div>
+    </div>
+    <nav class="vs-tabs" aria-label="PVE-helper settings areas">
+      <a href="{% url 'core:settings_storage' %}"{% if active_settings_tab == "storage" %} class="active"{% endif %}>Storage access</a>
+    </nav>
+  </section>
+
+  <div class="settings-content">
+    {% block settings_content %}{% endblock %}
+  </div>
+{% endblock %}

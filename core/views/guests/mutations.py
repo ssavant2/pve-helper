@@ -1,19 +1,39 @@
 """Standalone guest mutation endpoints: power, snapshot, backup, bulk-nics (from _core)."""
+
 from __future__ import annotations
+
 from core.models import ProxmoxCluster
+
 from ..common import *  # noqa: F401,F403
-from .. import common
-from ._core import (_backup_error,_delete_all_guest_snapshots,_guest_nic_bridges,_queue_guest_backup_restore,_restore_archive_from_key,_restore_options,_snapshot_error,_submit_guest_backup)
-from .operation_lifecycle import (_guest_write,_audit_guest,_finish_guest_running_audit,_guest_action_response,_guest_delete_with_client,_guest_post_with_client,_guest_ref_from_target_value,_wants_task_json)
+from ._core import (
+    _backup_error,
+    _delete_all_guest_snapshots,
+    _guest_nic_bridges,
+    _queue_guest_backup_restore,
+    _restore_archive_from_key,
+    _restore_options,
+    _snapshot_error,
+    _submit_guest_backup,
+)
+from .operation_lifecycle import (
+    _audit_guest,
+    _finish_guest_running_audit,
+    _guest_action_response,
+    _guest_delete_with_client,
+    _guest_post_with_client,
+    _guest_ref_from_target_value,
+    _guest_write,
+)
 from .read_model_support import _require_guest
-from core.services.public_errors import public_exception_message
 
 
 @require_POST
 @app_login_required
 def guest_power(request, cluster_key: str, object_type: str, vmid: int):
     def result(error_label: str = ""):
-        return _guest_action_response(request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_summary")
+        return _guest_action_response(
+            request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_summary"
+        )
 
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     action = request.POST.get("action", "")
@@ -33,13 +53,13 @@ def guest_power(request, cluster_key: str, object_type: str, vmid: int):
     return result()
 
 
-
-
 @require_POST
 @app_login_required
 def guest_snapshot_create(request, cluster_key: str, object_type: str, vmid: int):
     def result(error_label: str = ""):
-        return _guest_action_response(request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+        return _guest_action_response(
+            request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots"
+        )
 
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     name = request.POST.get("snapname", "").strip()
@@ -58,38 +78,42 @@ def guest_snapshot_create(request, cluster_key: str, object_type: str, vmid: int
     response, err, client = _guest_post_with_client(detail, "snapshot", data)
     if err:
         error_label = _snapshot_error(err)
-        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": name})
+        _finish_guest_running_audit(
+            running_event, detail, response, client, err=error_label, audit_details={"snapshot": name}
+        )
         return result(error_label)
     _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": name})
     return result()
-
-
 
 
 @require_POST
 @app_login_required
 def guest_snapshot_delete(request, cluster_key: str, object_type: str, vmid: int, snapname: str):
     def result(error_label: str = ""):
-        return _guest_action_response(request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+        return _guest_action_response(
+            request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots"
+        )
 
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     running_event = _audit_guest(request, detail, "guest.snapshot.delete", {"snapshot": snapname}, outcome="running")
     response, err, client = _guest_delete_with_client(detail, f"snapshot/{quote(snapname, safe='')}")
     if err:
         error_label = _snapshot_error(err)
-        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname})
+        _finish_guest_running_audit(
+            running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname}
+        )
         return result(error_label)
     _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
     return result()
-
-
 
 
 @require_POST
 @app_login_required
 def guest_snapshot_delete_all(request, cluster_key: str, object_type: str, vmid: int):
     def result(error_label: str = ""):
-        return _guest_action_response(request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+        return _guest_action_response(
+            request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots"
+        )
 
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     running_event = _audit_guest(request, detail, "guest.snapshot.delete_all", outcome="running")
@@ -102,39 +126,43 @@ def guest_snapshot_delete_all(request, cluster_key: str, object_type: str, vmid:
     return result()
 
 
-
-
 @require_POST
 @app_login_required
 def guest_snapshot_rollback(request, cluster_key: str, object_type: str, vmid: int, snapname: str):
     def result(error_label: str = ""):
-        return _guest_action_response(request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots")
+        return _guest_action_response(
+            request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_snapshots"
+        )
 
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     running_event = _audit_guest(request, detail, "guest.snapshot.rollback", {"snapshot": snapname}, outcome="running")
     response, err, client = _guest_post_with_client(detail, f"snapshot/{quote(snapname, safe='')}/rollback")
     if err:
         error_label = _snapshot_error(err)
-        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname})
+        _finish_guest_running_audit(
+            running_event, detail, response, client, err=error_label, audit_details={"snapshot": snapname}
+        )
         return result(error_label)
     _finish_guest_running_audit(running_event, detail, response, client, audit_details={"snapshot": snapname})
     return result()
-
-
 
 
 @require_POST
 @app_login_required
 def guest_backup_now(request, cluster_key, object_type, vmid):
     def result(error_label: str = ""):
-        return _guest_action_response(request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_backup")
+        return _guest_action_response(
+            request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_backup"
+        )
 
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     response, err, client, audit_details = _submit_guest_backup(request, detail)
     running_event = _audit_guest(request, detail, "guest.backup.run", audit_details, outcome="running")
     if err:
         error_label = _backup_error(err)
-        _finish_guest_running_audit(running_event, detail, response, client, err=error_label, audit_details=audit_details)
+        _finish_guest_running_audit(
+            running_event, detail, response, client, err=error_label, audit_details=audit_details
+        )
         return result(error_label)
     _finish_guest_running_audit(
         running_event,
@@ -147,13 +175,13 @@ def guest_backup_now(request, cluster_key, object_type, vmid):
     return result()
 
 
-
-
 @require_POST
 @app_login_required
 def guest_backup_delete(request, cluster_key, object_type, vmid):
     def result(error_label: str = ""):
-        return _guest_action_response(request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_backup")
+        return _guest_action_response(
+            request, cluster_key, object_type, vmid, error_label, redirect_name="core:guest_backup"
+        )
 
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     volid = request.POST.get("volid", "").strip()
@@ -174,7 +202,9 @@ def guest_backup_delete(request, cluster_key, object_type, vmid):
     response = result_write.value
     client = result_write.client
     err = result_write.error
-    running_event = _audit_guest(request, detail, "guest.backup.delete", {"storage": storage, "volid": volid}, outcome="running")
+    running_event = _audit_guest(
+        request, detail, "guest.backup.delete", {"storage": storage, "volid": volid}, outcome="running"
+    )
     if err:
         _finish_guest_running_audit(running_event, detail, response, client, err=f"Delete backup failed: {err}")
         return result(f"Delete backup failed: {err}")
@@ -189,8 +219,6 @@ def guest_backup_delete(request, cluster_key, object_type, vmid):
     return result()
 
 
-
-
 @app_login_required
 def guest_backup_restore(request, cluster_key: str):
     cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
@@ -198,8 +226,12 @@ def guest_backup_restore(request, cluster_key: str):
         raise Http404("Proxmox cluster not found")
     archives, nodes, storage_options, nextid = _restore_options(cluster)
     restore_error = ""
-    selected_archive_key = request.POST.get("archive_key", "") if request.method == "POST" else request.GET.get("archive", "")
-    source_type = (request.POST.get("source_type", "") if request.method == "POST" else request.GET.get("source_type", "")).strip()
+    selected_archive_key = (
+        request.POST.get("archive_key", "") if request.method == "POST" else request.GET.get("archive", "")
+    )
+    source_type = (
+        request.POST.get("source_type", "") if request.method == "POST" else request.GET.get("source_type", "")
+    ).strip()
     source_vmid_text = (
         request.POST.get("source_vmid", "") if request.method == "POST" else request.GET.get("source_vmid", "")
     ).strip()
@@ -253,16 +285,12 @@ def guest_backup_restore(request, cluster_key: str):
         "source_type": source_type,
         "source_vmid": source_vmid or "",
         "cluster_key": cluster.key,
-        "cluster_choices": list(
-            ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
-        ),
+        "cluster_choices": list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")),
         "form_values": request.POST
         if request.method == "POST"
         else {"node": nodes[0]["key"] if nodes else "", "vmid": nextid},
     }
     return render(request, "core/guest_backup_restore.html", context)
-
-
 
 
 @require_POST

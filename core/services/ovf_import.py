@@ -17,7 +17,6 @@ from pathlib import PurePosixPath
 from typing import BinaryIO
 
 from core.models import StorageMount
-from core.services.storage_mounts import storage_mount_root
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     confined_relative_path,
@@ -25,7 +24,7 @@ from core.services.confined_filesystem import (
     open_regular_file,
     regular_file_exists,
 )
-
+from core.services.storage_paths import storage_mount_root
 
 MAX_OVF_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 256
@@ -262,8 +261,8 @@ def _validate_directory_manifest(root: str, source_path: str, manifest: str) -> 
             with open_regular_file(root, candidate) as handle:
                 if _hash_stream(handle, algorithm) != expected:
                     raise OvfImportError(f"OVF manifest checksum failed for {name}.")
-        except ConfinedFilesystemError:
-            raise OvfImportError(f"OVF manifest references unavailable file {name}.")
+        except ConfinedFilesystemError as exc:
+            raise OvfImportError(f"OVF manifest references unavailable file {name}.") from exc
 
 
 def _tag(element: ET.Element, name: str) -> str | None:
@@ -288,7 +287,11 @@ def _parse_ovf_xml(data: bytes) -> OvfPackage:
     except ET.ParseError as exc:
         raise OvfImportError("OVF XML is invalid.") from exc
 
-    refs = {_attribute(element, "id"): _safe_member_name(_attribute(element, "href")) for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "File"}
+    refs = {
+        _attribute(element, "id"): _safe_member_name(_attribute(element, "href"))
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "File"
+    }
     disks_by_id: dict[str, OvfDisk] = {}
     for element in root.iter():
         if element.tag.rsplit("}", 1)[-1] != "Disk":
@@ -298,7 +301,10 @@ def _parse_ovf_xml(data: bytes) -> OvfPackage:
         href = refs.get(file_ref, "")
         if not disk_id or not href:
             raise OvfImportError("OVF disk is missing its file reference.")
-        capacity = _capacity_bytes(_attribute(element, "capacity"), _attribute(element, "capacityAllocationUnits") or _attribute(element, "allocationUnits"))
+        capacity = _capacity_bytes(
+            _attribute(element, "capacity"),
+            _attribute(element, "capacityAllocationUnits") or _attribute(element, "allocationUnits"),
+        )
         disks_by_id[disk_id] = OvfDisk(disk_id=disk_id, href=href, capacity_bytes=capacity)
 
     name = "imported-vm"
@@ -322,7 +328,11 @@ def _parse_ovf_xml(data: bytes) -> OvfPackage:
         elif resource_type == "4" and quantity:
             memory_mib = _memory_mib(quantity, _tag(element, "AllocationUnits"))
         elif resource_type == "10":
-            nics.append(OvfNic(network_name=_tag(element, "Connection") or "", model=_nic_model(_tag(element, "ResourceSubType"))))
+            nics.append(
+                OvfNic(
+                    network_name=_tag(element, "Connection") or "", model=_nic_model(_tag(element, "ResourceSubType"))
+                )
+            )
         elif resource_type == "17":
             host_resource = _tag(element, "HostResource") or ""
             disk_id = host_resource.rsplit("/", 1)[-1]
@@ -395,7 +405,12 @@ def _nic_model(raw: str | None) -> str:
 
 
 def _ovf_ostype(root: ET.Element) -> str:
-    values = " ".join(str(value).lower() for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "OperatingSystemSection" for value in element.attrib.values())
+    values = " ".join(
+        str(value).lower()
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "OperatingSystemSection"
+        for value in element.attrib.values()
+    )
     if "windows" in values or "win" in values:
         if any(value in values for value in ("2022", "2025", "11")):
             return "win11"

@@ -112,7 +112,11 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
         proxmox_port=port,
         proxmox_ticket=ticket,
         proxmox_password=password,
-        details={"cert_present": bool(response.get("cert")), "console_type": console_type, "proxmox_user": proxmox_user},
+        details={
+            "cert_present": bool(response.get("cert")),
+            "console_type": console_type,
+            "proxmox_user": proxmox_user,
+        },
     )
     clear_live_guest_caches(cluster=cluster)
     return ConsoleSessionResult(session=session, token=token, password=password, console_type=console_type)

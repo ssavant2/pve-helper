@@ -3,11 +3,10 @@ from __future__ import annotations
 import colorsys
 import hashlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from core.models import CurrentGuestInventory
-
 
 TAG_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]*$")
 HEX_RE = re.compile(r"^[0-9a-f]{6}$")
@@ -92,7 +91,7 @@ def readable_foreground(background: str) -> str:
     background = validate_color(background)
     if not background:
         return ""
-    r, g, b = (int(background[index:index + 2], 16) / 255 for index in (0, 2, 4))
+    r, g, b = (int(background[index : index + 2], 16) / 255 for index in (0, 2, 4))
     luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
     return "000000" if luminance > 0.55 else "ffffff"
 
@@ -159,10 +158,7 @@ def parse_registered_tags(cluster_options: dict) -> dict[str, RegisteredTag]:
     names = parse_tags(_option_text(cluster_options.get("registered-tags")))
     style = parse_tag_style(cluster_options.get("tag-style"))
     colors = parse_color_map(style.get("color-map", ""))
-    return {
-        name: RegisteredTag(name, *(colors.get(name) or ("", "")))
-        for name in names
-    }
+    return {name: RegisteredTag(name, *(colors.get(name) or ("", ""))) for name in names}
 
 
 def inventory_rows(guests: Iterable[CurrentGuestInventory], registered: dict[str, RegisteredTag]) -> list[TagSummary]:

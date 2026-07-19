@@ -4,12 +4,13 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import PurePosixPath
 
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from django.db.models import Q
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
+
 GUEST_TASK_NAMES = {
     "guest.power.start": "Power on",
     "guest.power.shutdown": "Shut down guest",
@@ -119,11 +120,15 @@ def recent_task_page(
     offset = page * limit
     scans = list(_visible_scan_tasks().order_by("-created_at"))
     scan_ids = [str(scan.id) for scan in scans]
-    audit_events = AuditEvent.objects.filter(
-        action="scan.queued",
-        object_type="scan_run",
-        object_id__in=scan_ids,
-    ).select_related("user").order_by("-timestamp")
+    audit_events = (
+        AuditEvent.objects.filter(
+            action="scan.queued",
+            object_type="scan_run",
+            object_id__in=scan_ids,
+        )
+        .select_related("user")
+        .order_by("-timestamp")
+    )
     initiators = {}
     for event in audit_events:
         initiators.setdefault(event.object_id, event.username or (event.user.get_username() if event.user else ""))
@@ -287,7 +292,9 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
 def _visible_guest_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
     return list(
-        AuditEvent.objects.filter(Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS), timestamp__gte=cutoff)
+        AuditEvent.objects.filter(
+            Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS), timestamp__gte=cutoff
+        )
         .select_related("user", "cluster")
         .order_by("-timestamp")
     )
@@ -324,7 +331,9 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
         attempted = details.get("endpoints_attempted") if isinstance(details.get("endpoints_attempted"), list) else []
         succeeded = details.get("endpoints_succeeded") if isinstance(details.get("endpoints_succeeded"), list) else []
         registry_error = str(details.get("registry_error") or "").strip()
-        membership_errors = details.get("membership_errors") if isinstance(details.get("membership_errors"), list) else []
+        membership_errors = (
+            details.get("membership_errors") if isinstance(details.get("membership_errors"), list) else []
+        )
         if attempted:
             extra = f"Registry and membership; {len(succeeded)}/{len(attempted)} endpoints"
         else:
@@ -572,7 +581,6 @@ def _scheduled_action_status(run: ScheduledActionRun) -> tuple[str, str]:
 
 
 def _scheduled_action_details(run: ScheduledActionRun) -> str:
-    action = run.scheduled_action
     planned_for = _datetime_label(run.planned_for)
     upid = run.proxmox_task_upid
     if upid:

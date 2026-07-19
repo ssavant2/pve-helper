@@ -1,9 +1,10 @@
 """Guest read-only tabs: datastores, networks, agent — extracted from _core."""
-from ..common import *  # noqa: F401,F403
-from .. import common
+
 from core.models import ClusterStorageMount
+
+from ..common import *  # noqa: F401,F403
 from .presenters import _config_ip_addresses, _with_network_ip_addresses
-from .read_model_support import (_guest_agent_summary,_guest_api_get,_guest_tab_context,_require_guest)
+from .read_model_support import _guest_agent_summary, _guest_api_get, _guest_tab_context, _require_guest
 
 
 @app_login_required
@@ -17,9 +18,7 @@ def guest_datastores(request, cluster_key: str, object_type: str, vmid: int):
     )
     mounts = {
         binding.cluster_storage.storage_id: binding.mount
-        for binding in ClusterStorageMount.objects.select_related(
-            "cluster_storage", "mount"
-        ).filter(
+        for binding in ClusterStorageMount.objects.select_related("cluster_storage", "mount").filter(
             cluster_storage__cluster__key=detail.cluster_key,
             cluster_storage__present=True,
             mount__enabled=True,
@@ -34,7 +33,9 @@ def guest_datastores(request, cluster_key: str, object_type: str, vmid: int):
                 "storage_id": disk["storage_id"],
                 "mounted": disk["mounted"],
                 "url": disk["url"],
-                "display_name": mounts[disk["storage_id"]].display_name if disk["storage_id"] in mounts else disk["storage_id"],
+                "display_name": mounts[disk["storage_id"]].display_name
+                if disk["storage_id"] in mounts
+                else disk["storage_id"],
                 "disks": [],
             },
         )
@@ -44,18 +45,16 @@ def guest_datastores(request, cluster_key: str, object_type: str, vmid: int):
     return render(request, "core/guest_datastores.html", context)
 
 
-
-
 @app_login_required
 def guest_networks_view(request, cluster_key: str, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
     agent_summary = _guest_agent_summary(detail, allow_fetch=True)
     context = _guest_tab_context(detail, "networks")
-    context["nets"] = _with_network_ip_addresses(guest_networks(detail.config), _config_ip_addresses(detail.config), agent_summary)
+    context["nets"] = _with_network_ip_addresses(
+        guest_networks(detail.config), _config_ip_addresses(detail.config), agent_summary
+    )
     context["agent_ips"] = agent_summary.get("ips", [])
     return render(request, "core/guest_networks.html", context)
-
-
 
 
 @app_login_required

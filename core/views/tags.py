@@ -13,6 +13,14 @@ from django.views.decorators.http import require_POST
 from core.models import CurrentGuestInventory, ProxmoxCluster, ProxmoxInventory
 from core.services.guests import is_template
 from core.services.proxmox import ProxmoxAPIError
+from core.services.tag_actions import (
+    TagOperationQueueError,
+    enqueue_tag_operation,
+    prepare_tag_operation,
+    recolor_tag,
+    register_tag,
+)
+from core.services.tag_catalog import load_tag_catalog
 from core.services.tag_inventory_refresh import (
     TagInventoryRefreshAlreadyActive,
     TagInventoryRefreshQueueError,
@@ -22,19 +30,10 @@ from core.services.tag_operation_confirmation import (
     issue_tag_operation_confirmation,
     validate_tag_operation_confirmation,
 )
-from core.services.tag_actions import (
-    TagOperationQueueError,
-    enqueue_tag_operation,
-    prepare_tag_operation,
-    recolor_tag,
-    register_tag,
-)
-from core.services.tag_catalog import load_tag_catalog
 from core.services.tags import parse_tags
 
 from . import common
 from .common import app_login_required, navigation_context, record_audit_event
-
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +47,7 @@ def _tag_context(*, cluster, selected: str = "") -> dict:
     rows = list(catalog.summaries)
     for row in rows:
         row.detail_url = (
-            f"{reverse('core:tag_detail', kwargs={'cluster_key': cluster.key})}"
-            f"?{urlencode({'tag': row.name})}"
+            f"{reverse('core:tag_detail', kwargs={'cluster_key': cluster.key})}?{urlencode({'tag': row.name})}"
         )
     return {
         **navigation_context("tags"),
@@ -62,9 +60,7 @@ def _tag_context(*, cluster, selected: str = "") -> dict:
         "selected_tag": selected,
         "cluster_key": catalog.cluster_key,
         "selected_cluster": cluster,
-        "cluster_choices": ProxmoxCluster.objects.filter(enabled=True).order_by(
-            "display_name", "key"
-        ),
+        "cluster_choices": ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"),
     }
 
 
@@ -140,11 +136,7 @@ def tag_detail(request, cluster_key: str):
             )
             linked_clones = set()
             context["lineage_error"] = "Linked-clone classification is temporarily unavailable."
-        assigned = {
-            guest.guest_ref().identity_tuple
-            for guest in summary.guests
-            if guest.guest_ref() is not None
-        }
+        assigned = {guest.guest_ref().identity_tuple for guest in summary.guests if guest.guest_ref() is not None}
         assignable = list(context["inventory_state"].guests)
         assignable.sort(key=lambda guest: ((guest.name or "").casefold(), guest.vmid, guest.node))
         for guest in assignable:
@@ -156,7 +148,8 @@ def tag_detail(request, cluster_key: str):
             guest.tag_target = ref.serialize() if ref is not None else ""
             guest.tag_type_label = _tag_type_label(guest, linked_clones)
         context["assignable_guests"] = [
-            guest for guest in assignable
+            guest
+            for guest in assignable
             if guest.tag_target
             and guest.guest_ref().identity_tuple not in assigned
             and summary.name not in parse_tags(guest.config)
@@ -172,9 +165,7 @@ def tag_create(request, cluster_key: str):
         raise Http404("Proxmox cluster not found")
     catalog = load_tag_catalog(cluster=cluster)
     cluster = _catalog_cluster(catalog)
-    _tags, error = register_tag(
-        request.POST.get("tag", ""), request.POST.get("color", ""), cluster=cluster
-    )
+    _tags, error = register_tag(request.POST.get("tag", ""), request.POST.get("color", ""), cluster=cluster)
     if error:
         return _tag_form_response(request, cluster_key=cluster.key, ok=False, error=error)
     else:
@@ -213,11 +204,7 @@ def tag_recolor(request, cluster_key: str):
         )
     if _wants_json(request):
         return JsonResponse({"ok": True, "error": ""})
-    return redirect(
-        reverse("core:tag_detail", kwargs={"cluster_key": cluster.key})
-        + "?"
-        + urlencode({"tag": name})
-    )
+    return redirect(reverse("core:tag_detail", kwargs={"cluster_key": cluster.key}) + "?" + urlencode({"tag": name}))
 
 
 @require_POST
@@ -246,9 +233,7 @@ def tag_operation(request, cluster_key: str):
         messages.error(request, error)
         if summary is not None:
             return redirect(
-                reverse("core:tag_detail", kwargs={"cluster_key": cluster.key})
-                + "?"
-                + urlencode({"tag": source})
+                reverse("core:tag_detail", kwargs={"cluster_key": cluster.key}) + "?" + urlencode({"tag": source})
             )
         return redirect("core:tags_overview", cluster_key=cluster.key)
     event = record_audit_event(

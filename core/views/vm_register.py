@@ -13,18 +13,17 @@ from __future__ import annotations
 
 import os
 
-from django.conf import settings
 from django.contrib import messages
 from django.http import Http404
 from django.shortcuts import redirect, render
 
 from core.models import ProxmoxCluster, StorageMount
+from core.services import vm_register as reg
 from core.services.guest_create import create_options
-from core.services.refs import GuestRef
-from core.services.storage_mounts import resolve_storage_mount
 from core.services.ovf_import import OvfImportError, parse_ovf_package
 from core.services.proxmox import clear_live_guest_caches
-from core.services import vm_register as reg
+from core.services.refs import GuestRef
+from core.services.storage_mounts import resolve_storage_mount
 
 from .common import app_login_required, enqueue_bulk_task, navigation_context, record_audit_event
 
@@ -97,7 +96,6 @@ def _params_from_post(post, node: str) -> dict:
 
 @app_login_required
 def register_vm(request, cluster_key: str):
-
     src = request.POST if request.method == "POST" else request.GET
     mode = src.get("mode", "")
     if mode not in ("adopt", "import", "ovf"):
@@ -209,9 +207,7 @@ def _register_submit(request, mode: str, options: dict, *, cluster) -> str | Non
         return "Name is required."
     ref = GuestRef(cluster.key, "vm", int(params["vmid"]), node=node)
     if params["bios"] == "ovmf":
-        params["efidisk_storage"] = (
-            post.get("efidisk_storage", "").strip() or post.get("target_storage", "").strip()
-        )
+        params["efidisk_storage"] = post.get("efidisk_storage", "").strip() or post.get("target_storage", "").strip()
         efi_source = post.get("efidisk_source", "").strip()
         if efi_source:
             params["efidisk_source"] = efi_source

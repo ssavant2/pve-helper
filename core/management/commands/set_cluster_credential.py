@@ -44,9 +44,7 @@ class Command(BaseCommand):
             raise CommandError("The token secret was empty.")
 
         try:
-            credential = set_cluster_credential(
-                cluster, token_id=options["token_id"], token_secret=secret
-            )
+            credential = set_cluster_credential(cluster, token_id=options["token_id"], token_secret=secret)
         except (ClusterCredentialError, EncryptionConfigurationError) as exc:
             raise CommandError(str(exc)) from exc
 

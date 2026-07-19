@@ -20,7 +20,6 @@ from core.models import ClusterCredential, ClusterTransportTrust, ProxmoxCluster
 from core.services.audit_events import record_audit_event
 from core.services.cluster_activation import ClusterActivationError, enable_cluster
 from core.services.cluster_credentials import ClusterCredentialError, set_cluster_credential
-from core.services.cluster_trust import TransportTrustError
 from core.services.cluster_onboarding import (
     ClusterCandidate,
     ClusterOnboardingError,
@@ -38,6 +37,7 @@ from core.services.cluster_onboarding import (
     verify_registered_endpoint,
     verify_replacement_credential,
 )
+from core.services.cluster_trust import TransportTrustError
 from core.services.config import endpoint_name_from_url
 from core.services.secret_encryption import (
     EncryptionConfigurationError,
@@ -46,7 +46,6 @@ from core.services.secret_encryption import (
 )
 
 from .common import app_login_required, navigation_context
-
 
 # Curated, secret-free domain errors surfaced to the operator. Catching this
 # explicit set — rather than the RuntimeError base they all share — keeps an
@@ -71,12 +70,9 @@ _TOKEN_MAX_AGE_SECONDS = 10 * 60
 @app_login_required
 def clusters_overview(request):
     clusters = list(ProxmoxCluster.objects.prefetch_related("endpoints").order_by("display_name", "key"))
-    credential_ids = {
-        row.cluster_id: row.token_id for row in ClusterCredential.objects.filter(cluster__in=clusters)
-    }
+    credential_ids = {row.cluster_id: row.token_id for row in ClusterCredential.objects.filter(cluster__in=clusters)}
     trust_modes = {
-        row.cluster_id: row.get_mode_display()
-        for row in ClusterTransportTrust.objects.filter(cluster__in=clusters)
+        row.cluster_id: row.get_mode_display() for row in ClusterTransportTrust.objects.filter(cluster__in=clusters)
     }
     for cluster in clusters:
         cluster.endpoint_count = len(cluster.endpoints.all())
@@ -237,9 +233,7 @@ def _render_cluster_connection(request, cluster: ProxmoxCluster, *, operation_er
             "credential": credential,
             "trust": trust,
             "display_name_form": ClusterDisplayNameForm(initial={"display_name": cluster.display_name}),
-            "credential_form": CredentialRotationForm(
-                initial={"token_id": credential.token_id if credential else ""}
-            ),
+            "credential_form": CredentialRotationForm(initial={"token_id": credential.token_id if credential else ""}),
             "operation_error": operation_error,
         },
     )
@@ -313,7 +307,9 @@ def cluster_connection_action(request, cluster_key: str):
                 )
         elif action == "remove-credential":
             with transaction.atomic():
-                token_id = ClusterCredential.objects.filter(cluster=cluster).values_list("token_id", flat=True).first() or ""
+                token_id = (
+                    ClusterCredential.objects.filter(cluster=cluster).values_list("token_id", flat=True).first() or ""
+                )
                 remove_stored_credential(cluster)
                 record_audit_event(
                     request,

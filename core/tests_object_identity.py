@@ -31,12 +31,8 @@ class GuestRefTests(SimpleTestCase):
 
 class DurableGuestIdentityTests(TestCase):
     def setUp(self):
-        self.cluster_a = ProxmoxCluster.objects.create(
-            key="cluster-a", display_name="Cluster A", enabled=True
-        )
-        self.cluster_b = ProxmoxCluster.objects.create(
-            key="cluster-b", display_name="Cluster B", enabled=False
-        )
+        self.cluster_a = ProxmoxCluster.objects.create(key="cluster-a", display_name="Cluster A", enabled=True)
+        self.cluster_b = ProxmoxCluster.objects.create(key="cluster-b", display_name="Cluster B", enabled=False)
         self.endpoint_a = ProxmoxEndpoint.objects.create(
             cluster=self.cluster_a,
             name="pve1",

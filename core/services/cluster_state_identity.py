@@ -53,6 +53,6 @@ def cluster_advisory_lock_id(base_lock_id: int, cluster) -> int:
     """Derive a stable positive PostgreSQL bigint lock id for one cluster."""
     if cluster is None or not getattr(cluster, "key", ""):
         raise ValueError("A cluster is required for a cluster-scoped advisory lock.")
-    material = f"{int(base_lock_id)}:{cluster.key}".encode("utf-8")
+    material = f"{int(base_lock_id)}:{cluster.key}".encode()
     value = int.from_bytes(hashlib.blake2b(material, digest_size=8).digest(), "big")
     return value & ((1 << 63) - 1)

@@ -8,7 +8,6 @@ from django.conf import settings
 from django.utils import timezone
 from django_q.models import Schedule
 
-
 TRASH_PURGE_SCHEDULE_NAME = "pve-helper automatic trash purge"
 TRASH_PURGE_FUNC = "core.tasks.purge_expired_trash"
 DEFAULT_TRASH_MAX_AGE_DAYS = 30
@@ -79,9 +78,7 @@ def _trash_purge_schedule() -> Schedule | None:
 
 def _validated_max_age(value: int) -> int:
     if value < MIN_TRASH_MAX_AGE_DAYS or value > MAX_TRASH_MAX_AGE_DAYS:
-        raise ValueError(
-            f"Trash max age must be between {MIN_TRASH_MAX_AGE_DAYS} and {MAX_TRASH_MAX_AGE_DAYS} days."
-        )
+        raise ValueError(f"Trash max age must be between {MIN_TRASH_MAX_AGE_DAYS} and {MAX_TRASH_MAX_AGE_DAYS} days.")
     return value
 
 

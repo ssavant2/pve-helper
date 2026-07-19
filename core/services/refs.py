@@ -18,7 +18,6 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import quote, unquote
 
-
 # Serialized references are durable: they reach queue payloads and audit rows and
 # must stay parseable across deploys, so the format carries its own version.
 NODE_REF_VERSION = "nr1"
@@ -44,7 +43,7 @@ class ClusterStorageRef:
         return f"sr1:{quote(self.cluster_key, safe='')}:{quote(self.storage_id, safe='')}"
 
     @classmethod
-    def parse(cls, raw: str) -> "ClusterStorageRef":
+    def parse(cls, raw: str) -> ClusterStorageRef:
         parts = str(raw or "").split(":")
         if len(parts) != 3 or parts[0] != "sr1":
             raise RefParseError("Invalid cluster storage reference.")
@@ -63,7 +62,7 @@ class StorageInstanceRef:
         )
 
     @classmethod
-    def parse(cls, raw: str) -> "StorageInstanceRef":
+    def parse(cls, raw: str) -> StorageInstanceRef:
         parts = str(raw or "").split(":")
         if len(parts) != 4 or parts[0] != "si1":
             raise RefParseError("Invalid storage instance reference.")
@@ -82,7 +81,7 @@ class VolumeRef:
         return f"vr1:{quote(self.instance.serialize(), safe='')}:{quote(self.volid, safe='')}"
 
     @classmethod
-    def parse(cls, raw: str) -> "VolumeRef":
+    def parse(cls, raw: str) -> VolumeRef:
         parts = str(raw or "").split(":")
         if len(parts) != 3 or parts[0] != "vr1":
             raise RefParseError("Invalid volume reference.")
@@ -103,7 +102,7 @@ class MountRef:
         return f"mr1:{self.mount_key}"
 
     @classmethod
-    def parse(cls, raw: str) -> "MountRef":
+    def parse(cls, raw: str) -> MountRef:
         parts = str(raw or "").split(":")
         if len(parts) != 2 or parts[0] != "mr1" or not parts[1]:
             raise RefParseError("Invalid mount reference.")

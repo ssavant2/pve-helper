@@ -28,7 +28,6 @@ from core.services.secret_encryption import (
     keyring,
 )
 
-
 # Distinct from the bootstrap and tag-inventory lock ids.
 _CREDENTIAL_CUTOVER_LOCK_ID = 0x50564548424F02
 
@@ -54,13 +53,7 @@ class ProxmoxCredential:
 
 def credential_cutover_completed() -> bool:
     state = RuntimeConfigurationState.objects.filter(pk=RuntimeConfigurationState.SINGLETON_PK).first()
-    return bool(
-        state
-        and (
-            state.credential_cutover_completed_at
-            or state.identity_contract_version >= 1
-        )
-    )
+    return bool(state and (state.credential_cutover_completed_at or state.identity_contract_version >= 1))
 
 
 def set_cluster_credential(cluster: ProxmoxCluster, *, token_id: str, token_secret: str) -> ClusterCredential:
@@ -153,9 +146,11 @@ def complete_credential_cutover() -> tuple[bool, str]:
 
     with transaction.atomic():
         _advisory_xact_lock(_CREDENTIAL_CUTOVER_LOCK_ID)
-        state = RuntimeConfigurationState.objects.select_for_update().filter(
-            pk=RuntimeConfigurationState.SINGLETON_PK
-        ).first()
+        state = (
+            RuntimeConfigurationState.objects.select_for_update()
+            .filter(pk=RuntimeConfigurationState.SINGLETON_PK)
+            .first()
+        )
         if state is None:
             return False, "The installation is not bootstrapped yet."
         if state.credential_cutover_completed_at:
@@ -163,9 +158,7 @@ def complete_credential_cutover() -> tuple[bool, str]:
 
         clusters = list(ProxmoxCluster.objects.select_for_update().order_by("key"))
         if len(clusters) != 1:
-            return False, (
-                f"Expected exactly one cluster to import the legacy token into, found {len(clusters)}."
-            )
+            return False, (f"Expected exactly one cluster to import the legacy token into, found {len(clusters)}.")
         cluster = clusters[0]
 
         # Verify the keyring works before recording a marker that stops the fallback.
@@ -192,9 +185,7 @@ def missing_encryption_key_ids() -> list[str]:
     """
     available = set(keyring())
     referenced = set(
-        ClusterCredential.objects.exclude(encryption_key_id="").values_list(
-            "encryption_key_id", flat=True
-        )
+        ClusterCredential.objects.exclude(encryption_key_id="").values_list("encryption_key_id", flat=True)
     )
     return sorted(referenced - available)
 

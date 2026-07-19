@@ -18,7 +18,5 @@ class Command(BaseCommand):
         except ClusterActivationError as exc:
             raise CommandError(str(exc)) from exc
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Multi-cluster identity contract v{state.identity_contract_version} is active."
-            )
+            self.style.SUCCESS(f"Multi-cluster identity contract v{state.identity_contract_version} is active.")
         )

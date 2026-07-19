@@ -381,7 +381,7 @@ class ConsoleSession(TimestampedModel):
             models.Index(fields=["status", "expires_at"], name="core_console_status_exp_idx"),
         ]
 
-    def guest_ref(self) -> "GuestRef | None":
+    def guest_ref(self) -> GuestRef | None:
         if self.cluster_id is None:
             return None
         return GuestRef(
@@ -740,7 +740,7 @@ class ProxmoxInventory(TimestampedModel):
         label = self.name or self.vmid or self.object_type
         return f"{self.node}: {label}"
 
-    def guest_ref(self) -> "GuestRef | None":
+    def guest_ref(self) -> GuestRef | None:
         if self.cluster_id is None or self.vmid is None or self.object_type not in {"vm", "ct"}:
             return None
         return GuestRef(self.cluster.key, self.object_type, self.vmid, self.node)
@@ -819,7 +819,7 @@ class CurrentGuestInventory(TimestampedModel):
     def __str__(self) -> str:
         return f"{self.node}: {self.name or self.vmid}"
 
-    def guest_ref(self) -> "GuestRef | None":
+    def guest_ref(self) -> GuestRef | None:
         if self.cluster_id is None:
             return None
         return GuestRef(self.cluster.key, self.object_type, self.vmid, self.node)
@@ -912,7 +912,7 @@ class ProxmoxStorageConsumer(TimestampedModel):
             )
         ]
 
-    def node_ref(self) -> "NodeRef | None":
+    def node_ref(self) -> NodeRef | None:
         if self.cluster_id is None:
             return None
         return NodeRef(cluster_key=self.cluster.key, node=self.expected_node_name)
@@ -1067,7 +1067,7 @@ class ScheduledAction(TimestampedModel):
         target = f"{self.target_type}:{self.target_vmid}"
         return f"{self.name} ({self.action_type} {target})"
 
-    def guest_ref(self) -> "GuestRef | None":
+    def guest_ref(self) -> GuestRef | None:
         if self.cluster_id is None:
             return None
         return GuestRef(

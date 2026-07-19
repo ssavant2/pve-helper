@@ -32,7 +32,6 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from django.conf import settings
 
-
 SECRET_FORMAT_VERSION = "v1"
 _KEY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _AES_GCM_KEY_BYTES = 32
@@ -59,9 +58,7 @@ def _parse_keyring(raw: str) -> dict[str, bytes]:
         key_id, separator, encoded = entry.partition(":")
         key_id = key_id.strip()
         if not separator:
-            raise EncryptionConfigurationError(
-                "PVE_HELPER_ENCRYPTION_KEYS entries must be '<key-id>:<base64-key>'."
-            )
+            raise EncryptionConfigurationError("PVE_HELPER_ENCRYPTION_KEYS entries must be '<key-id>:<base64-key>'.")
         if not _KEY_ID_RE.match(key_id):
             raise EncryptionConfigurationError(
                 f"Invalid encryption key id {key_id!r}: use lowercase letters, digits, '-' or '_'."
@@ -69,9 +66,7 @@ def _parse_keyring(raw: str) -> dict[str, bytes]:
         try:
             key = base64.b64decode(encoded.strip(), validate=True)
         except (ValueError, base64.binascii.Error) as exc:
-            raise EncryptionConfigurationError(
-                f"Encryption key {key_id!r} is not valid base64."
-            ) from exc
+            raise EncryptionConfigurationError(f"Encryption key {key_id!r} is not valid base64.") from exc
         if len(key) != _AES_GCM_KEY_BYTES:
             raise EncryptionConfigurationError(
                 f"Encryption key {key_id!r} must be {_AES_GCM_KEY_BYTES} bytes, got {len(key)}."
@@ -91,8 +86,7 @@ def active_key_id() -> str:
     keys = keyring()
     if not keys:
         raise EncryptionConfigurationError(
-            "No encryption keyring is configured. Set PVE_HELPER_ENCRYPTION_KEYS before "
-            "storing cluster credentials."
+            "No encryption keyring is configured. Set PVE_HELPER_ENCRYPTION_KEYS before storing cluster credentials."
         )
     configured = (getattr(settings, "PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID", "") or "").strip()
     if not configured:
@@ -131,7 +125,7 @@ def _split(sealed: str) -> tuple[str, str, str]:
 def _aad(key_id: str) -> bytes:
     # Bind the version and key id into the authentication tag so neither can be
     # edited in the stored string to point a value at a different key.
-    return f"{SECRET_FORMAT_VERSION}:{key_id}".encode("utf-8")
+    return f"{SECRET_FORMAT_VERSION}:{key_id}".encode()
 
 
 def encrypt_secret(plaintext: str) -> str:
@@ -163,9 +157,7 @@ def decrypt_secret(sealed: str) -> str:
     try:
         plaintext = AESGCM(keys[key_id]).decrypt(nonce, ciphertext, _aad(key_id))
     except InvalidTag as exc:
-        raise SecretDecryptionError(
-            f"Stored secret failed authentication under key {key_id!r}."
-        ) from exc
+        raise SecretDecryptionError(f"Stored secret failed authentication under key {key_id!r}.") from exc
     return plaintext.decode("utf-8")
 
 

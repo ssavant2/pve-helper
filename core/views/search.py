@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 
+from core.models import ProxmoxEndpoint, StorageMount
+
 from .common import *  # noqa: F401,F403
 from .guests.read_model_support import _guest_agent_summary, _guest_rows
-from core.models import ProxmoxEndpoint, StorageMount
 
 
 @app_login_required
@@ -105,7 +106,13 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
     mounted_ids = set()
     for storage in StorageMount.objects.filter(enabled=True).order_by("display_name"):
         mounted_ids.add(storage.storage_id)
-        parts = [storage.display_name, storage.storage_id, storage.export, storage.path, *(storage.expected_consumers or [])]
+        parts = [
+            storage.display_name,
+            storage.storage_id,
+            storage.export,
+            storage.path,
+            *(storage.expected_consumers or []),
+        ]
         if not _matches_search(parts, tokens):
             continue
         meta = ["Mounted datastore", storage.storage_id]
@@ -214,7 +221,14 @@ def _global_search_hosts(tokens: list[str]) -> list[dict]:
     for cluster, node, status, config in sorted(
         candidates, key=lambda item: (item[0].display_name.casefold(), item[1].casefold())
     ):
-        parts = [cluster.display_name, cluster.key, node, status, _config_text(config, "cpu"), _config_text(config, "mem")]
+        parts = [
+            cluster.display_name,
+            cluster.key,
+            node,
+            status,
+            _config_text(config, "cpu"),
+            _config_text(config, "mem"),
+        ]
         if not _matches_search(parts, tokens):
             continue
         meta = [cluster.display_name, "Host"]
@@ -237,9 +251,17 @@ def _global_search_hosts(tokens: list[str]) -> list[dict]:
 
 def _global_search_endpoints(tokens: list[str]) -> list[dict]:
     results = []
-    for endpoint in ProxmoxEndpoint.objects.filter(enabled=True).select_related("cluster").order_by("cluster__display_name", "name"):
+    for endpoint in (
+        ProxmoxEndpoint.objects.filter(enabled=True).select_related("cluster").order_by("cluster__display_name", "name")
+    ):
         if not _matches_search(
-            [endpoint.cluster.display_name, endpoint.cluster.key, endpoint.name, endpoint.url, endpoint.last_health_status],
+            [
+                endpoint.cluster.display_name,
+                endpoint.cluster.key,
+                endpoint.name,
+                endpoint.url,
+                endpoint.last_health_status,
+            ],
             tokens,
         ):
             continue
@@ -255,7 +277,9 @@ def _global_search_endpoints(tokens: list[str]) -> list[dict]:
                 url=reverse("core:dashboard"),
                 icon_family="vicon",
                 icon="cluster",
-                score=_search_score(tokens, endpoint.cluster.display_name, endpoint.cluster.key, endpoint.name, endpoint.url),
+                score=_search_score(
+                    tokens, endpoint.cluster.display_name, endpoint.cluster.key, endpoint.name, endpoint.url
+                ),
             )
         )
     return results

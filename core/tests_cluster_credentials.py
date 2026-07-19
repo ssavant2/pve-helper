@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import os
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -25,7 +24,6 @@ from core.services.secret_encryption import (
     generate_key,
     key_id_of,
 )
-
 
 KEY_A = base64.b64encode(b"A" * 32).decode()
 KEY_B = base64.b64encode(b"B" * 32).decode()
@@ -309,14 +307,10 @@ class EndpointUrlIdentityTests(TestCase):
 
         first = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)
         second = ProxmoxCluster.objects.create(key="b", display_name="B", enabled=False)
-        ProxmoxEndpoint.objects.create(
-            name="a1", url="https://pve.example.net:8006", cluster=first, enabled=True
-        )
+        ProxmoxEndpoint.objects.create(name="a1", url="https://pve.example.net:8006", cluster=first, enabled=True)
 
         with self.assertRaises(IntegrityError), transaction.atomic():
-            ProxmoxEndpoint.objects.create(
-                name="b1", url="https://PVE.example.net:8006/", cluster=second, enabled=True
-            )
+            ProxmoxEndpoint.objects.create(name="b1", url="https://PVE.example.net:8006/", cluster=second, enabled=True)
 
     def test_editing_a_url_keeps_the_canonical_form_in_sync(self):
         cluster = ProxmoxCluster.objects.create(key="a", display_name="A", enabled=True)

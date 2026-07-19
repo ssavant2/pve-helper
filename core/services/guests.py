@@ -105,8 +105,7 @@ def guest_identity_from_inventory(obj: Any) -> GuestIdentity:
         getattr(obj, "object_type", ""),
         getattr(obj, "vmid", None),
         getattr(obj, "name", ""),
-        cluster_key=getattr(getattr(obj, "cluster", None), "key", "")
-        or getattr(obj, "cluster_key", ""),
+        cluster_key=getattr(getattr(obj, "cluster", None), "key", "") or getattr(obj, "cluster_key", ""),
         node=getattr(obj, "node", ""),
     )
 

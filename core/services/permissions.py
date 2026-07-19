@@ -88,7 +88,7 @@ def _read_acl(path: str) -> tuple[list[AclEntry], bool]:
 
         is_default = line.startswith("default:")
         if is_default:
-            line = line[len("default:"):]
+            line = line[len("default:") :]
 
         parts = line.split(":", 2)
         if len(parts) != 3:
@@ -98,11 +98,13 @@ def _read_acl(path: str) -> tuple[list[AclEntry], bool]:
         if entry_type not in ("user", "group", "mask", "other"):
             continue
 
-        entries.append(AclEntry(
-            entry_type=entry_type,
-            principal=principal,
-            permissions=permissions,
-            default=is_default,
-        ))
+        entries.append(
+            AclEntry(
+                entry_type=entry_type,
+                principal=principal,
+                permissions=permissions,
+                default=is_default,
+            )
+        )
 
     return entries, True

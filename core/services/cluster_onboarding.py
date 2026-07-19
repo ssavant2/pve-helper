@@ -18,7 +18,6 @@ from django.utils import timezone
 
 from core.models import (
     AuditEvent,
-    ClusterTransportTrust,
     ConsoleSession,
     ProxmoxCluster,
     ProxmoxEndpoint,
@@ -52,7 +51,6 @@ from core.services.cluster_trust import (
 )
 from core.services.config import endpoint_name_from_url, normalize_endpoint_url
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient
-
 
 _ENDPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$")
 _MINIMUM_PROXMOX_VERSION = (9, 2)
@@ -170,9 +168,7 @@ def verify_new_cluster(
     )
     owner = ProxmoxCluster.objects.filter(discovered_ca_uuid=verified.identity.ca_uuid).first()
     if owner is not None:
-        raise ClusterOnboardingError(
-            f"This physical Proxmox cluster is already registered as '{owner.key}'."
-        )
+        raise ClusterOnboardingError(f"This physical Proxmox cluster is already registered as '{owner.key}'.")
     return candidate, verified
 
 
@@ -340,9 +336,7 @@ def disable_cluster(cluster: ProxmoxCluster) -> ProxmoxCluster:
     locked = ProxmoxCluster.objects.select_for_update().get(pk=cluster.pk)
     blockers = active_cluster_operation_labels(locked)
     if blockers:
-        raise ClusterOnboardingError(
-            "Disable was refused while provider work is active: " + "; ".join(blockers) + "."
-        )
+        raise ClusterOnboardingError("Disable was refused while provider work is active: " + "; ".join(blockers) + ".")
     if locked.enabled:
         locked.enabled = False
         locked.save(update_fields=["enabled", "updated_at"])
@@ -358,9 +352,7 @@ def remove_stored_credential(cluster: ProxmoxCluster) -> None:
     blockers = active_cluster_operation_labels(locked)
     if blockers:
         raise ClusterOnboardingError(
-            "Credential removal was refused while provider work is active: "
-            + "; ".join(blockers)
-            + "."
+            "Credential removal was refused while provider work is active: " + "; ".join(blockers) + "."
         )
     from core.models import ClusterCredential
 
@@ -490,9 +482,7 @@ def active_cluster_operation_labels(cluster: ProxmoxCluster) -> list[str]:
     # A scan is cluster-wide: it snapshots every enabled endpoint and reads this
     # cluster's nodes for the whole run. Disabling mid-scan lets the in-flight run
     # keep reading the just-disabled cluster, so any active scan blocks the change.
-    active_scans = ScanRun.objects.filter(
-        status__in=(ScanRun.Status.QUEUED, ScanRun.Status.RUNNING)
-    ).count()
+    active_scans = ScanRun.objects.filter(status__in=(ScanRun.Status.QUEUED, ScanRun.Status.RUNNING)).count()
     if active_scans:
         labels.append(f"{active_scans} running scan(s)")
     return labels
@@ -528,14 +518,15 @@ def _verify_connection(
     except (ProxmoxAPIError, TransportTrustError) as exc:
         raise ClusterOnboardingError(f"Verified Proxmox connection failed: {exc}") from exc
 
-    node_names = tuple(
-        sorted(
-            {
-                str(row.get("node") or "").strip()
-                for row in nodes_data if isinstance(row, dict) and row.get("node")
-            }
+    node_names = (
+        tuple(
+            sorted(
+                {str(row.get("node") or "").strip() for row in nodes_data if isinstance(row, dict) and row.get("node")}
+            )
         )
-    ) if isinstance(nodes_data, list) else ()
+        if isinstance(nodes_data, list)
+        else ()
+    )
     if not node_names:
         raise ClusterOnboardingError("The token could connect, but Proxmox returned no visible nodes.")
     _assert_administrator_permissions(permissions, administrator_role)
@@ -550,8 +541,7 @@ def _verify_connection(
         break
     if identity is None:
         raise ClusterOnboardingError(
-            "Could not verify the Proxmox cluster identity through any visible node: "
-            + "; ".join(identity_errors)
+            "Could not verify the Proxmox cluster identity through any visible node: " + "; ".join(identity_errors)
         )
     try:
         status = client.get("cluster/status")
@@ -582,14 +572,10 @@ def _verify_connection(
 def _assert_supported_proxmox_version(version: str) -> None:
     match = _PROXMOX_VERSION_RE.match(str(version or ""))
     if match is None:
-        raise ClusterOnboardingError(
-            "Could not verify the Proxmox VE version. Proxmox VE 9.2 or later is required."
-        )
+        raise ClusterOnboardingError("Could not verify the Proxmox VE version. Proxmox VE 9.2 or later is required.")
     observed = (int(match.group(1)), int(match.group(2)))
     if observed < _MINIMUM_PROXMOX_VERSION:
-        raise ClusterOnboardingError(
-            f"Proxmox VE 9.2 or later is required; the endpoint reports {version}."
-        )
+        raise ClusterOnboardingError(f"Proxmox VE 9.2 or later is required; the endpoint reports {version}.")
 
 
 def _assert_administrator_permissions(permissions, administrator_role) -> None:
@@ -607,8 +593,7 @@ def _assert_administrator_permissions(permissions, administrator_role) -> None:
         preview = ", ".join(missing[:8])
         suffix = f" and {len(missing) - 8} more" if len(missing) > 8 else ""
         raise ClusterOnboardingError(
-            "The API token does not have effective Administrator permissions on '/'. "
-            f"Missing: {preview}{suffix}."
+            f"The API token does not have effective Administrator permissions on '/'. Missing: {preview}{suffix}."
         )
 
 

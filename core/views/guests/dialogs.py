@@ -1,11 +1,33 @@
 """Guest read tabs + dialog option endpoints (snapshots/backup + *_options) — from _core."""
+
 from __future__ import annotations
-from ..common import *  # noqa: F401,F403
-from .. import common
-from ._core import (_backup_job_covers,_guest_backup_archives,_guest_backup_storages,_guest_cpu_model,_guest_movable_disks,_guest_nic_bridges,_guest_snapshot_entries,_migrate_not_allowed_reason,_node_available_bridges,_node_cpu_models,_node_cpu_signature,_ordered_snapshot_entries)
-from .operation_lifecycle import _guest_kind
-from .read_model_support import (_config_disk_bytes,_config_storage_ids,_guest_pool_memberships,_guest_tab_context,_require_guest)
+
 from core.services.storage_catalog import node_storage_rows
+
+from .. import common
+from ..common import *  # noqa: F401,F403
+from ._core import (
+    _backup_job_covers,
+    _guest_backup_archives,
+    _guest_backup_storages,
+    _guest_cpu_model,
+    _guest_movable_disks,
+    _guest_nic_bridges,
+    _guest_snapshot_entries,
+    _migrate_not_allowed_reason,
+    _node_available_bridges,
+    _node_cpu_models,
+    _node_cpu_signature,
+    _ordered_snapshot_entries,
+)
+from .operation_lifecycle import _guest_kind
+from .read_model_support import (
+    _config_disk_bytes,
+    _config_storage_ids,
+    _guest_pool_memberships,
+    _guest_tab_context,
+    _require_guest,
+)
 
 
 @app_login_required
@@ -30,8 +52,6 @@ def guest_snapshots(request, cluster_key: str, object_type: str, vmid: int):
             }
         )
     return render(request, "core/guest_snapshots.html", context)
-
-
 
 
 @app_login_required
@@ -69,8 +89,6 @@ def guest_backup(request, cluster_key: str, object_type: str, vmid: int):
     return render(request, "core/guest_backup.html", context)
 
 
-
-
 @app_login_required
 def guest_backup_options(request, cluster_key: str, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
@@ -82,8 +100,6 @@ def guest_backup_options(request, cluster_key: str, object_type: str, vmid: int)
             "guest": {"type": detail.object_type, "vmid": detail.vmid, "node": detail.node},
         }
     )
-
-
 
 
 @app_login_required
@@ -222,8 +238,6 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
     )
 
 
-
-
 @app_login_required
 def guest_clone_options(request, cluster_key: str, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
@@ -252,11 +266,7 @@ def guest_clone_options(request, cluster_key: str, object_type: str, vmid: int):
         default_storage = storages[0]
 
     used_vmids = sorted(
-        {
-            guest.vmid
-            for guest in common.fetch_live_guest_inventory(cluster=detail.cluster)
-            if guest.vmid is not None
-        }
+        {guest.vmid for guest in common.fetch_live_guest_inventory(cluster=detail.cluster) if guest.vmid is not None}
     )
 
     return JsonResponse(
@@ -272,8 +282,6 @@ def guest_clone_options(request, cluster_key: str, object_type: str, vmid: int):
             "is_template": is_template(detail.config),
         }
     )
-
-
 
 
 @app_login_required

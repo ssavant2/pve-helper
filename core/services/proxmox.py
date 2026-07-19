@@ -14,7 +14,6 @@ from django.core.cache import cache
 from .classification import extract_disk_references
 from .cluster_state_identity import cluster_cache_key, invalidate_cluster_cache
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -455,7 +454,9 @@ class ProxmoxClient:
             return "lxc"
         raise ProxmoxAPIError(f"Unsupported guest type: {object_type}")
 
-    def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
+    def _request(
+        self, method: str, path: str, *, data: dict[str, Any] | None = None, timeout: float | None = None
+    ) -> Any:
         headers = {}
         credential = self._credential
         if credential is not None:
@@ -577,14 +578,10 @@ def fetch_verified_guest_inventory(*, cluster) -> VerifiedGuestInventory:
     guests_by_key: dict[tuple[str, str, int], ProxmoxGuestSummary] = {}
     for resource in result.value or ():
         _add_guest_summary(guests_by_key, resource)
-    guests = tuple(
-        sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node))
-    )
+    guests = tuple(sorted(guests_by_key.values(), key=lambda guest: (guest.object_type, guest.vmid, guest.node)))
 
     attempted = tuple(attempt.endpoint_name for attempt in result.attempted)
-    errors = tuple(
-        f"{attempt.endpoint_name}: {attempt.error}" for attempt in result.attempted if not attempt.ok
-    )
+    errors = tuple(f"{attempt.endpoint_name}: {attempt.error}" for attempt in result.attempted if not attempt.ok)
     if not attempted:
         errors = errors + (f"Cluster '{result.cluster_key}' has no enabled Proxmox endpoint.",)
 
@@ -760,9 +757,7 @@ def _paused_vm_keys(unknown_vm_keys, deadline, *, cluster) -> set[tuple[str, str
             if timeout is None:
                 return paused
             try:
-                current = client.get(
-                    f"nodes/{quote(node, safe='')}/qemu/{vmid}/status/current", timeout=timeout
-                )
+                current = client.get(f"nodes/{quote(node, safe='')}/qemu/{vmid}/status/current", timeout=timeout)
             except ProxmoxAPIError:
                 continue
             if isinstance(current, dict) and current.get("qmpstatus") == "paused":

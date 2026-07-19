@@ -6,10 +6,9 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
-from django.db import connection
-from django.db import transaction
-from django.db.models import Count, F, Q
 from django.conf import settings
+from django.db import connection, transaction
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django_q.models import Task
@@ -28,12 +27,11 @@ from .models import (
     StorageSpaceSnapshot,
     TrashItem,
 )
-from .services.classification import classify_entry, extract_disk_references
-from .services.cluster_state_identity import cluster_advisory_lock_id
 from .services.audit_events import record_audit_event
-from .services.console_session_cleanup import prune_console_sessions
+from .services.classification import classify_entry
 from .services.cluster_resolver import client_for_endpoint, cluster_clients
-from .services.runtime_bootstrap import ensure_bootstrap
+from .services.cluster_state_identity import cluster_advisory_lock_id
+from .services.console_session_cleanup import prune_console_sessions
 from .services.current_guest_inventory import (
     ScanGuestObservation,
     reconcile_live_guest_inventory,
@@ -58,8 +56,9 @@ from .services.proxmox import (
     fetch_live_guest_status,
     fetch_verified_guest_inventory,
 )
-from .services.scan_schedule import scan_schedule_state
+from .services.runtime_bootstrap import ensure_bootstrap
 from .services.scan_retention import prune_scan_history
+from .services.scan_schedule import scan_schedule_state
 from .services.scheduled_actions import dispatch_due_scheduled_actions, execute_scheduled_action_run
 from .services.storage import StorageScanner
 from .services.storage_actions import (
@@ -68,16 +67,16 @@ from .services.storage_actions import (
     normalize_uploaded_proxmox_image_paths,
     purge_trash_item,
 )
-from .services.storage_visibility import ignored_relative_paths_for_storage
-from .services.storage_mounts import registered_mount_health, resolve_storage_mount, storage_mount_root
 from .services.storage_catalog import (
     classify_mounted_volume,
     refresh_storage_catalog,
     refresh_storage_metadata,
     refresh_storage_volumes,
 )
+from .services.storage_mounts import registered_mount_health, resolve_storage_mount
+from .services.storage_paths import storage_mount_root
+from .services.storage_visibility import ignored_relative_paths_for_storage
 from .services.task_queues import BULK_QUEUE_NAME, queued_task_ids
-
 
 SPACE_SNAPSHOT_RETENTION_DAYS = 8
 
@@ -90,11 +89,13 @@ def refresh_all_storage_metadata() -> dict[str, object]:
     rows = []
     for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
         state = refresh_storage_metadata(cluster)
-        rows.append({
-            "cluster_key": cluster.key,
-            "complete": state.metadata_complete,
-            "errors": state.metadata_errors,
-        })
+        rows.append(
+            {
+                "cluster_key": cluster.key,
+                "complete": state.metadata_complete,
+                "errors": state.metadata_errors,
+            }
+        )
     return {"clusters": rows, "complete": all(row["complete"] for row in rows) if rows else False}
 
 
@@ -102,11 +103,13 @@ def refresh_all_storage_volumes() -> dict[str, object]:
     rows = []
     for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
         state = refresh_storage_volumes(cluster)
-        rows.append({
-            "cluster_key": cluster.key,
-            "complete": state.volume_complete,
-            "errors": state.volume_errors,
-        })
+        rows.append(
+            {
+                "cluster_key": cluster.key,
+                "complete": state.volume_complete,
+                "errors": state.volume_errors,
+            }
+        )
     return {"clusters": rows, "complete": all(row["complete"] for row in rows) if rows else False}
 
 
@@ -135,7 +138,6 @@ def _durable_or_legacy_guest_operation(
     authorize provider access once identity contract version 1 is active.
     """
     return client_for_audit_event(event, preferred_endpoint_url=endpoint_url)
-
 
 
 def _refresh_cluster_guest_inventory(cluster) -> dict[str, object]:
@@ -228,9 +230,7 @@ def poll_guest_audit_task(
     node = node or str(details.get("proxmox_task_node") or ref.node)
     upid = upid or str(details.get("proxmox_task_upid") or "")
     timeout_seconds = int(
-        timeout_seconds
-        or details.get("task_timeout_seconds")
-        or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
+        timeout_seconds or details.get("task_timeout_seconds") or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
     )
     if not node or not upid:
         event.outcome = "failed"
@@ -353,9 +353,7 @@ def reap_stale_guest_tasks() -> dict[str, int]:
     failed so it stops showing as a phantom running row.
     """
     threshold = timezone.now() - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
-    stale = AuditEvent.objects.filter(
-        action__startswith="guest.", outcome="running", timestamp__lt=threshold
-    )
+    stale = AuditEvent.objects.filter(action__startswith="guest.", outcome="running", timestamp__lt=threshold)
     resolved = 0
     reaped = 0
     changed = False
@@ -432,9 +430,9 @@ def _reap_stale_tag_operations(*, now) -> int:
     interrupted = 0
     for candidate in candidates:
         details = dict(candidate.details) if isinstance(candidate.details, dict) else {}
-        activity_at = parse_datetime(
-            str(details.get("heartbeat_at") or details.get("queued_at") or "")
-        ) or candidate.timestamp
+        activity_at = (
+            parse_datetime(str(details.get("heartbeat_at") or details.get("queued_at") or "")) or candidate.timestamp
+        )
         if activity_at > threshold:
             continue
         with transaction.atomic():
@@ -442,9 +440,9 @@ def _reap_stale_tag_operations(*, now) -> int:
             if event.outcome not in {"queued", "running"}:
                 continue
             details = dict(event.details) if isinstance(event.details, dict) else {}
-            activity_at = parse_datetime(
-                str(details.get("heartbeat_at") or details.get("queued_at") or "")
-            ) or event.timestamp
+            activity_at = (
+                parse_datetime(str(details.get("heartbeat_at") or details.get("queued_at") or "")) or event.timestamp
+            )
             if activity_at > threshold:
                 continue
             task_id = str(details.get("worker_task_id") or "")
@@ -481,9 +479,9 @@ def _reap_stale_tag_inventory_refreshes(*, now) -> int:
     interrupted = 0
     for candidate in candidates:
         details = dict(candidate.details) if isinstance(candidate.details, dict) else {}
-        activity_at = parse_datetime(
-            str(details.get("heartbeat_at") or details.get("queued_at") or "")
-        ) or candidate.timestamp
+        activity_at = (
+            parse_datetime(str(details.get("heartbeat_at") or details.get("queued_at") or "")) or candidate.timestamp
+        )
         if activity_at > threshold:
             continue
         with transaction.atomic():
@@ -491,9 +489,9 @@ def _reap_stale_tag_inventory_refreshes(*, now) -> int:
             if event.outcome not in {"queued", "running"}:
                 continue
             details = dict(event.details) if isinstance(event.details, dict) else {}
-            activity_at = parse_datetime(
-                str(details.get("heartbeat_at") or details.get("queued_at") or "")
-            ) or event.timestamp
+            activity_at = (
+                parse_datetime(str(details.get("heartbeat_at") or details.get("queued_at") or "")) or event.timestamp
+            )
             if activity_at > threshold:
                 continue
             task_id = str(details.get("worker_task_id") or "")
@@ -510,6 +508,7 @@ def _reap_stale_tag_inventory_refreshes(*, now) -> int:
             interrupted += 1
     return interrupted
 
+
 def _resolve_force_stop_questions(*, now) -> int:
     """Resolve timed-out shutdown questions outside the request/HTML path."""
     candidates = list(
@@ -519,11 +518,7 @@ def _resolve_force_stop_questions(*, now) -> int:
             timestamp__gte=now - timedelta(minutes=60),
         ).order_by("-timestamp")
     )
-    candidates = [
-        event
-        for event in candidates
-        if _is_open_force_stop_question(event)
-    ]
+    candidates = [event for event in candidates if _is_open_force_stop_question(event)]
     if not candidates:
         return 0
 
@@ -582,9 +577,7 @@ def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
     """
     now = now or timezone.now()
     scan_cutoff = now - timedelta(seconds=settings.SCAN_TASK_TIMEOUT_SECONDS + STALE_BULK_TASK_GRACE_SECONDS)
-    inflate_cutoff = now - timedelta(
-        seconds=settings.STORAGE_INFLATE_TIMEOUT_SECONDS + STALE_BULK_TASK_GRACE_SECONDS
-    )
+    inflate_cutoff = now - timedelta(seconds=settings.STORAGE_INFLATE_TIMEOUT_SECONDS + STALE_BULK_TASK_GRACE_SECONDS)
 
     scans_reaped = 0
     scans = ScanRun.objects.filter(status=ScanRun.Status.RUNNING, started_at__lt=scan_cutoff)
@@ -676,9 +669,7 @@ def migrate_guest_disks_task(
     vmid = vmid or ref.vmid
     moves = moves if moves is not None else details.get("moves", [])
     timeout_seconds = int(
-        timeout_seconds
-        or details.get("task_timeout_seconds")
-        or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
+        timeout_seconds or details.get("task_timeout_seconds") or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
     )
     if not node or not isinstance(moves, list):
         event.outcome = "failed"
@@ -789,9 +780,7 @@ def restore_guest_backup_task(
     shutdown_first = bool(details.get("shutdown_first")) if shutdown_first is None else shutdown_first
     start_after = bool(details.get("start_after")) if start_after is None else start_after
     timeout_seconds = int(
-        timeout_seconds
-        or details.get("task_timeout_seconds")
-        or settings.BACKUP_TASK_TIMEOUT_SECONDS
+        timeout_seconds or details.get("task_timeout_seconds") or settings.BACKUP_TASK_TIMEOUT_SECONDS
     )
     if not node or not archive or not storage:
         event.outcome = "failed"
@@ -846,7 +835,9 @@ def restore_guest_backup_task(
         if error is None and not current_status:
             error = "Could not confirm the existing guest's power state. Restore was not started."
         if error is None and current_status != "stopped":
-            error = run_step("shutdown existing guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/shutdown", {})
+            error = run_step(
+                "shutdown existing guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/shutdown", {}
+            )
             if error == "cancelled":
                 return
             if error:
@@ -1079,12 +1070,16 @@ def _refresh_import_target_inventory(
 
 def enqueue_scheduled_scan() -> int | None:
     schedule_state = scan_schedule_state()
-    active_scan = ScanRun.objects.filter(
-        status__in=[
-            ScanRun.Status.QUEUED,
-            ScanRun.Status.RUNNING,
-        ]
-    ).order_by("-created_at").first()
+    active_scan = (
+        ScanRun.objects.filter(
+            status__in=[
+                ScanRun.Status.QUEUED,
+                ScanRun.Status.RUNNING,
+            ]
+        )
+        .order_by("-created_at")
+        .first()
+    )
     if active_scan:
         record_audit_event(
             username="system",
@@ -1136,9 +1131,7 @@ def purge_expired_trash(max_age_days: int = 30) -> None:
                 exc_info=True,
             )
             error = (
-                "Invalid storage path."
-                if str(exc) == "Invalid storage path."
-                else "Trash item could not be purged."
+                "Invalid storage path." if str(exc) == "Invalid storage path." else "Trash item could not be purged."
             )
             errors.append({"item_id": item.id, "error": error})
             continue
@@ -1203,9 +1196,7 @@ def _record_local_space_snapshots(recorded_at: datetime) -> int:
     the local-storage Monitor tab gets the same 2x/day time series as the
     mounted ones. Cheap: a couple of calls per node, deduped across endpoints."""
     created = 0
-    states = ClusterStorageNodeState.objects.select_related(
-        "cluster_storage", "cluster_storage__cluster"
-    ).filter(
+    states = ClusterStorageNodeState.objects.select_related("cluster_storage", "cluster_storage__cluster").filter(
         cluster_storage__cluster__enabled=True,
         cluster_storage__present=True,
         cluster_storage__shared=False,
@@ -1445,11 +1436,7 @@ def _run_scan(scan: ScanRun) -> None:
     # scanned even though the endpoint rows are enabled. exclude() keeps legacy
     # null-cluster endpoints and enabled-cluster endpoints; it drops only those whose
     # cluster is explicitly disabled.
-    endpoints = list(
-        ProxmoxEndpoint.objects.filter(enabled=True)
-        .exclude(cluster__enabled=False)
-        .order_by("name")
-    )
+    endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True).exclude(cluster__enabled=False).order_by("name"))
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
     scan_target = scan.target_storage
     if scan_target is not None:
@@ -1588,9 +1575,7 @@ def _run_scan(scan: ScanRun) -> None:
     scan.storage_gate_status = gate_status
     scan.error_details = {"proxmox": endpoint_errors} if endpoint_errors else {}
     scan.progress_message = (
-        f"Scanning {scan_target.display_name}."
-        if scan_target is not None
-        else "Scanning storage roots."
+        f"Scanning {scan_target.display_name}." if scan_target is not None else "Scanning storage roots."
     )
     scan.save(
         update_fields=[
@@ -1614,9 +1599,7 @@ def _run_scan(scan: ScanRun) -> None:
 
         health = registered_mount_health(storage)
         if not health.available:
-            storage_errors[storage.storage_id] = [
-                {"path": "/", "error": health.reason or "Mount unavailable."}
-            ]
+            storage_errors[storage.storage_id] = [{"path": "/", "error": health.reason or "Mount unavailable."}]
             continue
         scanner = StorageScanner(
             storage.storage_id,
@@ -1642,8 +1625,7 @@ def _run_scan(scan: ScanRun) -> None:
                     classification.evidence["comparison"] = {
                         "legacy": legacy_classification.classification,
                         "catalog": catalog_classification.classification,
-                        "matched": legacy_classification.classification
-                        == catalog_classification.classification,
+                        "matched": legacy_classification.classification == catalog_classification.classification,
                     }
                     if legacy_classification.classification != catalog_classification.classification:
                         logger.info(
@@ -1694,11 +1676,7 @@ def _run_scan(scan: ScanRun) -> None:
     scan.finished_at = timezone.now()
     scan.filesystem_scan_at = filesystem_at
     scan.summary_counts = summary
-    scan.progress_message = (
-        f"Scan completed with {warning_count} warning(s)."
-        if warning_count
-        else "Scan completed."
-    )
+    scan.progress_message = f"Scan completed with {warning_count} warning(s)." if warning_count else "Scan completed."
     scan.save(
         update_fields=[
             "status",
@@ -1782,9 +1760,7 @@ def _prune_scan_history_after_success() -> None:
     )
 
 
-def _record_space_snapshots(
-    scan: ScanRun | None, storages: list[StorageMount], recorded_at: datetime
-) -> int:
+def _record_space_snapshots(scan: ScanRun | None, storages: list[StorageMount], recorded_at: datetime) -> int:
     created = 0
     for storage in storages:
         space = storage_space_info(storage)
@@ -1853,9 +1829,8 @@ def _storage_gate_status(
                 continue
 
             ref = consumer.node_ref()
-            covered = (
-                ref is not None
-                and consumer.expected_node_name in cluster_coverage.get(consumer.cluster_id, set())
+            covered = ref is not None and consumer.expected_node_name in cluster_coverage.get(
+                consumer.cluster_id, set()
             )
             label = ref.serialize() if ref is not None else consumer.expected_node_name
             expected_refs.append(label)
@@ -1868,9 +1843,7 @@ def _storage_gate_status(
                 missing_names.append(consumer.expected_node_name)
                 missing_refs.append(label)
                 consumer.last_gate_status = "unavailable"
-            consumer.save(
-                update_fields=["last_gate_status", "last_successful_inventory_scan", "updated_at"]
-            )
+            consumer.save(update_fields=["last_gate_status", "last_successful_inventory_scan", "updated_at"])
 
         # An expectation with no consumer row cannot have been covered by anything.
         unqualified = sorted(expected_names - {c.expected_node_name for c in consumers})

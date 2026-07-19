@@ -13,11 +13,13 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import httpx
+from django.apps import apps
 from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.contrib.messages import get_messages
 from django.core.cache import cache
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.apps import apps
 from django.db import IntegrityError, connection, transaction
 from django.test import (
     RequestFactory,
@@ -27,8 +29,6 @@ from django.test import (
     override_settings,
 )
 from django.urls import reverse
-from django.contrib.auth import get_user_model
-from django.contrib.messages import get_messages
 from django.utils import timezone
 from django_q.models import Schedule
 
@@ -51,13 +51,12 @@ from core.models import (
     ScanRun,
     ScheduledAction,
     ScheduledActionRun,
-    StorageMount,
     StorageCatalogState,
+    StorageMount,
     StorageSpaceSnapshot,
     TrashItem,
 )
-from core.signals import ensure_always_on_schedules
-from core.tasks import poll_guest_audit_task, restore_guest_backup_task
+from core.services import runtime_bootstrap
 from core.services.audit_retention_schedule import AUDIT_RETENTION_SCHEDULE_NAME, audit_retention_schedule_state
 from core.services.classification import categorize_proxmox_path, classify_entry, extract_disk_references
 from core.services.cluster_activation import (
@@ -66,25 +65,24 @@ from core.services.cluster_activation import (
     set_initial_cluster_key,
 )
 from core.services.cluster_state_identity import cluster_cache_key
-from core.services import runtime_bootstrap
-from core.services.refs import GuestRef, NodeRef, RefParseError
-from core.services.runtime_bootstrap import ensure_bootstrap
+from core.services.file_actions import _storage_gate_blocked
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
-from core.services.storage_mounts import MountHealth
+from core.services.guest_inventory_refresh_schedule import GUEST_INVENTORY_REFRESH_SCHEDULE_NAME
 from core.services.proxmox import (
     LIVE_GUEST_DISPLAY_TIMEOUT_SECONDS,
     LIVE_GUEST_INVENTORY_CACHE_SECONDS,
-    LIVE_GUEST_STATUS_CACHE_SECONDS,
     InventoryResult,
     ProxmoxAPIError,
     ProxmoxClient,
     ProxmoxObject,
-    ProxmoxTaskTimeout,
     ProxmoxTaskResult,
+    ProxmoxTaskTimeout,
     _fetch_live_guest_inventory_uncached,
     _fetch_live_guest_status_uncached,
 )
 from core.services.recent_tasks import recent_task_page
+from core.services.refs import GuestRef, NodeRef, RefParseError
+from core.services.runtime_bootstrap import ensure_bootstrap
 from core.services.scan_retention import prune_scan_history
 from core.services.scan_schedule import SCAN_SCHEDULE_NAME, update_scan_schedule
 from core.services.scheduled_actions import (
@@ -98,7 +96,6 @@ from core.services.scheduled_actions import (
 )
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
-from core.services.guest_inventory_refresh_schedule import GUEST_INVENTORY_REFRESH_SCHEDULE_NAME
 from core.services.storage import StorageEntry, StorageScanner
 from core.services.storage_actions import (
     StorageActionError,
@@ -107,18 +104,21 @@ from core.services.storage_actions import (
     validate_inflate_storage_file,
 )
 from core.services.storage_details import storage_details
+from core.services.storage_mounts import MountHealth
 from core.services.trash_schedule import TRASH_PURGE_SCHEDULE_NAME, trash_purge_schedule_state
-from core.services.file_actions import _storage_gate_blocked
+from core.signals import ensure_always_on_schedules
 from core.tasks import (
     _storage_gate_status,
     dispatch_scheduled_actions,
     enqueue_scheduled_scan,
     inflate_storage_file_task,
     normalize_uploaded_proxmox_image_paths_task,
+    poll_guest_audit_task,
     purge_expired_audit_events,
     purge_expired_trash,
     reap_stale_guest_tasks,
     record_storage_space_snapshots,
+    restore_guest_backup_task,
     run_scan,
 )
 from pve_helper.settings import external_url_uses_https
@@ -154,9 +154,7 @@ class HermeticProxmoxMixin:
         # test already configured rather than violating that invariant.
         cluster = ProxmoxCluster.objects.filter(enabled=True).first()
         if cluster is None:
-            cluster = ProxmoxCluster.objects.create(
-                key="default", display_name="Default cluster", enabled=True
-            )
+            cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
         if not ProxmoxEndpoint.objects.filter(cluster=cluster, enabled=True).exists():
             ProxmoxEndpoint.objects.create(
                 name="hermetic-pve",
@@ -170,7 +168,6 @@ class HermeticProxmoxMixin:
         mocked.start()
         self.addCleanup(mocked.stop)
         return client
-
 
 
 class LiveGuestDisplayReadTests(TestCase):
@@ -200,10 +197,13 @@ class LiveGuestDisplayReadTests(TestCase):
         with patch("core.services.cluster_resolver.client_for_endpoint", return_value=client):
             guests = _fetch_live_guest_inventory_uncached(cluster=cluster)
 
-        self.assertEqual([(guest.object_type, guest.vmid, guest.name, guest.node) for guest in guests], [
-            ("ct", 101, "Lab CT", "pve2"),
-            ("vm", 500, "Lab VM", "pve1"),
-        ])
+        self.assertEqual(
+            [(guest.object_type, guest.vmid, guest.name, guest.node) for guest in guests],
+            [
+                ("ct", 101, "Lab CT", "pve2"),
+                ("vm", 500, "Lab VM", "pve1"),
+            ],
+        )
 
 
 class PowerActionMapTests(SimpleTestCase):
@@ -299,7 +299,9 @@ class MigrateActionTests(HermeticProxmoxMixin, SimpleTestCase):
         from core.views.guests import _migrate_guest_from_bulk_request
 
         request = RequestFactory().post("/", {"migrate_kind": "host", "migrate_target_node": "pve3"})
-        err, _details, response, client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
+        err, _details, response, client = _migrate_guest_from_bulk_request(
+            request, self._detail(), self._running_event()
+        )
         self.assertIn("must differ", err)
         self.assertIsNone(response)
         self.assertIsNone(client)
@@ -308,7 +310,9 @@ class MigrateActionTests(HermeticProxmoxMixin, SimpleTestCase):
         from core.views.guests import _migrate_guest_from_bulk_request
 
         request = RequestFactory().post("/", {"migrate_kind": "storage", "migrate_target_storage": ""})
-        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
+        err, _details, _response, _client = _migrate_guest_from_bulk_request(
+            request, self._detail(), self._running_event()
+        )
         self.assertIn("target storage", err.lower())
 
     def test_storage_migration_noop_when_all_disks_already_on_target(self):
@@ -316,7 +320,9 @@ class MigrateActionTests(HermeticProxmoxMixin, SimpleTestCase):
 
         # the guest's only disk is already on TrueNAS-VM → nothing to move
         request = RequestFactory().post("/", {"migrate_kind": "storage", "migrate_target_storage": "TrueNAS-VM"})
-        err, details, response, _client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
+        err, details, response, _client = _migrate_guest_from_bulk_request(
+            request, self._detail(), self._running_event()
+        )
         self.assertEqual(err, "")
         self.assertTrue(details.get("noop"))
         self.assertIsNone(response)
@@ -325,7 +331,9 @@ class MigrateActionTests(HermeticProxmoxMixin, SimpleTestCase):
         from core.views.guests import _migrate_guest_from_bulk_request
 
         request = RequestFactory().post("/", {"migrate_kind": "sideways"})
-        err, _details, _response, _client = _migrate_guest_from_bulk_request(request, self._detail(), self._running_event())
+        err, _details, _response, _client = _migrate_guest_from_bulk_request(
+            request, self._detail(), self._running_event()
+        )
         self.assertIn("Choose what to migrate", err)
 
 
@@ -505,9 +513,11 @@ class LinkedCloneTemplateGuardTests(TestCase):
             config={},
         )
         self.client.force_login(get_user_model().objects.create_user("tester", password="x"))
-        with patch("core.views.guests.actions._require_guest", return_value=detail), patch(
-            "core.views.common.fetch_live_guest_lineage", return_value={101: 100}
-        ), patch("core.views.guests.actions._guest_post_with_client") as post:
+        with (
+            patch("core.views.guests.actions._require_guest", return_value=detail),
+            patch("core.views.common.fetch_live_guest_lineage", return_value={101: 100}),
+            patch("core.views.guests.actions._guest_post_with_client") as post,
+        ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
                 {"bulk_action": "template", "guest": ref.serialize()},
@@ -572,9 +582,7 @@ class LinkedCloneBaseProtectionTests(TestCase):
         from core.models import ProxmoxInventory
         from core.views.guests.actions import _destroy_guest_from_bulk_request
 
-        cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default", enabled=True
-        )
+        cluster = ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
         ref = GuestRef(cluster.key, "vm", 505, "pve3")
         detail = SimpleNamespace(
             cluster=cluster,
@@ -686,17 +694,13 @@ class DisplayDiskReferenceTests(SimpleTestCase):
             ],
             {102: 505},
         )
-        self.assertEqual(
-            refs, [{"volid": "TrueNAS-FS:102/vm-102-disk-0.qcow2", "backed_by": "base-505"}]
-        )
+        self.assertEqual(refs, [{"volid": "TrueNAS-FS:102/vm-102-disk-0.qcow2", "backed_by": "base-505"}])
 
     def test_non_clone_unchanged(self):
         from core.views.storage import _display_disk_references
 
         refs = _display_disk_references(100, ["TrueNAS-FS:100/vm-100-disk-0.qcow2"], {})
-        self.assertEqual(
-            refs, [{"volid": "TrueNAS-FS:100/vm-100-disk-0.qcow2", "backed_by": ""}]
-        )
+        self.assertEqual(refs, [{"volid": "TrueNAS-FS:100/vm-100-disk-0.qcow2", "backed_by": ""}])
 
 
 class StorageRescanAfterCloneTests(TestCase):
@@ -704,7 +708,9 @@ class StorageRescanAfterCloneTests(TestCase):
     so new/removed disks reclassify at once instead of lingering as orphans."""
 
     def _storage(self):
-        return StorageMount.objects.create(storage_id="TrueNAS-FS", display_name="TrueNAS-FS", path="/tmp/x", enabled=True)
+        return StorageMount.objects.create(
+            storage_id="TrueNAS-FS", display_name="TrueNAS-FS", path="/tmp/x", enabled=True
+        )
 
     def test_enqueues_scoped_scan_for_affected_storage(self):
         from core.tasks import enqueue_storage_rescan
@@ -811,9 +817,7 @@ class ShutdownForceStopOfferTests(TestCase):
 
 class GuestTaskReaperTests(TestCase):
     def setUp(self):
-        self.cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
 
     def _running_event(self, age_seconds: int):
         from datetime import timedelta
@@ -856,7 +860,6 @@ class GuestTaskReaperTests(TestCase):
         self.assertTrue(Schedule.objects.filter(name=GUEST_TASK_REAPER_SCHEDULE_NAME).exists())
 
     def test_reaper_resolves_force_stop_question_when_guest_is_already_stopped(self):
-        now = timezone.now()
         event = AuditEvent.objects.create(
             cluster=self.cluster,
             action="guest.power.shutdown",
@@ -1186,9 +1189,7 @@ class ClassificationTests(SimpleTestCase):
         self.assertEqual(result.classification, FileInventory.Classification.PROXMOX_CONTENT)
 
     def test_ct_template_tarball_is_content_but_stray_file_is_not(self):
-        good = self._classify(
-            relative_path="template/cache/debian-12.tar.zst", content_category="ct_template"
-        )
+        good = self._classify(relative_path="template/cache/debian-12.tar.zst", content_category="ct_template")
         self.assertEqual(good.classification, FileInventory.Classification.PROXMOX_CONTENT)
         stray = self._classify(relative_path="template/cache/readme.md", content_category="ct_template")
         self.assertEqual(stray.classification, FileInventory.Classification.UNKNOWN)
@@ -1459,9 +1460,7 @@ class StorageGateClusterIdentityTests(TestCase):
         self.now = timezone.now()
 
     def _consumer(self, cluster, node="pve1"):
-        return ProxmoxStorageConsumer.objects.create(
-            storage=self.storage, cluster=cluster, expected_node_name=node
-        )
+        return ProxmoxStorageConsumer.objects.create(storage=self.storage, cluster=cluster, expected_node_name=node)
 
     def test_cluster_a_success_does_not_satisfy_cluster_b_gate(self):
         self._consumer(self.cluster_a)
@@ -1511,9 +1510,7 @@ class StorageGateClusterIdentityTests(TestCase):
 
     def test_unattributed_consumer_is_rejected_by_the_database(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
-            ProxmoxStorageConsumer.objects.create(
-                storage=self.storage, cluster=None, expected_node_name="pve1"
-            )
+            ProxmoxStorageConsumer.objects.create(storage=self.storage, cluster=None, expected_node_name="pve1")
 
     def test_expectation_without_a_consumer_row_is_missing(self):
         status = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)["nfs-vm"]
@@ -1612,14 +1609,18 @@ class LocalDatastoreNavTests(TestCase):
         from core.services.local_datastores import local_datastore_nav
 
         cache.clear()
-        cluster = ProxmoxCluster.objects.create(
-            key="local-storage", display_name="Local storage", enabled=True
-        )
+        cluster = ProxmoxCluster.objects.create(key="local-storage", display_name="Local storage", enabled=True)
         local_lvm = ClusterStorage.objects.create(cluster=cluster, storage_id="local-lvm", storage_type="lvmthin")
         local = ClusterStorage.objects.create(cluster=cluster, storage_id="local", storage_type="dir")
-        shared = ClusterStorage.objects.create(cluster=cluster, storage_id="TrueNAS-VM", storage_type="nfs", shared=True)
-        ClusterStorageNodeState.objects.create(cluster_storage=local_lvm, node="pve1", total_bytes=100, used_bytes=40, available_bytes=60, active=True)
-        ClusterStorageNodeState.objects.create(cluster_storage=local, node="pve1", total_bytes=200, used_bytes=50, available_bytes=150, active=True)
+        shared = ClusterStorage.objects.create(
+            cluster=cluster, storage_id="TrueNAS-VM", storage_type="nfs", shared=True
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=local_lvm, node="pve1", total_bytes=100, used_bytes=40, available_bytes=60, active=True
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=local, node="pve1", total_bytes=200, used_bytes=50, available_bytes=150, active=True
+        )
         ClusterStorageNodeState.objects.create(cluster_storage=local, node="pve2", total_bytes=0, active=True)
         ClusterStorageNodeState.objects.create(cluster_storage=shared, node="pve1", active=True)
 
@@ -1959,9 +1960,7 @@ class ScheduledRecurrenceTests(TestCase):
 
 class ScheduledActionDispatchTests(TestCase):
     def setUp(self):
-        self.cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
 
     def _action(self, *, next_run_at=None, catch_up_policy=None, max_lateness_minutes=0):
         return ScheduledAction.objects.create(
@@ -2115,9 +2114,7 @@ class ScheduledActionDispatchTests(TestCase):
 
 class ScheduledActionExecutionTests(TestCase):
     def setUp(self):
-        self.cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
 
     class FakeProxmoxClient:
         def __init__(self, *, status="stopped", config=None, task_success=True):
@@ -2424,9 +2421,7 @@ class ScanRetentionTests(TestCase):
     def test_null_timestamp_scan_does_not_displace_file_inventory(self):
         """PostgreSQL DESC must not sort legacy NULL timestamps first."""
         now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.get_current_timezone())
-        storage = StorageMount.objects.create(
-            storage_id="nfs-vm", display_name="nfs-vm", path="/vm"
-        )
+        storage = StorageMount.objects.create(storage_id="nfs-vm", display_name="nfs-vm", path="/vm")
         file_scan = self._completed_scan(now - timedelta(hours=1))
         legacy_metadata = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         current_file = self._file(file_scan, storage, "images/500/vm-500-disk-0.qcow2")
@@ -2440,12 +2435,8 @@ class ScanRetentionTests(TestCase):
 
 class ScanTaskTests(TestCase):
     def test_run_scan_uses_inventory_result_ok_and_audits_completion(self):
-        cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
-        ProxmoxEndpoint.objects.create(
-            name="pve1", url="https://pve1.example.test:8006", cluster=cluster
-        )
+        cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
+        ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.test:8006", cluster=cluster)
         StorageMount.objects.create(storage_id="nfs-fs", display_name="nfs-fs", path="/storage")
         scan = ScanRun.objects.create(progress_message="Queued")
 
@@ -2492,13 +2483,9 @@ class ScanTaskTests(TestCase):
         """A guest on a node with no endpoint row of its own must still be scanned
         through the cluster's reachable member, so its shared-storage disk is
         referenced and never mis-classified as a likely orphan."""
-        cluster = ProxmoxCluster.objects.create(
-            key="clustera", display_name="Cluster A", enabled=True
-        )
+        cluster = ProxmoxCluster.objects.create(key="clustera", display_name="Cluster A", enabled=True)
         # Only pve1 has an endpoint row; pve2 hosts a live guest but is un-endpointed.
-        ProxmoxEndpoint.objects.create(
-            name="pve1", url="https://pve1.example.test:8006", cluster=cluster
-        )
+        ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.test:8006", cluster=cluster)
         StorageMount.objects.create(storage_id="nfs-fs", display_name="nfs-fs", path="/storage")
         scan = ScanRun.objects.create(progress_message="Queued")
 
@@ -2774,9 +2761,7 @@ class StartupCheckTests(SimpleTestCase):
 class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
     def setUp(self):
         super().setUp()
-        self.cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
         registry_patch = patch("core.services.tag_catalog.registered_tags", return_value=({}, ""))
         registry_patch.start()
         self.addCleanup(registry_patch.stop)
@@ -2899,9 +2884,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             status="online",
         )
         cache.set(
-            cluster_cache_key(
-                "guest-agent-summary:v2", self.cluster, "pve1", "vm", 500
-            ),
+            cluster_cache_key("guest-agent-summary:v2", self.cluster, "pve1", "vm", 500),
             {
                 "enabled": True,
                 "running": True,
@@ -2983,6 +2966,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         response = self.client.get(reverse("core:dashboard"))
         self.assertNotContains(response, "Save")
+        content_security_policy = response.headers["Content-Security-Policy"]
+        self.assertIn("script-src 'self'", content_security_policy)
+        self.assertIn("script-src-attr 'none'", content_security_policy)
+        self.assertIn("style-src-attr 'unsafe-inline'", content_security_policy)
+        self.assertIn("object-src 'none'", content_security_policy)
+        self.assertIn("frame-ancestors 'none'", content_security_policy)
         self.assertContains(response, "data-auto-submit-form")
         self.assertContains(response, "<title>pve-helper</title>")
         self.assertContains(response, 'rel="icon"')
@@ -3314,7 +3303,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "File Actions (last 7 days)")
         self.assertContains(response, "Recent Scans (last 7 days)")
         self.assertContains(response, "Proxmox does not expose per-datastore performance metrics here")
-        self.assertLess(response.content.decode().index("File Actions (last 7 days)"), response.content.decode().index("Recent Scans (last 7 days)"))
+        self.assertLess(
+            response.content.decode().index("File Actions (last 7 days)"),
+            response.content.decode().index("Recent Scans (last 7 days)"),
+        )
         self.assertContains(response, "Normalize uploaded disk metadata")
         self.assertNotContains(response, "file.upload_normalized")
         self.assertContains(response, "Recent scan")
@@ -4593,7 +4585,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
         AuditEvent.objects.all().delete()
-        AuditEvent.objects.create(username="viewer", action="scan.completed", object_type="scan_run", object_id="scan-1", module="storage")
+        AuditEvent.objects.create(
+            username="viewer", action="scan.completed", object_type="scan_run", object_id="scan-1", module="storage"
+        )
 
         response = self.client.get(reverse("core:audit_export"), {"format": "xlsx"})
 
@@ -4952,7 +4946,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 )
 
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response["X-Accel-Redirect"], "/_pve_helper_download/nfs-vm/dump/backup%20with%20space.vma.zst")
+            self.assertEqual(
+                response["X-Accel-Redirect"], "/_pve_helper_download/nfs-vm/dump/backup%20with%20space.vma.zst"
+            )
             self.assertEqual(response["Accept-Ranges"], "bytes")
             self.assertIn("attachment", response["Content-Disposition"])
             self.assertIn("backup with space.vma.zst", response["Content-Disposition"])
@@ -5144,7 +5140,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             self.assertRedirects(response, browser_url)
             self.assertEqual((root / "upload.txt").read_bytes(), b"hello")
-            self.assertTrue(FileInventory.objects.filter(scan_run__status=ScanRun.Status.COMPLETED, path="upload.txt").exists())
+            self.assertTrue(
+                FileInventory.objects.filter(scan_run__status=ScanRun.Status.COMPLETED, path="upload.txt").exists()
+            )
             event = AuditEvent.objects.get(action="file.uploaded")
             self.assertEqual(event.object_id, f"{storage.mount_ref}:upload.txt")
             self.assertIn("Upload file", [task["name"] for task in recent_task_page(limit=10).tasks])
@@ -5368,7 +5366,15 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            nfs_file = root / ".trash" / "pve-helper" / "20260629T203814393614Z" / "images" / "505" / ".nfs000000000001d51f00000001"
+            nfs_file = (
+                root
+                / ".trash"
+                / "pve-helper"
+                / "20260629T203814393614Z"
+                / "images"
+                / "505"
+                / ".nfs000000000001d51f00000001"
+            )
             nfs_file.parent.mkdir(parents=True)
             nfs_file.write_bytes(b"temporary")
             storage = StorageMount.objects.create(
@@ -5452,7 +5458,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             trash_item.refresh_from_db()
             self.assertEqual(trash_item.restore_status, TrashItem.RestoreStatus.PURGED)
             self.assertFalse(trash_file.exists())
-            self.assertEqual(AuditEvent.objects.get(action="file.purged").object_id, f"{storage.mount_ref}:dump/old.vma.zst")
+            self.assertEqual(
+                AuditEvent.objects.get(action="file.purged").object_id, f"{storage.mount_ref}:dump/old.vma.zst"
+            )
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_trash_item_purge_requires_confirmation(self):
@@ -5601,7 +5609,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             trash_path = root / trash_item.trash_path
             self.assertTrue(trash_path.exists())
             self.assertEqual(trash_path.read_bytes(), b"orphan")
-            self.assertEqual(AuditEvent.objects.get(action="file.trashed").object_id, f"{storage.mount_ref}:dump/orphan.vma.zst")
+            self.assertEqual(
+                AuditEvent.objects.get(action="file.trashed").object_id, f"{storage.mount_ref}:dump/orphan.vma.zst"
+            )
 
             trash_url = reverse("core:storage_trash", args=[storage.mount_ref])
             response = self.client.get(trash_url)
@@ -5618,7 +5628,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertTrue(original.exists())
             self.assertEqual(original.read_bytes(), b"orphan")
             self.assertFalse(trash_path.exists())
-            self.assertEqual(AuditEvent.objects.get(action="file.restored").object_id, f"{storage.mount_ref}:dump/orphan.vma.zst")
+            self.assertEqual(
+                AuditEvent.objects.get(action="file.restored").object_id, f"{storage.mount_ref}:dump/orphan.vma.zst"
+            )
             task_names = [task["name"] for task in recent_task_page(limit=10).tasks]
             self.assertIn("Move file to trash", task_names)
             self.assertIn("Restore file", task_names)
@@ -6081,7 +6093,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertEqual((target_dir / "move-me.iso").read_bytes(), b"move")
             self.assertFalse(FileInventory.objects.filter(scan_run=scan, path="template/iso/move-me.iso").exists())
             self.assertTrue(FileInventory.objects.filter(scan_run=scan, path="snippets/move-me.iso").exists())
-            self.assertEqual(AuditEvent.objects.get(action="file.moved").details["old_path"], "template/iso/move-me.iso")
+            self.assertEqual(
+                AuditEvent.objects.get(action="file.moved").details["old_path"], "template/iso/move-me.iso"
+            )
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_multiple_files_can_be_moved_to_the_same_directory(self):
@@ -6230,35 +6244,43 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "2026-06-26 08:15:30")
         self.assertContains(response, "Queued scan")
 
-        with patch(
-            "core.views.common.storage_space_info",
-            return_value=StorageSpaceInfo(
-                ok=True,
-                total_bytes=10 * 1024**4,
-                available_bytes=4 * 1024**4,
-                used_bytes=6 * 1024**4,
-                used_percent=60.0,
-                filesystem_type="nfs4",
-                access_mode="read_write",
-                access_label="Read/write",
-                access_class="success",
-                can_write=True,
-            ),
-        ):
-            response = self.client.get(reverse("core:datastores"))
+    def test_storage_catalog_and_pve_helper_settings_have_separate_navigation(self):
+        metadata_generation = uuid.uuid4()
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="shared-nfs",
+            storage_type="nfs",
+            shared=True,
+            present=True,
+            observed_metadata_generation=metadata_generation,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            active=True,
+            enabled=True,
+            present=True,
+            observed_metadata_generation=metadata_generation,
+        )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Latest Scan")
-        self.assertContains(response, "Filesystem")
-        self.assertContains(response, "60.0%")
-        self.assertContains(response, "/mnt/tank/proxmox-fs")
-        self.assertContains(response, "/mnt/pve/nfs-fs")
-        self.assertNotContains(response, "/storages/truenas-fs")
-        self.assertContains(response, "PVE options")
-        self.assertContains(response, "default")
-        self.assertContains(response, "PVE-helper access")
-        self.assertContains(response, "Read/write")
-        self.assertContains(response, "2026-06-26 08:15:30")
+        catalog = self.client.get(reverse("core:datastores"))
+        self.assertEqual(catalog.status_code, 200)
+        self.assertContains(catalog, "Storage Catalog")
+        self.assertContains(catalog, "Proxmox storage catalog")
+        self.assertContains(catalog, "shared-nfs")
+        self.assertContains(catalog, reverse("core:settings_storage"))
+        self.assertNotContains(catalog, "Registered associations")
+
+        settings_root = self.client.get(reverse("core:pve_helper_settings"))
+        self.assertRedirects(settings_root, reverse("core:settings_storage"))
+        storage_settings = self.client.get(reverse("core:settings_storage"))
+        self.assertEqual(storage_settings.status_code, 200)
+        self.assertContains(storage_settings, "PVE-helper Settings")
+        self.assertContains(storage_settings, "Storage access")
+        self.assertContains(storage_settings, "Registered associations")
+        self.assertContains(storage_settings, "Register host mount")
+        self.assertContains(storage_settings, "PVE-helper Settings", count=2)
+        self.assertNotContains(storage_settings, "Proxmox storage catalog")
 
     def test_recent_tasks_endpoint_paginates_scans(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -6298,7 +6320,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             created_at=timezone.now() - timedelta(hours=2),
             finished_at=timezone.now() - timedelta(minutes=61),
         )
-        fresh_scan = ScanRun.objects.create(
+        ScanRun.objects.create(
             status=ScanRun.Status.COMPLETED,
             progress_message="Fresh scan",
             finished_at=timezone.now() - timedelta(minutes=59),
@@ -6403,6 +6425,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         class FakeProxmoxClient:
             endpoint = "https://pve1.example.invalid:8006/api2/json"
+
             def stop_task(self, *, node, upid):
                 stopped_tasks.append((self.endpoint, node, upid))
 
@@ -6423,7 +6446,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         event.refresh_from_db()
         self.assertEqual(event.outcome, "cancelled")
         self.assertEqual(event.details["cancelled_by"], "operator")
-        self.assertEqual(stopped_tasks, [("https://pve1.example.invalid:8006/api2/json", "pve1", "UPID:pve1:shutdown:500:root@pam:")])
+        self.assertEqual(
+            stopped_tasks, [("https://pve1.example.invalid:8006/api2/json", "pve1", "UPID:pve1:shutdown:500:root@pam:")]
+        )
         self.assertTrue(AuditEvent.objects.filter(action="task.cancelled", outcome="success").exists())
 
     def test_cancel_recent_completed_guest_task_is_rejected(self):
@@ -6549,10 +6574,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             response = self.client.get(reverse("core:vms_overview"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'data-vm-overview')
-        self.assertContains(response, 'data-vm-select')
-        self.assertContains(response, 'data-vm-bulk-form')
-        self.assertContains(response, 'data-vm-agent-info-url')
+        self.assertContains(response, "data-vm-overview")
+        self.assertContains(response, "data-vm-select")
+        self.assertContains(response, "data-vm-bulk-form")
+        self.assertContains(response, "data-vm-agent-info-url")
         self.assertEqual(LIVE_GUEST_INVENTORY_CACHE_SECONDS, 30)
         self.assertContains(response, "Power state updates right after an action and otherwise refreshes periodically.")
         self.assertContains(response, "Has snapshot")
@@ -6593,9 +6618,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
 
         cache.set(
-            cluster_cache_key(
-                "guest-snapshot-present:v2", self.cluster, "pve1", "vm", 500
-            ),
+            cluster_cache_key("guest-snapshot-present:v2", self.cluster, "pve1", "vm", 500),
             True,
             60,
         )
@@ -6702,9 +6725,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
 
         cache.set(
-            cluster_cache_key(
-                "guest-agent-summary:v2", self.cluster, "pve1", "vm", 500
-            ),
+            cluster_cache_key("guest-agent-summary:v2", self.cluster, "pve1", "vm", 500),
             {
                 "enabled": True,
                 "running": True,
@@ -6910,8 +6931,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Virtual Hardware")
         self.assertContains(response, "VM Options")
         self.assertContains(response, "Boot Options")
-        self.assertContains(response, 'data-boot-order-editor')
-        self.assertContains(response, 'data-hotplug-editor')
+        self.assertContains(response, "data-boot-order-editor")
+        self.assertContains(response, "data-hotplug-editor")
         self.assertContains(response, "scsi0")
         self.assertContains(response, "vmbr0")
 
@@ -7013,7 +7034,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False
+        )
         self.assertEqual(fake_client.digest, "abc123")
         self.assertEqual(fake_client.delete, [])
         self.assertEqual(
@@ -7083,7 +7106,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:guest_summary", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False
+        )
         self.assertEqual(
             fake_client.updates,
             {
@@ -7240,7 +7265,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:guest_summary", args=[self.cluster.key, "ct", 601]), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:guest_summary", args=[self.cluster.key, "ct", 601]), fetch_redirect_response=False
+        )
         self.assertEqual(fake_client.digest, "ctdigest")
         self.assertEqual(fake_client.delete, [])
         self.assertEqual(fake_client.updates["hostname"], "ct-renamed")
@@ -7250,7 +7277,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(fake_client.updates["features"], "nesting=1,fuse=1,mount=nfs;cifs")
         self.assertEqual(fake_client.updates["startup"], "order=1,up=10,down=20")
         self.assertEqual(fake_client.updates["mp0"], "nfs-ct:4,mp=/srv/new,backup=1,size=4G")
-        self.assertEqual(fake_client.updates["net0"], "name=eth0,bridge=vmbr1,firewall=1,gw=192.0.2.1,ip=192.0.2.60/24,tag=42,type=veth")
+        self.assertEqual(
+            fake_client.updates["net0"],
+            "name=eth0,bridge=vmbr1,firewall=1,gw=192.0.2.1,ip=192.0.2.60/24,tag=42,type=veth",
+        )
         self.assertEqual(fake_client.updates["mp1"], "nfs-ct:2,mp=/opt/app")
         self.assertEqual(fake_client.updates["net1"], "name=eth1,bridge=vmbr0,firewall=1,ip=dhcp,type=veth")
         self.assertEqual(
@@ -7446,7 +7476,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     self.updates.append((node, object_type, vmid, updates, delete, digest))
 
             fake_client = self._patch_provider_client(FakeClient())
-            live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
+            live_guest = self._live_guest(
+                object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped"
+            )
             with (
                 patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
                 patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
@@ -7527,7 +7559,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     self.updated = True
 
             fake_client = self._patch_provider_client(FakeClient())
-            live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped")
+            live_guest = self._live_guest(
+                object_type="vm", vmid=500, name="Lab Template", node="pve1", status="stopped"
+            )
             with (
                 patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
                 patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
@@ -7586,7 +7620,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         ):
             response = self.client.post(
                 reverse("core:vms_bulk_action"),
-                {"bulk_action": "pool", "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()], "pool_id": "new-pool"},
+                {
+                    "bulk_action": "pool",
+                    "guest": [GuestRef(self.cluster.key, "vm", 500).serialize()],
+                    "pool_id": "new-pool",
+                },
             )
 
         self.assertRedirects(response, reverse("core:vms_overview"), fetch_redirect_response=False)
@@ -7724,9 +7762,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
             patch("core.views.common.async_task", return_value="poll-task-1") as poll_mock,
         ):
-            response = self.client.post(reverse("core:guest_snapshot_delete", args=[self.cluster.key, "vm", 500, "snap-a"]))
+            response = self.client.post(
+                reverse("core:guest_snapshot_delete", args=[self.cluster.key, "vm", 500, "snap-a"])
+            )
 
-        self.assertRedirects(response, reverse("core:guest_snapshots", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:guest_snapshots", args=[self.cluster.key, "vm", 500]), fetch_redirect_response=False
+        )
         self.assertEqual(fake_client.deletes, ["nodes/pve1/qemu/500/snapshot/snap-a"])
         # The delete returns a UPID; the task is polled in the background (async
         # audit), not by blocking the request on wait_for_task.
@@ -7905,7 +7947,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:vms_bulk_action"),
                 {
                     "bulk_action": "tags",
-                    "guest": [GuestRef(self.cluster.key, "vm", 500).serialize(), GuestRef(self.cluster.key, "vm", 501).serialize()],
+                    "guest": [
+                        GuestRef(self.cluster.key, "vm", 500).serialize(),
+                        GuestRef(self.cluster.key, "vm", 501).serialize(),
+                    ],
                     "tags_mode": "add",
                     "tags_value": "new old",
                 },
@@ -7977,7 +8022,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             proxmox_task_node="pve1",
         )
 
-        with patch("core.views.common.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
+        with patch(
+            "core.views.common.fetch_live_guest_inventory",
+            side_effect=AssertionError("overview should not fetch live targets"),
+        ):
             response = self.client.get(reverse("core:scheduled_tasks"))
 
         self.assertEqual(response.status_code, 200)
@@ -7993,8 +8041,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Latest 10 Runs")
         self.assertContains(response, "Success")
 
-        with patch("core.views.common.fetch_live_guest_inventory", side_effect=AssertionError("overview should not fetch live targets")):
-            response = self.client.get(reverse("core:scheduled_tasks"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()})
+        with patch(
+            "core.views.common.fetch_live_guest_inventory",
+            side_effect=AssertionError("overview should not fetch live targets"),
+        ):
+            response = self.client.get(
+                reverse("core:scheduled_tasks"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()}
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "filtered to VM 500 (Lab VM)")
@@ -8042,7 +8095,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             status=ScheduledActionRun.Status.QUEUED,
         )
 
-        response = self.client.get(reverse("core:scheduled_task_runs"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()})
+        response = self.client.get(
+            reverse("core:scheduled_task_runs"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()}
+        )
 
         self.assertEqual(response.status_code, 200)
         runs = response.json()["runs"]
@@ -8673,7 +8728,14 @@ class VmRegisterServiceTests(SimpleTestCase):
         self.assertEqual(fresh["efidisk0"], "S:1,efitype=4m,pre-enrolled-keys=1")
 
         imported = _base_body(
-            {"vmid": "1", "name": "x", "bios": "ovmf", "efidisk_storage": "S", "efidisk_source": "S:9/vm-9-disk-0.raw", "nics": []}
+            {
+                "vmid": "1",
+                "name": "x",
+                "bios": "ovmf",
+                "efidisk_storage": "S",
+                "efidisk_source": "S:9/vm-9-disk-0.raw",
+                "nics": [],
+            }
         )
         self.assertIn("import-from=S:9/vm-9-disk-0.raw", imported["efidisk0"])
 
@@ -8700,9 +8762,7 @@ class VmRegisterViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("vmreg-tester", is_staff=True, is_superuser=True)
         self.client.force_login(self.user)
-        self.cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
 
     _OPTS = {
         "available": True,
@@ -8752,9 +8812,7 @@ class GuestBackupRestoreTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("backup-operator", password="unused")
         self.client.force_login(self.user)
-        self.cluster = ProxmoxCluster.objects.create(
-            key="default", display_name="Default cluster", enabled=True
-        )
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
         CurrentGuestInventory.objects.create(
             cluster=self.cluster,
             object_type="vm",
@@ -8788,11 +8846,17 @@ class GuestBackupRestoreTests(TestCase):
         )
         for node in nodes:
             ClusterStorageNodeState.objects.create(
-                cluster_storage=backup, node=node, active=True, enabled=True,
+                cluster_storage=backup,
+                node=node,
+                active=True,
+                enabled=True,
                 observed_metadata_generation=metadata_generation,
             )
             ClusterStorageNodeState.objects.create(
-                cluster_storage=images, node=node, active=True, enabled=True,
+                cluster_storage=images,
+                node=node,
+                active=True,
+                enabled=True,
                 observed_metadata_generation=metadata_generation,
             )
             for archive in archives:
@@ -8826,6 +8890,7 @@ class GuestBackupRestoreTests(TestCase):
 
     def test_backup_now_tracks_the_vzdump_upid(self):
         self._seed_storage_catalog(nodes=("pve1",))
+
         class FakeClient:
             endpoint = "https://pve1.invalid:8006"
 

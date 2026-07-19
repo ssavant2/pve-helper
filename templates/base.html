@@ -5,40 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>pve-helper</title>
-    <script>
-      (function () {
-        try {
-          var theme = localStorage.getItem("pve-helper-theme");
-          if (theme !== "light" && theme !== "dark") {
-            theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-          }
-          document.documentElement.dataset.theme = theme;
-          document.documentElement.style.colorScheme = theme;
-        } catch (error) {
-          document.documentElement.dataset.theme = "light";
-        }
-      })();
-    </script>
-    <script>
-      (function () {
-        try {
-          var guestNameStyle = localStorage.getItem("pve-helper-guest-name-style");
-          document.documentElement.dataset.guestNameStyle = guestNameStyle === "name-only" ? "name-only" : "id-name";
-        } catch (error) {
-          document.documentElement.dataset.guestNameStyle = "id-name";
-        }
-      })();
-    </script>
-    <script>
-      (function () {
-        try {
-          var ipVersionStyle = localStorage.getItem("pve-helper-ip-version-style");
-          document.documentElement.dataset.ipVersionStyle = ipVersionStyle === "ipv4-only" ? "ipv4-only" : "all";
-        } catch (error) {
-          document.documentElement.dataset.ipVersionStyle = "all";
-        }
-      })();
-    </script>
+    <script src="{% static 'js/preferences-bootstrap.js' %}"></script>
     <link rel="stylesheet" href="{% static 'css/app/foundation.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/layout.css' %}?v=20260712-60">
     <link rel="stylesheet" href="{% static 'css/app/topbar.css' %}?v=20260712-60">
@@ -153,9 +120,14 @@
               <span class="tree-label">Storage</span>
             </button>
             <div class="tree-children">
-              <a class="tree-node tree-leaf {% if active_nav == 'dashboard' or active_nav == 'datastores' %}active{% endif %}" href="{% url 'core:dashboard' %}">
+              <a class="tree-node tree-leaf {% if active_nav == 'dashboard' %}active{% endif %}" href="{% url 'core:dashboard' %}">
                 <span class="tree-icon"><i data-lucide="layout-dashboard" aria-hidden="true"></i></span>
                 <span class="tree-label">Overview</span>
+              </a>
+
+              <a class="tree-node tree-leaf {% if active_nav == 'datastores' %}active{% endif %}" href="{% url 'core:datastores' %}">
+                <span class="tree-icon"><i data-lucide="list-tree" aria-hidden="true"></i></span>
+                <span class="tree-label">Catalog</span>
               </a>
 
               {% if app_nav_local_datastores %}
@@ -259,6 +231,12 @@
             <span class="tree-caret"></span>
             <span class="tree-icon"><i data-lucide="clipboard-list" aria-hidden="true"></i></span>
             <span class="tree-label">Audit</span>
+          </a>
+
+          <a class="tree-node module-node {% if active_nav == 'pve_settings' %}active{% endif %}" href="{% url 'core:settings_storage' %}">
+            <span class="tree-caret"></span>
+            <span class="tree-icon"><i data-lucide="settings" aria-hidden="true"></i></span>
+            <span class="tree-label">PVE-helper Settings</span>
           </a>
         </nav>
         <div class="sidebar-resize-handle" data-sidebar-resize-handle role="separator" aria-orientation="vertical" aria-label="Resize navigation"></div>

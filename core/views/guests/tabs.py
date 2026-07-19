@@ -1,10 +1,12 @@
 """Guest read-only tabs: monitor, permissions, cloud-init (+edit) — extracted from _core."""
-from ..common import *  # noqa: F401,F403
+
+from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
+
 from .. import common
+from ..common import *  # noqa: F401,F403
 from .operation_lifecycle import _write_result
 from .presenters import _fmt_bytes, _rrd_chart
-from .read_model_support import (_guest_api_get,_guest_tab_context,_require_guest)
-from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
+from .read_model_support import _guest_api_get, _guest_tab_context, _require_guest
 
 
 @app_login_required
@@ -62,8 +64,6 @@ def guest_monitor(request, cluster_key: str, object_type: str, vmid: int):
     return render(request, "core/guest_monitor.html", context)
 
 
-
-
 @app_login_required
 def guest_permissions(request, cluster_key: str, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
@@ -103,8 +103,6 @@ def guest_permissions(request, cluster_key: str, object_type: str, vmid: int):
     return render(request, "core/guest_permissions.html", context)
 
 
-
-
 @app_login_required
 def guest_cloudinit(request, cluster_key: str, object_type: str, vmid: int):
     detail = _require_guest(object_type, vmid, cluster_key=cluster_key)
@@ -138,8 +136,6 @@ def guest_cloudinit(request, cluster_key: str, object_type: str, vmid: int):
     return render(request, "core/guest_cloudinit.html", context)
 
 
-
-
 @require_POST
 @app_login_required
 def guest_cloudinit_edit(request, cluster_key, object_type, vmid):
@@ -164,7 +160,9 @@ def guest_cloudinit_edit(request, cluster_key, object_type, vmid):
         fresh = client.guest_config(node=node, object_type=object_type, vmid=vmid)
         # only delete keys that currently exist
         delete = [k for k in delete if k in fresh]
-        client.set_guest_config(node=node, object_type=object_type, vmid=vmid, updates=updates, delete=delete, digest=fresh.get("digest"))
+        client.set_guest_config(
+            node=node, object_type=object_type, vmid=vmid, updates=updates, delete=delete, digest=fresh.get("digest")
+        )
     except (ProxmoxAPIError, IndexError) as exc:
         err = str(exc)
     if not err:

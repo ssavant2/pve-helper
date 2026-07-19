@@ -29,11 +29,7 @@ def ensure_guest_task_reaper_schedule() -> Schedule:
     )
     if created:
         return schedule
-    updates = {
-        key: value
-        for key, value in defaults.items()
-        if key != "next_run" and getattr(schedule, key) != value
-    }
+    updates = {key: value for key, value in defaults.items() if key != "next_run" and getattr(schedule, key) != value}
     if updates:
         for field, value in updates.items():
             setattr(schedule, field, value)

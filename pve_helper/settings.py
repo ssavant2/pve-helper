@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
+from django.utils.csp import CSP
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -66,6 +67,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "django.middleware.csp.ContentSecurityPolicyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -74,6 +76,26 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+SECURE_CSP = {
+    "default-src": [CSP.SELF],
+    "base-uri": [CSP.SELF],
+    "connect-src": [CSP.SELF, "ws:", "wss:"],
+    "font-src": [CSP.SELF, "data:"],
+    "form-action": [CSP.SELF],
+    "frame-ancestors": [CSP.NONE],
+    "frame-src": [CSP.NONE],
+    "img-src": [CSP.SELF, "data:", "blob:"],
+    "media-src": [CSP.SELF, "blob:"],
+    "object-src": [CSP.NONE],
+    "script-src": [CSP.SELF],
+    "script-src-attr": [CSP.NONE],
+    "style-src": [CSP.SELF],
+    # Existing server-rendered progress, tag-color and indentation values use
+    # narrowly-scoped style attributes. External stylesheets remain same-origin.
+    "style-src-attr": [CSP.UNSAFE_INLINE],
+    "worker-src": [CSP.SELF, "blob:"],
+}
 
 ROOT_URLCONF = "pve_helper.urls"
 
@@ -240,15 +262,9 @@ CURRENT_GUEST_REFRESH_INTERVAL_MINUTES = env_int("CURRENT_GUEST_REFRESH_INTERVAL
 # This is the container-visible root, never an operator supplied host path.  The
 # Compose source may vary, but application paths are always confined below this
 # fixed namespace.
-PVE_HELPER_STORAGE_CONTAINER_ROOT = Path(
-    env("PVE_HELPER_STORAGE_CONTAINER_ROOT", "/storages")
-)
-STORAGE_METADATA_REFRESH_INTERVAL_MINUTES = env_int(
-    "STORAGE_METADATA_REFRESH_INTERVAL_MINUTES", 1
-)
-STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES = env_int(
-    "STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES", 5
-)
+PVE_HELPER_STORAGE_CONTAINER_ROOT = Path(env("PVE_HELPER_STORAGE_CONTAINER_ROOT", "/storages"))
+STORAGE_METADATA_REFRESH_INTERVAL_MINUTES = env_int("STORAGE_METADATA_REFRESH_INTERVAL_MINUTES", 1)
+STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES = env_int("STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES", 5)
 
 Q_CLUSTER = {
     "name": "pve-helper",

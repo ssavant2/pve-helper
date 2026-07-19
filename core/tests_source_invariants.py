@@ -6,7 +6,6 @@ from pathlib import Path
 from django.conf import settings
 from django.test import SimpleTestCase
 
-
 NATIVE_DIALOG_PATTERN = re.compile(
     r"\bwindow\.(?:alert|confirm)\s*\("
     r"|(?:^|[;{}=:(,!&|?])\s*(?:alert|confirm)\s*\("
@@ -78,9 +77,7 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
             "core/services/tag_registry.py",
             "core/views/guests/read_model_support.py",
         }
-        bare_cluster_key = re.compile(
-            r"pve-helper:(?:live-guest|guest-|tag-registry|nav-local)"
-        )
+        bare_cluster_key = re.compile(r"pve-helper:(?:live-guest|guest-|tag-registry|nav-local)")
         offenders = []
         for path in self._python_sources():
             source = path.read_text()
@@ -119,8 +116,7 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
         self.assertEqual(
             offenders,
             [],
-            "Cluster operations may not use one global overlap/advisory lock: "
-            f"{', '.join(offenders)}",
+            f"Cluster operations may not use one global overlap/advisory lock: {', '.join(offenders)}",
         )
 
     def test_production_proxmox_clients_are_built_only_by_scoped_factories(self):
@@ -128,9 +124,7 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
             "core/services/cluster_resolver.py",
             "core/services/cluster_onboarding.py",
         }
-        offenders = sorted(
-            self._modules_containing("ProxmoxClient(") - allowed
-        )
+        offenders = sorted(self._modules_containing("ProxmoxClient(") - allowed)
         self.assertEqual(
             offenders,
             [],
@@ -143,9 +137,7 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
 class FrontendSourceInvariantTests(SimpleTestCase):
     def _frontend_sources(self) -> list[Path]:
         root = Path(settings.BASE_DIR)
-        return sorted((root / "static/js/app").glob("*.js")) + sorted(
-            (root / "templates/core").rglob("*.html")
-        )
+        return sorted((root / "static/js/app").glob("*.js")) + sorted((root / "templates/core").rglob("*.html"))
 
     def test_native_alert_and_confirm_are_not_used(self):
         root = Path(settings.BASE_DIR)
@@ -174,8 +166,23 @@ class FrontendSourceInvariantTests(SimpleTestCase):
         self.assertEqual(
             prompt_locations[0][0],
             CONSOLE_PROMPT_PATH,
-            "window.prompt() is reserved for the console paste safeguard; use "
-            "the shared application dialog elsewhere.",
+            "window.prompt() is reserved for the console paste safeguard; use the shared application dialog elsewhere.",
+        )
+
+    def test_templates_do_not_reintroduce_inline_scripts(self):
+        root = Path(settings.BASE_DIR)
+        inline_script = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>", re.IGNORECASE)
+        violations = []
+        for path in sorted((root / "templates").rglob("*.html")):
+            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                if inline_script.search(line):
+                    violations.append(f"{path.relative_to(root)}:{line_number}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "Inline scripts weaken the enforced Content Security Policy; add same-origin static JavaScript instead: "
+            f"{', '.join(violations)}",
         )
 
 
@@ -186,11 +193,7 @@ class BackendSourceInvariantTests(SimpleTestCase):
         violations = []
         for path in sorted((root / "core").rglob("*.py")):
             relative_path = path.relative_to(root)
-            if (
-                relative_path == allowed_path
-                or "migrations" in relative_path.parts
-                or path.name.startswith("tests")
-            ):
+            if relative_path == allowed_path or "migrations" in relative_path.parts or path.name.startswith("tests"):
                 continue
             for line_number, line in enumerate(path.read_text().splitlines(), start=1):
                 if "AuditEvent.objects.create(" in line:
@@ -260,8 +263,7 @@ class BackendSourceInvariantTests(SimpleTestCase):
         self.assertEqual(
             violations,
             [],
-            "Routed views must be wrapped by app_login_required (only health_* are "
-            f"public): {', '.join(violations)}",
+            f"Routed views must be wrapped by app_login_required (only health_* are public): {', '.join(violations)}",
         )
 
     def test_production_tag_registry_writes_use_the_shared_service(self):
@@ -270,11 +272,7 @@ class BackendSourceInvariantTests(SimpleTestCase):
         violations = []
         for path in sorted((root / "core").rglob("*.py")):
             relative_path = path.relative_to(root)
-            if (
-                relative_path == allowed_path
-                or "migrations" in relative_path.parts
-                or path.name.startswith("tests")
-            ):
+            if relative_path == allowed_path or "migrations" in relative_path.parts or path.name.startswith("tests"):
                 continue
             for line_number, line in enumerate(path.read_text().splitlines(), start=1):
                 if ".set_cluster_options(" in line:

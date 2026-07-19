@@ -10,6 +10,7 @@ reads the tab segment from the current request path and grafts it onto the
 target object's detail prefix. Any module whose per-object URLs look like
 ``<prefix>/<tab>/`` with a ``summary`` tab gets this for free.
 """
+
 from __future__ import annotations
 
 from django import template

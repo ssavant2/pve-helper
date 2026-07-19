@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import quote
 
-from django.conf import settings
 from django.db import connection, models, transaction
 from django.utils import timezone
 
@@ -35,7 +35,6 @@ from core.services.cluster_state_identity import cluster_advisory_lock_id
 from core.services.proxmox import ProxmoxAPIError
 from core.services.storage_backends import ContentListMode, backend_profile
 from core.services.storage_mounts import mount_health, scope_conflict
-
 
 logger = logging.getLogger(__name__)
 _METADATA_LOCK_BASE = 0x50564553544D01
@@ -186,11 +185,7 @@ def _metadata_semantics(cluster: ProxmoxCluster) -> tuple[tuple[Any, ...], ...]:
     Capacity and observation timestamps intentionally do not participate: they
     change frequently without changing which storage instances or volumes exist.
     """
-    definitions = (
-        ClusterStorage.objects.filter(cluster=cluster)
-        .prefetch_related("node_states")
-        .order_by("storage_id")
-    )
+    definitions = ClusterStorage.objects.filter(cluster=cluster).prefetch_related("node_states").order_by("storage_id")
     return tuple(
         (
             definition.storage_id,
@@ -240,10 +235,7 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
 
     generation = uuid.uuid4()
     observed_at = timezone.now()
-    node_online = {
-        str(row["node"]): str(row.get("status") or "").lower() in {"online", ""}
-        for row in nodes
-    }
+    node_online = {str(row["node"]): str(row.get("status") or "").lower() in {"online", ""} for row in nodes}
     with transaction.atomic():
         state, _ = StorageCatalogState.objects.select_for_update().get_or_create(cluster=cluster)
         previous_semantics = _metadata_semantics(cluster)
@@ -253,9 +245,7 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
         seen_definition_ids: set[int] = set()
         seen_node_ids: set[int] = set()
         by_storage_node = {
-            (str(item.get("storage") or ""), node): item
-            for node, items in node_answers.items()
-            for item in items
+            (str(item.get("storage") or ""), node): item for node, items in node_answers.items() for item in items
         }
         for raw in definitions:
             storage_id = str(raw["storage"])
@@ -298,9 +288,9 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
         ClusterStorage.objects.filter(cluster=cluster).exclude(pk__in=seen_definition_ids).update(
             present=False, retired_at=observed_at
         )
-        ClusterStorageNodeState.objects.filter(cluster_storage__cluster=cluster).exclude(
-            pk__in=seen_node_ids
-        ).update(present=False, active=False)
+        ClusterStorageNodeState.objects.filter(cluster_storage__cluster=cluster).exclude(pk__in=seen_node_ids).update(
+            present=False, active=False
+        )
         state.metadata_generation = generation
         state.metadata_refreshed_at = observed_at
         state.metadata_last_attempt_at = attempted_at
@@ -396,7 +386,9 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
                     raw = _get_with_failover(clients, path)
                     if not isinstance(raw, list):
                         raise StorageCatalogError("Invalid storage content response.")
-                    answers[node] = [item for item in (_normalize_volume(row) for row in raw if isinstance(row, dict)) if item]
+                    answers[node] = [
+                        item for item in (_normalize_volume(row) for row in raw if isinstance(row, dict)) if item
+                    ]
                 except Exception as exc:
                     errors[f"{definition.storage_id}@{node}"] = _public_error(exc)
             if len(answers) != len(candidates):
@@ -468,9 +460,8 @@ def refresh_storage_catalog(cluster: ProxmoxCluster) -> StorageCatalogState:
 
 
 def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
-    state = (
-        StorageCatalogState.objects.filter(cluster=definition.cluster).first()
-        or StorageCatalogState(cluster=definition.cluster)
+    state = StorageCatalogState.objects.filter(cluster=definition.cluster).first() or StorageCatalogState(
+        cluster=definition.cluster
     )
     profile = backend_profile(definition.storage_type)
     nodes = tuple(definition.node_states.filter(present=True).order_by("node"))
@@ -514,9 +505,9 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         write_reason = health.reason
     can_write = can_browse and bool(health and health.writable)
 
-    observations = definition.volume_observations.filter(
-        observed_volume_generation=state.volume_generation
-    ).order_by("node", "volid")
+    observations = definition.volume_observations.filter(observed_volume_generation=state.volume_generation).order_by(
+        "node", "volid"
+    )
     if node:
         observations = observations.filter(node=node)
     elif definition.shared:
@@ -540,11 +531,10 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         definition=definition,
         nodes=nodes,
         volumes=volumes,
-        capabilities=StorageCapabilities(
-            can_list, list_reason, can_browse, browse_reason, can_write, write_reason
-        ),
+        capabilities=StorageCapabilities(can_list, list_reason, can_browse, browse_reason, can_write, write_reason),
         metadata_stale=not state.metadata_complete,
-        volumes_stale=not state.volume_complete or state.volume_based_on_metadata_generation != state.metadata_generation,
+        volumes_stale=not state.volume_complete
+        or state.volume_based_on_metadata_generation != state.metadata_generation,
         coverage_complete=coverage_complete,
         coverage_reason=list_reason,
     )
@@ -592,9 +582,7 @@ def storage_volume_rows(
     content: str = "",
     vmid: int | None = None,
 ) -> tuple[list[dict[str, Any]], bool, str]:
-    definition = ClusterStorage.objects.filter(
-        cluster=cluster, storage_id=storage_id, present=True
-    ).first()
+    definition = ClusterStorage.objects.filter(cluster=cluster, storage_id=storage_id, present=True).first()
     if definition is None:
         return [], False, "Storage is not present in the latest catalog."
     view = storage_view(definition, node=node)
@@ -634,7 +622,13 @@ def usage_preflight(
         )
     token = ":".join(
         str(value or "")
-        for value in (state.metadata_generation, state.volume_generation, definition.cluster.key, definition.storage_id, node)
+        for value in (
+            state.metadata_generation,
+            state.volume_generation,
+            definition.cluster.key,
+            definition.storage_id,
+            node,
+        )
     )
     if not view.coverage_complete:
         return UsagePreflight(UsageState.UNKNOWN, view.coverage_reason, token)
@@ -648,14 +642,14 @@ def usage_preflight(
         if any(str(ref).startswith(prefix) and (not volid or str(ref) == volid) for ref in guest.disk_references or []):
             references.add(f"{guest.object_type}:{guest.vmid}")
     if references:
-        return UsagePreflight(UsageState.REFERENCED, "Storage content is referenced by guests.", token, tuple(sorted(references)))
+        return UsagePreflight(
+            UsageState.REFERENCED, "Storage content is referenced by guests.", token, tuple(sorted(references))
+        )
 
     bindings = list(definition.mount_bindings.select_related("mount"))
     binding_ids = [binding.mount_id for binding in bindings]
     if binding_ids:
-        backend_identities = {
-            binding.mount.backend_identity for binding in bindings if binding.mount.backend_identity
-        }
+        backend_identities = {binding.mount.backend_identity for binding in bindings if binding.mount.backend_identity}
         if any(not binding.mount.backend_identity for binding in bindings):
             return UsagePreflight(
                 UsageState.UNKNOWN,
@@ -666,9 +660,7 @@ def usage_preflight(
             ClusterStorage.objects.filter(present=True)
             .filter(
                 models.Q(mount_bindings__mount_id__in=binding_ids)
-                | models.Q(
-                    mount_bindings__mount__backend_identity__in=backend_identities
-                )
+                | models.Q(mount_bindings__mount__backend_identity__in=backend_identities)
             )
             .exclude(pk=definition.pk)
             .distinct()
@@ -688,8 +680,7 @@ def usage_preflight(
                 "object_type", "vmid", "disk_references"
             ):
                 if any(
-                    str(ref).startswith(other_prefix)
-                    and (not other_volid or str(ref) == other_volid)
+                    str(ref).startswith(other_prefix) and (not other_volid or str(ref) == other_volid)
                     for ref in guest.disk_references or []
                 ):
                     return UsagePreflight(
@@ -708,11 +699,7 @@ def usage_preflight(
 
 
 def classify_mounted_volume(mount: StorageMount, relative_path: str) -> ClassificationResult | None:
-    bindings = list(
-        mount.cluster_bindings.select_related(
-            "cluster_storage", "cluster_storage__cluster"
-        ).all()
-    )
+    bindings = list(mount.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster").all())
     if not bindings:
         return None
     suffix = str(relative_path).lstrip("/").removeprefix("images/")
@@ -731,10 +718,7 @@ def classify_mounted_volume(mount: StorageMount, relative_path: str) -> Classifi
         "catalog_decisions": [state.value for state, _reason, _token in decisions],
         "coverage_tokens": [token for _state, _reason, token in decisions],
     }
-    if any(
-        state in {UsageState.REFERENCED, UsageState.REFERENCED_ELSEWHERE}
-        for state, _reason, _token in decisions
-    ):
+    if any(state in {UsageState.REFERENCED, UsageState.REFERENCED_ELSEWHERE} for state, _reason, _token in decisions):
         return ClassificationResult(
             FileInventory.Classification.REFERENCED,
             "The API storage catalog found this volume referenced in an associated cluster.",
