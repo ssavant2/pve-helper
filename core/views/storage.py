@@ -200,6 +200,68 @@ def _mount_candidates() -> list[dict[str, str]]:
     ]
 
 
+# A confirmation must fit on screen to be read at all; a 200-guest datastore
+# would otherwise produce a wall of text nobody checks.
+_GUESTS_SHOWN_IN_CONFIRM = 6
+
+
+def _binding_rows() -> list[dict[str, object]]:
+    """Registered associations, each with what it is currently carrying.
+
+    Unbinding is one click and immediately removes file browsing, writes and
+    API-catalog classification for that datastore, so the confirmation has to
+    say what is actually in use rather than only asking whether the operator is
+    sure. The evidence comes from the published projection — a passive page
+    render must not fan out to Proxmox to answer this.
+    """
+    rows = []
+    bindings = ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount").order_by(
+        "cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"
+    )
+    for binding in bindings:
+        definition = binding.cluster_storage
+        prefix = f"{definition.storage_id}:"
+        guests = [
+            (guest.status == "running", f"{guest.object_type}:{guest.vmid}", guest.status or "unknown")
+            for guest in CurrentGuestInventory.objects.filter(cluster=definition.cluster).only(
+                "object_type", "vmid", "status", "disk_references"
+            )
+            if any(str(ref).startswith(prefix) for ref in guest.disk_references or [])
+        ]
+        # Running guests first: they are the ones the operator must see, and they
+        # must never be the entries a display cap silently drops.
+        guests.sort(key=lambda item: (not item[0], item[1]))
+        running = sum(1 for is_running, _label, _status in guests if is_running)
+        volumes = definition.volume_observations.count()
+        usage = []
+        if definition.content:
+            usage.append("content types " + ", ".join(definition.content))
+        if volumes:
+            usage.append(f"{volumes} catalog volume(s)")
+        if guests:
+            shown = ", ".join(f"{label} ({status})" for _is_running, label, status in guests[:_GUESTS_SHOWN_IN_CONFIRM])
+            hidden = len(guests) - _GUESTS_SHOWN_IN_CONFIRM
+            if hidden > 0:
+                shown += f", and {hidden} more"
+            running_note = f", {running} of them running" if running else ""
+            usage.append(f"referenced by {len(guests)} guest(s){running_note}: {shown}")
+        label = f"{definition.cluster.display_name} \u00b7 {definition.storage_id}"
+        in_use = "; ".join(usage) or "no catalog volumes or guest references are currently recorded"
+        rows.append(
+            {
+                "binding": binding,
+                "guest_count": len(guests),
+                "confirm": (
+                    f"{label} is currently in use: {in_use}. "
+                    "Removing the association stops file browsing, file writes and orphan "
+                    "classification for this datastore until a mount is registered again."
+                ),
+                "confirm_second": (f"Are you really sure? {label} is still in use: {in_use}."),
+            }
+        )
+    return rows
+
+
 @app_login_required
 def storage_mount_register(request):
     definitions = list(
@@ -237,9 +299,13 @@ def storage_mount_register(request):
     confirm_distinct_backend = False
     if request.method == "POST":
         if request.POST.get("action") == "remove_binding":
+            try:
+                binding_id = int(str(request.POST.get("binding_id") or ""))
+            except ValueError:
+                binding_id = 0
             binding = (
                 ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount")
-                .filter(pk=request.POST.get("binding_id"))
+                .filter(pk=binding_id)
                 .first()
             )
             if binding is None:
@@ -398,9 +464,7 @@ def storage_mount_register(request):
             "confirm_distinct_backend": confirm_distinct_backend,
             "registered": registered if registered != "removed" else None,
             "removed": registered == "removed",
-            "bindings": ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount").order_by(
-                "cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"
-            ),
+            "bindings": _binding_rows(),
         },
     )
 

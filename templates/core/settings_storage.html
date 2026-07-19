@@ -24,17 +24,25 @@
     <table class="data-table compact-table">
       <thead><tr><th>Cluster</th><th>Datastore</th><th>Scope</th><th>Host mount</th><th></th></tr></thead>
       <tbody>
-        {% for binding in bindings %}
+        {% for row in bindings %}
           <tr>
-            <td>{{ binding.cluster_storage.cluster.display_name }}</td>
-            <td>{{ binding.cluster_storage.storage_id }}</td>
-            <td>{{ binding.node|default:"Shared" }}</td>
-            <td>{{ binding.mount.display_name }} <span class="subline">/storages/{{ binding.mount.relative_path }}</span></td>
+            <td>{{ row.binding.cluster_storage.cluster.display_name }}</td>
+            <td>{{ row.binding.cluster_storage.storage_id }}</td>
+            <td>{{ row.binding.node|default:"Shared" }}</td>
+            <td>{{ row.binding.mount.display_name }} <span class="subline">/storages/{{ row.binding.mount.relative_path }}</span></td>
             <td class="row-actions">
-              <form method="post">
+              <form
+                method="post"
+                data-confirm="{{ row.confirm }}"
+                data-confirm-title="Remove mount association?"
+                data-confirm-label="Remove association"
+                data-confirm-second="{{ row.confirm_second }}"
+                data-confirm-second-label="Yes, remove it"
+                data-confirm-danger="true"
+              >
                 {% csrf_token %}
                 <input type="hidden" name="action" value="remove_binding">
-                <input type="hidden" name="binding_id" value="{{ binding.pk }}">
+                <input type="hidden" name="binding_id" value="{{ row.binding.pk }}">
                 <button class="icon-button danger" type="submit" title="Remove association" aria-label="Remove mount association"><i data-lucide="unlink" aria-hidden="true"></i></button>
               </form>
             </td>

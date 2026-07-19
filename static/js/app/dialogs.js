@@ -13,7 +13,18 @@ const ensureVmActionDialog = () => {
 
 // Shared confirm/consequence dialog. `body` is trusted HTML; callers must
 // escape user- or database-provided text before passing it.
-const openConfirmDialog = ({ title = "Please confirm", body = "", confirmLabel = "Confirm", danger = false }) =>
+/**
+ * @param swapActions Render Cancel where Confirm normally sits. Used for the
+ * second step of an escalated confirmation so a memorised double-click on the
+ * same spot cannot carry an operator through both dialogs.
+ */
+const openConfirmDialog = ({
+  title = "Please confirm",
+  body = "",
+  confirmLabel = "Confirm",
+  danger = false,
+  swapActions = false,
+}) =>
   new Promise((resolve) => {
     const dialog = ensureVmActionDialog();
     let decided = false;
@@ -25,8 +36,13 @@ const openConfirmDialog = ({ title = "Please confirm", body = "", confirmLabel =
         </div>
         <div class="vm-action-dialog-body">${body}</div>
         <div class="form-actions">
-          <button class="primary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>
-          <button class="secondary-action" type="button" data-confirm-no>Cancel</button>
+          ${
+            swapActions
+              ? `<button class="primary-action" type="button" data-confirm-no>Cancel</button>
+          <button class="secondary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>`
+              : `<button class="primary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>
+          <button class="secondary-action" type="button" data-confirm-no>Cancel</button>`
+          }
         </div>
       </div>
     `;

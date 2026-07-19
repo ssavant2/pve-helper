@@ -451,6 +451,18 @@ const initConfirmForms = (root) => {
         danger: form.dataset.confirmDanger === "true",
       });
       if (!confirmed) return;
+      // An action can escalate: the second step repeats what is at stake and
+      // swaps the buttons, so it cannot be cleared by muscle memory.
+      if (form.dataset.confirmSecond) {
+        const reconfirmed = await openConfirmDialog({
+          title: form.dataset.confirmSecondTitle || "Are you really sure?",
+          body: `<p>${escapeHtml(form.dataset.confirmSecond)}</p>`,
+          confirmLabel: form.dataset.confirmSecondLabel || "Yes, continue",
+          danger: form.dataset.confirmDanger === "true",
+          swapActions: true,
+        });
+        if (!reconfirmed) return;
+      }
       form.dataset.confirmed = "true";
       form.requestSubmit(event.submitter || undefined);
     });

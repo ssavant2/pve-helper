@@ -106,8 +106,9 @@ from core.services.storage_actions import (
     normalize_uploaded_proxmox_image_paths,
     validate_inflate_storage_file,
 )
+from core.services.storage_catalog import storage_view
 from core.services.storage_details import storage_details
-from core.services.storage_mounts import MountHealth
+from core.services.storage_mounts import MountHealth, bind_storage_mount
 from core.services.trash_schedule import TRASH_PURGE_SCHEDULE_NAME, trash_purge_schedule_state
 from core.signals import ensure_always_on_schedules
 from core.tasks import (
@@ -6433,6 +6434,100 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         binding = ClusterStorageMount.objects.get()
         self.assertEqual(binding.cluster_storage, definition)
         self.assertEqual(binding.mount.identity_source, StorageMount.IdentitySource.DERIVED)
+
+    def test_removing_a_mount_association_states_current_use_and_is_audited(self):
+        """The page's only destructive action: prove it works and that it warns with facts."""
+        metadata_generation = uuid.uuid4()
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="shared-nfs",
+            storage_type="nfs",
+            shared=True,
+            present=True,
+            content=["images", "iso"],
+            config={"server": "nas.hq.local", "export": "/mnt/tank/vm"},
+            observed_metadata_generation=metadata_generation,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            present=True,
+            active=True,
+            enabled=True,
+            observed_metadata_generation=metadata_generation,
+        )
+        ClusterStorageVolumeObservation.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            volid="shared-nfs:100/vm-100-disk-0.qcow2",
+            vmid=100,
+            content="images",
+            observed_volume_generation=uuid.uuid4(),
+            based_on_metadata_generation=metadata_generation,
+            last_seen_at=timezone.now(),
+        )
+        # One running, one stopped, plus enough others to exercise the display cap.
+        CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
+            node="pve1",
+            object_type="vm",
+            vmid=100,
+            status="running",
+            disk_references=["shared-nfs:100/vm-100-disk-0.qcow2"],
+            observed_at=timezone.now(),
+        )
+        for vmid in range(200, 208):
+            CurrentGuestInventory.objects.create(
+                cluster=self.cluster,
+                node="pve1",
+                object_type="vm",
+                vmid=vmid,
+                status="stopped",
+                disk_references=[f"shared-nfs:{vmid}/vm-{vmid}-disk-0.qcow2"],
+                observed_at=timezone.now(),
+            )
+        mount = StorageMount.objects.create(
+            storage_id="mount-nas",
+            display_name="NAS",
+            path="/storages/nas",
+            relative_path="nas",
+            backend_identity="nas.hq.local:/mnt/tank/vm",
+        )
+        binding = bind_storage_mount(cluster_storage=definition, mount=mount)
+
+        page = self.client.get(reverse("core:settings_storage"))
+        self.assertContains(page, "content types images, iso")
+        self.assertContains(page, "1 catalog volume(s)")
+        # Running guests are named first so the cap can never hide them.
+        self.assertContains(page, "referenced by 9 guest(s), 1 of them running: vm:100 (running)")
+        self.assertContains(page, "and 3 more")
+        self.assertContains(page, "Are you really sure?")
+
+        # A non-numeric id is a stale form, not a server error.
+        bad = self.client.post(
+            reverse("core:settings_storage"),
+            {"action": "remove_binding", "binding_id": "not-a-number"},
+        )
+        self.assertEqual(bad.status_code, 200)
+        self.assertContains(bad, "Mount association no longer exists.")
+        self.assertTrue(ClusterStorageMount.objects.filter(pk=binding.pk).exists())
+
+        removed = self.client.post(
+            reverse("core:settings_storage"),
+            {"action": "remove_binding", "binding_id": str(binding.pk)},
+        )
+
+        self.assertEqual(removed.status_code, 200)
+        self.assertFalse(ClusterStorageMount.objects.filter(pk=binding.pk).exists())
+        # The mount itself survives; only the association is undone.
+        self.assertTrue(StorageMount.objects.filter(pk=mount.pk).exists())
+        event = AuditEvent.objects.get(action="storage.mount.unregistered")
+        self.assertEqual(event.details["storage_id"], "shared-nfs")
+        self.assertEqual(event.details["scope"], "shared")
+        # And the datastore has genuinely lost its file access.
+        view = storage_view(ClusterStorage.objects.get(pk=definition.pk))
+        self.assertFalse(view.capabilities.can_browse_files)
+        self.assertIn("No host mount is registered", view.capabilities.browse_files_reason)
 
     def test_node_local_datastore_without_an_active_instance_cannot_be_chosen(self):
         metadata_generation = uuid.uuid4()
