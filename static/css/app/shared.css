@@ -864,7 +864,8 @@ code {
   .metric-grid,
   .storage-summary-grid,
   .storage-metadata-strip,
-  .split-view {
+  .split-view,
+  .split-view.dashboard-summary-grid {
     grid-template-columns: 1fr;
   }
 

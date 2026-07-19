@@ -38,6 +38,7 @@ from core.models import (
     AuditEvent,
     ClusterStorage,
     ClusterStorageNodeState,
+    ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
     ConsoleSession,
     CurrentGuestInventory,
@@ -2809,6 +2810,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             present=True,
             observed_metadata_generation=metadata_generation,
         )
+        ClusterStorageVolumeCoverage.objects.create(
+            cluster_storage=definition,
+            scope=ClusterStorageVolumeCoverage.Scope.NODE,
+            node=node,
+            volume_generation=volume_generation,
+            based_on_metadata_generation=metadata_generation,
+            refreshed_at=timezone.now(),
+            last_attempt_at=timezone.now(),
+            complete=True,
+        )
         for row in rows:
             ClusterStorageVolumeObservation.objects.create(
                 cluster_storage=definition,
@@ -2825,8 +2836,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             cluster=self.cluster,
             metadata_generation=metadata_generation,
             metadata_complete=True,
-            volume_generation=volume_generation,
-            volume_based_on_metadata_generation=metadata_generation,
             volume_complete=True,
         )
 
@@ -2960,7 +2969,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             config={"storage": "nfs-vm", "type": "nfs", "content": "images,iso"},
         )
 
-        for name in ["core:dashboard", "core:datastores", "core:orphan_finder"]:
+        for name in ["core:dashboard", "core:orphan_finder"]:
             response = self.client.get(reverse(name))
             self.assertEqual(response.status_code, 200)
 
@@ -2979,7 +2988,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "data-soft-nav-content")
         self.assertContains(response, "data-soft-nav-tree")
         self.assertContains(response, "data-global-search")
-        self.assertContains(response, "Classification legend")
         self.assertContains(response, "Storage gate")
         self.assertContains(response, "protects orphan classification")
 
@@ -6244,7 +6252,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "2026-06-26 08:15:30")
         self.assertContains(response, "Queued scan")
 
-    def test_storage_catalog_and_pve_helper_settings_have_separate_navigation(self):
+    def test_storage_overview_contains_catalog_and_links_to_pve_helper_settings(self):
         metadata_generation = uuid.uuid4()
         definition = ClusterStorage.objects.create(
             cluster=self.cluster,
@@ -6263,13 +6271,15 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             observed_metadata_generation=metadata_generation,
         )
 
-        catalog = self.client.get(reverse("core:datastores"))
-        self.assertEqual(catalog.status_code, 200)
-        self.assertContains(catalog, "Storage Catalog")
-        self.assertContains(catalog, "Proxmox storage catalog")
-        self.assertContains(catalog, "shared-nfs")
-        self.assertContains(catalog, reverse("core:settings_storage"))
-        self.assertNotContains(catalog, "Registered associations")
+        overview = self.client.get(reverse("core:dashboard"))
+        self.assertEqual(overview.status_code, 200)
+        self.assertContains(overview, 'id="storage-catalog"')
+        self.assertContains(overview, "Storage catalog")
+        self.assertContains(overview, "shared-nfs")
+        self.assertContains(overview, "Storage definitions")
+        self.assertContains(overview, "Accessible mounts")
+        self.assertContains(overview, reverse("core:settings_storage"))
+        self.assertNotContains(overview, "Registered associations")
 
         settings_root = self.client.get(reverse("core:pve_helper_settings"))
         self.assertRedirects(settings_root, reverse("core:settings_storage"))
@@ -6280,7 +6290,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(storage_settings, "Registered associations")
         self.assertContains(storage_settings, "Register host mount")
         self.assertContains(storage_settings, "PVE-helper Settings", count=2)
-        self.assertNotContains(storage_settings, "Proxmox storage catalog")
+        self.assertContains(storage_settings, f"{reverse('core:dashboard')}#storage-catalog")
+        self.assertNotContains(storage_settings, "Storage definitions")
 
     def test_recent_tasks_endpoint_paginates_scans(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -8859,6 +8870,16 @@ class GuestBackupRestoreTests(TestCase):
                 enabled=True,
                 observed_metadata_generation=metadata_generation,
             )
+            ClusterStorageVolumeCoverage.objects.create(
+                cluster_storage=images,
+                scope=ClusterStorageVolumeCoverage.Scope.NODE,
+                node=node,
+                volume_generation=volume_generation,
+                based_on_metadata_generation=metadata_generation,
+                refreshed_at=timezone.now(),
+                last_attempt_at=timezone.now(),
+                complete=True,
+            )
             for archive in archives:
                 ClusterStorageVolumeObservation.objects.create(
                     cluster_storage=backup,
@@ -8869,12 +8890,19 @@ class GuestBackupRestoreTests(TestCase):
                     based_on_metadata_generation=metadata_generation,
                     last_seen_at=timezone.now(),
                 )
+        ClusterStorageVolumeCoverage.objects.create(
+            cluster_storage=backup,
+            scope=ClusterStorageVolumeCoverage.Scope.SHARED,
+            volume_generation=volume_generation,
+            based_on_metadata_generation=metadata_generation,
+            refreshed_at=timezone.now(),
+            last_attempt_at=timezone.now(),
+            complete=True,
+        )
         StorageCatalogState.objects.create(
             cluster=self.cluster,
             metadata_generation=metadata_generation,
             metadata_complete=True,
-            volume_generation=volume_generation,
-            volume_based_on_metadata_generation=metadata_generation,
             volume_complete=True,
         )
 

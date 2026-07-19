@@ -117,7 +117,6 @@ class ClusterConnectionViewTests(TestCase):
     def test_zero_cluster_state_keeps_aggregate_views_usable(self):
         for route_name in (
             "core:dashboard",
-            "core:datastores",
             "core:vms_overview",
             "core:vms",
             "core:scheduled_tasks",

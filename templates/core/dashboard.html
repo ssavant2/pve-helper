@@ -46,8 +46,12 @@
 
   <section class="metric-grid">
     <div class="metric">
-      <span class="metric-label">Storages</span>
-      <strong>{{ storage_count }}</strong>
+      <span class="metric-label">Storage definitions</span>
+      <strong>{{ storage_definition_count }}</strong>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Accessible mounts</span>
+      <strong>{{ storage_mount_count }}</strong>
     </div>
     <div class="metric">
       <span class="metric-label">Last inventory</span>
@@ -63,7 +67,7 @@
     </div>
   </section>
 
-  <section class="split-view">
+  <section class="split-view dashboard-summary-grid">
     <div class="panel">
       <div class="panel-heading">
         <h2>Latest scan</h2>
@@ -72,8 +76,8 @@
         <dl class="details-list">
           <dt>Status</dt><dd><span class="badge {{ latest_scan.status }}">{{ latest_scan.get_status_display }}</span></dd>
           <dt>Progress</dt><dd>{{ latest_scan.progress_message|default:"-" }}</dd>
-          <dt>Created</dt><dd>{{ latest_scan.created_at }}</dd>
-          <dt>Finished</dt><dd>{{ latest_scan.finished_at|default:"-" }}</dd>
+          <dt>Created</dt><dd>{{ latest_scan.created_at|date:"Y-m-d H:i:s" }}</dd>
+          <dt>Finished</dt><dd>{% if latest_scan.finished_at %}{{ latest_scan.finished_at|date:"Y-m-d H:i:s" }}{% else %}-{% endif %}</dd>
           <dt>Endpoints</dt><dd>{{ latest_scan.endpoints_succeeded|join:", "|default:"-" }}</dd>
         </dl>
       {% else %}
@@ -85,7 +89,6 @@
       <div class="panel-heading">
         <h2>Classification</h2>
       </div>
-      {% include "core/partials/classification_legend.html" %}
       <table class="data-table compact">
         <tbody>
           <tr><th>Referenced</th><td><a href="{% url 'core:classified_files' %}?classification=referenced">{{ classification_counts.referenced|default:0 }}</a></td></tr>
@@ -99,7 +102,7 @@
   </section>
 
   {% if result_scan %}
-    <section class="panel">
+    <section class="panel dashboard-storage-gate">
       <div class="panel-heading">
         <h2>Storage gate</h2>
       </div>
@@ -162,4 +165,40 @@
       </table>
     </section>
   {% endif %}
+
+  <section class="panel" id="storage-catalog">
+    <div class="panel-heading">
+      <h2>Storage catalog</h2>
+      <div class="panel-heading-controls">
+        <a class="button button-secondary" href="{% url 'core:settings_storage' %}">Configure PVE-helper access</a>
+      </div>
+    </div>
+    <table class="data-table compact storage-catalog-table">
+      <thead><tr><th>Datastore</th><th>Type</th><th>Scope</th><th>Volumes</th><th>File access</th></tr></thead>
+      <tbody>
+        {% for row in catalog_rows %}
+          <tr>
+            <td>
+              {% if row.node %}<a href="{% url 'core:api_storage_summary' row.definition.cluster.key row.node row.definition.storage_id %}">{{ row.definition.storage_id }}</a>{% else %}{{ row.definition.storage_id }}{% endif %}
+              <span class="muted"> · {{ row.definition.cluster.display_name }}</span>
+            </td>
+            <td>{{ row.definition.storage_type }}</td>
+            <td>{% if row.definition.shared %}Shared{% else %}Node-local{% endif %}</td>
+            <td>{% if row.view.capabilities.can_list_volumes %}<span class="badge completed">Available</span>{% else %}<span class="badge warning" title="{{ row.view.capabilities.list_volumes_reason }}">Unavailable</span>{% endif %}</td>
+            <td>{% if row.view.capabilities.can_browse_files %}<span class="badge completed">Available</span>{% else %}<span class="muted">{{ row.view.capabilities.browse_files_reason }}</span>{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5" class="empty-state">The storage catalog has not completed its first refresh.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if clusters_without_storage %}
+      <div class="catalog-pending notice-warning">
+        <strong>Catalog pending:</strong>
+        no current storage definition has been published for
+        {% for cluster in clusters_without_storage %}{% if not forloop.first %}, {% endif %}{{ cluster.display_name|default:cluster.key }}{% endfor %}.
+        Wait for the next refresh or inspect the cluster connection.
+      </div>
+    {% endif %}
+  </section>
 {% endblock %}

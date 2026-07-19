@@ -12,7 +12,6 @@ app_name = "core"
 
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
-    path("datastores/", views.datastores, name="datastores"),
     path("settings/", views.pve_helper_settings, name="pve_helper_settings"),
     path("settings/storage/", views.storage_mount_register, name="settings_storage"),
     path("search/", views.global_search, name="global_search"),

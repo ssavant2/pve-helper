@@ -10,12 +10,13 @@ from django.utils import timezone
 from core.models import (
     ClusterStorage,
     ClusterStorageMount,
+    ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
     CurrentGuestInventory,
     ProxmoxCluster,
-    StorageCatalogState,
     StorageMount,
 )
+from core.services.proxmox import _fetch_live_guest_lineage_uncached
 from core.services.refs import (
     ClusterStorageRef,
     MountRef,
@@ -85,6 +86,27 @@ class StorageReadModelSourceInvariantTests(SimpleTestCase):
             self.assertIn("recursive: readonly", source)
             self.assertIn("storage_accel_state:/storage-accel-state", source)
             self.assertNotIn("TRUENAS_FS_HOST_PATH", source)
+
+    def test_cluster_volume_summary_is_never_an_authorization_input(self):
+        root = Path(__file__).resolve().parent
+        telemetry_owners = {
+            root / "admin.py",
+            root / "models.py",
+            root / "tasks.py",
+            root / "services" / "storage_catalog.py",
+        }
+        offenders = []
+        for path in root.rglob("*.py"):
+            if path in telemetry_owners or path.name.startswith("tests") or "migrations" in path.parts:
+                continue
+            if "volume_complete" in path.read_text(encoding="utf-8"):
+                offenders.append(str(path.relative_to(root)))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Cluster-level volume_complete is summary telemetry only; authorization must use scoped coverage.",
+        )
 
 
 class FakeStorageClient:
@@ -164,17 +186,17 @@ class StorageCatalogTests(TestCase):
 
     def test_unchanged_metadata_refresh_preserves_volume_coverage(self):
         self._metadata()
-        first = self._volumes()
-        volume_generation = first.volume_generation
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        coverage = shared.volume_coverages.get(node__isnull=True)
+        volume_generation = coverage.volume_generation
 
         refreshed = self._metadata()
+        coverage.refresh_from_db()
 
         self.assertTrue(refreshed.volume_complete)
-        self.assertEqual(refreshed.volume_generation, volume_generation)
-        self.assertEqual(
-            refreshed.volume_based_on_metadata_generation,
-            refreshed.metadata_generation,
-        )
+        self.assertEqual(coverage.volume_generation, volume_generation)
+        self.assertEqual(coverage.based_on_metadata_generation, refreshed.metadata_generation)
         self.assertFalse(
             ClusterStorageVolumeObservation.objects.exclude(
                 based_on_metadata_generation=refreshed.metadata_generation
@@ -189,6 +211,10 @@ class StorageCatalogTests(TestCase):
         refreshed = self._metadata()
 
         self.assertFalse(refreshed.volume_complete)
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        local = ClusterStorage.objects.get(cluster=self.cluster, storage_id="local")
+        self.assertFalse(storage_view(shared).coverage_complete)
+        self.assertTrue(storage_view(local, node="pve1").coverage_complete)
 
     def test_failed_refresh_keeps_last_complete_projection(self):
         first = self._metadata()
@@ -203,8 +229,9 @@ class StorageCatalogTests(TestCase):
 
     def test_failed_volume_refresh_keeps_last_complete_observations(self):
         self._metadata()
-        first = self._volumes()
-        generation = first.volume_generation
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        generation = shared.volume_coverages.get(node__isnull=True).volume_generation
         observation_count = ClusterStorageVolumeObservation.objects.filter(
             cluster_storage__cluster=self.cluster
         ).count()
@@ -213,11 +240,56 @@ class StorageCatalogTests(TestCase):
         failed = self._volumes()
 
         self.assertFalse(failed.volume_complete)
-        self.assertEqual(failed.volume_generation, generation)
+        shared_coverage = shared.volume_coverages.get(node__isnull=True)
+        self.assertFalse(shared_coverage.complete)
+        self.assertEqual(shared_coverage.volume_generation, generation)
+        stale_view = storage_view(shared)
+        self.assertFalse(stale_view.coverage_complete)
+        self.assertTrue(stale_view.volumes_stale)
+        self.assertEqual(len(stale_view.volumes), 1)
         self.assertEqual(
             ClusterStorageVolumeObservation.objects.filter(cluster_storage__cluster=self.cluster).count(),
             observation_count,
         )
+
+    def test_shared_failure_does_not_poison_node_local_coverage(self):
+        self._metadata()
+        self._volumes()
+        self.responses["nodes/pve2/storage/shared/content"] = []
+
+        state = self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        local = ClusterStorage.objects.get(cluster=self.cluster, storage_id="local")
+
+        self.assertFalse(state.volume_complete)
+        self.assertFalse(storage_view(shared).coverage_complete)
+        self.assertTrue(storage_view(local, node="pve1").coverage_complete)
+        self.assertEqual([row.volid for row in storage_view(local, node="pve1").volumes], ["local:vm-101-disk-0"])
+
+    def test_node_local_failure_is_isolated_to_that_node(self):
+        self._metadata()
+        self._volumes()
+        self.responses["nodes/pve2/storage/local/content"] = RuntimeError("down")
+
+        state = self._volumes()
+        local = ClusterStorage.objects.get(cluster=self.cluster, storage_id="local")
+
+        self.assertFalse(state.volume_complete)
+        self.assertTrue(storage_view(local, node="pve1").coverage_complete)
+        self.assertFalse(storage_view(local, node="pve2").coverage_complete)
+        self.assertEqual([row.volid for row in storage_view(local, node="pve1").volumes], ["local:vm-101-disk-0"])
+
+    def test_lineage_uses_healthy_scopes_when_cluster_summary_is_partial(self):
+        self.responses["nodes/pve1/storage/local/content"][0]["parent"] = "local:100/base-100-disk-0.qcow2"
+        self._metadata()
+        self._volumes()
+        self.responses["nodes/pve2/storage/shared/content"] = []
+
+        state = self._volumes()
+        lineage = _fetch_live_guest_lineage_uncached(cluster=self.cluster)
+
+        self.assertFalse(state.volume_complete)
+        self.assertEqual(lineage, {101: 100})
 
     def test_complete_metadata_omission_retires_definition(self):
         self._metadata()
@@ -370,7 +442,11 @@ class StorageCatalogTests(TestCase):
         self.assertEqual(result.state, UsageState.REFERENCED_ELSEWHERE)
         self.assertEqual(result.references, ("cluster-b:vm:100",))
 
-        StorageCatalogState.objects.filter(cluster=cluster_b).update(volume_complete=False)
+        ClusterStorageVolumeCoverage.objects.filter(cluster_storage=shared_b).update(
+            complete=False,
+            error_code="test_incomplete",
+            error_reason="Coverage is incomplete.",
+        )
         incomplete = usage_preflight(shared, volid="shared:100/vm-100-disk-0.qcow2", fresh=False)
         self.assertEqual(incomplete.state, UsageState.UNKNOWN)
 

@@ -444,8 +444,6 @@ class StorageCatalogState(TimestampedModel):
     metadata_last_attempt_at = models.DateTimeField(null=True, blank=True)
     metadata_complete = models.BooleanField(default=False)
     metadata_errors = models.JSONField(default=dict, blank=True)
-    volume_generation = models.UUIDField(null=True, blank=True)
-    volume_based_on_metadata_generation = models.UUIDField(null=True, blank=True)
     volume_refreshed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     volume_last_attempt_at = models.DateTimeField(null=True, blank=True)
     volume_complete = models.BooleanField(default=False)
@@ -570,6 +568,52 @@ class ClusterStorageMount(TimestampedModel):
     def __str__(self) -> str:
         scope = self.node or "shared"
         return f"{self.cluster_storage}@{scope} -> {self.mount.mount_key}"
+
+
+class ClusterStorageVolumeCoverage(TimestampedModel):
+    """Publication state for one independently knowable storage scope."""
+
+    class Scope(models.TextChoices):
+        SHARED = "shared", "Shared"
+        NODE = "node", "Node"
+
+    cluster_storage = models.ForeignKey(
+        ClusterStorage,
+        on_delete=models.CASCADE,
+        related_name="volume_coverages",
+    )
+    scope = models.CharField(max_length=12, choices=Scope.choices)
+    node = models.CharField(max_length=120, null=True, blank=True)
+    volume_generation = models.UUIDField(null=True, blank=True)
+    based_on_metadata_generation = models.UUIDField(null=True, blank=True)
+    refreshed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    complete = models.BooleanField(default=False)
+    error_code = models.CharField(max_length=64, blank=True)
+    error_reason = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["cluster_storage__cluster__key", "cluster_storage__storage_id", "node"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(models.Q(scope="shared", node__isnull=True) | models.Q(scope="node", node__isnull=False)),
+                name="storage_volume_coverage_scope_node",
+            ),
+            models.UniqueConstraint(
+                fields=["cluster_storage", "node"],
+                name="unique_storage_volume_coverage_scope",
+                nulls_distinct=False,
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["cluster_storage", "complete"],
+                name="core_csvolcov_state_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.cluster_storage}@{self.node or 'shared'} coverage"
 
 
 class ClusterStorageVolumeObservation(TimestampedModel):

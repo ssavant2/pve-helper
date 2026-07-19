@@ -122,16 +122,20 @@ def dashboard(request):
     latest_scan = ScanRun.objects.order_by("-created_at").first()
     result_scan = _latest_result_scan()
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
+    catalog_rows = _storage_catalog_rows()
     _decorate_storages_with_scan_state(storages, result_scan)
     classification_counts = _current_classification_counts(storages)
     context = {
         **navigation_context("dashboard"),
         "latest_scan": latest_scan,
         "result_scan": result_scan,
-        "storage_count": StorageMount.objects.count(),
+        "storage_definition_count": len(catalog_rows),
+        "storage_mount_count": len(storages),
         "scan_count": ScanRun.objects.count(),
         "audit_count": AuditEvent.objects.count(),
         "classification_counts": classification_counts,
+        "catalog_rows": catalog_rows,
+        "clusters_without_storage": _clusters_without_storage(),
         "storage_gate_rows": _storage_gate_rows(storages, result_scan),
         "scan_schedule": scan_schedule_state(),
         "trash_purge_schedule": _trash_purge_schedule_state(),
@@ -146,17 +150,19 @@ def _clusters_without_storage() -> list[ProxmoxCluster]:
     return list(ProxmoxCluster.objects.filter(enabled=True).exclude(pk__in=represented).order_by("key"))
 
 
-@app_login_required
-def datastores(request):
+def _storage_catalog_rows() -> list[dict]:
     catalog_rows = []
     definitions = (
         ClusterStorage.objects.select_related("cluster")
         .filter(cluster__enabled=True, present=True)
-        .prefetch_related("node_states", "mount_bindings__mount", "volume_observations")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
         .order_by("cluster__display_name", "storage_id")
     )
     for definition in definitions:
-        nodes = list(definition.node_states.filter(present=True).order_by("node"))
+        nodes = sorted(
+            (node_state for node_state in definition.node_states.all() if node_state.present),
+            key=lambda node_state: node_state.node,
+        )
         selected_node = next((row.node for row in nodes if row.active), nodes[0].node if nodes else "")
         view = storage_view(definition, node=selected_node)
         catalog_rows.append(
@@ -168,12 +174,7 @@ def datastores(request):
             }
         )
 
-    context = {
-        **navigation_context("datastores"),
-        "clusters_without_storage": _clusters_without_storage(),
-        "catalog_rows": catalog_rows,
-    }
-    return render(request, "core/datastores.html", context)
+    return catalog_rows
 
 
 @app_login_required
@@ -377,7 +378,7 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, s
     if status is None:
         definition = (
             ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
-            .prefetch_related("node_states", "mount_bindings__mount", "volume_observations")
+            .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
             .first()
         )
         if definition is None:
@@ -416,7 +417,7 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, s
         for key, label, name in _API_STORAGE_TABS
     ]
     return {
-        **navigation_context("datastores"),
+        **navigation_context("dashboard"),
         "node": node,
         "cluster_key": cluster.key,
         "selected_cluster": cluster,
@@ -451,7 +452,7 @@ def storage_catalog_refresh_view(request, cluster_key: str, storage: str):
 def _api_storage_volumes(cluster, node: str, storage: str, highlight_vmid=None):
     definition = (
         ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
-        .prefetch_related("node_states", "mount_bindings__mount", "volume_observations")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
         .first()
     )
     if definition is None:

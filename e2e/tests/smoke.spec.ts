@@ -14,7 +14,6 @@ const PAGES = [
   { name: "Add cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
-  { name: "Storage Catalog", path: "/datastores/" },
   { name: "PVE-helper Settings", path: "/settings/storage/" },
   { name: "Audit log", path: "/audit/" },
 ];
@@ -55,16 +54,27 @@ test("header displays the configured application version", async ({ page }) => {
   await expect(page.locator(".brand-version")).toHaveText("DEV");
 });
 
-test("storage catalog and application storage settings are both reachable from navigation", async ({ page }) => {
+test("storage overview contains the catalog and links to application storage settings", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("link", { name: "Catalog", exact: true }).click();
-  await expect(page).toHaveURL(/\/datastores\/$/);
-  await expect(page.getByRole("heading", { name: "Storage Catalog", exact: true })).toBeVisible();
+  const summaryPanels = page.locator(".dashboard-summary-grid > .panel");
+  const latestScanBox = await summaryPanels.nth(0).boundingBox();
+  const classificationBox = await summaryPanels.nth(1).boundingBox();
+  expect(latestScanBox).not.toBeNull();
+  expect(classificationBox).not.toBeNull();
+  expect(Math.abs((latestScanBox?.width ?? 0) - (classificationBox?.width ?? 0))).toBeLessThanOrEqual(1);
+  expect(Math.abs((latestScanBox?.height ?? 0) - (classificationBox?.height ?? 0))).toBeLessThanOrEqual(1);
 
-  await page.getByRole("link", { name: "PVE-helper Settings", exact: true }).click();
+  await expect(page.locator("#storage-catalog")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Storage catalog", exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "Configure PVE-helper access", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/storage\/$/);
   await expect(page.getByRole("link", { name: "Storage access", exact: true })).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "Registered associations", exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "View storage catalog", exact: true }).click();
+  await expect(page).toHaveURL(/\/#storage-catalog$/);
+  await expect(page.locator("#storage-catalog")).toBeVisible();
 });
 
 test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {

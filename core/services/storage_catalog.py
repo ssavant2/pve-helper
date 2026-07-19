@@ -22,6 +22,7 @@ from django.utils import timezone
 from core.models import (
     ClusterStorage,
     ClusterStorageNodeState,
+    ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
     CurrentGuestInventory,
     FileInventory,
@@ -84,6 +85,7 @@ class StorageView:
     volumes_stale: bool
     coverage_complete: bool
     coverage_reason: str
+    coverage_token: str
 
 
 @dataclass(frozen=True)
@@ -179,15 +181,15 @@ def _node_inventory(clients, nodes: list[dict[str, Any]]) -> tuple[dict[str, lis
     return answers, errors
 
 
-def _metadata_semantics(cluster: ProxmoxCluster) -> tuple[tuple[Any, ...], ...]:
+def _metadata_semantics(cluster: ProxmoxCluster) -> dict[str, tuple[Any, ...]]:
     """Return the storage semantics that can invalidate volume absence proof.
 
     Capacity and observation timestamps intentionally do not participate: they
     change frequently without changing which storage instances or volumes exist.
     """
     definitions = ClusterStorage.objects.filter(cluster=cluster).prefetch_related("node_states").order_by("storage_id")
-    return tuple(
-        (
+    return {
+        definition.storage_id: (
             definition.storage_id,
             definition.storage_type,
             tuple(definition.content or ()),
@@ -202,7 +204,7 @@ def _metadata_semantics(cluster: ProxmoxCluster) -> tuple[tuple[Any, ...], ...]:
             ),
         )
         for definition in definitions
-    )
+    }
 
 
 def refresh_storage_metadata(cluster: ProxmoxCluster) -> StorageCatalogState:
@@ -239,9 +241,6 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
     with transaction.atomic():
         state, _ = StorageCatalogState.objects.select_for_update().get_or_create(cluster=cluster)
         previous_semantics = _metadata_semantics(cluster)
-        previous_volume_complete = state.volume_complete
-        previous_volume_generation = state.volume_generation
-        previous_volume_based_on = state.volume_based_on_metadata_generation
         seen_definition_ids: set[int] = set()
         seen_node_ids: set[int] = set()
         by_storage_node = {
@@ -297,24 +296,34 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
         state.metadata_complete = True
         state.metadata_errors = {}
         current_semantics = _metadata_semantics(cluster)
-        volume_proof_compatible = (
-            previous_volume_complete
-            and previous_volume_generation is not None
-            and previous_volume_based_on is not None
-            and previous_semantics == current_semantics
+        coverage_errors: dict[str, str] = {}
+        coverage_rows = ClusterStorageVolumeCoverage.objects.select_for_update().filter(
+            cluster_storage__cluster=cluster
         )
-        if volume_proof_compatible:
-            # The cheap lane got a fresh generation but proved that all semantics
-            # relevant to the existing content observation are unchanged.
-            ClusterStorageVolumeObservation.objects.filter(
-                cluster_storage__cluster=cluster,
-                observed_volume_generation=previous_volume_generation,
-            ).update(based_on_metadata_generation=generation)
-            state.volume_based_on_metadata_generation = generation
-        else:
-            # Definition/node semantics changed, so absence is unknown until the
-            # expensive lane publishes against this exact generation.
-            state.volume_complete = False
+        for coverage in coverage_rows.select_related("cluster_storage"):
+            storage_id = coverage.cluster_storage.storage_id
+            semantics_unchanged = previous_semantics.get(storage_id) == current_semantics.get(storage_id)
+            if semantics_unchanged and coverage.complete and coverage.volume_generation is not None:
+                observations = ClusterStorageVolumeObservation.objects.filter(
+                    cluster_storage=coverage.cluster_storage,
+                    observed_volume_generation=coverage.volume_generation,
+                )
+                if coverage.scope == ClusterStorageVolumeCoverage.Scope.NODE:
+                    observations = observations.filter(node=coverage.node)
+                observations.update(based_on_metadata_generation=generation)
+                coverage.based_on_metadata_generation = generation
+                coverage.save(update_fields=["based_on_metadata_generation", "updated_at"])
+            elif not semantics_unchanged:
+                coverage.complete = False
+                coverage.error_code = "metadata_changed"
+                coverage.error_reason = "Storage metadata changed; volume coverage requires refresh."
+                coverage.save(update_fields=["complete", "error_code", "error_reason", "updated_at"])
+                coverage_errors[_coverage_error_key(coverage.cluster_storage, coverage.node)] = coverage.error_reason
+        state.volume_complete = _coverage_summary_complete(cluster, generation)
+        if state.volume_complete:
+            state.volume_errors = {}
+        elif coverage_errors:
+            state.volume_errors = coverage_errors
         state.save()
     return state
 
@@ -325,6 +334,36 @@ def _candidate_nodes(definition: ClusterStorage) -> list[str]:
         .order_by("node")
         .values_list("node", flat=True)
     )
+
+
+def _coverage_error_key(definition: ClusterStorage, node: str | None) -> str:
+    return f"{definition.storage_id}@{node}" if node else definition.storage_id
+
+
+def _coverage_summary_complete(cluster: ProxmoxCluster, metadata_generation: uuid.UUID) -> bool:
+    definitions = (
+        ClusterStorage.objects.filter(cluster=cluster, present=True, disabled=False)
+        .prefetch_related("node_states", "volume_coverages")
+        .order_by("storage_id")
+    )
+    for definition in definitions:
+        if backend_profile(definition.storage_type).content_list_mode is not ContentListMode.PVE_API:
+            continue
+        candidates = _candidate_nodes(definition)
+        if not candidates:
+            return False
+        coverages = {coverage.node: coverage for coverage in definition.volume_coverages.all()}
+        required_nodes: tuple[str | None, ...] = (None,) if definition.shared else tuple(candidates)
+        for node in required_nodes:
+            coverage = coverages.get(node)
+            if (
+                coverage is None
+                or not coverage.complete
+                or coverage.volume_generation is None
+                or coverage.based_on_metadata_generation != metadata_generation
+            ):
+                return False
+    return True
 
 
 def _normalize_volume(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -354,6 +393,12 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
     state, _ = StorageCatalogState.objects.get_or_create(cluster=cluster)
     metadata_generation = state.metadata_generation
     if not state.metadata_complete or metadata_generation is None:
+        ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster=cluster).update(
+            complete=False,
+            last_attempt_at=attempted_at,
+            error_code="metadata_incomplete",
+            error_reason="Complete storage metadata is required.",
+        )
         state.volume_last_attempt_at = attempted_at
         state.volume_complete = False
         state.volume_errors = {"metadata": "Complete storage metadata is required."}
@@ -366,49 +411,117 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
             .prefetch_related("node_states")
             .order_by("storage_id")
         )
-        gathered: dict[int, dict[str, list[dict[str, Any]]]] = {}
+        successes: list[tuple[ClusterStorage, str, str | None, dict[str, list[dict[str, Any]]]]] = []
+        failures: list[tuple[ClusterStorage, str, str | None, str, str]] = []
         errors: dict[str, str] = {}
         for definition in definitions:
             profile = backend_profile(definition.storage_type)
             if profile.content_list_mode is not ContentListMode.PVE_API:
-                # Unknown plugins are explicitly unsupported, not a failure of
-                # otherwise knowable storage. Their own capability stays false.
-                gathered[definition.pk] = {}
+                # Unsupported plugins are explicitly unavailable rather than a
+                # failed scope, and therefore do not poison supported storage.
                 continue
             candidates = _candidate_nodes(definition)
             if not candidates:
-                errors[definition.storage_id] = "No permitted active node."
+                reason = "No permitted active node."
+                failures.append(
+                    (
+                        definition,
+                        ClusterStorageVolumeCoverage.Scope.SHARED
+                        if definition.shared
+                        else ClusterStorageVolumeCoverage.Scope.NODE,
+                        None,
+                        "no_active_node",
+                        reason,
+                    )
+                )
+                errors[definition.storage_id] = reason
                 continue
-            answers: dict[str, list[dict[str, Any]]] = {}
+            if definition.shared:
+                answers: dict[str, list[dict[str, Any]]] = {}
+                failed_nodes: list[str] = []
+                for node in candidates:
+                    path = f"nodes/{quote(node, safe='')}/storage/{quote(definition.storage_id, safe='')}/content"
+                    try:
+                        raw = _get_with_failover(clients, path)
+                        if not isinstance(raw, list):
+                            raise StorageCatalogError("Invalid storage content response.")
+                        answers[node] = [
+                            item for item in (_normalize_volume(row) for row in raw if isinstance(row, dict)) if item
+                        ]
+                    except Exception as exc:
+                        failed_nodes.append(node)
+                        errors[f"{definition.storage_id}@{node}"] = _public_error(exc)
+                if failed_nodes:
+                    failures.append(
+                        (
+                            definition,
+                            ClusterStorageVolumeCoverage.Scope.SHARED,
+                            None,
+                            "required_node_unavailable",
+                            "Volume inventory is unavailable on one or more required nodes.",
+                        )
+                    )
+                    continue
+                signatures = {
+                    tuple(sorted((row["volid"], row["vmid"], row["content"], row["size_bytes"]) for row in rows))
+                    for rows in answers.values()
+                }
+                if len(signatures) != 1:
+                    reason = "Shared nodes returned inconsistent volume sets."
+                    errors[definition.storage_id] = reason
+                    failures.append(
+                        (
+                            definition,
+                            ClusterStorageVolumeCoverage.Scope.SHARED,
+                            None,
+                            "shared_node_disagreement",
+                            reason,
+                        )
+                    )
+                    continue
+                successes.append((definition, ClusterStorageVolumeCoverage.Scope.SHARED, None, answers))
+                continue
             for node in candidates:
                 path = f"nodes/{quote(node, safe='')}/storage/{quote(definition.storage_id, safe='')}/content"
                 try:
                     raw = _get_with_failover(clients, path)
                     if not isinstance(raw, list):
                         raise StorageCatalogError("Invalid storage content response.")
-                    answers[node] = [
+                    volumes = [
                         item for item in (_normalize_volume(row) for row in raw if isinstance(row, dict)) if item
                     ]
+                    successes.append(
+                        (
+                            definition,
+                            ClusterStorageVolumeCoverage.Scope.NODE,
+                            node,
+                            {node: volumes},
+                        )
+                    )
                 except Exception as exc:
-                    errors[f"{definition.storage_id}@{node}"] = _public_error(exc)
-            if len(answers) != len(candidates):
-                continue
-            if definition.shared:
-                signatures = {
-                    tuple(sorted((row["volid"], row["vmid"], row["content"], row["size_bytes"]) for row in rows))
-                    for rows in answers.values()
-                }
-                if len(signatures) != 1:
-                    errors[definition.storage_id] = "Shared nodes returned inconsistent volume sets."
-                    continue
-            gathered[definition.pk] = answers
-        if errors:
-            raise StorageCatalogError("Incomplete storage volume inventory.")
+                    reason = _public_error(exc)
+                    errors[f"{definition.storage_id}@{node}"] = reason
+                    failures.append(
+                        (
+                            definition,
+                            ClusterStorageVolumeCoverage.Scope.NODE,
+                            node,
+                            "node_inventory_unavailable",
+                            reason,
+                        )
+                    )
     except Exception as exc:
+        reason = _public_error(exc)
+        ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster=cluster).update(
+            complete=False,
+            last_attempt_at=attempted_at,
+            error_code="refresh_failed",
+            error_reason=reason,
+        )
         state.refresh_from_db()
         state.volume_last_attempt_at = attempted_at
         state.volume_complete = False
-        state.volume_errors = errors if "errors" in locals() and errors else {"refresh": _public_error(exc)}
+        state.volume_errors = {"refresh": reason}
         state.save(update_fields=["volume_last_attempt_at", "volume_complete", "volume_errors", "updated_at"])
         return state
 
@@ -422,13 +535,18 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
             state.volume_errors = {"metadata": "Storage metadata changed during volume refresh."}
             state.save(update_fields=["volume_last_attempt_at", "volume_complete", "volume_errors", "updated_at"])
             return state
-        ClusterStorageVolumeObservation.objects.filter(cluster_storage__cluster=cluster).delete()
-        rows: list[ClusterStorageVolumeObservation] = []
-        definitions_by_id = {row.pk: row for row in definitions}
-        for definition_id, answers in gathered.items():
-            definition = definitions_by_id[definition_id]
-            # Shared answers are deliberately retained per answering node. The
-            # catalog exposes one logical set only after their equality was proven.
+        for definition, scope, node, answers in successes:
+            coverage, _ = ClusterStorageVolumeCoverage.objects.select_for_update().get_or_create(
+                cluster_storage=definition,
+                node=node,
+                defaults={"scope": scope},
+            )
+            coverage.scope = scope
+            observations = ClusterStorageVolumeObservation.objects.filter(cluster_storage=definition)
+            if scope == ClusterStorageVolumeCoverage.Scope.NODE:
+                observations = observations.filter(node=node)
+            observations.delete()
+            rows: list[ClusterStorageVolumeObservation] = []
             for node, volumes in answers.items():
                 rows.extend(
                     ClusterStorageVolumeObservation(
@@ -441,13 +559,36 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
                     )
                     for volume in volumes
                 )
-        ClusterStorageVolumeObservation.objects.bulk_create(rows, batch_size=500)
-        state.volume_generation = generation
-        state.volume_based_on_metadata_generation = metadata_generation
+            ClusterStorageVolumeObservation.objects.bulk_create(rows, batch_size=500)
+            coverage.volume_generation = generation
+            coverage.based_on_metadata_generation = metadata_generation
+            coverage.refreshed_at = observed_at
+            coverage.last_attempt_at = attempted_at
+            coverage.complete = True
+            coverage.error_code = ""
+            coverage.error_reason = ""
+            coverage.save()
+        for definition, scope, node, error_code, error_reason in failures:
+            if scope == ClusterStorageVolumeCoverage.Scope.NODE and node is None:
+                # With no active node there is no independently addressable
+                # node-local scope to persist; storage_view reports the metadata
+                # condition directly.
+                continue
+            coverage, _ = ClusterStorageVolumeCoverage.objects.select_for_update().get_or_create(
+                cluster_storage=definition,
+                node=node,
+                defaults={"scope": scope},
+            )
+            coverage.scope = scope
+            coverage.last_attempt_at = attempted_at
+            coverage.complete = False
+            coverage.error_code = error_code
+            coverage.error_reason = error_reason
+            coverage.save()
         state.volume_refreshed_at = observed_at
         state.volume_last_attempt_at = attempted_at
-        state.volume_complete = True
-        state.volume_errors = {}
+        state.volume_complete = not failures and _coverage_summary_complete(cluster, metadata_generation)
+        state.volume_errors = errors
         state.save()
     return state
 
@@ -466,6 +607,31 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
     profile = backend_profile(definition.storage_type)
     nodes = tuple(definition.node_states.filter(present=True).order_by("node"))
     active_nodes = [row for row in nodes if row.active and row.enabled]
+    coverage_rows = tuple(definition.volume_coverages.all())
+    coverage_by_node = {coverage.node: coverage for coverage in coverage_rows}
+    requested_coverages: list[ClusterStorageVolumeCoverage | None]
+    if definition.shared:
+        requested_coverages = [coverage_by_node.get(None)]
+    elif node:
+        requested_coverages = [coverage_by_node.get(node)]
+    else:
+        requested_coverages = [coverage_by_node.get(row.node) for row in active_nodes]
+
+    def coverage_is_current(coverage: ClusterStorageVolumeCoverage | None) -> bool:
+        return bool(
+            coverage
+            and coverage.complete
+            and coverage.volume_generation is not None
+            and state.metadata_complete
+            and coverage.based_on_metadata_generation == state.metadata_generation
+        )
+
+    current_coverages = [coverage for coverage in requested_coverages if coverage_is_current(coverage)]
+    display_coverages = [
+        coverage
+        for coverage in requested_coverages
+        if coverage and coverage.volume_generation is not None and profile.content_list_mode is ContentListMode.PVE_API
+    ]
     list_reason = ""
     if not profile.known:
         list_reason = f"Unsupported storage type: {definition.storage_type or 'unknown'}."
@@ -475,10 +641,14 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         list_reason = "The selected storage instance is not active."
     elif not active_nodes:
         list_reason = "No permitted active node."
-    elif not state.volume_complete:
-        list_reason = next(iter(state.volume_errors.values()), "Volume inventory is incomplete.")
-    elif state.volume_based_on_metadata_generation != state.metadata_generation:
-        list_reason = "Volume inventory is stale relative to storage metadata."
+    elif not requested_coverages or len(current_coverages) != len(requested_coverages):
+        failed = next((coverage for coverage in requested_coverages if not coverage_is_current(coverage)), None)
+        if failed and failed.error_reason:
+            list_reason = failed.error_reason
+        elif not state.metadata_complete:
+            list_reason = "Storage metadata inventory is incomplete."
+        else:
+            list_reason = "Volume coverage has not completed for this storage scope."
     can_list = not list_reason
 
     bindings = list(definition.mount_bindings.select_related("mount"))
@@ -505,12 +675,14 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         write_reason = health.reason
     can_write = can_browse and bool(health and health.writable)
 
-    observations = definition.volume_observations.filter(observed_volume_generation=state.volume_generation).order_by(
-        "node", "volid"
-    )
-    if node:
-        observations = observations.filter(node=node)
-    elif definition.shared:
+    observation_scope = models.Q(pk__in=[])
+    for coverage in display_coverages:
+        scope = models.Q(observed_volume_generation=coverage.volume_generation)
+        if coverage.scope == ClusterStorageVolumeCoverage.Scope.NODE:
+            scope &= models.Q(node=coverage.node)
+        observation_scope |= scope
+    observations = definition.volume_observations.filter(observation_scope).order_by("node", "volid")
+    if definition.shared:
         first = active_nodes[0].node if active_nodes else ""
         observations = observations.filter(node=first)
     volumes = tuple(
@@ -527,16 +699,19 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         for row in observations
     )
     coverage_complete = can_list
+    coverage_token = ",".join(
+        sorted(f"{coverage.node or 'shared'}={coverage.volume_generation}" for coverage in current_coverages)
+    )
     return StorageView(
         definition=definition,
         nodes=nodes,
         volumes=volumes,
         capabilities=StorageCapabilities(can_list, list_reason, can_browse, browse_reason, can_write, write_reason),
         metadata_stale=not state.metadata_complete,
-        volumes_stale=not state.volume_complete
-        or state.volume_based_on_metadata_generation != state.metadata_generation,
+        volumes_stale=not coverage_complete,
         coverage_complete=coverage_complete,
         coverage_reason=list_reason,
+        coverage_token=coverage_token,
     )
 
 
@@ -624,7 +799,7 @@ def usage_preflight(
         str(value or "")
         for value in (
             state.metadata_generation,
-            state.volume_generation,
+            view.coverage_token,
             definition.cluster.key,
             definition.storage_id,
             node,
@@ -667,28 +842,33 @@ def usage_preflight(
         )
         relative = volid.split(":", 1)[1] if ":" in volid else ""
         for other in elsewhere:
-            other_view = storage_view(other)
-            if not other_view.coverage_complete:
-                return UsagePreflight(
-                    UsageState.UNKNOWN,
-                    "The same verified mount has incomplete coverage in another cluster.",
-                    token,
-                )
-            other_volid = f"{other.storage_id}:{relative}" if relative else ""
-            other_prefix = f"{other.storage_id}:"
-            for guest in CurrentGuestInventory.objects.filter(cluster=other.cluster).only(
-                "object_type", "vmid", "disk_references"
-            ):
-                if any(
-                    str(ref).startswith(other_prefix) and (not other_volid or str(ref) == other_volid)
-                    for ref in guest.disk_references or []
-                ):
+            matching_bindings = other.mount_bindings.select_related("mount").filter(
+                models.Q(mount_id__in=binding_ids) | models.Q(mount__backend_identity__in=backend_identities)
+            )
+            for other_node in {binding.node or "" for binding in matching_bindings}:
+                other_view = storage_view(other, node=other_node)
+                if not other_view.coverage_complete:
                     return UsagePreflight(
-                        UsageState.REFERENCED_ELSEWHERE,
-                        "The same verified mount is referenced by another cluster.",
+                        UsageState.UNKNOWN,
+                        "The same verified mount has incomplete coverage in another cluster.",
                         token,
-                        (f"{other.cluster.key}:{guest.object_type}:{guest.vmid}",),
                     )
+                other_volid = f"{other.storage_id}:{relative}" if relative else ""
+                other_prefix = f"{other.storage_id}:"
+                guests = CurrentGuestInventory.objects.filter(cluster=other.cluster)
+                if other_node and not other.shared:
+                    guests = guests.filter(node=other_node)
+                for guest in guests.only("object_type", "vmid", "disk_references"):
+                    if any(
+                        str(ref).startswith(other_prefix) and (not other_volid or str(ref) == other_volid)
+                        for ref in guest.disk_references or []
+                    ):
+                        return UsagePreflight(
+                            UsageState.REFERENCED_ELSEWHERE,
+                            "The same verified mount is referenced by another cluster.",
+                            token,
+                            (f"{other.cluster.key}:{guest.object_type}:{guest.vmid}",),
+                        )
     elif not binding_ids:
         return UsagePreflight(
             UsageState.UNKNOWN,

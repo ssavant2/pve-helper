@@ -699,17 +699,38 @@ def fetch_live_guest_lineage(*, cluster) -> dict[int, int]:
 
 
 def _fetch_live_guest_lineage_uncached(*, cluster) -> dict[int, int]:
-    from core.models import ClusterStorageVolumeObservation, StorageCatalogState
+    from django.db import models
+
+    from core.models import (
+        ClusterStorageVolumeCoverage,
+        ClusterStorageVolumeObservation,
+        StorageCatalogState,
+    )
 
     lineage: dict[int, int] = {}
     state = StorageCatalogState.objects.filter(cluster=cluster).first()
-    if state is None or not state.volume_complete or state.volume_generation is None:
+    if state is None or not state.metadata_complete or state.metadata_generation is None:
         return lineage
-    observations = ClusterStorageVolumeObservation.objects.filter(
+    coverage_filter = models.Q(pk__in=[])
+    coverages = ClusterStorageVolumeCoverage.objects.filter(
         cluster_storage__cluster=cluster,
         cluster_storage__present=True,
+        complete=True,
+        volume_generation__isnull=False,
+        based_on_metadata_generation=state.metadata_generation,
+    )
+    for coverage in coverages:
+        scope = models.Q(
+            cluster_storage=coverage.cluster_storage,
+            observed_volume_generation=coverage.volume_generation,
+        )
+        if coverage.scope == ClusterStorageVolumeCoverage.Scope.NODE:
+            scope &= models.Q(node=coverage.node)
+        coverage_filter |= scope
+    observations = ClusterStorageVolumeObservation.objects.filter(
+        coverage_filter,
+        cluster_storage__present=True,
         content="images",
-        observed_volume_generation=state.volume_generation,
     ).only("vmid", "metadata")
     for item in observations:
         match = _BASE_VOLUME_RE.search(str((item.metadata or {}).get("parent") or ""))

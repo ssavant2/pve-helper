@@ -6,7 +6,7 @@
       <h2>Storage access</h2>
       <p>Associate host-mounted directories with storage definitions already discovered from Proxmox.</p>
     </div>
-    <div class="page-actions"><a class="button button-secondary" href="{% url 'core:datastores' %}">View storage catalog</a></div>
+    <div class="page-actions"><a class="button button-secondary" href="{% url 'core:dashboard' %}#storage-catalog">View storage catalog</a></div>
   </section>
 
   {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}

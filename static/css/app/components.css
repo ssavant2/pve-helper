@@ -269,9 +269,31 @@
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.catalog-pending {
+  padding: 9px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.split-view.dashboard-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.dashboard-storage-gate {
+  margin-bottom: 14px;
+}
+
+.data-table.storage-catalog-table th,
+.data-table.storage-catalog-table td {
+  padding-block: 5px;
+  font-size: 13px;
 }
 
 .metric,

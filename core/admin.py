@@ -5,6 +5,7 @@ from .models import (
     ClusterStorage,
     ClusterStorageMount,
     ClusterStorageNodeState,
+    ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
     CurrentGuestInventory,
     CurrentGuestInventoryState,
@@ -48,6 +49,20 @@ class ClusterStorageVolumeObservationAdmin(admin.ModelAdmin):
     list_display = ("cluster_storage", "node", "volid", "vmid", "content", "last_seen_at")
     list_filter = ("content",)
     search_fields = ("cluster_storage__cluster__key", "cluster_storage__storage_id", "volid", "=vmid")
+
+
+@admin.register(ClusterStorageVolumeCoverage)
+class ClusterStorageVolumeCoverageAdmin(admin.ModelAdmin):
+    list_display = (
+        "cluster_storage",
+        "scope",
+        "node",
+        "complete",
+        "refreshed_at",
+        "error_code",
+    )
+    list_filter = ("scope", "complete", "error_code")
+    search_fields = ("cluster_storage__cluster__key", "cluster_storage__storage_id", "node")
 
 
 @admin.register(StorageCatalogState)

@@ -122,7 +122,8 @@ operator has independently verified the intended cluster and explicitly
 re-approved the new identity.
 
 An added cluster's Proxmox storage definitions and node state appear in
-**Storage → Catalog** after catalog refresh. This API inventory requires no host mount.
+the **Storage catalog** section under **Storage → Overview** after catalog refresh.
+This API inventory requires no host mount.
 If a file-tree datastore should also be browsable, mount it beneath the deployment's
 `/storages` host root and use **PVE-helper Settings → Storage access** to bind that
 existing directory to the correct cluster storage and, for node-local storage,
