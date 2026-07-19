@@ -268,6 +268,22 @@ pve-helper separates its API inventory from optional filesystem access:
 | **Proxmox API inventory (Layer 1)** | Read definitions, node state, capacity, volumes and guest references. Block/API backends such as LVM-thin, RBD and PBS remain useful here but never pretend to have a file browser. |
 | **Registered file-tree mount (Layer 2)** | Adds scanning, folder browsing and supported file actions for eligible backends such as `dir`, NFS, CIFS and CephFS. The mount is an explicit deployment association, not inferred from a matching name. |
 
+Both layers are visible on **Storage → Overview**, labelled as such: *Storage
+catalog* is Layer 1, *Storage gate* is Layer 2, and mount associations live under
+**PVE-helper Settings → Storage access** (also Layer 2).
+
+#### Two checks guard a destructive file action
+
+They are not redundant, and neither implies the other:
+
+| Check | What it proves | Evidence |
+| --- | --- | --- |
+| **Storage gate** (Layer 2) | PVE-helper's own scan saw the whole picture — every expected Proxmox consumer of this shared mount answered while the scan ran. | Scan-time consumer coverage |
+| **Volume coverage** (Layer 1, per datastore in Storage catalog) | Proxmox's API listing is complete for that exact storage scope, bound to the generation it was observed under. | Generation-bound API coverage |
+
+A destructive action must pass both. If one refuses, the refusal names which
+one and why; an Unknown or Blocked verdict is never a deletion candidate.
+
 Mounted storage is only as writable as its effective Docker bind mount. A green
 app-level write setting does not override a read-only NFS mount. Conversely,
 `STORAGE_WRITE_ENABLED=false` is a global operational brake that hides/rejects

@@ -104,7 +104,10 @@
   {% if result_scan %}
     <section class="panel dashboard-storage-gate">
       <div class="panel-heading">
-        <h2>Storage gate</h2>
+        <div>
+          <h2>Storage gate</h2>
+          <p class="panel-meta">Layer 2 — what PVE-helper's own scan and host mount can see.</p>
+        </div>
       </div>
       {% include "core/partials/storage_gate_help.html" %}
       <table class="data-table compact">
@@ -168,7 +171,10 @@
 
   <section class="panel" id="storage-catalog">
     <div class="panel-heading">
-      <h2>Storage catalog</h2>
+      <div>
+        <h2>Storage catalog</h2>
+        <p class="panel-meta">Layer 1 — what Proxmox reports through the API.</p>
+      </div>
       <div class="panel-heading-controls">
         <a class="button button-secondary" href="{% url 'core:settings_storage' %}">Configure PVE-helper access</a>
       </div>

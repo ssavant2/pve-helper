@@ -7,4 +7,14 @@
     remain available, while risky file changes stay disabled until inventory is
     complete. Local/API-only storages are not part of this gate.
   </p>
+  <p>
+    A destructive file action must pass <strong>two independent checks</strong>,
+    because there are two separate ways to be missing evidence. This gate proves
+    that <em>PVE-helper's own scan</em> saw the whole picture: every expected
+    Proxmox consumer of this shared mount answered while the scan ran. The
+    <strong>volume coverage</strong> shown per datastore in Storage catalog proves
+    that <em>Proxmox's API listing</em> is complete for that exact storage scope,
+    bound to the generation it was observed under. Neither implies the other, so
+    both must pass — and either one refusing is reported with its own reason.
+  </p>
 </section>

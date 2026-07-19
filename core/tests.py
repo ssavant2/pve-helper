@@ -6353,6 +6353,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(overview, "Accessible mounts")
         self.assertContains(overview, reverse("core:settings_storage"))
         self.assertNotContains(overview, "Registered associations")
+        # The manual's two-layer model must be named by the pages implementing it.
+        self.assertContains(overview, "Layer 1 — what Proxmox reports through the API")
 
         settings_root = self.client.get(reverse("core:pve_helper_settings"))
         self.assertRedirects(settings_root, reverse("core:settings_storage"))
@@ -6361,6 +6363,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(storage_settings, "PVE-helper Settings")
         self.assertContains(storage_settings, "Storage access")
         self.assertContains(storage_settings, "Registered associations")
+        self.assertContains(storage_settings, "Layer 2 —")
         self.assertContains(storage_settings, "Register host mount")
         self.assertContains(storage_settings, "PVE-helper Settings", count=2)
         self.assertContains(storage_settings, f"{reverse('core:dashboard')}#storage-catalog")
