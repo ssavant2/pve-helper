@@ -325,6 +325,15 @@ For file changes:
 - Use **Move to trash** instead of permanent deletion when available. The app
   moves eligible files to `.trash/pve-helper` on the same storage, allowing a
   controlled restore path.
+- **Permanent deletion from the Recycle Bin cannot be undone**, and is the only
+  file operation in the app that cannot. It therefore asks twice. The first
+  dialog states what is about to be destroyed: the original path, the size, how
+  long it has been recoverable, and — importantly — whether a guest
+  configuration still points at that disk, in which case restoring it is the
+  only way to make that guest whole again. The second dialog repeats those facts
+  with its buttons swapped, so it cannot be cleared by muscle memory. Deleting a
+  file that a *running* guest uses is not possible at all: the action is refused
+  before any dialog appears.
 - Restore, rename, move, upload, and inflate can have downstream Proxmox
   consequences. Refresh the scan after a material change.
 - Do not use pve-helper to manipulate files that are merely “unknown”; resolve

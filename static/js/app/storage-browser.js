@@ -415,12 +415,27 @@ const initConfirmedFileActions = (root = document) => {
           return;
         }
       } else if (actionKind === "purge") {
+        // The only irreversible file operation in the app: state what is being
+        // destroyed, then make the operator answer for it a second time with the
+        // buttons swapped.
+        const purgeFacts = form.dataset.purgeFacts || `Permanently delete ${fileName}? This cannot be undone.`;
         if (
           !(await openConfirmDialog({
             title: "Permanently delete",
-            body: `<p>Permanently delete <strong>${escapeHtml(fileName)}</strong>?</p><p>This cannot be undone.</p>`,
+            body: `<p>${escapeHtml(purgeFacts)}</p>`,
             confirmLabel: "Delete permanently",
             danger: true,
+          }))
+        ) {
+          return;
+        }
+        if (
+          !(await openConfirmDialog({
+            title: "Are you really sure?",
+            body: `<p>${escapeHtml(form.dataset.purgeSecond || purgeFacts)}</p>`,
+            confirmLabel: "Yes, delete permanently",
+            danger: true,
+            swapActions: true,
           }))
         ) {
           return;

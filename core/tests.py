@@ -5371,6 +5371,57 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertContains(response, "No restorable files in the Recycle Bin.")
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
+    def test_recycle_bin_purge_states_what_is_destroyed_and_who_still_references_it(self):
+        """The app's only irreversible file operation must say what it is deleting."""
+        user = get_user_model().objects.create_user(username="purge-viewer", password="unused")
+        self.client.force_login(user)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+            )
+            metadata_generation = uuid.uuid4()
+            definition = ClusterStorage.objects.create(
+                cluster=self.cluster,
+                storage_id="shared-nfs",
+                storage_type="dir",
+                shared=True,
+                present=True,
+                observed_metadata_generation=metadata_generation,
+            )
+            bind_storage_mount(cluster_storage=definition, mount=storage)
+            CurrentGuestInventory.objects.create(
+                cluster=self.cluster,
+                node="pve1",
+                object_type="vm",
+                vmid=100,
+                status="stopped",
+                disk_references=["shared-nfs:100/vm-100-disk-0.qcow2"],
+                observed_at=timezone.now(),
+            )
+            TrashItem.objects.create(
+                mount=storage,
+                storage_id=storage.storage_id,
+                original_path="images/100/vm-100-disk-0.qcow2",
+                trash_path=".trash/pve-helper/20260719T120000000000Z/images/100/vm-100-disk-0.qcow2",
+                restore_status=TrashItem.RestoreStatus.TRASHED,
+                moved_at=timezone.now() - timedelta(days=3),
+                metadata={"original_size_bytes": 5 * 1024 * 1024},
+            )
+
+            response = self.client.get(reverse("core:storage_trash", args=[storage.mount_ref]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "original path images/100/vm-100-disk-0.qcow2")
+        self.assertContains(response, "recoverable here for 3 day(s)")
+        self.assertContains(response, "still referenced by 1 guest config(s): vm:100 (stopped)")
+        self.assertContains(response, "cannot be undone")
+        self.assertContains(response, "Are you really sure?")
+
+    @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_storage_trash_ignores_nfs_silly_rename_files(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)

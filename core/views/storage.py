@@ -5,6 +5,8 @@ import uuid
 from pathlib import PurePosixPath
 from typing import BinaryIO
 
+from django.template.defaultfilters import filesizeformat
+
 from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.storage_backends import backend_profile
@@ -1238,9 +1240,67 @@ def storage_trash(request, storage_id: str):
     context = {
         **navigation_context("storage_browser", active_storage_id=storage.storage_id),
         "storage": storage,
-        "items": items,
+        "items": _trash_rows(storage, items),
     }
     return render(request, "core/storage_trash.html", context)
+
+
+def _trash_rows(storage: StorageMount, items: list[TrashItem]) -> list[dict[str, object]]:
+    """Trash entries with the facts a permanent delete has to state.
+
+    Purging is the only genuinely irreversible file operation in the app, and it
+    had the weakest guard of any of them. What matters at that moment is what the
+    file was, how long it has been recoverable, and whether a guest configuration
+    still points at it — a still-referenced disk means restoring is the only way
+    back for that guest.
+    """
+    bindings = list(storage.cluster_bindings.select_related("cluster_storage__cluster"))
+    references: dict[str, list[str]] = {}
+    if bindings:
+        clusters = {binding.cluster_storage.cluster_id: binding.cluster_storage.cluster for binding in bindings}
+        guests = list(
+            CurrentGuestInventory.objects.filter(cluster_id__in=clusters).only(
+                "object_type", "vmid", "status", "disk_references", "cluster_id"
+            )
+        )
+        for item in items:
+            relative = str(item.original_path).lstrip("/").removeprefix("images/")
+            volids = {f"{binding.cluster_storage.storage_id}:{relative}" for binding in bindings}
+            references[item.trash_path] = sorted(
+                f"{guest.object_type}:{guest.vmid} ({guest.status or 'unknown'})"
+                for guest in guests
+                if any(str(ref) in volids for ref in guest.disk_references or [])
+            )
+
+    now = tz.now()
+    rows = []
+    for item in items:
+        size = (item.metadata or {}).get("original_size_bytes")
+        facts = [f"original path {item.original_path}"]
+        if isinstance(size, int):
+            facts.append(f"{filesizeformat(size)}")
+        if item.moved_at:
+            days = max(0, (now - item.moved_at).days)
+            facts.append(f"recoverable here for {days} day(s)")
+        referencing = references.get(item.trash_path) or []
+        if referencing:
+            shown = ", ".join(referencing[:_GUESTS_SHOWN_IN_CONFIRM])
+            hidden = len(referencing) - _GUESTS_SHOWN_IN_CONFIRM
+            if hidden > 0:
+                shown += f", and {hidden} more"
+            facts.append(f"still referenced by {len(referencing)} guest config(s): {shown}")
+        summary = "; ".join(facts)
+        rows.append(
+            {
+                "item": item,
+                "confirm": (
+                    f"Permanently delete this file? {summary}. "
+                    "This deletes it from disk immediately and cannot be undone."
+                ),
+                "confirm_second": f"Are you really sure? This cannot be undone. {summary}.",
+            }
+        )
+    return rows
 
 
 @app_login_required

@@ -25,7 +25,8 @@
         </tr>
       </thead>
       <tbody>
-        {% for item in items %}
+        {% for row in items %}
+          {% with item=row.item %}
           <tr data-context-label="{{ storage.storage_id }}:{{ item.original_path }}">
             <td><code>{{ item.original_path }}</code></td>
             <td>{{ item.moved_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
@@ -48,6 +49,8 @@
                   data-confirm-file-action
                   data-action-kind="purge"
                   data-file-name="{{ item.original_path }}"
+                  data-purge-facts="{{ row.confirm }}"
+                  data-purge-second="{{ row.confirm_second }}"
                 >
                   {% csrf_token %}
                   <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -59,6 +62,7 @@
               {% endif %}
             </td>
           </tr>
+          {% endwith %}
         {% empty %}
           <tr>
             <td colspan="6" class="empty-state">No restorable files in the Recycle Bin.</td>
