@@ -104,20 +104,27 @@ pve-helper listens over HTTP. A certificate
 is neither provisioned nor required; an external reverse proxy may terminate
 HTTPS if your environment needs it.
 
-## Enabling storage writes
+## Storage writes
 
-The default application policy is read-only (`STORAGE_WRITE_ENABLED=false`). nginx
-receives a private, recursively read-only `/storages` snapshot; web and workers
-receive the dynamically propagated root read-write so the application can authorize
-an operation after checking the specific live mount. A newly added mount uses the
-safe streaming download fallback until nginx next restarts. Verify the host mount
-and ACLs first. To allow upload, trash and restore operations, create a temporary
-upload directory on real writable storage, then set:
+Storage writes are enabled by default (`STORAGE_WRITE_ENABLED=true`). That is an
+application-wide policy, not a per-datastore one: nginx receives a private,
+recursively read-only `/storages` snapshot, web and workers receive the dynamically
+propagated root read-write, and every upload, trash or restore is still authorized
+against the specific live mount and its ACLs at the moment of the operation. A
+datastore mounted `ro` on the host stays read-only regardless of this setting. A newly
+added mount uses the safe streaming download fallback until nginx next restarts.
+
+Because writes are on, an upload temporary directory is required and startup refuses
+to proceed without one. Create it on real writable storage — not container `/tmp`,
+which is a tmpfs — and set:
 
 ```env
-STORAGE_WRITE_ENABLED=true
 FILE_UPLOAD_TEMP_DIR=/storages/nas-files/.pve-helper-upload-tmp
 ```
+
+Set `STORAGE_WRITE_ENABLED=false` to freeze storage writes across the whole
+application during maintenance, without remounting anything on the host. It hides the
+write controls and rejects write requests even where the mount itself is writable.
 
 See `docs/deployment-runbook.md` for NFS mount guidance, upload temporary-space
 requirements, OIDC providers, reverse proxies and database role separation.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -3278,6 +3280,48 @@ class StartupCheckTests(SimpleTestCase):
     def test_external_url_scheme_controls_secure_cookie_policy(self):
         self.assertFalse(external_url_uses_https("http://pve-helper.internal:21080"))
         self.assertTrue(external_url_uses_https("https://pve-helper.example.net"))
+
+
+class SettingsFallbackTests(SimpleTestCase):
+    """What the settings module decides when the environment says nothing.
+
+    Compose supplies every one of these in the shipped stacks, so the fallbacks are
+    reached only when something is missing — a bare `manage.py`, a hand-written
+    Compose file, a new service that copied an incomplete environment block. That is
+    exactly when a fail-open default does damage, and exactly when no reviewer is
+    looking, so the direction of each fallback is asserted here rather than left to
+    whichever of the two layers a reader happens to open.
+    """
+
+    def _settings_without(self, *names):
+        module = importlib.import_module("pve_helper.settings")
+        with patch.dict(os.environ, {}, clear=False):
+            for name in names:
+                os.environ.pop(name, None)
+            return importlib.reload(module)
+
+    def tearDown(self):
+        # The reload above rebinds module-level names from the current environment;
+        # restore the module the rest of the suite (and `django.conf`) is holding.
+        importlib.reload(importlib.import_module("pve_helper.settings"))
+        super().tearDown()
+
+    def test_debug_is_off_when_the_environment_does_not_say_otherwise(self):
+        self.assertFalse(self._settings_without("DEBUG").DEBUG)
+
+    def test_login_is_required_when_the_environment_does_not_say_otherwise(self):
+        self.assertTrue(self._settings_without("APP_REQUIRE_LOGIN").APP_REQUIRE_LOGIN)
+
+    def test_the_production_compose_file_never_relies_on_a_debug_fallback(self):
+        """DEBUG must be pinned in the released asset, not inherited.
+
+        `production_startup_errors()` returns early under DEBUG, so a production
+        deployment that ends up debugging also loses the check that would have
+        objected to the default SECRET_KEY and an empty ALLOWED_HOSTS.
+        """
+        compose = (settings.BASE_DIR / "docker-compose.production.yml").read_text()
+        defaults = set(re.findall(r"^\s*DEBUG: \$\{DEBUG:-(\w+)\}", compose, re.MULTILINE))
+        self.assertEqual(defaults, {"false"})
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)

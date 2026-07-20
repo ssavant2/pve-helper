@@ -39,7 +39,13 @@ def external_url_uses_https(value: str) -> bool:
 
 
 SECRET_KEY = env("APP_SECRET_KEY", "dev-insecure-change-me")
-DEBUG = env_bool("DEBUG", True)
+# False is the fallback rather than the convenience value because DEBUG=True does not
+# merely add detail: it returns tracebacks with local variables and a settings dump to
+# whoever made the request, and it short-circuits `production_startup_errors()`, so a
+# deployment that simply forgets this variable also loses the check that would have
+# complained about the default SECRET_KEY and an empty ALLOWED_HOSTS. Development sets
+# it explicitly in Compose.
+DEBUG = env_bool("DEBUG", False)
 APP_REQUIRE_LOGIN = env_bool("APP_REQUIRE_LOGIN", True)
 APP_BASE_URL = env("APP_BASE_URL", "https://pve-helper.example.com").rstrip("/")
 APP_VERSION = env("APP_VERSION", "DEV")
@@ -236,6 +242,11 @@ BACKUP_TASK_TIMEOUT_SECONDS = env_int("BACKUP_TASK_TIMEOUT_SECONDS", 21600)
 SCHEDULED_ACTION_POLL_INTERVAL_SECONDS = env_int("SCHEDULED_ACTION_POLL_INTERVAL_SECONDS", 5)
 SCHEDULED_ACTION_RUN_RETENTION_DAYS = env_int("SCHEDULED_ACTION_RUN_RETENTION_DAYS", 90)
 
+# Writes are the application's normal mode, not an opt-in: this is an administrative
+# tool and every mount already carries its own `ro`/`rw` answer, which
+# `storage_mounts.mount_health()` honours per datastore. This flag is the
+# coarse operational brake above that — something an operator turns *off* to freeze
+# storage writes during maintenance without remounting anything on the host.
 STORAGE_WRITE_ENABLED = env_bool("STORAGE_WRITE_ENABLED", True)
 CONSOLE_ENABLED = env_bool("CONSOLE_ENABLED", True)
 CONSOLE_SESSION_TTL_SECONDS = env_int("CONSOLE_SESSION_TTL_SECONDS", 30)

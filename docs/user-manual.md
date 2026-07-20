@@ -325,10 +325,11 @@ the same volid, for the guest that owns it, so a reference is expected. Its gate
 is the one that fits: the guest must be stopped, verified live at the moment of
 the action rather than from the last scan.
 
-Mounted storage is only as writable as its effective Docker bind mount. A green
-app-level write setting does not override a read-only NFS mount. Conversely,
-`STORAGE_WRITE_ENABLED=false` is a global operational brake that hides/rejects
-storage writes even when a mount is writable.
+Mounted storage is only as writable as its effective Docker bind mount. Writes are
+enabled application-wide by default, but that does not override a read-only NFS
+mount. Conversely, an administrator can set `STORAGE_WRITE_ENABLED=false` to freeze
+storage writes across the whole application during maintenance; that hides and
+rejects storage writes even where a mount is writable.
 
 ### Scan before judging files
 

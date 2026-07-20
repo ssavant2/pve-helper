@@ -327,17 +327,17 @@ File upload, move-to-trash, and restore actions are enabled in app configuration
 default, but they still require the effective storage mount to be writable from inside
 the `web` container. This lets one datastore stay read-only while another is writable.
 
-To allow writes for a storage:
+To allow writes for a storage, change the affected host NFS mount from `ro` to `rw`.
+Nothing else is needed: `STORAGE_WRITE_ENABLED` already defaults to true, and the
+Compose contract keeps nginx read-only while giving web/workers the access an
+authorized operation needs.
 
-1. Change the affected host NFS mount from `ro` to `rw`.
-
-2. Set `STORAGE_WRITE_ENABLED=true`. The Compose contract already keeps nginx
-   read-only and gives web/workers the access needed for an authorized operation.
-
-`STORAGE_WRITE_ENABLED=false` is the global emergency brake. It hides
-write controls and rejects write requests even if a storage is mounted read-write.
+`STORAGE_WRITE_ENABLED=false` is the global emergency brake, for freezing writes
+application-wide during maintenance without touching host mounts. It hides write
+controls and rejects write requests even if a storage is mounted read-write.
 `STORAGE_UPLOAD_MAX_SIZE_MB` controls the upload limit; `0` means no app-level limit.
-`FILE_UPLOAD_TEMP_DIR` controls where Django stores multipart upload chunks before the
+`FILE_UPLOAD_TEMP_DIR` is required while writes are enabled — startup refuses to
+proceed without it — and controls where Django stores multipart upload chunks before the
 view writes the final file to its target path. For large datastore uploads, do not leave
 this on container `/tmp`: `/tmp` is a tmpfs in the hardened container and large uploads
 can kill the Gunicorn worker with out-of-memory errors before the app code sees the
