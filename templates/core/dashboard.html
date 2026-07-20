@@ -185,7 +185,7 @@
         {% for row in catalog_rows %}
           <tr>
             <td>
-              {% if row.node %}<a href="{% url 'core:api_storage_summary' row.definition.cluster.key row.node row.definition.storage_id %}">{{ row.definition.storage_id }}</a>{% else %}{{ row.definition.storage_id }}{% endif %}
+              {% if row.node %}<a href="{% if row.definition.shared %}{% url 'core:api_storage_summary' cluster_key=row.definition.cluster.key storage=row.definition.storage_id %}{% else %}{% url 'core:api_storage_summary' cluster_key=row.definition.cluster.key node=row.node storage=row.definition.storage_id %}{% endif %}">{{ row.definition.storage_id }}</a>{% else %}{{ row.definition.storage_id }}{% endif %}
               <span class="muted"> · {{ row.definition.cluster.display_name }}</span>
             </td>
             <td>{{ row.definition.storage_type }}</td>

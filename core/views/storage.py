@@ -9,7 +9,7 @@ from django.template.defaultfilters import filesizeformat
 
 from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
-from core.services.datastore_nav import nav_datastore_key
+from core.services.datastore_nav import datastore_url, nav_datastore_key
 from core.services.storage_backends import backend_profile
 from core.services.storage_catalog import (
     StorageOperationScope,
@@ -486,8 +486,16 @@ def _live_status_for(statuses: dict, node: str, object_type: str, vmid: int, def
 
 
 # ---------------------------------------------------------------------------
-# Local / API-only storages (local, local-lvm, ZFS, ...): read-only tabbed view
-# built entirely from the Proxmox API since pve-helper cannot mount them.
+# The datastore object view.
+#
+# One page per *datastore scope*, which is the grain the storage read model
+# already publishes under: a shared datastore is one cluster-wide object however
+# many nodes see it, while a node-local one is a separate object per node. That
+# is why the node is part of the URL for the latter and absent for the former —
+# `local` exists on every node of a cluster, and three pages that differ only in
+# whose disk they describe must not collapse into one. It is also the scope
+# `ClusterStorageVolumeCoverage` proves completeness for, so the page can always
+# answer for the volumes it shows.
 # ---------------------------------------------------------------------------
 
 _API_STORAGE_TABS = [
@@ -500,6 +508,39 @@ _API_STORAGE_TABS = [
 ]
 
 
+def _resolve_datastore_scope(cluster, storage: str, node: str):
+    """Normalize a requested scope, or say where the caller should have gone.
+
+    Returns `(definition, node, moved)`. A shared datastore addressed with a node
+    redirects to its cluster-wide URL and a node-local one addressed without a
+    node redirects to its only node, so a stale link or a hand-typed URL lands on
+    the canonical page instead of a subtly wrong one. `definition` is None when
+    the catalog does not carry the storage at all; the page then renders its
+    not-found state, which is why this does not raise.
+    """
+    definition = (
+        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
+        .select_related("cluster__storage_catalog_state")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
+        .first()
+    )
+    if definition is None:
+        return None, node, False
+    if definition.shared:
+        return definition, "", bool(node)
+    present = sorted(state.node for state in definition.node_states.all() if state.present)
+    if node:
+        if node not in present:
+            raise Http404("Storage is not present on that node.")
+        return definition, node, False
+    if len(present) == 1:
+        return definition, present[0], True
+    # Several instances share the name and nothing in the URL says which disk is
+    # meant. Guessing one would show another node's capacity under this node's
+    # name, which is the confusion the per-node scope exists to prevent.
+    raise Http404("This datastore is node-local; address it through a node.")
+
+
 def _api_num(value):
     try:
         return int(value)
@@ -510,21 +551,23 @@ def _api_num(value):
             return None
 
 
-def _api_storage_context(cluster, node: str, storage: str, active_tab: str):
+def _api_storage_context(cluster, definition, storage: str, node: str, active_tab: str):
     # `view` stays None when the storage is absent from the catalog: the page
     # then renders the not-found state without any catalog-derived context.
     view = None
-    definition = (
-        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
-        .select_related("cluster__storage_catalog_state")
-        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
-        .first()
-    )
+    scope_nodes: tuple = ()
     if definition is None:
         status, found, error = {}, False, "Storage is not present in the latest catalog."
     else:
         view = storage_view(definition, node=node)
-        node_state = next((row for row in view.nodes if row.node == node), None)
+        scope_nodes = view.nodes
+        # A shared datastore is one backend behind every node that sees it, so its
+        # capacity is read from whichever instance is currently active rather than
+        # from a node the URL no longer carries.
+        capacity_node = node or next(
+            (row.node for row in view.nodes if row.active), view.nodes[0].node if view.nodes else ""
+        )
+        node_state = next((row for row in view.nodes if row.node == capacity_node), None)
         status = {
             **dict(definition.config or {}),
             "storage": definition.storage_id,
@@ -550,14 +593,21 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str):
         {
             "key": key,
             "label": label,
-            "url": reverse(name, args=[cluster.key, node, storage]),
+            "url": datastore_url(name, cluster.key, storage, node),
             "active": key == active_tab,
         }
         for key, label, name in _API_STORAGE_TABS
     ]
+    shared = bool(definition and definition.shared)
     return {
         **navigation_context("dashboard"),
         "node": node,
+        "datastore_scope_label": (
+            f"Shared datastore in {cluster.display_name}"
+            if shared
+            else (f"Node-local datastore on {node}" if node else "Datastore")
+        ),
+        "scope_nodes": scope_nodes,
         "cluster_key": cluster.key,
         "selected_cluster": cluster,
         "storage": storage,
@@ -573,11 +623,9 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str):
         "active_api_tab": active_tab,
         "active_api_node": node,
         "active_api_storage": storage,
-        "active_nav_datastore": nav_datastore_key(
-            cluster.key, storage, "" if definition is not None and definition.shared else node
-        ),
+        "active_nav_datastore": nav_datastore_key(cluster.key, storage, "" if shared else node),
         "catalog_view": view,
-        "storage_shared": bool(definition and definition.shared),
+        "storage_shared": shared,
     }
 
 
@@ -591,13 +639,18 @@ def storage_catalog_refresh_view(request, cluster_key: str, storage: str):
     return JsonResponse({"ok": True, "status": "queued"}, status=202)
 
 
-def _api_storage_volumes(cluster, node: str, storage: str, highlight_vmid=None):
-    definition = (
-        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
-        .select_related("cluster__storage_catalog_state")
-        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
-        .first()
-    )
+def _datastore_redirect(request, route_name: str, cluster, storage: str, node: str):
+    """Send a non-canonical scope URL to the canonical one, keeping ?vmid."""
+    url = datastore_url(route_name, cluster.key, storage, node)
+    vmid = request.GET.get("vmid")
+    if vmid:
+        # The untrusted value is query data appended to a locally reversed URL;
+        # it can never control the redirect's scheme, host, or path prefix.
+        url = url + "?vmid=" + quote(str(vmid))
+    return redirect(url)
+
+
+def _api_storage_volumes(cluster, definition, node: str, highlight_vmid=None):
     if definition is None:
         return [], False, "Storage is not present in the latest catalog."
     catalog = storage_view(definition, node=node)
@@ -621,35 +674,36 @@ def _api_storage_volumes(cluster, node: str, storage: str, highlight_vmid=None):
 
 
 @app_login_required
-def storage_api_inventory(request, cluster_key: str, node: str, storage: str):
-    """Backward-compatible entry point; redirects to the Summary tab, keeping the
-    optional ?vmid highlight used by the guest Datastores tab."""
+def storage_api_inventory(request, cluster_key: str, storage: str, node: str = ""):
+    """Entry point without a tab; redirects to Summary, keeping the optional ?vmid
+    highlight used by the guest Datastores tab."""
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
-    url = reverse("core:api_storage_summary", args=[cluster.key, node, storage])
-    vmid = request.GET.get("vmid")
-    if vmid:
-        # The untrusted value is query data appended to a locally reversed URL;
-        # it can never control the redirect's scheme, host, or path prefix.
-        url = url + "?vmid=" + quote(str(vmid))
-    return redirect(url)
+    _definition, node, _moved = _resolve_datastore_scope(cluster, storage, node)
+    return _datastore_redirect(request, "core:api_storage_summary", cluster, storage, node)
 
 
 @app_login_required
-def api_storage_summary(request, cluster_key: str, node: str, storage: str):
+def api_storage_summary(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
-    context = _api_storage_context(cluster, node, storage, "summary")
-    volumes, _found, _error = _api_storage_volumes(cluster, node, storage)
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_summary", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "summary")
+    volumes, _found, _error = _api_storage_volumes(cluster, definition, node)
     vmids = {str(v["vmid"]) for v in volumes if v.get("vmid")}
     context.update({"volume_count": len(volumes), "guest_count": len(vmids)})
     return render(request, "core/storage_api/summary.html", context)
 
 
 @app_login_required
-def api_storage_volumes(request, cluster_key: str, node: str, storage: str):
+def api_storage_volumes(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_volumes", cluster, storage, node)
     highlight_vmid = _int_or_zero(request.GET.get("vmid")) or None
-    volumes, found, error = _api_storage_volumes(cluster, node, storage, highlight_vmid)
-    context = _api_storage_context(cluster, node, storage, "volumes")
+    volumes, found, error = _api_storage_volumes(cluster, definition, node, highlight_vmid)
+    context = _api_storage_context(cluster, definition, storage, node, "volumes")
     context.update(
         {
             "volumes": volumes,
@@ -662,19 +716,28 @@ def api_storage_volumes(request, cluster_key: str, node: str, storage: str):
 
 
 @app_login_required
-def api_storage_vms(request, cluster_key: str, node: str, storage: str):
+def api_storage_vms(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_vms", cluster, storage, node)
     guests = []
     prefix = f"{storage}:"
     lineage = common.stored_guest_lineage(cluster)
-    for obj in CurrentGuestInventory.objects.filter(cluster=cluster, node=node).order_by("object_type", "vmid"):
+    # A shared datastore is consumed from anywhere in the cluster, so its guests
+    # are not restricted to one node; a node-local one can only be consumed from
+    # the node whose disk it is. Either way the query stays inside this cluster.
+    candidates = CurrentGuestInventory.objects.filter(cluster=cluster)
+    if node:
+        candidates = candidates.filter(node=node)
+    for obj in candidates.order_by("object_type", "vmid"):
         matching = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
         if matching:
             obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
             guests.append(obj)
     if guests:
         _decorate_guests_with_scheduled_actions(guests)
-    context = _api_storage_context(cluster, node, storage, "vms")
+    context = _api_storage_context(cluster, definition, storage, node, "vms")
     context.update({"guests": guests, "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS})
     return render(request, "core/storage_api/vms.html", context)
 
@@ -684,11 +747,11 @@ def _api_live_content_values(cluster, storage: str) -> list[str]:
     return list(definition.content) if definition else []
 
 
-def _api_content_usage(cluster, node: str, storage: str) -> dict[str, dict]:
+def _api_content_usage(cluster, definition, node: str) -> dict[str, dict]:
     """Count volumes per content type from the API volume list, so we can block
     removing a content type that is still in use (the local analog of the
     filesystem-scan blocker used for mounted storages)."""
-    volumes, _found, _error = _api_storage_volumes(cluster, node, storage)
+    volumes, _found, _error = _api_storage_volumes(cluster, definition, node)
     usage: dict[str, dict] = {}
     for volume in volumes:
         key = str(volume.get("content") or "").strip()
@@ -737,11 +800,14 @@ def _api_content_blockers(usage: dict[str, dict], removed: list[str]) -> list[di
 
 
 @app_login_required
-def api_storage_content(request, cluster_key: str, node: str, storage: str):
+def api_storage_content(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
-    context = _api_storage_context(cluster, node, storage, "content")
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_content", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "content")
     current = _api_live_content_values(cluster, storage)
-    usage = _api_content_usage(cluster, node, storage)
+    usage = _api_content_usage(cluster, definition, node)
     context.update(
         {
             "content_options": _api_content_options(current, usage),
@@ -754,9 +820,10 @@ def api_storage_content(request, cluster_key: str, node: str, storage: str):
 
 @require_POST
 @app_login_required
-def update_api_storage_content(request, cluster_key: str, node: str, storage: str):
+def update_api_storage_content(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
-    redirect_to = reverse("core:api_storage_content", args=[cluster.key, node, storage])
+    definition, node, _moved = _resolve_datastore_scope(cluster, storage, node)
+    redirect_to = datastore_url("core:api_storage_content", cluster.key, storage, node)
     if not settings.STORAGE_WRITE_ENABLED:
         return _storage_write_disabled_response()
 
@@ -766,7 +833,7 @@ def update_api_storage_content(request, cluster_key: str, node: str, storage: st
         messages.error(request, "Select at least one content type.")
         return redirect(redirect_to)
 
-    usage = _api_content_usage(cluster, node, storage)
+    usage = _api_content_usage(cluster, definition, node)
     removed = [key for key in current if key not in requested]
     blockers = _api_content_blockers(usage, removed)
     if blockers:
@@ -808,28 +875,36 @@ def update_api_storage_content(request, cluster_key: str, node: str, storage: st
 
 
 @app_login_required
-def api_storage_monitor(request, cluster_key: str, node: str, storage: str):
+def api_storage_monitor(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
-    context = _api_storage_context(cluster, node, storage, "monitor")
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_monitor", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "monitor")
     chart_data = _api_storage_space_chart_data(cluster, node, storage, tz.now())
     context["space_chart_data_json"] = json.dumps(chart_data)
     return render(request, "core/storage_api/monitor.html", context)
 
 
 @app_login_required
-def api_storage_configure(request, cluster_key: str, node: str, storage: str):
+def api_storage_configure(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
-    context = _api_storage_context(cluster, node, storage, "configure")
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_configure", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "configure")
     scan = _latest_result_scan()
     config = {}
     if scan:
-        row = ProxmoxInventory.objects.filter(
+        rows = ProxmoxInventory.objects.filter(
             scan_run=scan,
             cluster=cluster,
-            node=node,
             object_type=ProxmoxInventory.ObjectType.STORAGE,
             name=storage,
-        ).first()
+        )
+        # A shared datastore's definition is cluster-wide, so any node's scan row
+        # carries the same configuration; a node-local one must come from its node.
+        row = (rows.filter(node=node) if node else rows.order_by("node")).first()
         if row and isinstance(row.config, dict):
             config = row.config
     # Present the interesting config keys in a stable order; skip the nested

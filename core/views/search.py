@@ -6,6 +6,7 @@ import re
 from types import SimpleNamespace
 
 from core.models import ProxmoxEndpoint, StorageMount
+from core.services.datastore_nav import datastore_url
 
 from .common import *  # noqa: F401,F403
 from .guests.read_model_support import _guest_agent_summary, _guest_rows
@@ -167,10 +168,7 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
                     kind="Datastore",
                     label=obj.name or "Storage",
                     meta=" • ".join(meta),
-                    url=reverse(
-                        "core:api_storage_summary",
-                        args=[obj.cluster.key, obj.node, obj.name],
-                    ),
+                    url=datastore_url("core:api_storage_summary", obj.cluster.key, obj.name, obj.node),
                     icon_family="vicon",
                     icon="storage",
                     score=_search_score(

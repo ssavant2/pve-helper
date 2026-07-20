@@ -9,6 +9,7 @@ from django.utils.http import urlencode
 
 from core.models import ClusterStorageMount, StorageMount
 from core.services.classification import extract_disk_references
+from core.services.datastore_nav import datastore_url
 
 DISK_BUS_RE = re.compile(r"^(scsi|virtio|sata|ide|efidisk|tpmstate|rootfs|mp)\d*$")
 NIC_RE = re.compile(r"^net\d+$")
@@ -59,7 +60,7 @@ def _storage_link(
     if storage_id in mounted_refs:
         return True, reverse("core:storage_browser", args=[mounted_refs[storage_id]]), "Browse files"
     if node:
-        base = reverse("core:storage_api_inventory", args=[cluster_key, node, storage_id])
+        base = datastore_url("core:storage_api_inventory", cluster_key, storage_id, node)
         return False, f"{base}?{urlencode({'vmid': vmid})}", "Storage inventory"
     return False, "", ""
 
@@ -191,7 +192,7 @@ def guest_volume_links(
                 )
             )
         elif node:
-            base = reverse("core:storage_api_inventory", args=[cluster_key, node, storage_id])
+            base = datastore_url("core:storage_api_inventory", cluster_key, storage_id, node)
             links.append(
                 GuestVolumeLink(
                     volid=volid,

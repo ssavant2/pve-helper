@@ -2,7 +2,7 @@
 
 {% block api_storage_content %}
   <section class="storage-tab-content">
-    <form method="post" action="{% url 'core:update_api_storage_content' node storage %}" class="panel storage-content-panel">
+    <form method="post" action="{% if node %}{% url 'core:update_api_storage_content' cluster_key=cluster_key node=node storage=storage %}{% else %}{% url 'core:update_api_storage_content' cluster_key=cluster_key storage=storage %}{% endif %}" class="panel storage-content-panel">
       {% csrf_token %}
       <div class="panel-heading">
         <div>

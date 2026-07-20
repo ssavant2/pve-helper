@@ -10,6 +10,21 @@ from .views.cluster_scope import (
 
 app_name = "core"
 
+
+def datastore_routes(tab: str, view, name: str) -> list:
+    """The two URL shapes one datastore tab is reachable under.
+
+    They share a route name and are told apart by whether `node` is present:
+    a shared datastore is one cluster-wide object, while `local` is a different
+    disk on every node and must say which one. Reverse through
+    `views.storage.datastore_url()` so no caller has to choose.
+    """
+    return [
+        path(f"clusters/<str:cluster_key>/datastores/<str:storage>/{tab}", view, name=name),
+        path(f"clusters/<str:cluster_key>/nodes/<str:node>/datastores/<str:storage>/{tab}", view, name=name),
+    ]
+
+
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("settings/", views.pve_helper_settings, name="pve_helper_settings"),
@@ -365,48 +380,20 @@ urlpatterns = [
         name="cluster_endpoint_action",
     ),
     path("datastores/mounts/register/", views.storage_mount_register, name="storage_mount_register"),
+    # The datastore object view. Each tab has two shapes sharing one route name:
+    # a shared datastore is cluster-wide and carries no node, a node-local one is
+    # a different disk on every node and must say which. `datastore_url()` picks
+    # the shape from the scope, so no caller decides between them.
+    *datastore_routes("", views.storage_api_inventory, "storage_api_inventory"),
+    *datastore_routes("summary/", views.api_storage_summary, "api_storage_summary"),
+    *datastore_routes("monitor/", views.api_storage_monitor, "api_storage_monitor"),
+    *datastore_routes("volumes/", views.api_storage_volumes, "api_storage_volumes"),
+    *datastore_routes("vms/", views.api_storage_vms, "api_storage_vms"),
+    *datastore_routes("content/", views.api_storage_content, "api_storage_content"),
+    *datastore_routes("content/update/", views.update_api_storage_content, "update_api_storage_content"),
+    *datastore_routes("configure/", views.api_storage_configure, "api_storage_configure"),
     path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/",
-        views.storage_api_inventory,
-        name="storage_api_inventory",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/summary/",
-        views.api_storage_summary,
-        name="api_storage_summary",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/monitor/",
-        views.api_storage_monitor,
-        name="api_storage_monitor",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/volumes/",
-        views.api_storage_volumes,
-        name="api_storage_volumes",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/vms/",
-        views.api_storage_vms,
-        name="api_storage_vms",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/content/",
-        views.api_storage_content,
-        name="api_storage_content",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/content/update/",
-        views.update_api_storage_content,
-        name="update_api_storage_content",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:node>/<str:storage>/configure/",
-        views.api_storage_configure,
-        name="api_storage_configure",
-    ),
-    path(
-        "clusters/<str:cluster_key>/storage-api/<str:storage>/refresh/",
+        "clusters/<str:cluster_key>/datastores/<str:storage>/refresh/",
         views.storage_catalog_refresh_view,
         name="storage_catalog_refresh",
     ),

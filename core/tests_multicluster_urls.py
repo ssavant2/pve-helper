@@ -33,7 +33,12 @@ class MulticlusterRouteInventoryTests(SimpleTestCase):
         self.assertEqual(sum(route.startswith("vms/<str:cluster_key>/<str:object_type>") for route in routes), 37)
         self.assertEqual(sum(route.startswith("vms/<str:cluster_key>/") for route in routes), 40)
         self.assertEqual(sum(route.startswith("vms/<str:object_type>") for route in routes), 37)
-        self.assertEqual(sum(route.startswith("clusters/<str:cluster_key>/storage-api/") for route in routes), 9)
+        # The datastore object view: eight tabs in two scope shapes each, plus the
+        # cluster-wide catalog refresh.
+        self.assertEqual(sum(route.startswith("clusters/<str:cluster_key>/datastores/") for route in routes), 9)
+        self.assertEqual(
+            sum(route.startswith("clusters/<str:cluster_key>/nodes/<str:node>/datastores/") for route in routes), 8
+        )
         self.assertEqual(sum(route.startswith("storage-api/<str:node>/<str:storage>/") for route in routes), 8)
 
     def test_cluster_scope_is_not_read_from_session_state(self):
@@ -115,8 +120,8 @@ class LegacyClusterUrlTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 409)
-        self.assertContains(response, "/clusters/a/storage-api/pve1/local/summary/", status_code=409)
-        self.assertContains(response, "/clusters/b/storage-api/pve1/local/summary/", status_code=409)
+        self.assertContains(response, "/clusters/a/nodes/pve1/datastores/local/summary/", status_code=409)
+        self.assertContains(response, "/clusters/b/nodes/pve1/datastores/local/summary/", status_code=409)
 
     def test_recent_tasks_cluster_filter_uses_durable_cluster_key(self):
         for cluster in (self.cluster_a, self.cluster_b):

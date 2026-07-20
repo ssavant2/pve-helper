@@ -1834,9 +1834,11 @@ class DatastoreNavTests(TestCase):
         groups = datastore_nav(use_cache=False, cluster=cluster)
         self.assertEqual([s["storage_id"] for s in groups["shared"]], ["TrueNAS-VM"])
         self.assertEqual(groups["nodes"], [])
-        # One cluster-wide object, linked through the first *active* instance —
-        # the same rule the catalog table on the Overview page uses.
-        self.assertEqual(groups["shared"][0]["link_node"], "pve2")
+        # One cluster-wide object, so its page carries no node at all. Capacity
+        # still comes from the first *active* instance, the rule the catalog table
+        # on the Overview page uses.
+        self.assertEqual(groups["shared"][0]["link_node"], "")
+        self.assertEqual(groups["shared"][0]["nav_key"], "local-storage||TrueNAS-VM")
 
     def test_the_highlight_key_separates_two_clusters_sharing_a_node_name(self):
         """Proxmox defaults make `pve1`/`local` collide across clusters; the old
@@ -1871,7 +1873,9 @@ class DatastoreNavTests(TestCase):
 
         response = self.client.get(reverse("core:dashboard"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, reverse("core:api_storage_summary", args=[cluster.key, "pve1", "TrueNAS-VM"]))
+        # The shared datastore's page is cluster-wide; the node-local one is not.
+        self.assertContains(response, f"/clusters/{cluster.key}/datastores/TrueNAS-VM/summary/")
+        self.assertContains(response, f"/clusters/{cluster.key}/nodes/pve1/datastores/local-lvm/summary/")
         self.assertContains(response, ">Host Mounts<")
         # The old labels claimed an axis the catalog does not have: the group that
         # said "Shared Datastores" was listing registered mounts, not shared storage.

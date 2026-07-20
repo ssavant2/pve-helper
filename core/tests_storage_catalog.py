@@ -1078,16 +1078,17 @@ class ApiStorageContextTests(TestCase):
         self.cluster = ProxmoxCluster.objects.create(key="cluster-ctx", display_name="Cluster Ctx")
 
     def test_absent_storage_yields_no_catalog_context(self):
-        from core.views.storage import _api_storage_context
+        from core.views.storage import _api_storage_context, _resolve_datastore_scope
 
-        context = _api_storage_context(self.cluster, "pve1", "missing", "summary")
+        definition, node, _moved = _resolve_datastore_scope(self.cluster, "missing", "pve1")
+        context = _api_storage_context(self.cluster, definition, "missing", node, "summary")
 
         self.assertFalse(context["found"])
         self.assertIsNone(context["catalog_view"])
         self.assertFalse(context["storage_shared"])
 
     def test_catalogued_shared_storage_reports_itself_as_shared(self):
-        from core.views.storage import _api_storage_context
+        from core.views.storage import _api_storage_context, _resolve_datastore_scope
 
         definition = ClusterStorage.objects.create(
             cluster=self.cluster,
@@ -1108,8 +1109,99 @@ class ApiStorageContextTests(TestCase):
             available_bytes=90,
         )
 
-        context = _api_storage_context(self.cluster, "pve1", "shared", "summary")
+        # A shared datastore resolves to the cluster-wide scope, so the node the
+        # caller supplied is dropped rather than baked into the page.
+        definition, node, moved = _resolve_datastore_scope(self.cluster, "shared", "pve1")
+        self.assertTrue(moved)
+        self.assertEqual(node, "")
+        context = _api_storage_context(self.cluster, definition, "shared", node, "summary")
 
         self.assertTrue(context["found"])
         self.assertIsNotNone(context["catalog_view"])
         self.assertTrue(context["storage_shared"])
+
+
+class DatastoreScopeUrlTests(TestCase):
+    """A datastore page is keyed on the scope its volumes are published under.
+
+    A shared datastore is one cluster-wide object however many nodes see it; a
+    node-local one is a different disk on each node, and Proxmox gives them all
+    the same name. Collapsing the latter into one page would show one node's
+    capacity under another node's disk, which is precisely what the per-node
+    volume coverage scope exists to keep apart.
+    """
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="scope", display_name="Scope", enabled=True)
+
+    def _definition(self, storage_id, *, shared, nodes):
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id=storage_id,
+            storage_type="nfs" if shared else "dir",
+            shared=shared,
+            present=True,
+            content=["images"],
+            config={"storage": storage_id},
+        )
+        for node in nodes:
+            ClusterStorageNodeState.objects.create(
+                cluster_storage=definition, node=node, present=True, active=True, enabled=True
+            )
+        return definition
+
+    def test_a_shared_datastore_answers_without_a_node(self):
+        self._definition("TrueNAS-VM", shared=True, nodes=["pve1", "pve2"])
+
+        response = self.client.get("/clusters/scope/datastores/TrueNAS-VM/summary/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Shared datastore in Scope")
+
+    def test_a_shared_datastore_addressed_through_a_node_moves_to_its_cluster_url(self):
+        """Otherwise the same datastore has one page per node, and each of them
+        claims a completeness that is only ever proven cluster-wide."""
+        self._definition("TrueNAS-VM", shared=True, nodes=["pve1", "pve2"])
+
+        response = self.client.get("/clusters/scope/nodes/pve2/datastores/TrueNAS-VM/summary/")
+
+        self.assertRedirects(
+            response,
+            "/clusters/scope/datastores/TrueNAS-VM/summary/",
+            fetch_redirect_response=False,
+        )
+
+    def test_each_node_local_instance_keeps_its_own_page(self):
+        self._definition("local", shared=False, nodes=["pve1", "pve2", "pve3"])
+
+        for node in ("pve1", "pve2", "pve3"):
+            response = self.client.get(f"/clusters/scope/nodes/{node}/datastores/local/summary/")
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, f"Node-local datastore on {node}")
+
+    def test_a_node_local_datastore_refuses_an_ambiguous_cluster_wide_url(self):
+        """Three disks are called `local` here. Picking one would show a node's
+        capacity under another node's name rather than admit the ambiguity."""
+        self._definition("local", shared=False, nodes=["pve1", "pve2", "pve3"])
+
+        response = self.client.get("/clusters/scope/datastores/local/summary/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_single_instance_node_local_datastore_moves_to_its_node(self):
+        self._definition("local", shared=False, nodes=["pve1"])
+
+        response = self.client.get("/clusters/scope/datastores/local/summary/")
+
+        self.assertRedirects(
+            response,
+            "/clusters/scope/nodes/pve1/datastores/local/summary/",
+            fetch_redirect_response=False,
+        )
+
+    def test_a_node_that_does_not_hold_the_datastore_is_not_a_page(self):
+        self._definition("local", shared=False, nodes=["pve1"])
+
+        response = self.client.get("/clusters/scope/nodes/pve2/datastores/local/summary/")
+
+        self.assertEqual(response.status_code, 404)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.core.cache import cache
+from django.urls import reverse
 
 from core.models import ClusterStorageNodeState
 from core.services.cluster_state_identity import cluster_cache_key
@@ -33,6 +34,20 @@ def datastore_nav(*, cluster, use_cache: bool = True):
     return result
 
 
+def datastore_url(route_name: str, cluster_key: str, storage: str, node: str = "") -> str:
+    """Reverse a datastore route in the shape its scope requires.
+
+    The two URL shapes share one route name and are told apart by whether `node`
+    is present, so every caller reverses through here instead of deciding which
+    pattern to name. It lives beside `nav_datastore_key` because both answer the
+    same question: what identifies this datastore.
+    """
+    kwargs = {"cluster_key": cluster_key, "storage": storage}
+    if node:
+        kwargs["node"] = node
+    return reverse(route_name, kwargs=kwargs)
+
+
 def nav_datastore_key(cluster_key: str, storage_id: str, node: str = "") -> str:
     """The identity a sidebar datastore leaf is highlighted by.
 
@@ -56,10 +71,10 @@ def _entry(row, *, cluster_key: str, link_node: str, shared: bool) -> dict:
         "avail": row.available_bytes,
         "used_pct": round(used / total * 100) if total and used is not None and total > 0 else None,
         "active": row.active,
-        # The storage detail URL is node-qualified even for a shared storage, whose
-        # volumes are published once under the shared observation node. The node
-        # therefore only selects whose capacity numbers are shown, and it is chosen
-        # by the same rule the catalog table uses so both surfaces agree.
+        # Empty for a shared datastore, which has one cluster-wide page. For a
+        # node-local one the node is part of the page's identity: `local` is a
+        # different disk on every node, so the three leaves must not lead to one
+        # page. The capacity above still comes from a specific instance.
         "link_node": link_node,
         "nav_key": nav_datastore_key(cluster_key, row.cluster_storage.storage_id, "" if shared else row.node),
     }
@@ -85,7 +100,7 @@ def _build(cluster):
         # First active instance, else the first present one — the rule in
         # `_storage_catalog_rows`. `rows` is already node-ordered, so this is stable.
         chosen = next((row for row in candidates if row.active), candidates[0])
-        shared.append(_entry(chosen, cluster_key=cluster.key, link_node=chosen.node, shared=True))
+        shared.append(_entry(chosen, cluster_key=cluster.key, link_node="", shared=True))
     shared.sort(key=lambda entry: entry["storage_id"])
     return {
         "shared": shared,

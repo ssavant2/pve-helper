@@ -1,5 +1,9 @@
 {% load nav_tags %}
-{% url 'core:api_storage_summary' cluster_key s.link_node s.storage_id as api_summary_url %}
+{% if s.link_node %}
+  {% url 'core:api_storage_summary' cluster_key=cluster_key node=s.link_node storage=s.storage_id as api_summary_url %}
+{% else %}
+  {% url 'core:api_storage_summary' cluster_key=cluster_key storage=s.storage_id as api_summary_url %}
+{% endif %}
 <a class="tree-node tree-leaf storage-leaf {% if active_nav_datastore == s.nav_key %}active{% endif %}" href="{% sticky_object_url api_summary_url %}" title="{{ s.storage_id }}{% if s.type %} ({{ s.type }}){% endif %}">
   <span class="tree-icon"><i data-lucide="{{ leaf_icon|default:'hard-drive' }}" aria-hidden="true"></i></span>
   <span class="tree-label">{{ s.storage_id }}</span>
