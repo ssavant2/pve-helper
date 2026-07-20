@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from django.core.cache import cache
+
 from core.models import ProxmoxCluster
 from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_state_identity import cluster_cache_key

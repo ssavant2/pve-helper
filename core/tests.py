@@ -3401,6 +3401,66 @@ class SettingsFallbackTests(SimpleTestCase):
         self.assertEqual(defaults, {"false"})
 
 
+class ProcessLocalCacheTests(SimpleTestCase):
+    """The conditions that make one cache per process the right choice.
+
+    Nothing here checks that caching works; it checks that the cache stays the
+    kind of thing a process may hold alone. A read-through memo of a provider
+    response may diverge between workers at the cost of one extra call. A lock,
+    a counter or a session may not — those need every process to see the same
+    value, and putting one here would fail silently rather than loudly.
+    """
+
+    def _modules_using_the_cache(self):
+        for path in Path(settings.BASE_DIR).joinpath("core").rglob("*.py"):
+            if path.name.startswith("tests"):
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "from django.core.cache import" in source:
+                yield path.relative_to(settings.BASE_DIR), source
+
+    def test_the_backend_is_declared_and_outgrows_djangos_default_ceiling(self):
+        """An implicit LocMemCache caps at 300 entries and culls a third at a time.
+
+        The per-guest snapshot, agent and HA keys pass 300 in a real fleet well
+        inside their TTLs, so the default would evict on volume at a moment that
+        has nothing to do with freshness.
+        """
+        backend = settings.CACHES["default"]
+        self.assertEqual(backend["BACKEND"], "django.core.cache.backends.locmem.LocMemCache")
+        self.assertGreater(backend["OPTIONS"]["MAX_ENTRIES"], 300)
+
+    def test_sessions_do_not_live_in_a_cache_only_one_process_can_read(self):
+        self.assertNotIn("cache", settings.SESSION_ENGINE)
+
+    def test_the_cache_is_never_used_as_a_coordination_primitive(self):
+        """`add`, `incr`/`decr` and `get_or_set` are the atomic operations.
+
+        Each one reads as mutual exclusion, a rate limit or a run-once guard,
+        and each is atomic only within the process that holds the memory. This
+        codebase coordinates through PostgreSQL advisory locks instead
+        (`cluster_state_identity.cluster_advisory_lock_id`).
+        """
+        offenders = [
+            f"{path}: {match.group(0)}"
+            for path, source in self._modules_using_the_cache()
+            for match in re.finditer(r"\bcache\.(add|incr|decr|get_or_set)\b", source)
+        ]
+        self.assertEqual(offenders, [])
+
+    def test_every_cached_value_is_namespaced_by_its_cluster_generation(self):
+        """Divergence is only harmless while a stale copy is unreachable.
+
+        `cluster_cache_key()` folds `cluster.cache_generation` into the key, so a
+        writer bumping that column retires the old namespace for every process at
+        once — which is why no `cache.delete` is needed and why deleting in one
+        worker would not have been enough. A key built any other way would keep a
+        stale value alive in whichever process happened to store it.
+        """
+        offenders = [str(path) for path, source in self._modules_using_the_cache() if "cluster_cache_key" not in source]
+        self.assertEqual(offenders, [])
+
+
 @override_settings(APP_REQUIRE_LOGIN=False)
 @override_settings(
     PVE_API_TOKEN_ID="root@pam!test",

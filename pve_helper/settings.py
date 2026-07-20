@@ -145,6 +145,38 @@ if env("DB_ENGINE", "") == "sqlite":
         "NAME": env("DB_NAME", "/tmp/e2e/db.sqlite3"),
     }
 
+# Process-local on purpose, declared rather than inherited so the choice is
+# visible and its condition is written down next to it.
+#
+# Everything in this cache is a read-through memo of a Proxmox response: live
+# guest status, inventory, locks, lineage, the tag registry and the datastore
+# nav. Nothing coordination-shaped lives here — sessions are database-backed and
+# mutual exclusion uses PostgreSQL advisory locks — so two processes holding
+# different copies costs a provider round-trip and never correctness.
+# Staleness is handled by `cluster_state_identity.cluster_cache_key()`, which
+# namespaces every key with the cluster's `cache_generation`; a writer bumps
+# that column, so invalidation already reaches sibling processes that a
+# `cache.delete` in one worker would have missed.
+#
+# MAX_ENTRIES is raised well above Django's default of 300 because the per-guest
+# snapshot/agent/HA keys reach that ceiling long before their TTLs expire in a
+# real fleet, and the default CULL_FREQUENCY then discards a third of the cache
+# at a moment unrelated to freshness. Entries are small dicts and every TTL here
+# is a minute or less, so the ceiling costs a few megabytes per process.
+#
+# Revisit when `web` runs as more than one container: sharing the memo across
+# five processes on one host is worth little, but across replicas the hit rate
+# falls with each one, and a shared backend becomes the right trade. That is a
+# backend swap in this dict — the call sites and the generation scheme carry
+# over unchanged.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "pve-helper",
+        "OPTIONS": {"MAX_ENTRIES": 10000, "CULL_FREQUENCY": 4},
+    }
+}
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
