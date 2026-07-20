@@ -277,9 +277,15 @@ def _metadata_semantics(cluster: ProxmoxCluster) -> dict[str, tuple[Any, ...]]:
             definition.disabled,
             definition.present,
             json.dumps(_canonical_config(definition.config), sort_keys=True, separators=(",", ":")),
+            # Sorted here rather than by `.order_by()` (which would defeat the
+            # prefetch above) and rather than by the model's Meta ordering (which
+            # exists for other reasons and could be changed for them). This tuple
+            # decides whether volume coverage is invalidated: a reordering that
+            # arrives from somewhere else would republish the whole catalog every
+            # cycle and discard every absence proof with it.
             tuple(
                 (state.node, state.present, state.active, state.enabled)
-                for state in definition.node_states.all().order_by("node")
+                for state in sorted(definition.node_states.all(), key=lambda state: state.node)
             ),
         )
         for definition in definitions
@@ -410,10 +416,11 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
 
 
 def _candidate_nodes(definition: ClusterStorage) -> list[str]:
-    return list(
-        definition.node_states.filter(present=True, active=True, enabled=True)
-        .order_by("node")
-        .values_list("node", flat=True)
+    # Narrowed in Python so a prefetched definition answers without a query: the
+    # volume refresh calls this once per storage, inside the lane that already
+    # pays for a Proxmox round trip per storage.
+    return sorted(
+        state.node for state in definition.node_states.all() if state.present and state.active and state.enabled
     )
 
 
@@ -1256,9 +1263,7 @@ class MountedVolumeClassifier:
 
     def __init__(self, mount: StorageMount) -> None:
         self._bindings = list(mount.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster"))
-        self._scopes = [
-            _usage_scope(binding.cluster_storage, binding.node or "") for binding in self._bindings
-        ]
+        self._scopes = [_usage_scope(binding.cluster_storage, binding.node or "") for binding in self._bindings]
         self._observed: list[set[str]] = []
         for binding in self._bindings:
             observations = binding.cluster_storage.volume_observations

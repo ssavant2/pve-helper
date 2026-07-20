@@ -35,6 +35,8 @@ from core.services.storage_catalog import (
     StorageCatalogChanged,
     StorageOperationScope,
     UsageState,
+    _candidate_nodes,
+    _metadata_semantics,
     classify_mounted_volume,
     refresh_storage_metadata,
     refresh_storage_volumes,
@@ -397,7 +399,9 @@ class StorageCatalogTests(TestCase):
         self.assertFalse(state.volume_complete)
         self.assertFalse(storage_view(shared).coverage_complete)
         self.assertTrue(storage_view(local, node="pve1").coverage_complete)
-        self.assertEqual([row.volid for row in storage_volumes(storage_view(local, node="pve1"))], ["local:vm-101-disk-0"])
+        self.assertEqual(
+            [row.volid for row in storage_volumes(storage_view(local, node="pve1"))], ["local:vm-101-disk-0"]
+        )
 
     def test_node_local_failure_is_isolated_to_that_node(self):
         self._metadata()
@@ -410,7 +414,9 @@ class StorageCatalogTests(TestCase):
         self.assertFalse(state.volume_complete)
         self.assertTrue(storage_view(local, node="pve1").coverage_complete)
         self.assertFalse(storage_view(local, node="pve2").coverage_complete)
-        self.assertEqual([row.volid for row in storage_volumes(storage_view(local, node="pve1"))], ["local:vm-101-disk-0"])
+        self.assertEqual(
+            [row.volid for row in storage_volumes(storage_view(local, node="pve1"))], ["local:vm-101-disk-0"]
+        )
 
     def test_lineage_uses_healthy_scopes_when_cluster_summary_is_partial(self):
         self.responses["nodes/pve1/storage/local/content"][0]["parent"] = "local:100/base-100-disk-0.qcow2"
@@ -748,6 +754,55 @@ class StorageCatalogTests(TestCase):
                 classifier.classify(f"images/900/vm-900-disk-{index}.qcow2")
 
         self.assertEqual(referenced.classification, FileInventory.Classification.REFERENCED)
+
+    def test_metadata_semantics_costs_two_queries_and_agrees_with_the_database(self):
+        """The snapshot that decides whether volume coverage survives a refresh.
+
+        It runs twice per metadata refresh — before and after the update loop —
+        so a per-definition query here is paid 2N times every cycle to prove that
+        nothing changed. It must also agree exactly with the database: a tuple
+        that reorders makes every storage look changed, which republishes the
+        catalog and discards every absence proof with it.
+        """
+        self._metadata()
+
+        with self.assertNumQueries(2):
+            semantics = _metadata_semantics(self.cluster)
+
+        definitions = list(ClusterStorage.objects.filter(cluster=self.cluster))
+        self.assertEqual(set(semantics), {definition.storage_id for definition in definitions})
+        for definition in definitions:
+            expected = tuple(
+                (state.node, state.present, state.active, state.enabled)
+                for state in ClusterStorageNodeState.objects.filter(cluster_storage=definition).order_by("node")
+            )
+            self.assertEqual(semantics[definition.storage_id][-1], expected)
+
+    def test_candidate_nodes_reuses_a_prefetched_definition(self):
+        """The volume refresh asks this once per storage.
+
+        That lane already pays a Proxmox round trip per storage; it must not also
+        pay a database round trip for node states it has already loaded.
+        """
+        self._metadata()
+        definitions = list(
+            ClusterStorage.objects.filter(cluster=self.cluster, present=True).prefetch_related("node_states")
+        )
+        self.assertGreater(len(definitions), 1)
+
+        with self.assertNumQueries(0):
+            candidates = [_candidate_nodes(definition) for definition in definitions]
+
+        for definition, nodes in zip(definitions, candidates, strict=True):
+            expected = list(
+                ClusterStorageNodeState.objects.filter(
+                    cluster_storage=definition, present=True, active=True, enabled=True
+                )
+                .order_by("node")
+                .values_list("node", flat=True)
+            )
+            self.assertEqual(nodes, expected)
+            self.assertTrue(nodes)
 
     def test_a_prefetched_listing_resolves_every_storage_view_for_free(self):
         """Listing N datastores must not cost N times the per-storage reads.
