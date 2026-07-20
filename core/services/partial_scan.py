@@ -54,7 +54,7 @@ def refresh_storage_directory(
             FileInventory(
                 scan_run=scan,
                 storage=storage,
-                path=entry.path,
+                path=entry.relative_path,
                 derived_volid=entry.derived_volid,
                 content_category=entry.content_category,
                 entry_type=entry.entry_type,

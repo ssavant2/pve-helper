@@ -9,7 +9,15 @@ from .classification import categorize_proxmox_path, derive_volid
 
 @dataclass(frozen=True)
 class StorageEntry:
-    path: str
+    """One filesystem entry beneath a mount root.
+
+    The two path fields are named for what they are rather than reusing `path`,
+    because that word already means the absolute one on `StorageMount` and the
+    relative one on `FileInventory`. Callers writing a row therefore spell out
+    `path=entry.relative_path`, which is the translation into the model's naming
+    and not an accident of matching attribute names.
+    """
+
     full_path: str
     relative_path: str
     entry_type: str
@@ -58,7 +66,6 @@ class StorageScanner:
                     stack.append(item)
 
                 yield StorageEntry(
-                    path=relative,
                     full_path=item.as_posix(),
                     relative_path=relative,
                     entry_type=entry_type,
@@ -67,30 +74,6 @@ class StorageScanner:
                     size_bytes=stat.st_size if entry_type == "file" else None,
                     modified_at=stat.st_mtime,
                 )
-
-    def iter_top_level(self) -> list[StorageEntry]:
-        if not self.root.exists():
-            return []
-
-        entries: list[StorageEntry] = []
-        for item in sorted(self.root.iterdir(), key=lambda path: path.name.lower()):
-            relative = item.relative_to(self.root).as_posix()
-            if self._is_ignored(relative):
-                continue
-            derived = derive_volid(self.storage_id, relative)
-            entries.append(
-                StorageEntry(
-                    path=relative,
-                    full_path=item.as_posix(),
-                    relative_path=relative,
-                    entry_type=self._entry_type(item),
-                    content_category=derived.content_category if derived else categorize_proxmox_path(relative),
-                    derived_volid=derived.volid if derived else "",
-                    size_bytes=item.stat().st_size if item.is_file() else None,
-                    modified_at=item.stat().st_mtime,
-                )
-            )
-        return entries
 
     def iter_directory(self, relative_path: str = "") -> list[StorageEntry]:
         directory = self.root if not relative_path else self.root.joinpath(*PurePosixPath(relative_path).parts)
@@ -118,7 +101,6 @@ class StorageScanner:
             derived = derive_volid(self.storage_id, relative)
             entries.append(
                 StorageEntry(
-                    path=relative,
                     full_path=item.as_posix(),
                     relative_path=relative,
                     entry_type=entry_type,

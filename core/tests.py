@@ -1718,6 +1718,62 @@ class ClassificationTests(SimpleTestCase):
         self.assertEqual(mount_access_mode(mount), "read_only")
 
 
+class ScannerToInventoryPathTests(TestCase):
+    """The two scan paths that write `FileInventory` rows from a live filesystem.
+
+    Both translate a `StorageEntry` into a row, and the row's `path` column holds the
+    path relative to the mount root — the same convention every later consumer reads,
+    from the browser's directory prefixes to `extract_vmid_from_image_path`. A row
+    written with an absolute path would look plausible in the database and break
+    silently downstream, so the translation is asserted here rather than assumed. The
+    periodic scan in `core.tasks` already had coverage; these two did not, and the
+    preflight is patched out in the tests that exercise its caller.
+    """
+
+    def _mount(self, root: Path) -> StorageMount:
+        return StorageMount.objects.create(
+            storage_id="scan-fs",
+            display_name="Scan FS",
+            path=root.as_posix(),
+            expected_consumers=["pve-node-1"],
+        )
+
+    def _tree(self, root: Path) -> None:
+        (root / "images" / "500").mkdir(parents=True)
+        (root / "images" / "500" / "vm-500-disk-0.qcow2").write_bytes(b"disk")
+
+    def test_the_preflight_scan_records_paths_relative_to_the_mount_root(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._tree(root)
+            storage = self._mount(root)
+
+            from core.views.storage import _run_storage_content_preflight_scan
+
+            scan = _run_storage_content_preflight_scan(storage)
+
+        self.assertEqual(scan.status, ScanRun.Status.COMPLETED)
+        self.assertEqual(
+            set(FileInventory.objects.filter(scan_run=scan).values_list("path", flat=True)),
+            {"images", "images/500", "images/500/vm-500-disk-0.qcow2"},
+        )
+
+    def test_the_directory_refresh_records_paths_relative_to_the_mount_root(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._tree(root)
+            storage = self._mount(root)
+            scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+
+            from core.services.partial_scan import refresh_storage_directory
+
+            refresh_storage_directory(storage=storage, scan=scan, directory_path="images/500")
+
+        rows = FileInventory.objects.filter(scan_run=scan)
+        self.assertEqual([row.path for row in rows], ["images/500/vm-500-disk-0.qcow2"])
+        self.assertEqual(rows[0].evidence["full_path"], (root / "images/500/vm-500-disk-0.qcow2").as_posix())
+
+
 @override_settings(
     PVE_ENDPOINTS=["https://pve-node-1.example.com:8006"],
 )
@@ -3051,7 +3107,6 @@ class ScanTaskTests(TestCase):
                 return InventoryResult(node=node, ok=True, objects=[], errors=[])
 
         disk_entry = StorageEntry(
-            path="images/500/vm-500-disk-0.qcow2",
             full_path="/storage/images/500/vm-500-disk-0.qcow2",
             relative_path="images/500/vm-500-disk-0.qcow2",
             entry_type=FileInventory.EntryType.FILE,
