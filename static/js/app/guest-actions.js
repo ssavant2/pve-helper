@@ -469,7 +469,17 @@ const guestRowIdentity = (row) => {
   };
 };
 
-const openVmFormDialog = ({ title, summary, bodyHtml, submitLabel, submitClass = "primary-action", onSubmit }) => {
+// `cancelLabel` is overridden where declining is a recorded decision rather than
+// a way out — see `openForceStopDialog`.
+const openVmFormDialog = ({
+  title,
+  summary,
+  bodyHtml,
+  submitLabel,
+  submitClass = "primary-action",
+  cancelLabel = "Cancel",
+  onSubmit,
+}) => {
   const dialog = ensureVmActionDialog();
   dialog.innerHTML = `
       <form class="vm-action-dialog-form" method="dialog">
@@ -482,7 +492,7 @@ const openVmFormDialog = ({ title, summary, bodyHtml, submitLabel, submitClass =
         <p class="form-error" data-vm-dialog-error hidden></p>
         <div class="form-actions">
           <button class="${escapeHtml(submitClass)}" type="submit" data-vm-dialog-submit>${escapeHtml(submitLabel)}</button>
-          <button class="secondary-action" type="button" data-vm-dialog-cancel>Cancel</button>
+          <button class="secondary-action" type="button" data-vm-dialog-cancel>${escapeHtml(cancelLabel)}</button>
         </div>
       </form>
     `;
@@ -619,6 +629,10 @@ const openForceStopDialog = (target, label, taskId) => {
     summary: label || target,
     submitLabel: "Force stop",
     submitClass: "primary-action danger-action",
+    // Closing this dialog answers the question either way (see below), so the
+    // declining button has to say that it leaves the guest running rather than
+    // imply the offer comes back.
+    cancelLabel: "Leave it running",
     bodyHtml: `
         <p>The graceful shutdown of <strong>${escapeHtml(label || target)}</strong> timed out — the guest did not respond to the ACPI power signal (no <code>acpid</code> or QEMU guest agent running), so it is <strong>still running</strong>.</p>
         <p><strong>Force stop</strong> is an ungraceful hard power-off, like pulling the plug: unsaved data inside the guest may be lost.</p>

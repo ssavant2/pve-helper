@@ -949,6 +949,10 @@ const openBulkFilePartialDialog = async (payload, taskId) => {
     title: "Partly completed",
     body,
     confirmLabel: `Retry ${retryPaths.length} file(s)`,
+    // Declining here is the "accept" half of the question, not a way out: it
+    // records the answer and closes the question for good. Labelling it Cancel
+    // would promise the opposite of what the button does.
+    cancelLabel: "Accept this outcome",
     danger: false,
   });
   const retrying = Boolean(retryRequested && retry.url && retryPaths.length);

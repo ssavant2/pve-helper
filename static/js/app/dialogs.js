@@ -14,14 +14,18 @@ const ensureVmActionDialog = () => {
 // Shared confirm/consequence dialog. `body` is trusted HTML; callers must
 // escape user- or database-provided text before passing it.
 /**
- * @param swapActions Render Cancel where Confirm normally sits. Used for the
- * second step of an escalated confirmation so a memorised double-click on the
- * same spot cannot carry an operator through both dialogs.
+ * @param swapActions Render the declining button where Confirm normally sits.
+ * Used for the second step of an escalated confirmation so a memorised
+ * double-click on the same spot cannot carry an operator through both dialogs.
+ * @param cancelLabel Override when declining is itself a recorded decision
+ * rather than a way out. "Cancel" promises that nothing happens; if the button
+ * durably answers a question, say what it answers.
  */
 const openConfirmDialog = ({
   title = "Please confirm",
   body = "",
   confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
   danger = false,
   swapActions = false,
 }) =>
@@ -38,10 +42,10 @@ const openConfirmDialog = ({
         <div class="form-actions">
           ${
             swapActions
-              ? `<button class="primary-action" type="button" data-confirm-no>Cancel</button>
+              ? `<button class="primary-action" type="button" data-confirm-no>${escapeHtml(cancelLabel)}</button>
           <button class="secondary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>`
               : `<button class="primary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>
-          <button class="secondary-action" type="button" data-confirm-no>Cancel</button>`
+          <button class="secondary-action" type="button" data-confirm-no>${escapeHtml(cancelLabel)}</button>`
           }
         </div>
       </div>
