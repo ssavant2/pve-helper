@@ -60,8 +60,8 @@
   gap: 18px;
   min-height: 36px;
   padding: 4px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--panel-bg);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
   font-size: 14px;
 }
 
@@ -208,9 +208,9 @@
 
 .page-button {
   padding: 2px 8px;
-  border: 1px solid var(--border, #d1d5db);
+  border: 1px solid var(--line);
   border-radius: 4px;
-  background: var(--surface, #fff);
+  background: var(--surface);
   color: var(--text);
   text-decoration: none;
   font-size: 12px;
@@ -218,7 +218,7 @@
 }
 
 .page-button:hover:not(.disabled) {
-  background: var(--surface-alt, #f9fafb);
+  background: var(--surface-alt);
 }
 
 .page-button.disabled {
@@ -915,24 +915,24 @@ code {
 
 .usage-bar-bg {
   height: 8px;
-  background: var(--surface_alt, #e5e7eb);
+  background: var(--surface-alt);
   border-radius: 4px;
   overflow: hidden;
 }
 
 .usage-bar-fill {
   height: 100%;
-  background: var(--accent, #3b82f6);
+  background: var(--accent);
   border-radius: 4px;
   transition: width 0.3s ease;
 }
 
 .usage-bar-fill.warning {
-  background: var(--warning_bg, #f59e0b);
+  background: var(--amber);
 }
 
 .usage-bar-fill.danger {
-  background: var(--danger_bg, #ef4444);
+  background: var(--red);
 }
 
 .api-capacity {

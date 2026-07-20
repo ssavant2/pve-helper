@@ -5,9 +5,9 @@
   gap: 14px;
   margin: 0 0 14px;
   padding: 14px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .vmreg-source-icon {
@@ -93,8 +93,8 @@
   gap: 10px;
   align-items: end;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
 }
 
 .vmreg-nic .hw-field {

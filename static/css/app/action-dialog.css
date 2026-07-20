@@ -81,7 +81,7 @@
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
   font: inherit;
 }

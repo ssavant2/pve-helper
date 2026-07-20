@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -9562,4 +9563,90 @@ class GuestBackupRestoreTests(TestCase):
         self.assertEqual(
             [path for path, _data in fake.posts],
             ["nodes/pve1/qemu/500/status/shutdown", "nodes/pve1/qemu"],
+        )
+
+
+class StylesheetTokenTests(SimpleTestCase):
+    """Guard the CSS custom properties the stylesheets actually depend on.
+
+    A `var(--x)` naming a property that is never defined is not a no-op: the
+    declaration is invalid at computed-value time, so the whole property falls
+    back to its initial value. `border: 1px solid var(--undefined)` therefore
+    renders as *no border at all*, silently, in every browser and with no
+    warning from any linter. That is how `--line-strong` removed the border from
+    every secondary button in the application without anyone noticing.
+    """
+
+    css_root = Path(settings.BASE_DIR) / "static" / "css"
+    template_root = Path(settings.BASE_DIR) / "templates"
+    definition_re = re.compile(r"(--[\w-]+)\s*:")
+    usage_re = re.compile(r"var\(\s*(--[\w-]+)\s*(,)?")
+
+    def _defined_properties(self) -> set[str]:
+        defined: set[str] = set()
+        for path in self.css_root.rglob("*.css"):
+            defined.update(self.definition_re.findall(path.read_text()))
+        # Some properties are set per element in a template (the storage
+        # browser's --depth, a tag's --tag-bg/--tag-fg), never in a stylesheet.
+        for path in self.template_root.rglob("*.html"):
+            defined.update(self.definition_re.findall(path.read_text()))
+        return defined
+
+    def test_every_used_custom_property_is_defined(self):
+        defined = self._defined_properties()
+        undefined = []
+        for path in sorted(self.css_root.rglob("*.css")):
+            text = path.read_text()
+            for match in self.usage_re.finditer(text):
+                name = match.group(1)
+                if name in defined:
+                    continue
+                line = text.count("\n", 0, match.start()) + 1
+                has_fallback = bool(match.group(2))
+                relative = path.relative_to(settings.BASE_DIR)
+                undefined.append(f"{relative}:{line} uses {name}{' (fallback only)' if has_fallback else ''}")
+        self.assertEqual(
+            undefined,
+            [],
+            "Undefined CSS custom properties — a var() without a definition drops the "
+            "whole declaration:\n  " + "\n  ".join(undefined),
+        )
+
+    def test_custom_properties_use_kebab_case(self):
+        """`--surface_alt` and `--surface-alt` are different properties.
+
+        The underscore spellings silently resolved to their hardcoded fallbacks,
+        so those rules never followed the light/dark theme at all.
+        """
+        offenders = []
+        for path in sorted(self.css_root.rglob("*.css")):
+            text = path.read_text()
+            for match in re.finditer(r"--[\w-]*_[\w-]*", text):
+                line = text.count("\n", 0, match.start()) + 1
+                offenders.append(f"{path.relative_to(settings.BASE_DIR)}:{line} {match.group(0)}")
+        self.assertEqual(offenders, [], "CSS custom properties are kebab-case:\n  " + "\n  ".join(offenders))
+
+
+class FrontendNavigationSourceTests(SimpleTestCase):
+    """Forms must go through soft navigation, not a document reload."""
+
+    js_root = Path(settings.BASE_DIR) / "static" / "js"
+
+    def test_no_native_form_submit_calls(self):
+        """`form.submit()` bypasses every submit listener, including ours.
+
+        It is invisible to the soft-navigation interceptor, so it always reloads
+        the whole document. Use `requestSubmit()`, which fires a real submit
+        event that the interceptor can act on.
+        """
+        offenders = []
+        for path in sorted(self.js_root.rglob("*.js")):
+            for number, line in enumerate(path.read_text().splitlines(), start=1):
+                code = line.split("//", 1)[0]
+                if re.search(r"\.submit\(\s*\)", code):
+                    offenders.append(f"{path.relative_to(settings.BASE_DIR)}:{number} {line.strip()}")
+        self.assertEqual(
+            offenders,
+            [],
+            "Use requestSubmit() so soft navigation sees the submit event:\n  " + "\n  ".join(offenders),
         )

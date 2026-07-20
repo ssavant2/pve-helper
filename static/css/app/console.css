@@ -33,8 +33,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  border: 1px solid var(--border);
-  background: var(--panel);
+  border: 1px solid var(--line);
+  background: var(--surface);
   padding: 1rem;
 }
 
@@ -85,14 +85,14 @@
   min-height: 34px;
   padding: 4px 8px;
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
 }
 
 .console-frame {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   background: #05070a;
   overflow: hidden;
 }

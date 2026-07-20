@@ -146,8 +146,8 @@
 .cluster-operation-error,
 .cluster-quarantine {
   padding: 11px 13px;
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
-  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line));
+  background: color-mix(in srgb, var(--red) 10%, var(--surface));
   color: var(--text);
 }
 
@@ -192,7 +192,7 @@
   margin-bottom: 14px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .cluster-candidate-summary span {
@@ -207,7 +207,7 @@
   padding: 13px 14px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
-  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
 }
 
 .cluster-certificate-heading {
@@ -334,8 +334,8 @@
 }
 
 .secondary-action.danger {
-  border-color: color-mix(in srgb, var(--danger) 62%, var(--line));
-  color: var(--danger);
+  border-color: color-mix(in srgb, var(--red) 62%, var(--line));
+  color: var(--red);
 }
 
 .secondary-action:disabled {
@@ -344,7 +344,7 @@
 }
 
 .badge.muted-badge {
-  background: var(--panel);
+  background: var(--surface-alt);
   color: var(--muted);
 }
 

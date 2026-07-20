@@ -317,14 +317,14 @@
 }
 
 .hw-invalid {
-  border-color: var(--danger_bg, #ef4444) !important;
+  border-color: var(--red) !important;
   box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3);
 }
 
 .hw-removed-note {
   display: none;
   margin: 8px 0 0;
-  color: var(--danger_bg, #ef4444);
+  color: var(--red);
   font-size: 13px;
 }
 
@@ -374,6 +374,7 @@
   --vs-menu: #ffffff;
   --vs-menu-shadow: rgba(34, 52, 63, 0.24);
   --vs-menu-hover: #d9e6ec;
+  --vs-menu-hover-text: #203640;
   --vs-accent: #008fc5;
   --vs-danger: #bb3b31;
   width: min(1240px, calc(100vw - 28px));
@@ -406,6 +407,7 @@ html[data-theme="dark"] .hardware-editor-page {
   --vs-menu: var(--surface);
   --vs-menu-shadow: rgba(0, 0, 0, 0.52);
   --vs-menu-hover: #dbe6eb;
+  --vs-menu-hover-text: #203640;
   --vs-accent: var(--accent);
   --vs-danger: var(--red);
   box-shadow: 0 28px 76px rgba(0, 0, 0, 0.5);

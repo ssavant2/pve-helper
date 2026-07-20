@@ -7,7 +7,7 @@
   width: 100%;
   min-width: 260px;
   padding: 5px 8px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -27,7 +27,7 @@
   align-content: start;
   padding: 10px;
   border: 1px solid var(--line);
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
 }
 
 .hw-add-card h4 {

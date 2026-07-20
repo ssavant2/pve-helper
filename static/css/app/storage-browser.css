@@ -315,7 +315,7 @@
 }
 
 .data-table tr.row-highlight {
-  background: var(--accent-soft, rgba(59, 130, 246, 0.12));
+  background: var(--blue-soft);
 }
 
 .datastore-file-manager {

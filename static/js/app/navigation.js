@@ -15,6 +15,14 @@ const setPageInitializer = (initializer) => {
   pageInitializer = typeof initializer === "function" ? initializer : () => {};
 };
 
+// Paths whose response is not an app page: session teardown (which may hand off
+// to the identity provider) and anything that streams a file back.
+const leavesTheApplication = (url) =>
+  url.origin !== window.location.origin ||
+  url.pathname.startsWith("/auth/") ||
+  url.pathname.includes("/download/") ||
+  url.pathname.includes("/export/");
+
 const shouldUseSoftNavigation = (anchor, event) => {
   if (
     event.defaultPrevented ||
@@ -31,10 +39,7 @@ const shouldUseSoftNavigation = (anchor, event) => {
   }
 
   const url = new URL(anchor.href, window.location.href);
-  if (url.origin !== window.location.origin) {
-    return false;
-  }
-  if (url.pathname.startsWith("/auth/") || url.pathname.includes("/download/")) {
+  if (leavesTheApplication(url)) {
     return false;
   }
   if (url.pathname === window.location.pathname && url.search === window.location.search && url.hash) {
@@ -82,6 +87,7 @@ const replacePageFromDocument = (nextDocument) => {
 
 const loadSoftNavigation = async (url, options = {}) => {
   const push = options.push !== false;
+  const method = (options.method || "get").toUpperCase();
   document.getElementById("context-menu")?.setAttribute("hidden", "");
 
   navigationController?.abort();
@@ -91,6 +97,8 @@ const loadSoftNavigation = async (url, options = {}) => {
 
   try {
     const response = await fetch(url.href, {
+      method,
+      body: options.body,
       headers: {
         Accept: "text/html",
         "X-Requested-With": "fetch",
@@ -111,14 +119,24 @@ const loadSoftNavigation = async (url, options = {}) => {
     if (!replacePageFromDocument(nextDocument)) {
       throw new Error("Soft navigation shell markers were missing.");
     }
+    // A POST usually redirects; the address bar must show where we landed, not
+    // where we posted. Landing back on the current page is an in-place update,
+    // not a new history entry.
+    const landedAt = response.redirected ? new URL(response.url) : url;
     if (push) {
-      window.history.pushState({ softNavigation: true }, "", url.href);
+      if (landedAt.href === window.location.href) {
+        window.history.replaceState({ softNavigation: true }, "", landedAt.href);
+      } else {
+        window.history.pushState({ softNavigation: true }, "", landedAt.href);
+      }
     }
   } catch (error) {
     if (error.name === "AbortError") {
       return;
     }
-    window.location.assign(url.href);
+    // Re-issuing a failed POST as a GET would be wrong, and the request may
+    // never have reached the server; reload where the user actually is.
+    window.location.assign(method === "POST" ? window.location.href : url.href);
   } finally {
     if (navigationController === controller) {
       navigationController = null;
@@ -145,6 +163,39 @@ const initSoftNavigation = () => {
 
     event.preventDefault();
     loadSoftNavigation(new URL(anchor.href, window.location.href));
+  });
+
+  // Forms are navigations too. Without this, every template form that has no
+  // JavaScript of its own reloads the whole document — losing scroll position,
+  // the taskbar's polling state and every open panel — for what is usually a
+  // single field edit. Feature modules that own a form call preventDefault
+  // first and are skipped here; anything that genuinely must leave the app
+  // (session teardown, a file download) opts out with data-no-soft-navigation,
+  // the same marker links already use.
+  document.addEventListener("submit", (event) => {
+    const form = event.target.closest("form");
+    if (!form || event.defaultPrevented || form.closest("[data-no-soft-navigation]")) {
+      return;
+    }
+    if (form.hasAttribute("target") || form.hasAttribute("formtarget")) {
+      return;
+    }
+    const action = new URL(form.getAttribute("action") || window.location.href, window.location.href);
+    if (leavesTheApplication(action)) {
+      return;
+    }
+
+    const method = (form.getAttribute("method") || "get").toLowerCase();
+    if (method === "get") {
+      // A filter/search form is just a link with a query string.
+      event.preventDefault();
+      action.search = new URLSearchParams(new FormData(form)).toString();
+      loadSoftNavigation(action);
+      return;
+    }
+
+    event.preventDefault();
+    loadSoftNavigation(action, { method: "post", body: new FormData(form) });
   });
 
   document.addEventListener("change", (event) => {

@@ -171,3 +171,62 @@ test("overview column picker toggles a column's visibility", async ({ page }) =>
   await vmidToggle.click();
   await expect.poll(() => vmidHeader.isVisible()).not.toBe(wasVisible);
 });
+
+// A settings edit must update the page in place. A native form submit reloads
+// the whole document, which throws away scroll position, the taskbar's polling
+// state and every open panel — for a single field. The marker below only
+// survives if no document load happened.
+test("changing an audit retention setting updates in place without reloading", async ({ page }) => {
+  await page.goto("/audit/", { waitUntil: "load" });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => typeof (window as unknown as { pveHelperRefreshRecentTasks?: unknown }).pveHelperRefreshRecentTasks,
+      ),
+    )
+    .toBe("function");
+
+  // The retention period lives in the schedule, so it is only persisted while
+  // the schedule is enabled; enable it first or the value has nowhere to go.
+  const enabled = page.locator('[data-auto-submit-form] input[name="enabled"]');
+  if (!(await enabled.isChecked())) {
+    await enabled.check();
+    await expect.poll(() => enabled.isChecked()).toBe(true);
+  }
+
+  await page.evaluate(() => {
+    (window as unknown as { __softNavProbe?: string }).__softNavProbe = "alive";
+  });
+
+  const retention = page.locator('[data-auto-submit-form] input[name="retention_days"]');
+  const before = await retention.inputValue();
+  const next = String(Number.parseInt(before, 10) === 30 ? 45 : 30);
+  // Type it: fill() sets the value without the change event the form listens
+  // for, so it would assert nothing about the submit path.
+  await retention.click();
+  await retention.press("Control+a");
+  await retention.pressSequentially(next);
+  await retention.press("Tab");
+
+  await expect.poll(() => retention.inputValue()).toBe(next);
+  const probe = await page.evaluate(() => (window as unknown as { __softNavProbe?: string }).__softNavProbe);
+  expect(probe).toBe("alive");
+
+  // ...and it really reached the server, rather than only sitting in the input.
+  await page.reload({ waitUntil: "load" });
+  await expect.poll(() => retention.inputValue()).toBe(next);
+});
+
+test("the audit search form filters without a document reload", async ({ page }) => {
+  await page.goto("/audit/", { waitUntil: "load" });
+  await page.evaluate(() => {
+    (window as unknown as { __softNavProbe?: string }).__softNavProbe = "alive";
+  });
+
+  await page.locator('.search-control input[name="q"]').fill("login");
+  await page.locator('.search-control button[type="submit"]').click();
+
+  await expect.poll(() => page.url()).toContain("q=login");
+  const probe = await page.evaluate(() => (window as unknown as { __softNavProbe?: string }).__softNavProbe);
+  expect(probe).toBe("alive");
+});

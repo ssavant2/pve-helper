@@ -14,12 +14,9 @@ const initAutoSubmitForms = (root = document) => {
         if (form.reportValidity && !form.reportValidity()) {
           return;
         }
-
-        if (form.requestSubmit) {
-          form.requestSubmit();
-          return;
-        }
-        form.submit();
+        // requestSubmit fires a real submit event, so soft navigation picks it
+        // up; form.submit() would bypass every listener and reload the page.
+        form.requestSubmit();
       });
     });
   });

@@ -215,7 +215,7 @@
 }
 
 .hw-danger {
-  color: var(--danger_bg, #ef4444) !important;
+  color: var(--red) !important;
 }
 
 .hw-add-menu-link {

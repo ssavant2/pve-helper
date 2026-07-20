@@ -136,7 +136,7 @@
 }
 
 .tag-warning {
-  border-color: var(--warning, #d69e2e);
+  border-color: var(--amber);
   margin-bottom: 18px;
   padding: 14px;
 }

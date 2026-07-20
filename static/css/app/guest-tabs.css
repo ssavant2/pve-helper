@@ -12,7 +12,7 @@
 .fw-add-rule select,
 .fw-add-rule input[type="text"] {
   padding: 6px 9px;
-  background: var(--surface_alt, transparent);
+  background: var(--surface-alt);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
