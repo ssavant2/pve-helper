@@ -163,7 +163,9 @@ def _try_advisory_xact_lock(cluster: ProxmoxCluster, lane: str) -> bool:
         return bool(cursor.fetchone()[0])
 
 
-def _node_inventory(clients, nodes: list[dict[str, Any]]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
+def _node_inventory(
+    clients, nodes: list[dict[str, Any]], *, cluster_key: str = ""
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
     answers: dict[str, list[dict[str, Any]]] = {}
     errors: dict[str, str] = {}
     for row in nodes:
@@ -181,6 +183,12 @@ def _node_inventory(clients, nodes: list[dict[str, Any]]) -> tuple[dict[str, lis
                 raise StorageCatalogError("Invalid node storage inventory.")
             answers[node] = [item for item in value if isinstance(item, dict)]
         except Exception as exc:  # preserve the last complete generation
+            logger.warning(
+                "Node storage inventory failed for cluster=%s node=%s",
+                cluster_key,
+                node,
+                exc_info=True,
+            )
             errors[node] = _public_error(exc)
     return answers, errors
 
@@ -242,10 +250,11 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
             raise StorageCatalogError("Invalid storage metadata response.")
         definitions = [item for item in definitions if isinstance(item, dict) and item.get("storage")]
         nodes = [item for item in nodes if isinstance(item, dict) and item.get("node")]
-        node_answers, errors = _node_inventory(clients, nodes)
+        node_answers, errors = _node_inventory(clients, nodes, cluster_key=cluster.key)
         if errors:
             raise StorageCatalogError("Incomplete node storage inventory.")
     except Exception as exc:
+        logger.exception("Storage metadata refresh failed for cluster=%s", cluster.key)
         state, _ = StorageCatalogState.objects.get_or_create(cluster=cluster)
         state.metadata_last_attempt_at = attempted_at
         state.metadata_complete = False
@@ -468,6 +477,13 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
                             item for item in (_normalize_volume(row) for row in raw if isinstance(row, dict)) if item
                         ]
                     except Exception as exc:
+                        logger.warning(
+                            "Shared volume listing failed for cluster=%s storage=%s node=%s",
+                            cluster.key,
+                            definition.storage_id,
+                            node,
+                            exc_info=True,
+                        )
                         failed_nodes.append(node)
                         errors[f"{definition.storage_id}@{node}"] = _public_error(exc)
                 if failed_nodes:
@@ -518,6 +534,13 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
                         )
                     )
                 except Exception as exc:
+                    logger.warning(
+                        "Node-local volume listing failed for cluster=%s storage=%s node=%s",
+                        cluster.key,
+                        definition.storage_id,
+                        node,
+                        exc_info=True,
+                    )
                     reason = _public_error(exc)
                     errors[f"{definition.storage_id}@{node}"] = reason
                     failures.append(
@@ -530,6 +553,7 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
                         )
                     )
     except Exception as exc:
+        logger.exception("Storage volume refresh failed for cluster=%s", cluster.key)
         reason = _public_error(exc)
         ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster=cluster).update(
             complete=False,

@@ -820,3 +820,120 @@ class StorageMountHealthTests(TestCase):
         self.assertTrue(health.available)
         self.assertFalse(health.writable)
         self.assertEqual(health.reason, "Storage writes are disabled.")
+
+
+class StorageCatalogFailureLoggingTests(TestCase):
+    """A swallowed exception must still reach the log with its traceback.
+
+    Every failure path here converts the exception into a curated public string
+    so the operator is never shown a raw provider message. That is deliberate —
+    but for a long time it also meant a `TypeError` from a bug in the parsing
+    code presented as a permanently incomplete catalog with nothing whatsoever
+    in the container logs, which is how the `content` ordering defect stayed
+    hidden. Keep the public message generic; keep the traceback.
+    """
+
+    logger_name = "core.services.storage_catalog"
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="cluster-log", display_name="Cluster Log")
+        self.responses = {
+            "storage": [{"storage": "shared", "type": "nfs", "shared": 1, "content": "images"}],
+            "nodes": [{"node": "pve1", "status": "online"}],
+            "nodes/pve1/storage": [
+                {"storage": "shared", "active": 1, "enabled": 1, "total": 100, "used": 10, "avail": 90}
+            ],
+            "nodes/pve1/storage/shared/content": [
+                {"volid": "shared:100/vm-100-disk-0.qcow2", "vmid": 100, "content": "images", "size": 10},
+            ],
+        }
+        self.client = FakeStorageClient(self.responses)
+
+    def _metadata(self):
+        with patch("core.services.storage_catalog.cluster_clients", return_value=[self.client]):
+            return refresh_storage_metadata(self.cluster)
+
+    def _volumes(self):
+        with patch("core.services.storage_catalog.cluster_clients", return_value=[self.client]):
+            return refresh_storage_volumes(self.cluster)
+
+    def test_node_inventory_failure_is_logged_with_its_traceback(self):
+        # A TypeError stands in for a bug in our own parsing code, which the
+        # bare `except Exception` cannot distinguish from an unreachable node.
+        self.responses["nodes/pve1/storage"] = TypeError("bug in the parser")
+
+        with self.assertLogs(self.logger_name, level="WARNING") as captured:
+            state = self._metadata()
+
+        self.assertFalse(state.metadata_complete)
+        node_records = [record for record in captured.records if "Node storage inventory failed" in record.getMessage()]
+        self.assertEqual(len(node_records), 1)
+        self.assertIn("cluster=cluster-log", node_records[0].getMessage())
+        self.assertIn("node=pve1", node_records[0].getMessage())
+        self.assertIsNotNone(node_records[0].exc_info, "the traceback must not be discarded")
+        # The operator still sees only the curated message.
+        self.assertNotIn("bug in the parser", str(state.metadata_errors))
+
+    def test_volume_lane_failure_is_logged_with_its_traceback(self):
+        self._metadata()
+        self.responses["nodes/pve1/storage/shared/content"] = TypeError("bug in the volume parser")
+
+        with self.assertLogs(self.logger_name, level="WARNING") as captured:
+            state = self._volumes()
+
+        self.assertFalse(state.volume_complete)
+        volume_records = [
+            record for record in captured.records if "Shared volume listing failed" in record.getMessage()
+        ]
+        self.assertEqual(len(volume_records), 1)
+        self.assertIn("storage=shared", volume_records[0].getMessage())
+        self.assertIsNotNone(volume_records[0].exc_info, "the traceback must not be discarded")
+        self.assertNotIn("bug in the volume parser", str(state.volume_errors))
+
+
+class ApiStorageContextTests(TestCase):
+    """The catalog-derived half of the per-node storage page is optional.
+
+    It used to be smuggled through `locals()` introspection, which hid the fact
+    that both values are simply absent when the storage is not in the catalog.
+    """
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="cluster-ctx", display_name="Cluster Ctx")
+
+    def test_absent_storage_yields_no_catalog_context(self):
+        from core.views.storage import _api_storage_context
+
+        context = _api_storage_context(self.cluster, "pve1", "missing", "summary")
+
+        self.assertFalse(context["found"])
+        self.assertIsNone(context["catalog_view"])
+        self.assertFalse(context["storage_shared"])
+
+    def test_catalogued_shared_storage_reports_itself_as_shared(self):
+        from core.views.storage import _api_storage_context
+
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="shared",
+            storage_type="nfs",
+            shared=True,
+            present=True,
+            content=["images"],
+            config={"storage": "shared", "type": "nfs"},
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            active=True,
+            enabled=True,
+            total_bytes=100,
+            used_bytes=10,
+            available_bytes=90,
+        )
+
+        context = _api_storage_context(self.cluster, "pve1", "shared", "summary")
+
+        self.assertTrue(context["found"])
+        self.assertIsNotNone(context["catalog_view"])
+        self.assertTrue(context["storage_shared"])

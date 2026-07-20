@@ -501,6 +501,11 @@ def _api_num(value):
 
 
 def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, status=None, found=None, error=""):
+    # Both stay None when the caller supplies its own `status`, or when the
+    # storage is absent from the catalog: this page then renders the live API
+    # answer without any catalog-derived context.
+    definition = None
+    view = None
     if status is None:
         definition = (
             ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
@@ -560,8 +565,8 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, s
         "active_api_tab": active_tab,
         "active_api_node": node,
         "active_api_storage": storage,
-        "catalog_view": view if "view" in locals() else None,
-        "storage_shared": bool(definition.shared) if "definition" in locals() and definition else False,
+        "catalog_view": view,
+        "storage_shared": bool(definition and definition.shared),
     }
 
 
