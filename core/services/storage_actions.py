@@ -24,7 +24,7 @@ from core.services.confined_filesystem import (
     rename_regular_file_noreplace,
 )
 from core.services.file_actions import ReferencedObject, file_action_risk, guest_objects_for_entry
-from core.services.image_info import probe_qemu_image_info
+from core.services.image_info import probe_qemu_image_info, qemu_img_failure_cause
 from core.services.storage_catalog import StorageCatalogChanged, StorageOperationScope, UsageState
 from core.services.storage_mounts import (
     registered_mount_health,
@@ -713,6 +713,24 @@ def validate_inflate_storage_file(
     )
 
 
+def _inflate_failure_message(stderr: str) -> str:
+    """A stable, actionable sentence for a failed `qemu-img convert`.
+
+    The raw output is external, unstructured text carrying host paths: the most
+    useful thing to have in the log and the least useful thing to put in a dialog.
+    Both branches promise the original file is untouched, which is true at every
+    point this can be reached — the rename happens only after the conversion has
+    been probed and accepted.
+    """
+    cause = qemu_img_failure_cause(stderr)
+    if cause:
+        return f"Inflate failed. {cause} The original file was left unchanged."
+    return (
+        "Inflate failed, and qemu-img gave no cause pve-helper recognises. The original "
+        "file was left unchanged; the raw output is in the application log."
+    )
+
+
 def inflate_storage_file(
     *,
     storage: StorageMount,
@@ -752,7 +770,15 @@ def inflate_storage_file(
             timeout=settings.STORAGE_INFLATE_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
-            raise StorageActionError(f"qemu-img convert failed: {(result.stderr or '').strip()[:240]}")
+            stderr = (result.stderr or "").strip()
+            logger.warning(
+                "qemu-img convert failed: storage=%s entry=%s returncode=%s stderr=%s",
+                storage.storage_id,
+                entry.pk,
+                result.returncode,
+                stderr,
+            )
+            raise StorageActionError(_inflate_failure_message(stderr))
 
         converted_info = probe_qemu_image_info(
             path=temp_path.as_posix(),

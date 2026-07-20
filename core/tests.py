@@ -4295,6 +4295,88 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertFalse(list(image_dir.glob("*.pve-helper-backup-*")))
             self.assertFalse(list(image_dir.glob(".pve-helper-inflate-*")))
 
+    @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_failed_inflate_names_the_cause_and_keeps_the_raw_output_in_the_log(self):
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img is not available")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_dir = root / "images" / "501"
+            image_dir.mkdir(parents=True)
+            disk = image_dir / "vm-501-disk-0.qcow2"
+            subprocess.run(
+                ["qemu-img", "create", "-f", "qcow2", disk.as_posix(), "16M"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            storage = StorageMount.objects.create(
+                storage_id="nfs-vm",
+                display_name="nfs-vm",
+                path=root.as_posix(),
+                expected_consumers=["pve-node-1"],
+            )
+            ProxmoxEndpoint.objects.create(
+                cluster=self.cluster,
+                name="pve-node-1",
+                url="https://pve-node-1.example.com:8006",
+                enabled=True,
+                details={"node": "pve-node-1"},
+            )
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
+            )
+            ProxmoxInventory.objects.create(
+                scan_run=scan,
+                node="pve-node-1",
+                object_type=ProxmoxInventory.ObjectType.VM,
+                vmid=501,
+                name="inflate-test",
+                cluster=self.cluster,
+                status="stopped",
+                disk_references=["nfs-vm:501/vm-501-disk-0.qcow2"],
+            )
+            entry = FileInventory.objects.create(
+                scan_run=scan,
+                storage=storage,
+                path="images/501/vm-501-disk-0.qcow2",
+                derived_volid="nfs-vm:501/vm-501-disk-0.qcow2",
+                entry_type=FileInventory.EntryType.FILE,
+                content_category="vm_disk",
+                classification=FileInventory.Classification.REFERENCED,
+            )
+            raw = "qemu-img: error while writing sector 8192: No space left on device"
+            real_run = subprocess.run
+
+            def only_convert_fails(args, **kwargs):
+                # `subprocess` is one shared module object, so patching its `run`
+                # patches it for every caller — including the preflight's own
+                # `qemu-img info`, which would then fail first and never reach the
+                # branch under test. Fail the conversion and nothing else.
+                if len(args) > 1 and args[1] == "convert":
+                    return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr=raw)
+                return real_run(args, **kwargs)
+
+            with (
+                patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
+                patch("core.services.storage_actions.subprocess.run", side_effect=only_convert_fails),
+                self.assertLogs("core.services.storage_actions", level="WARNING") as logs,
+                self.assertRaises(StorageActionError) as ctx,
+            ):
+                inflate_storage_file(storage=storage, entry=entry)
+
+            message = str(ctx.exception)
+            self.assertIn("out of free space", message)
+            self.assertIn("original file was left unchanged", message)
+            # The raw output is the whole point of the log line and has no business
+            # in the dialog: it is unstructured external text carrying host paths.
+            self.assertNotIn("sector 8192", message)
+            self.assertIn(raw, "\n".join(logs.output))
+            self.assertTrue(disk.exists())
+            self.assertFalse(list(image_dir.glob(".pve-helper-inflate-*")))
+
     def test_uploaded_proxmox_image_paths_are_normalized_for_proxmox(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -9652,6 +9734,81 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         task_page = recent_task_page()
         self.assertEqual(task_page.tasks[0]["target"], "nfs-fs")
+
+
+class QemuImgFailureMessageTests(SimpleTestCase):
+    """qemu-img says why it failed only in free-form English on stderr.
+
+    Recognising the handful of causes an operator can act on is worth doing; the
+    contract is that a recognised one is named, an unrecognised one is admitted
+    rather than guessed at, and neither answer ever carries the raw text. The last
+    part is not only a response-boundary rule here: `probe_qemu_image_info` writes
+    its result into `FileInventory.evidence`, so raw stderr would be persisted.
+    """
+
+    CAUSES = {
+        "qemu-img: error while writing sector 8192: No space left on device": "out of free space",
+        "qemu-img: Could not open '/mnt/x.qcow2': Disk quota exceeded": "quota is exhausted",
+        "qemu-img: Could not open '/mnt/x.qcow2': Permission denied": "not permitted to access",
+        "qemu-img: Could not create '/mnt/x': Read-only file system": "mounted read-only",
+        "qemu-img: error while reading sector 0: Input/output error": "I/O error",
+        "qcow2: Image is corrupt; cannot be opened read/write": "image is corrupt",
+        "qemu-img: Could not open '/mnt/x.raw': Image is not in qcow2 format": "not in qcow2 format",
+    }
+
+    def test_each_recognised_cause_is_named(self):
+        from core.services.image_info import qemu_img_failure_cause
+
+        for stderr, expected in self.CAUSES.items():
+            with self.subTest(stderr=stderr):
+                self.assertIn(expected, qemu_img_failure_cause(stderr) or "")
+
+    def test_an_unrecognised_cause_stays_unrecognised(self):
+        from core.services.image_info import qemu_img_failure_cause
+
+        self.assertIsNone(qemu_img_failure_cause("qemu-img: something nobody has seen before"))
+        self.assertIsNone(qemu_img_failure_cause(""))
+
+    def test_the_inflate_message_frames_the_cause_and_promises_the_original(self):
+        from core.services.storage_actions import _inflate_failure_message
+
+        named = _inflate_failure_message("qemu-img: error while writing: No space left on device")
+        self.assertIn("out of free space", named)
+        self.assertIn("original file was left unchanged", named)
+
+        unnamed = _inflate_failure_message("qemu-img: something nobody has seen before")
+        self.assertIn("no cause pve-helper recognises", unnamed)
+        self.assertIn("original file was left unchanged", unnamed)
+        self.assertIn("application log", unnamed)
+
+    def test_probe_errors_are_stable_text_and_the_raw_output_goes_to_the_log(self):
+        from core.services.image_info import _probe_failure
+
+        raw = "qemu-img: Could not open '/storages/truenas-vm/images/501/vm-501-disk-0.qcow2': Permission denied"
+        with self.assertLogs("core.services.image_info", level="WARNING") as logs:
+            message = _probe_failure(
+                subject="Image details are unavailable.",
+                command="info",
+                stderr=raw,
+                path="/storages/truenas-vm/images/501/vm-501-disk-0.qcow2",
+            )
+        self.assertEqual(message, "Image details are unavailable. pve-helper is not permitted to access this file.")
+        self.assertIn(raw, "\n".join(logs.output))
+
+    def test_no_probe_message_ever_carries_the_raw_output(self):
+        from core.services.image_info import _probe_failure
+
+        # Both branches, because the fallback is the one that is tempting to widen
+        # into "and here is what qemu-img said".
+        for stderr in (
+            "qemu-img: Could not open '/storages/truenas-vm/images/501/x.qcow2': Permission denied",
+            "qemu-img: Could not open '/storages/truenas-vm/images/501/x.qcow2': mystery",
+        ):
+            with self.subTest(stderr=stderr), self.assertLogs("core.services.image_info", level="WARNING"):
+                message = _probe_failure(
+                    subject="The qcow2 map could not be read.", command="check", stderr=stderr, path="/x"
+                )
+                self.assertNotIn("/storages/truenas-vm", message)
 
 
 class VmRegisterServiceTests(SimpleTestCase):

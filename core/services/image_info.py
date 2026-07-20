@@ -1,13 +1,52 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 from typing import Any
 
 from django.conf import settings
 
+logger = logging.getLogger(__name__)
+
 IMAGE_INFO_CATEGORIES = {"vm_disk", "base_image"}
+
+# qemu-img reports why it failed as free-form English on stderr; the exit code is 1
+# for everything and there is no machine-readable field to read instead. Matching
+# text is therefore the only way to tell "the datastore is full" from "the image is
+# broken" — two failures with completely different answers for the operator. Each
+# needle is one literal qemu-img or strerror phrase rather than a guess at a family
+# of them, and the sentences are worded for any qemu-img call, because the same
+# cause reaches the operator from `info`, `check` and `convert` alike.
+_QEMU_IMG_FAILURES: tuple[tuple[str, str], ...] = (
+    ("no space left on device", "The datastore is out of free space."),
+    ("disk quota exceeded", "The datastore's quota is exhausted."),
+    ("permission denied", "pve-helper is not permitted to access this file."),
+    ("read-only file system", "The datastore is mounted read-only."),
+    ("input/output error", "The datastore reported an I/O error."),
+    ("image is corrupt", "The image is corrupt."),
+    ("is not in qcow2 format", "The image is not in qcow2 format."),
+)
+
+
+def qemu_img_failure_cause(stderr: str) -> str | None:
+    """One operator-actionable sentence for a qemu-img failure, or None.
+
+    None is a real answer and callers must keep it that way: naming the wrong
+    cause sends the operator after the wrong problem, which is worse than saying
+    the output is in the log. The raw text never leaves this boundary — it is
+    unstructured external data carrying host paths, and it also ends up persisted
+    in scan evidence, where the project's own rule puts stable messages only.
+    """
+    lowered = stderr.lower()
+    return next((cause for needle, cause in _QEMU_IMG_FAILURES if needle in lowered), None)
+
+
+def _probe_failure(*, subject: str, command: str, stderr: str, path: str) -> str:
+    logger.warning("qemu-img %s failed: path=%s stderr=%s", command, path, stderr.strip())
+    cause = qemu_img_failure_cause(stderr)
+    return f"{subject} {cause}" if cause else f"{subject} The qemu-img output is in the application log."
 
 
 def probe_qemu_image_info(*, path: str, entry_type: str, content_category: str) -> dict[str, Any]:
@@ -32,7 +71,14 @@ def probe_qemu_image_info(*, path: str, entry_type: str, content_category: str) 
         return {"error": exc.__class__.__name__}
 
     if result.returncode != 0:
-        return {"error": (result.stderr or "qemu-img info failed").strip()[:240]}
+        return {
+            "error": _probe_failure(
+                subject="Image details are unavailable.",
+                command="info",
+                stderr=result.stderr or "",
+                path=path,
+            )
+        }
 
     try:
         payload = json.loads(result.stdout)
@@ -68,7 +114,14 @@ def _probe_qcow2_allocation(*, qemu_img: str, path: str) -> dict[str, Any]:
         return {"qcow2_allocation_error": exc.__class__.__name__}
 
     if result.returncode != 0:
-        return {"qcow2_allocation_error": (result.stderr or "qemu-img check failed").strip()[:240]}
+        return {
+            "qcow2_allocation_error": _probe_failure(
+                subject="The qcow2 map could not be read.",
+                command="check",
+                stderr=result.stderr or "",
+                path=path,
+            )
+        }
 
     try:
         payload = json.loads(result.stdout)
