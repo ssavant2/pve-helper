@@ -80,10 +80,31 @@ class CatalogVolume:
 
 
 @dataclass(frozen=True)
+class VolumeScope:
+    """A published observation set a view's volumes may be read from.
+
+    `node` is the empty string for a shared scope, whose observations live under
+    the single logical `SHARED_OBSERVATION_NODE`.
+    """
+
+    node: str
+    generation: uuid.UUID
+
+
+@dataclass(frozen=True)
 class StorageView:
+    """What a storage *is and can do* — deliberately without its volumes.
+
+    Materializing an observation row per volume is the expensive part, and most
+    callers (the datastore listing, every usage preflight) never read one. They
+    would pay for a tuple they discard, once per definition on a page. The two
+    callers that do want volumes pass this view to `storage_volumes`, which
+    carries `volume_scopes` for exactly that purpose.
+    """
+
     definition: ClusterStorage
     nodes: tuple[ClusterStorageNodeState, ...]
-    volumes: tuple[CatalogVolume, ...]
+    volume_scopes: tuple[VolumeScope, ...]
     capabilities: StorageCapabilities
     metadata_stale: bool
     volumes_stale: bool
@@ -772,12 +793,28 @@ def refresh_storage_catalog(cluster: ProxmoxCluster) -> StorageCatalogState:
     return state
 
 
+def catalog_state(cluster: ProxmoxCluster) -> StorageCatalogState:
+    """The cluster's publication state, read through the reverse one-to-one.
+
+    Going through the relation rather than a fresh queryset lets a caller that
+    fans out over many definitions resolve every state in the parent query with
+    `select_related("cluster__storage_catalog_state")`. An unsaved instance
+    stands in before the first refresh has ever run.
+    """
+    try:
+        return cluster.storage_catalog_state
+    except StorageCatalogState.DoesNotExist:
+        return StorageCatalogState(cluster=cluster)
+
+
 def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
-    state = StorageCatalogState.objects.filter(cluster=definition.cluster).first() or StorageCatalogState(
-        cluster=definition.cluster
-    )
+    # Every relation below is read with `.all()` and narrowed in Python: that is
+    # what lets a prefetched definition answer without a query. `.filter()` or
+    # `.order_by()` on a related manager builds a new queryset and silently
+    # bypasses the prefetch cache, which is exactly the N+1 this avoids.
+    state = catalog_state(definition.cluster)
     profile = backend_profile(definition.storage_type)
-    nodes = tuple(definition.node_states.filter(present=True).order_by("node"))
+    nodes = tuple(sorted((row for row in definition.node_states.all() if row.present), key=lambda row: row.node))
     active_nodes = [row for row in nodes if row.active and row.enabled]
     coverage_rows = tuple(definition.volume_coverages.all())
     coverage_by_node = {coverage.node: coverage for coverage in coverage_rows}
@@ -823,7 +860,7 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
             list_reason = "Volume coverage has not completed for this storage scope."
     can_list = not list_reason
 
-    bindings = list(definition.mount_bindings.select_related("mount"))
+    bindings = list(definition.mount_bindings.all())
     binding = next((row for row in bindings if definition.shared or row.node == node), None)
     browse_reason = ""
     health = None
@@ -833,7 +870,7 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
             if profile.known
             else f"No file browser: unsupported storage type {definition.storage_type or 'unknown'}."
         )
-    elif scope_conflict(definition):
+    elif scope_conflict(definition, bindings=bindings):
         browse_reason = "Mount scope conflict; explicitly remap this storage."
     elif binding is None:
         browse_reason = "No host mount is registered for this storage instance."
@@ -847,16 +884,50 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         write_reason = health.reason
     can_write = can_browse and bool(health and health.writable)
 
-    observation_scope = models.Q(pk__in=[])
-    for coverage in display_coverages:
-        scope = models.Q(observed_volume_generation=coverage.volume_generation)
-        if coverage.scope == ClusterStorageVolumeCoverage.Scope.NODE:
-            scope &= models.Q(node=coverage.node)
-        observation_scope |= scope
-    observations = definition.volume_observations.filter(observation_scope).order_by("node", "volid")
+    volume_scopes = tuple(
+        VolumeScope(
+            node=coverage.node if coverage.scope == ClusterStorageVolumeCoverage.Scope.NODE else "",
+            generation=coverage.volume_generation,
+        )
+        for coverage in display_coverages
+    )
+    coverage_complete = can_list
+    coverage_token = ",".join(
+        sorted(f"{coverage.node or 'shared'}={coverage.volume_generation}" for coverage in current_coverages)
+    )
+    return StorageView(
+        definition=definition,
+        nodes=nodes,
+        volume_scopes=volume_scopes,
+        capabilities=StorageCapabilities(can_list, list_reason, can_browse, browse_reason, can_write, write_reason),
+        metadata_stale=not state.metadata_complete,
+        volumes_stale=not coverage_complete,
+        coverage_complete=coverage_complete,
+        coverage_reason=list_reason,
+        coverage_token=coverage_token,
+    )
+
+
+def storage_volumes(view: StorageView) -> tuple[CatalogVolume, ...]:
+    """The published volume observations behind a view.
+
+    Separate from `storage_view` on purpose: this is the part that scales with
+    the number of volumes on a datastore, and only the two single-storage detail
+    paths read it. The listing page and the usage preflight never call it.
+    """
+    if not view.volume_scopes:
+        return ()
+    definition = view.definition
+    condition = models.Q(pk__in=[])
+    for scope in view.volume_scopes:
+        clause = models.Q(observed_volume_generation=scope.generation)
+        if scope.node:
+            clause &= models.Q(node=scope.node)
+        condition |= clause
+    observations = definition.volume_observations.filter(condition).order_by("node", "volid")
     if definition.shared:
         observations = observations.filter(node=SHARED_OBSERVATION_NODE)
-    volumes = tuple(
+    return tuple(
         CatalogVolume(
             node=row.node,
             volid=row.volid,
@@ -868,21 +939,6 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
             metadata=dict(row.metadata or {}),
         )
         for row in observations
-    )
-    coverage_complete = can_list
-    coverage_token = ",".join(
-        sorted(f"{coverage.node or 'shared'}={coverage.volume_generation}" for coverage in current_coverages)
-    )
-    return StorageView(
-        definition=definition,
-        nodes=nodes,
-        volumes=volumes,
-        capabilities=StorageCapabilities(can_list, list_reason, can_browse, browse_reason, can_write, write_reason),
-        metadata_stale=not state.metadata_complete,
-        volumes_stale=not coverage_complete,
-        coverage_complete=coverage_complete,
-        coverage_reason=list_reason,
-        coverage_token=coverage_token,
     )
 
 
@@ -928,7 +984,12 @@ def storage_volume_rows(
     content: str = "",
     vmid: int | None = None,
 ) -> tuple[list[dict[str, Any]], bool, str]:
-    definition = ClusterStorage.objects.filter(cluster=cluster, storage_id=storage_id, present=True).first()
+    definition = (
+        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage_id, present=True)
+        .select_related("cluster__storage_catalog_state")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
+        .first()
+    )
     if definition is None:
         return [], False, "Storage is not present in the latest catalog."
     view = storage_view(definition, node=node)
@@ -942,7 +1003,7 @@ def storage_volume_rows(
             "size": row.size_bytes,
             "used": row.used_bytes,
         }
-        for row in view.volumes
+        for row in storage_volumes(view)
         if (not content or row.content == content) and (vmid is None or row.vmid == vmid)
     ]
     return rows, view.coverage_complete, view.coverage_reason
@@ -1021,8 +1082,8 @@ def _usage_scope(definition: ClusterStorage, node: str) -> _UsageScope:
     one storage builds it once; `usage_preflight` builds it for a single call.
     """
     view = storage_view(definition, node=node)
-    state = StorageCatalogState.objects.filter(cluster=definition.cluster).first()
-    if state is None:
+    state = catalog_state(definition.cluster)
+    if state.pk is None:
         return _UsageScope(
             token=f"::{definition.cluster.key}:{definition.storage_id}:{node}",
             unknown_reason="Storage catalog has not completed its first refresh.",
@@ -1124,7 +1185,7 @@ def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[Cl
     is genuinely unanswerable.
     """
     profile = backend_profile(definition.storage_type)
-    bindings = list(definition.mount_bindings.select_related("mount"))
+    bindings = list(definition.mount_bindings.all())
     if bindings:
         if any(not binding.mount.backend_identity for binding in bindings):
             return [], "A registered host mount has no verified backend identity."
@@ -1133,6 +1194,8 @@ def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[Cl
         pairs: list[tuple[ClusterStorage, str]] = []
         others = (
             ClusterStorage.objects.filter(present=True)
+            .select_related("cluster__storage_catalog_state")
+            .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
             .filter(
                 models.Q(mount_bindings__mount_id__in=binding_ids)
                 | models.Q(mount_bindings__mount__backend_identity__in=identities)
@@ -1140,9 +1203,18 @@ def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[Cl
             .exclude(pk=definition.pk)
             .distinct()
         )
+        binding_id_set = set(binding_ids)
         for other in others:
-            matching = other.mount_bindings.select_related("mount").filter(
-                models.Q(mount_id__in=binding_ids) | models.Q(mount__backend_identity__in=identities)
+            # Narrowed in Python so the prefetched bindings above are reused; the
+            # sort makes the candidate order deterministic, which matters because
+            # an incomplete candidate seen first makes the whole answer UNKNOWN.
+            matching = sorted(
+                (
+                    row
+                    for row in other.mount_bindings.all()
+                    if row.mount_id in binding_id_set or row.mount.backend_identity in identities
+                ),
+                key=lambda row: row.node or "",
             )
             pairs.extend((other, binding.node or "") for binding in {row.node: row for row in matching}.values())
         return pairs, ""
@@ -1161,7 +1233,8 @@ def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[Cl
         )
     pairs = []
     for other in (
-        ClusterStorage.objects.select_related("cluster")
+        ClusterStorage.objects.select_related("cluster__storage_catalog_state")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .filter(present=True, shared=True, storage_type=definition.storage_type)
         .exclude(pk=definition.pk)
     ):

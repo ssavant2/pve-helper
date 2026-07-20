@@ -10,7 +10,12 @@ from django.template.defaultfilters import filesizeformat
 from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.storage_backends import backend_profile
-from core.services.storage_catalog import StorageOperationScope, refresh_storage_catalog, storage_view
+from core.services.storage_catalog import (
+    StorageOperationScope,
+    refresh_storage_catalog,
+    storage_view,
+    storage_volumes,
+)
 from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
@@ -161,9 +166,9 @@ def _clusters_without_storage() -> list[ProxmoxCluster]:
 def _storage_catalog_rows() -> list[dict]:
     catalog_rows = []
     definitions = (
-        ClusterStorage.objects.select_related("cluster")
+        ClusterStorage.objects.select_related("cluster__storage_catalog_state")
         .filter(cluster__enabled=True, present=True)
-        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .order_by("cluster__display_name", "storage_id")
     )
     for definition in definitions:
@@ -510,7 +515,8 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str):
     view = None
     definition = (
         ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
-        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
+        .select_related("cluster__storage_catalog_state")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .first()
     )
     if definition is None:
@@ -584,14 +590,15 @@ def storage_catalog_refresh_view(request, cluster_key: str, storage: str):
 def _api_storage_volumes(cluster, node: str, storage: str, highlight_vmid=None):
     definition = (
         ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
-        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
+        .select_related("cluster__storage_catalog_state")
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .first()
     )
     if definition is None:
         return [], False, "Storage is not present in the latest catalog."
     catalog = storage_view(definition, node=node)
     volumes = []
-    for entry in catalog.volumes:
+    for entry in storage_volumes(catalog):
         entry_vmid = entry.vmid
         volumes.append(
             {

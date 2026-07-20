@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from django.conf import settings
@@ -289,8 +290,15 @@ def unbind_storage_mount(binding: ClusterStorageMount) -> None:
     locked.delete()
 
 
-def scope_conflict(definition: ClusterStorage) -> bool:
-    scopes = set(definition.mount_bindings.values_list("scope", "node"))
+def scope_conflict(definition: ClusterStorage, *, bindings: Iterable[ClusterStorageMount] | None = None) -> bool:
+    """Whether the storage's mount bindings disagree with its own scope.
+
+    A caller that already holds the bindings passes them in: `values_list` always
+    reaches the database, so resolving them here would defeat a prefetch and cost
+    one query per definition on a page that lists many.
+    """
+    rows = definition.mount_bindings.all() if bindings is None else bindings
+    scopes = {(row.scope, row.node) for row in rows}
     if definition.shared:
         return (
             any(scope != ClusterStorageMount.Scope.SHARED or node is not None for scope, node in scopes)

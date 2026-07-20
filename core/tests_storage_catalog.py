@@ -5,7 +5,9 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from core.models import (
@@ -37,6 +39,7 @@ from core.services.storage_catalog import (
     refresh_storage_metadata,
     refresh_storage_volumes,
     storage_view,
+    storage_volumes,
     usage_preflight,
 )
 from core.services.storage_mounts import (
@@ -202,8 +205,8 @@ class StorageCatalogTests(TestCase):
                 ("pve2", "local:vm-202-disk-0"),
             },
         )
-        self.assertEqual(len(storage_view(shared).volumes), 1)
-        self.assertEqual(len(storage_view(local, node="pve2").volumes), 1)
+        self.assertEqual(len(storage_volumes(storage_view(shared))), 1)
+        self.assertEqual(len(storage_volumes(storage_view(local, node="pve2"))), 1)
 
     def test_steady_state_refresh_writes_no_observation_rows(self):
         """The projection must stop rewriting itself to prove nothing changed."""
@@ -265,7 +268,7 @@ class StorageCatalogTests(TestCase):
         self.assertEqual(rows, [("", "shared:100/vm-100-disk-0.qcow2")])
         coverage = shared.volume_coverages.get(node__isnull=True)
         self.assertEqual(coverage.agreeing_nodes, ["pve1", "pve2"])
-        self.assertEqual(len(storage_view(shared).volumes), 1)
+        self.assertEqual(len(storage_volumes(storage_view(shared))), 1)
 
     def test_size_drift_alone_does_not_republish_the_generation(self):
         """A thin volume's used size changes constantly and changes no membership fact."""
@@ -312,7 +315,7 @@ class StorageCatalogTests(TestCase):
             set(shared.volume_observations.values_list("volid", flat=True)),
             {"shared:100/vm-100-disk-0.qcow2", "shared:101/vm-101-disk-0.qcow2"},
         )
-        self.assertEqual(len(storage_view(shared).volumes), 2)
+        self.assertEqual(len(storage_volumes(storage_view(shared))), 2)
 
     def test_unchanged_metadata_refresh_preserves_volume_coverage(self):
         self._metadata()
@@ -376,7 +379,7 @@ class StorageCatalogTests(TestCase):
         stale_view = storage_view(shared)
         self.assertFalse(stale_view.coverage_complete)
         self.assertTrue(stale_view.volumes_stale)
-        self.assertEqual(len(stale_view.volumes), 1)
+        self.assertEqual(len(storage_volumes(stale_view)), 1)
         self.assertEqual(
             ClusterStorageVolumeObservation.objects.filter(cluster_storage__cluster=self.cluster).count(),
             observation_count,
@@ -394,7 +397,7 @@ class StorageCatalogTests(TestCase):
         self.assertFalse(state.volume_complete)
         self.assertFalse(storage_view(shared).coverage_complete)
         self.assertTrue(storage_view(local, node="pve1").coverage_complete)
-        self.assertEqual([row.volid for row in storage_view(local, node="pve1").volumes], ["local:vm-101-disk-0"])
+        self.assertEqual([row.volid for row in storage_volumes(storage_view(local, node="pve1"))], ["local:vm-101-disk-0"])
 
     def test_node_local_failure_is_isolated_to_that_node(self):
         self._metadata()
@@ -407,7 +410,7 @@ class StorageCatalogTests(TestCase):
         self.assertFalse(state.volume_complete)
         self.assertTrue(storage_view(local, node="pve1").coverage_complete)
         self.assertFalse(storage_view(local, node="pve2").coverage_complete)
-        self.assertEqual([row.volid for row in storage_view(local, node="pve1").volumes], ["local:vm-101-disk-0"])
+        self.assertEqual([row.volid for row in storage_volumes(storage_view(local, node="pve1"))], ["local:vm-101-disk-0"])
 
     def test_lineage_uses_healthy_scopes_when_cluster_summary_is_partial(self):
         self.responses["nodes/pve1/storage/local/content"][0]["parent"] = "local:100/base-100-disk-0.qcow2"
@@ -745,6 +748,48 @@ class StorageCatalogTests(TestCase):
                 classifier.classify(f"images/900/vm-900-disk-{index}.qcow2")
 
         self.assertEqual(referenced.classification, FileInventory.Classification.REFERENCED)
+
+    def test_a_prefetched_listing_resolves_every_storage_view_for_free(self):
+        """Listing N datastores must not cost N times the per-storage reads.
+
+        `storage_view` used to re-fetch every relation with `.filter()` or
+        `.order_by()`, and `scope_conflict` with `values_list`. Each of those
+        builds a new queryset and silently bypasses the prefetch cache, so the
+        page paid for the prefetch *and* for four-plus queries per definition.
+        """
+        self._metadata()
+        self._volumes()
+        definitions = list(
+            ClusterStorage.objects.filter(cluster=self.cluster, present=True)
+            .select_related("cluster__storage_catalog_state")
+            .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
+        )
+        self.assertGreater(len(definitions), 1)
+
+        with self.assertNumQueries(0):
+            for definition in definitions:
+                storage_view(definition, node="pve1")
+
+    def test_a_storage_view_never_reads_the_observation_table(self):
+        """The expensive half is opt-in.
+
+        Volume observations scale with the size of a datastore, and the callers
+        that only ask what a storage *can do* — the listing, every usage
+        preflight — never read one. Only `storage_volumes` may touch the table.
+        """
+        self._metadata()
+        self._volumes()
+        definition = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        table = ClusterStorageVolumeObservation._meta.db_table
+
+        with CaptureQueriesContext(connection) as captured:
+            view = storage_view(definition)
+        self.assertNotIn(table, " ".join(entry["sql"] for entry in captured))
+
+        with CaptureQueriesContext(connection) as captured:
+            volumes = storage_volumes(view)
+        self.assertTrue(volumes)
+        self.assertIn(table, " ".join(entry["sql"] for entry in captured))
 
     def test_classifier_and_single_volume_helper_agree(self):
         # The one-shot helper must stay a thin wrapper: two implementations of a
