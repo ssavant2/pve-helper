@@ -121,6 +121,10 @@ FILE_UPLOAD_TEMP_DIR=/storages/nas-files/.pve-helper-upload-tmp
 
 See `docs/deployment-runbook.md` for NFS mount guidance, upload temporary-space
 requirements, OIDC providers, reverse proxies and database role separation.
+The generic instructions do not require a particular NAS, reverse proxy or OIDC
+provider. If you use TrueNAS or Authentik, the optional
+`docs/truenas-acl-pve-helper.md` and `docs/authentik-oidc-setup.md` walkthroughs
+provide a more detailed, tested path through their product-specific settings.
 
 ## Update
 

@@ -317,7 +317,9 @@ without changing the app. Increase only if measurements show a benefit.
 
 If the app can see the NFS export but cannot enter Proxmox VM directories such as
 `images/<vmid>`, add a read/traverse ACL for the app identity. See
-`docs/truenas-acl-pve-helper.md`.
+`docs/truenas-acl-pve-helper.md` for a detailed, tested TrueNAS walkthrough. TrueNAS
+is not required; apply the equivalent identity and ACL controls on another storage
+platform.
 
 ## Storage write mode
 
@@ -569,8 +571,9 @@ boundary has succeeded.**
 
 ## OIDC authentication
 
-Follow `docs/oidc-setup.md` for the provider-neutral contract. An additional
-step-by-step recipe is available in `docs/authentik-oidc-setup.md` for Authentik.
+Follow `docs/oidc-setup.md` for the provider-neutral contract. Operators using
+Authentik can instead follow the more detailed, tested walkthrough in
+`docs/authentik-oidc-setup.md`; Authentik is not an application requirement.
 
 For a new installation, leave the legacy `PVE_ENDPOINTS`,
 `PVE_API_TOKEN_ID`, `PVE_API_TOKEN_SECRET` and `PVE_CA_BUNDLE` fields empty.

@@ -53,8 +53,14 @@ development. `INSTALL.md` is the canonical installation reference.
 - Deployment: `docs/deployment-runbook.md`
 - End-user guide: `docs/user-manual.md`
 - Authentication and generic OIDC setup: `docs/oidc-setup.md`
-- Authentik-specific OIDC example: `docs/authentik-oidc-setup.md`
+- Tested Authentik walkthrough (optional): `docs/authentik-oidc-setup.md`
+- Tested TrueNAS ACL walkthrough (optional): `docs/truenas-acl-pve-helper.md`
 - Security policy and vulnerability reporting: `SECURITY.md`
+
+pve-helper does not require Authentik or TrueNAS. The vendor-specific guides are
+more detailed, tested walkthroughs for operators who use those products; other
+standards-compatible OIDC providers, reverse proxies and supported storage
+backends can be configured from the generic documentation.
 
 ## License
 
