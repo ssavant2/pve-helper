@@ -23,7 +23,11 @@ from core.services.storage_mounts import (
     resolve_storage_mount,
     unbind_storage_mount,
 )
-from core.services.storage_paths import normalized_relative_path, storage_mount_root
+from core.services.storage_paths import (
+    default_trash_relative_path,
+    normalized_relative_path,
+    storage_mount_root,
+)
 
 from ..services.storage import StorageScanner
 from . import common
@@ -410,8 +414,8 @@ def storage_mount_register(request):
                     display_name=display_name,
                     path=f"/storages/{relative}",
                     relative_path=normalized_relative_path(relative),
-                    trash_path=f"/storages/{relative}/.pve-helper-trash",
-                    trash_relative_path=f"{relative}/.pve-helper-trash",
+                    trash_path=f"/storages/{default_trash_relative_path(relative)}",
+                    trash_relative_path=default_trash_relative_path(relative),
                     filesystem_type=candidate["filesystem_type"],
                     backend_identity=backend_identity,
                     identity_source=identity_source,

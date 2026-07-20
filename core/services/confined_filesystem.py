@@ -137,6 +137,40 @@ def rename_regular_file_noreplace(
     return (parent / safe_target).as_posix()
 
 
+def rename_directory_noreplace(root: str | Path, source_relative_path: str, target_relative_path: str) -> None:
+    """Move a directory, with its contents, to another location beneath the root.
+
+    Unlike the file rename above, source and target may sit under different
+    parents, so both are walked descriptor-relative and the rename crosses the
+    two descriptors. Missing target parents are created; an existing target is
+    refused rather than merged, because merging two trash directories would have
+    to decide which copy of a colliding name survives.
+    """
+    source_parts = PurePosixPath(normalized_relative_path(source_relative_path)).parts
+    target_parts = PurePosixPath(normalized_relative_path(target_relative_path)).parts
+
+    source_parent_fd = _open_parent(root, source_parts[:-1])
+    target_parent_fd = -1
+    try:
+        try:
+            source_stat = os.stat(source_parts[-1], dir_fd=source_parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise ConfinedFilesystemError("Source directory is unavailable or unsafe.") from exc
+        if not stat.S_ISDIR(source_stat.st_mode):
+            raise ConfinedFilesystemError("Source path does not identify a directory.")
+        target_parent_fd = _open_or_create_parent(root, target_parts[:-1])
+        _renameat2_noreplace(
+            source_parent_fd,
+            source_parts[-1],
+            target_parts[-1],
+            target_parent_fd=target_parent_fd,
+        )
+    finally:
+        if target_parent_fd >= 0:
+            os.close(target_parent_fd)
+        os.close(source_parent_fd)
+
+
 def remove_confined_directory(root: str | Path, relative_path: str) -> None:
     """Remove files from one directory and then the directory, without following links."""
     parts = PurePosixPath(normalized_relative_path(relative_path)).parts
@@ -279,13 +313,19 @@ def _open_or_create_parent(root: str | Path, parts: tuple[str, ...]) -> int:
         raise
 
 
-def _renameat2_noreplace(parent_fd: int, source_name: str, target_name: str) -> None:
+def _renameat2_noreplace(
+    parent_fd: int,
+    source_name: str,
+    target_name: str,
+    *,
+    target_parent_fd: int | None = None,
+) -> None:
     if _RENAMEAT2 is None:
         raise ConfinedFilesystemError("Secure no-replace rename is unavailable on this Linux runtime.")
     result = _RENAMEAT2(
         parent_fd,
         os.fsencode(source_name),
-        parent_fd,
+        parent_fd if target_parent_fd is None else target_parent_fd,
         os.fsencode(target_name),
         _RENAME_NOREPLACE,
     )

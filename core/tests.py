@@ -1055,6 +1055,125 @@ class TaskQueueConfigurationTests(SimpleTestCase):
         self.assertGreater(bulk["retry"], bulk["timeout"])
 
 
+class TrashDirectoryConventionTests(TestCase):
+    """One convention, enforced at every writer.
+
+    A mount whose trash is spelled differently is not a cosmetic inconsistency:
+    its trashed files are classified `app_internal` instead of `trash`, so they
+    vanish from the Trash view while still occupying the storage.
+    """
+
+    def test_every_writer_derives_the_same_trash_path(self):
+        from core.services.config import _bootstrap_storage_definition
+        from core.services.storage_paths import default_trash_relative_path
+
+        bootstrap = _bootstrap_storage_definition("truenas-fs", "nas:/fs", "/storages/truenas-fs", [])
+
+        self.assertEqual(bootstrap.trash_relative_path, default_trash_relative_path("truenas-fs"))
+        self.assertEqual(bootstrap.trash_path, "/storages/truenas-fs/.trash/pve-helper")
+        self.assertEqual(categorize_proxmox_path(".trash/pve-helper/20260101T000000Z/x.iso"), "trash")
+
+    def test_unconfigured_bootstrap_entry_has_no_trash_path(self):
+        from core.services.config import _bootstrap_storage_definition
+
+        definition = _bootstrap_storage_definition("replace-with-fs", "", "", [])
+
+        self.assertEqual(definition.trash_relative_path, "")
+        self.assertEqual(definition.trash_path, "")
+
+    def test_legacy_trash_directory_still_classifies_as_trash(self):
+        # Until a mount is migrated its files must not be labelled Infrastructure.
+        legacy = ".pve-helper-trash/20260101T000000Z/x.iso"
+        self.assertEqual(categorize_proxmox_path(legacy), "trash")
+        self.assertEqual(categorize_proxmox_path(".pve-helper-upload-tmp/x.part"), "app_internal")
+
+        # classify_entry re-checks the raw prefix itself, so it needs the same
+        # precedence: the category alone does not save it.
+        def classify(relative_path, content_category):
+            return classify_entry(
+                relative_path=relative_path,
+                entry_type=FileInventory.EntryType.FILE,
+                content_category=content_category,
+                derived_volid="",
+                referenced_volids=set(),
+                template_vmids=set(),
+                gate_ok=True,
+                missing_consumers=[],
+            ).classification
+
+        self.assertEqual(classify(legacy, "trash"), FileInventory.Classification.TRASH)
+        self.assertEqual(
+            classify(".pve-helper-upload-tmp/x.part", "app_internal"),
+            FileInventory.Classification.INFRASTRUCTURE,
+        )
+
+    def _run_migration(self, root):
+        from importlib import import_module
+
+        # The module name starts with a digit, so it cannot be imported by name.
+        migration = import_module("core.migrations.0022_canonical_trash_directory")
+        with override_settings(PVE_HELPER_STORAGE_CONTAINER_ROOT=Path(root)):
+            migration._adopt_canonical_trash_directory(apps, None)
+
+    def _legacy_mount(self):
+        return StorageMount.objects.create(
+            storage_id="legacy-fs",
+            display_name="Legacy FS",
+            path="/storages/legacy-fs",
+            relative_path="legacy-fs",
+            trash_path="/storages/legacy-fs/.pve-helper-trash",
+            trash_relative_path="legacy-fs/.pve-helper-trash",
+        )
+
+    def test_migration_moves_the_directory_the_row_and_the_trash_items_together(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mount = self._legacy_mount()
+            trashed = root / "legacy-fs" / ".pve-helper-trash" / "20260101T000000Z" / "old.iso"
+            trashed.parent.mkdir(parents=True)
+            trashed.write_bytes(b"trashed")
+            item = TrashItem.objects.create(
+                original_path="/storages/legacy-fs/template/iso/old.iso",
+                trash_path=str(trashed),
+                mount=mount,
+            )
+
+            self._run_migration(root)
+
+            mount.refresh_from_db()
+            item.refresh_from_db()
+            moved = root / "legacy-fs" / ".trash" / "pve-helper" / "20260101T000000Z" / "old.iso"
+            self.assertEqual(mount.trash_relative_path, "legacy-fs/.trash/pve-helper")
+            self.assertEqual(mount.trash_path, f"{root}/legacy-fs/.trash/pve-helper")
+            self.assertEqual(item.trash_path, str(moved))
+            self.assertEqual(moved.read_bytes(), b"trashed")
+            self.assertFalse((root / "legacy-fs" / ".pve-helper-trash").exists())
+
+    def test_migration_rewrites_the_row_when_nothing_was_ever_trashed(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "legacy-fs").mkdir()
+            mount = self._legacy_mount()
+
+            self._run_migration(root)
+
+            mount.refresh_from_db()
+            self.assertEqual(mount.trash_relative_path, "legacy-fs/.trash/pve-helper")
+
+    def test_migration_leaves_the_row_alone_when_the_storage_is_not_mounted(self):
+        # An unmounted storage looks exactly like an empty one. Rewriting the row
+        # here would point the app at a directory the trashed files are not in.
+        with TemporaryDirectory() as tmp:
+            mount = self._legacy_mount()
+
+            with self.assertLogs("core.migrations.0022_canonical_trash_directory", level="WARNING") as logs:
+                self._run_migration(Path(tmp))
+
+            mount.refresh_from_db()
+            self.assertEqual(mount.trash_relative_path, "legacy-fs/.pve-helper-trash")
+            self.assertIn("legacy-fs", logs.output[0])
+
+
 class ClassificationTests(SimpleTestCase):
     def test_extracts_disk_references_from_nested_snapshot_config(self):
         config = {

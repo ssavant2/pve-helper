@@ -16,16 +16,31 @@ class DerivedVolume:
     content_category: str
 
 
+# Top-level directories that hold trashed files. `.pve-helper-trash` is the
+# short-lived spelling some mounts were registered with before `.trash/pve-helper`
+# became the single convention; it is trash wherever it still exists on disk and
+# must be matched before the `.pve-helper` app-internal prefix, or its files are
+# labelled Infrastructure and disappear from the Trash view while still using the
+# storage. Migration 0022 moves such directories; this keeps the ones it could
+# not reach honest.
+TRASH_DIRECTORY_NAMES = (".trash", ".pve-helper-trash")
+
+
+def _is_trash_relative_path(relative_path: str) -> bool:
+    parts = PurePosixPath(relative_path).parts
+    return bool(parts) and parts[0] in TRASH_DIRECTORY_NAMES
+
+
 def categorize_proxmox_path(relative_path: str) -> str:
     path = PurePosixPath(relative_path)
     parts = path.parts
     suffix = path.suffix.lower()
     if not parts:
         return "unknown"
+    if parts[0] in TRASH_DIRECTORY_NAMES:
+        return "trash"
     if parts[0].startswith(".pve-helper"):
         return "app_internal"
-    if parts[:1] == (".trash",):
-        return "trash"
     if parts == ("images",):
         return "vm_images"
     if len(parts) == 2 and parts[0] == "images":
@@ -188,7 +203,11 @@ def classify_entry(
         "missing_consumers": missing_consumers,
     }
 
-    if content_category == "app_internal" or relative_path.startswith(".pve-helper"):
+    # Trash first: a trash directory can also carry the `.pve-helper` prefix, and
+    # it is trash rather than app-internal working state.
+    is_trash = content_category == "trash" or _is_trash_relative_path(relative_path)
+
+    if not is_trash and (content_category == "app_internal" or relative_path.startswith(".pve-helper")):
         return ClassificationResult(
             classification=FileInventory.Classification.INFRASTRUCTURE,
             reason="App-managed internal directory (upload staging / working files).",
@@ -196,7 +215,7 @@ def classify_entry(
             evidence=evidence,
         )
 
-    if content_category == "trash" or relative_path.startswith(".trash/"):
+    if is_trash:
         if entry_type != FileInventory.EntryType.FILE:
             return ClassificationResult(
                 classification=FileInventory.Classification.INFRASTRUCTURE,

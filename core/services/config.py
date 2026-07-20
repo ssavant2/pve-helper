@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from django.conf import settings
 
 from core.models import ProxmoxStorageConsumer, StorageMount
+from core.services.storage_paths import TRASH_DIRECTORY, default_trash_relative_path
 
 
 @dataclass(frozen=True)
@@ -67,28 +68,37 @@ def configured_endpoint_definitions() -> list[EndpointDefinition]:
     return definitions
 
 
+def _bootstrap_storage_definition(storage_id: str, export: str, container_path: str, consumers: list[str]):
+    relative = container_path.removeprefix("/storages/").strip("/")
+    # An unconfigured bootstrap entry has no path to hang a trash directory on;
+    # it is filtered out below, so leave the fields empty rather than raising.
+    trash_relative = default_trash_relative_path(relative) if relative else ""
+    return StorageDefinition(
+        storage_id=storage_id,
+        display_name=storage_id,
+        export=export,
+        path=container_path,
+        trash_path=f"{container_path.rstrip('/')}/{TRASH_DIRECTORY}" if container_path else "",
+        relative_path=relative,
+        trash_relative_path=trash_relative,
+        expected_consumers=consumers,
+    )
+
+
 def configured_storage_definitions() -> list[StorageDefinition]:
     expected_consumers = list(settings.PVE_EXPECTED_CONSUMERS)
     candidates = [
-        StorageDefinition(
-            storage_id=settings.TRUENAS_FS_STORAGE_ID,
-            display_name=settings.TRUENAS_FS_STORAGE_ID,
-            export=settings.TRUENAS_FS_EXPORT,
-            path=settings.TRUENAS_FS_CONTAINER_PATH,
-            trash_path=f"{settings.TRUENAS_FS_CONTAINER_PATH.rstrip('/')}/.trash/pve-helper",
-            relative_path=settings.TRUENAS_FS_CONTAINER_PATH.removeprefix("/storages/").strip("/"),
-            trash_relative_path=f"{settings.TRUENAS_FS_CONTAINER_PATH.removeprefix('/storages/').strip('/')}/.trash/pve-helper",
-            expected_consumers=expected_consumers,
+        _bootstrap_storage_definition(
+            settings.TRUENAS_FS_STORAGE_ID,
+            settings.TRUENAS_FS_EXPORT,
+            settings.TRUENAS_FS_CONTAINER_PATH,
+            expected_consumers,
         ),
-        StorageDefinition(
-            storage_id=settings.TRUENAS_VM_STORAGE_ID,
-            display_name=settings.TRUENAS_VM_STORAGE_ID,
-            export=settings.TRUENAS_VM_EXPORT,
-            path=settings.TRUENAS_VM_CONTAINER_PATH,
-            trash_path=f"{settings.TRUENAS_VM_CONTAINER_PATH.rstrip('/')}/.trash/pve-helper",
-            relative_path=settings.TRUENAS_VM_CONTAINER_PATH.removeprefix("/storages/").strip("/"),
-            trash_relative_path=f"{settings.TRUENAS_VM_CONTAINER_PATH.removeprefix('/storages/').strip('/')}/.trash/pve-helper",
-            expected_consumers=expected_consumers,
+        _bootstrap_storage_definition(
+            settings.TRUENAS_VM_STORAGE_ID,
+            settings.TRUENAS_VM_EXPORT,
+            settings.TRUENAS_VM_CONTAINER_PATH,
+            expected_consumers,
         ),
     ]
     return [
