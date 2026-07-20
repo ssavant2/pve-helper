@@ -607,7 +607,10 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
     ]
     shared = bool(definition and definition.shared)
     return {
-        **navigation_context("dashboard"),
+        # Not "dashboard": the datastore page is its own destination now that the
+        # sidebar links straight to it, and claiming the dashboard's key lit the
+        # Overview leaf as well as the datastore's own.
+        **navigation_context("datastore"),
         "node": node,
         "datastore_scope_label": (
             f"Shared datastore in {cluster.display_name}"

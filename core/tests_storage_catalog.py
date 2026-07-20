@@ -1279,3 +1279,30 @@ class DatastoreTabsAreUniformTests(TestCase):
         self.assertContains(response, "3 separate disks that share a name")
         self.assertContains(response, "/clusters/tabs/nodes/pve2/datastores/local/nodes/")
         self.assertContains(response, "/clusters/tabs/nodes/pve3/datastores/local/nodes/")
+
+
+class DatastoreNavHighlightTests(TestCase):
+    """The datastore page is its own destination, not the storage dashboard.
+
+    It used to claim the dashboard's navigation key, a leftover from when the only
+    way in was the Overview table. Selecting a datastore therefore lit the Overview
+    leaf as well as the datastore's own, so the sidebar showed two current pages.
+    """
+
+    def test_a_datastore_page_does_not_also_highlight_overview(self):
+        cluster = ProxmoxCluster.objects.create(key="hl", display_name="Hl", enabled=True)
+        definition = ClusterStorage.objects.create(
+            cluster=cluster, storage_id="TrueNAS-VM", storage_type="nfs", shared=True, present=True
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition, node="pve1", present=True, active=True, enabled=True
+        )
+
+        response = self.client.get("/clusters/hl/datastores/TrueNAS-VM/summary/")
+
+        self.assertEqual(response.context["active_nav"], "datastore")
+        html = response.content.decode()
+        overview = html.split('href="/"', 1)[0].rsplit("<a ", 1)[1]
+        self.assertNotIn("active", overview)
+        # The Storage module itself must still read as the current one.
+        self.assertIn("active-module", html)
