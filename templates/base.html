@@ -148,24 +148,6 @@
                 {% endfor %}
               {% endif %}
 
-              {% if app_nav_storages %}
-                <section class="tree-module tree-group expanded" data-tree-module="host-mounts" aria-label="Registered host mounts">
-                  <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
-                    <span class="tree-caret" data-tree-caret>v</span>
-                    <span class="tree-icon"><i data-lucide="folder-symlink" aria-hidden="true"></i></span>
-                    <span class="tree-label">Host Mounts</span>
-                  </button>
-                  <div class="tree-children">
-                    {% for nav_storage in app_nav_storages %}
-                      {% url 'core:storage_summary' nav_storage.mount_ref as storage_summary_url %}
-                      <a class="tree-node tree-leaf storage-leaf {% if active_storage_id == nav_storage.storage_id %}active{% endif %}" href="{% sticky_object_url storage_summary_url %}">
-                        <span class="tree-icon"><i data-lucide="database" aria-hidden="true"></i></span>
-                        <span class="tree-label">{{ nav_storage.display_name }}</span>
-                      </a>
-                    {% endfor %}
-                  </div>
-                </section>
-              {% endif %}
 
               <a class="tree-node tree-leaf {% if active_nav == 'orphans' %}active{% endif %}" href="{% url 'core:orphan_finder' %}">
                 <span class="tree-icon"><i data-lucide="file-question" aria-hidden="true"></i></span>

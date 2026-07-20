@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass
 
 from django.conf import settings
-from django.urls import reverse
 from django.utils.http import urlencode
 
 from core.models import ClusterStorageMount, StorageMount
@@ -57,8 +56,11 @@ def _storage_link(
     *,
     cluster_key: str,
 ) -> tuple[bool, str, str]:
-    if storage_id in mounted_refs:
-        return True, reverse("core:storage_browser", args=[mounted_refs[storage_id]]), "Browse files"
+    # The guest knows its cluster, node and storage id, which is the datastore
+    # page's own key: no mount ref to resolve, and the link is right even when the
+    # same mount is bound in more than one cluster.
+    if node and storage_id in mounted_refs:
+        return True, datastore_url("core:api_storage_files", cluster_key, storage_id, node), "Browse files"
     if node:
         base = datastore_url("core:storage_api_inventory", cluster_key, storage_id, node)
         return False, f"{base}?{urlencode({'vmid': vmid})}", "Storage inventory"
@@ -187,7 +189,7 @@ def guest_volume_links(
                     storage_id=storage_id,
                     volume=volume,
                     mounted=True,
-                    url=reverse("core:storage_browser", args=[mounted_refs[storage_id]]),
+                    url=datastore_url("core:api_storage_files", cluster_key, storage_id, node),
                     link_label="Browse files",
                 )
             )

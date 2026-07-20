@@ -305,3 +305,24 @@ def scope_conflict(definition: ClusterStorage, *, bindings: Iterable[ClusterStor
             or len(scopes) > 1
         )
     return any(scope != ClusterStorageMount.Scope.NODE or not node for scope, node in scopes)
+
+
+def mount_datastore_scope(mount: StorageMount):
+    """The datastore page a host mount's files are browsed on.
+
+    A mount is bound to one or more storage scopes; its file tree is the same
+    tree whichever one you arrive through, so the binding is resolved in a fixed
+    order rather than asking the caller to carry a scope through every file
+    operation. Returns None for a mount with no binding left, which can only
+    happen while an operator is unbinding it.
+    """
+    binding = (
+        mount.cluster_bindings.select_related("cluster_storage__cluster")
+        .order_by("cluster_storage__cluster__key", "node")
+        .first()
+    )
+    if binding is None:
+        return None
+    definition = binding.cluster_storage
+    node = "" if definition.shared else (binding.node or "")
+    return definition.cluster.key, definition.storage_id, node

@@ -17,13 +17,36 @@
           <span class="vs-divider"></span>
           <span class="vs-access">
             <span class="vs-access-label">PVE-helper access</span>
-            {% if catalog_view.capabilities.can_browse_files %}<span class="badge completed">Files available</span>{% else %}<span class="badge" title="{{ catalog_view.capabilities.browse_files_reason }}">API inventory</span>{% endif %}
+            {% if catalog_view.capabilities.can_write_files %}
+              <span class="badge completed">Read/write</span>
+            {% elif catalog_view.capabilities.can_browse_files %}
+              <span class="badge warning" title="{{ catalog_view.capabilities.write_files_reason }}">Read-only</span>
+            {% else %}
+              <span class="badge" title="{{ catalog_view.capabilities.browse_files_reason }}">API inventory</span>
+            {% endif %}
           </span>
         </div>
-        <form method="post" action="{% url 'core:storage_catalog_refresh' cluster_key storage %}" data-storage-catalog-refresh>
-          {% csrf_token %}<button class="vs-header-action" type="submit">Refresh</button>
-          <span class="muted" data-refresh-status aria-live="polite"></span>
-        </form>
+        <div class="vs-header-actions">
+          {% if catalog_view.mount %}
+            <form method="post" action="{% url 'core:start_scan' %}" data-scan-action data-scan-status-url="{% url 'core:scan_status' %}" data-scan-poll-ms="5000">
+              {% csrf_token %}
+              <input type="hidden" name="storage_id" value="{{ catalog_view.mount.mount_ref }}">
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button class="vs-header-action {% if active_scan %}loading{% endif %}" type="submit" data-scan-button {% if active_scan %}disabled{% endif %}>
+                <span class="scan-spinner" data-scan-spinner {% if not active_scan %}hidden{% endif %}>
+                  <i data-lucide="loader-circle" aria-hidden="true"></i>
+                </span>
+                <span data-scan-button-label>
+                  {% if active_scan %}{% if active_scan.status == "queued" %}Scan queued{% else %}Scanning{% endif %}{% else %}Start scan{% endif %}
+                </span>
+              </button>
+            </form>
+          {% endif %}
+          <form method="post" action="{% url 'core:storage_catalog_refresh' cluster_key storage %}" data-storage-catalog-refresh>
+            {% csrf_token %}<button class="vs-header-action" type="submit">Refresh</button>
+            <span class="muted" data-refresh-status aria-live="polite"></span>
+          </form>
+        </div>
       </div>
       <nav class="vs-tabs" aria-label="Datastore views">
         {% for tab in api_storage_tabs %}

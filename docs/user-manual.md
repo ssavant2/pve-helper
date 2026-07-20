@@ -67,7 +67,7 @@ The sidebar is the primary navigation. Its working areas are:
 | --- | --- |
 | **Clusters → Connections** | Add verified clusters/endpoints and manage per-cluster credentials and enabled state. |
 | **VMs/CTs** | Guest inventory, power, console, configuration, migration, backup/restore, and related operations. |
-| **Storage** | The Proxmox storage catalog per cluster, registered host mounts, scans, file operations, and orphan review. |
+| **Storage** | The Proxmox storage catalog per cluster — one page per datastore, with its nodes, volumes, guests, and (where pve-helper has a mount) its files, scans and file operations. |
 | **Tags** | Create and color tags, inspect membership, assign or remove tags, and rename or delete them across guests. |
 | **Scheduled Tasks** | One-time and recurring guest power schedules, their runs, and history. |
 | **Audit** | Authentication and administration history, filters, search, and export. |
@@ -272,13 +272,27 @@ Both layers are visible on **Storage → Overview**, labelled as such: *Storage
 catalog* is Layer 1, *Storage gate* is Layer 2, and mount associations live under
 **PVE-helper Settings → Storage access** (also Layer 2).
 
-The sidebar uses the same division. Under **Storage**, each cluster lists its
+The sidebar shows Layer 1 only. Under **Storage**, each cluster lists its
 published datastores — **Shared** first, since a shared datastore is one
 cluster-wide object however many nodes see it, then one group per node for that
-node's local storages. These are Layer 1 and lead to the datastore's
-Summary/Volumes/VMs tabs. **Host Mounts** below them is Layer 2: the registered
-mounts, leading to the file browser. A mount is deliberately not filed under a
-cluster — one mount can be bound to storages in several clusters.
+node's local storages (Proxmox names them all `local`/`local-lvm`, so the node
+group is what tells them apart). One datastore, one page, whatever pve-helper's
+own access to it happens to be.
+
+Layer 2 shows up on that page rather than beside it. A registered mount is
+pve-helper's *access* to a datastore, so it appears as the **Files** tab and as
+the scan-driven panels — and where the capability is missing, the tab says so in
+one line (`No file browser: lvmthin is not a browsable file-tree backend`)
+instead of disappearing, so the page looks the same for every datastore.
+Registering a mount stays in **PVE-helper Settings → Storage access**; it is a
+deployment association and never part of how the clusters see their disks.
+
+The **Nodes** tab answers "where is this datastore attached", including nodes
+that did not answer the last refresh — those keep their entry, marked *Unknown*,
+because a node taken down for patching has not lost its storage.
+
+Scheduling is not part of a storage page. The **VMs/CTs** tab only answers which
+guests consume the datastore; open the guest to schedule anything.
 
 #### Two checks guard a destructive file action
 

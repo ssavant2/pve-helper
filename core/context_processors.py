@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.utils import timezone
 
-from .models import ProxmoxCluster, StorageMount
+from .models import ProxmoxCluster
 from .services.datastore_nav import datastore_nav
 from .services.recent_tasks import recent_task_page
 
@@ -32,7 +32,6 @@ def app_settings(request):
         "app_require_login": settings.APP_REQUIRE_LOGIN,
         "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
         "storage_upload_max_size_mb": settings.STORAGE_UPLOAD_MAX_SIZE_MB,
-        "app_nav_storages": StorageMount.objects.filter(enabled=True).order_by("display_name"),
         "app_nav_datastore_clusters": datastore_clusters,
         "app_enabled_clusters": enabled_clusters,
         "app_multiple_clusters": len(enabled_clusters) > 1,

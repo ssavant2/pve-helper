@@ -759,3 +759,9 @@
 .datastore-configure .details-list > div {
   display: contents;
 }
+
+.vs-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

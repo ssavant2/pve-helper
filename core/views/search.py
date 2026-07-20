@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from core.models import ProxmoxEndpoint, StorageMount
 from core.services.datastore_nav import datastore_url
+from core.services.storage_mounts import mount_datastore_scope
 
 from .common import *  # noqa: F401,F403
 from .guests.read_model_support import _guest_agent_summary, _guest_rows
@@ -116,6 +117,11 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
         ]
         if not _matches_search(parts, tokens):
             continue
+        scope = mount_datastore_scope(storage)
+        if scope is None:
+            # An unbound mount has no datastore to open; it is configuration until
+            # an operator binds it under PVE-helper Settings.
+            continue
         meta = ["Mounted datastore", storage.storage_id]
         if storage.expected_consumers:
             meta.append(", ".join(storage.expected_consumers))
@@ -125,7 +131,7 @@ def _global_search_storages(tokens: list[str]) -> list[dict]:
                 kind="Datastore",
                 label=storage.display_name or storage.storage_id,
                 meta=" • ".join(meta),
-                url=reverse("core:storage_summary", args=[storage.mount_ref]),
+                url=datastore_url("core:api_storage_summary", *scope),
                 icon_family="vicon",
                 icon="storage",
                 score=_search_score(tokens, storage.display_name, storage.storage_id),

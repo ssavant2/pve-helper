@@ -47,7 +47,7 @@ pve-helper reads the tree through.
             {% endif %}
             <a
               class="folder-tree-link"
-              href="{% url 'core:storage_browser' mount.mount_ref %}{% if node.path %}?path={{ node.path|urlencode }}{% endif %}"
+              href="{{ files_base_url }}{% if node.path %}?path={{ node.path|urlencode }}{% endif %}"
             >
               <span class="folder-tree-icon">
                 {% if node.depth == 0 %}

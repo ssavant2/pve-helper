@@ -176,6 +176,76 @@ class HermeticProxmoxMixin:
         return client
 
 
+
+def browser_url(mount, path: str = "") -> str:
+    """The Files tab of the datastore a host mount belongs to.
+
+    The file browser is no longer a page of its own: a mount is pve-helper's
+    access to a *datastore*, so browsing happens on that datastore's page. Tests
+    that only need a mount get a minimal binding here, because a mount with no
+    binding has no datastore to browse and that is the product's answer, not a
+    test-setup shortcut.
+    """
+    from core.views.storage import _storage_browser_url
+
+    if isinstance(mount, str):
+        from core.services.storage_mounts import resolve_storage_mount
+
+        mount = resolve_storage_mount(mount)
+    if not mount.cluster_bindings.exists():
+        cluster = ProxmoxCluster.objects.first() or ProxmoxCluster.objects.create(
+            key="default", display_name="Default cluster", enabled=True
+        )
+        definition, _ = ClusterStorage.objects.get_or_create(
+            cluster=cluster,
+            storage_id=mount.storage_id,
+            # `dir`, because these mounts are temp directories rather than real
+            # network mounts: an `nfs` definition would demand a mountpoint and
+            # every file test would fail on health rather than on its own subject.
+            defaults={"storage_type": "dir", "shared": True, "present": True},
+        )
+        ClusterStorageMount.objects.create(
+            cluster_storage=definition, mount=mount, node=None, scope=ClusterStorageMount.Scope.SHARED
+        )
+        # A healthy datastore, published and completely covered. Without this the
+        # usage preflight has no evidence and refuses every destructive action —
+        # correctly, but that is the coverage gate's own subject, not these tests'.
+        generation = uuid.uuid4()
+        StorageCatalogState.objects.update_or_create(
+            cluster=cluster,
+            defaults={
+                "metadata_generation": generation,
+                "metadata_complete": True,
+                "metadata_refreshed_at": timezone.now(),
+            },
+        )
+        ClusterStorageVolumeCoverage.objects.update_or_create(
+            cluster_storage=definition,
+            scope=ClusterStorageVolumeCoverage.Scope.SHARED,
+            node=None,
+            defaults={
+                "volume_generation": uuid.uuid4(),
+                "based_on_metadata_generation": generation,
+                "refreshed_at": timezone.now(),
+                "complete": True,
+            },
+        )
+    return _storage_browser_url(mount, path)
+
+
+def unbound_files_url(cluster_key: str, storage_id: str, path: str = "") -> str:
+    """A datastore Files URL written out, for tests that must leave a mount unbound.
+
+    `_require_file_not_blocked` takes a different route once a mount has a cluster
+    binding: it runs the fresh usage preflight instead of the offline fallback.
+    Tests whose subject is the *file* action, not the coverage gate, keep the
+    mount unbound and name the URL directly rather than deriving it from a
+    binding they must not have.
+    """
+    suffix = f"?path={path}" if path else ""
+    return f"/clusters/{cluster_key}/datastores/{storage_id}/files/{suffix}"
+
+
 class LiveGuestDisplayReadTests(TestCase):
     """Display reads resolve an explicit cluster and read through its endpoints."""
 
@@ -1876,9 +1946,9 @@ class DatastoreNavTests(TestCase):
         # The shared datastore's page is cluster-wide; the node-local one is not.
         self.assertContains(response, f"/clusters/{cluster.key}/datastores/TrueNAS-VM/summary/")
         self.assertContains(response, f"/clusters/{cluster.key}/nodes/pve1/datastores/local-lvm/summary/")
-        self.assertContains(response, ">Host Mounts<")
-        # The old labels claimed an axis the catalog does not have: the group that
-        # said "Shared Datastores" was listing registered mounts, not shared storage.
+        # Registered mounts are configuration and live only under PVE-helper
+        # Settings; the tree shows datastores as the clusters see them.
+        self.assertNotContains(response, ">Host Mounts<")
         self.assertNotContains(response, "Shared Datastores")
         self.assertNotContains(response, "Local Datastores")
 
@@ -1918,8 +1988,11 @@ class StickyTabUrlTests(SimpleTestCase):
 
     def test_keeps_tab_when_switching_storage(self):
         self.assertEqual(
-            self._sticky("/storage/nfs-a/monitor/", "/storage/nfs-b/summary/"),
-            "/storage/nfs-b/monitor/",
+            self._sticky(
+                "/clusters/hq/datastores/nfs-a/monitor/",
+                "/clusters/hq/datastores/nfs-b/summary/",
+            ),
+            "/clusters/hq/datastores/nfs-b/monitor/",
         )
 
     def test_falls_back_to_summary_across_object_families(self):
@@ -3153,6 +3226,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
 
         live_guest = self._live_guest(object_type="vm", vmid=500, name="App01", node="pve1", status="running")
+        # A mount is searchable through the datastore it is bound to; an unbound
+        # one is configuration and has no page to open.
+        browser_url("nfs-vm")
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]):
             ip_response = self.client.get(reverse("core:global_search"), {"q": "203.0.113.3"})
             storage_response = self.client.get(reverse("core:global_search"), {"q": "TrueNAS"})
@@ -3245,7 +3321,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Likely orphan")
         self.assertContains(response, "all expected consumers were scanned")
 
-        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]))
+        response = self.client.get(browser_url("nfs-vm"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "images")
         self.assertContains(response, "VM images")
@@ -3253,22 +3329,20 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Start scan")
         self.assertContains(response, "Classification is conservative")
 
-        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/100"})
+        response = self.client.get(browser_url("nfs-vm"), {"path": "images/100"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "vm-100-disk-0.qcow2")
 
-        response = self.client.get(reverse("core:storage_hosts", args=["nfs-vm"]))
+        response = self.client.get(browser_url("nfs-vm").replace("/files/", "/nodes/"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, ">Nodes<")
-        self.assertContains(response, "Expected Proxmox Nodes")
 
         with patch("core.views.storage.common.cluster_scoped_clients", return_value=[]):
-            response = self.client.get(reverse("core:storage_content", args=["nfs-vm"]))
+            response = self.client.get(browser_url("nfs-vm").replace("/files/", "/content/"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Content Types")
         self.assertContains(response, "Disk image")
         self.assertContains(response, "Container template")
-        self.assertContains(response, "In use: 1")
 
     def test_classified_files_lists_and_links_to_folder(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
@@ -3291,11 +3365,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
 
         # Unknown drill-down lists the file and links to its containing folder.
+        # Resolved first: the link is the mount's datastore page, so the binding
+        # has to exist before the page renders.
+        expected_browser_url = browser_url(storage.mount_ref)
         response = self.client.get(reverse("core:classified_files"), {"classification": "unknown"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "cirros-0.6.2-x86_64-disk.img")
-        browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
-        self.assertContains(response, f'href="{browser_url}?path=images"')
+        self.assertContains(response, f'href="{expected_browser_url}?path=images"')
 
         # Likely orphans have their own workspace.
         response = self.client.get(reverse("core:classified_files"), {"classification": "likely_orphan"})
@@ -3545,7 +3621,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             AuditEvent.objects.filter(pk=old_event.pk).update(timestamp=now - timedelta(days=9))
             Schedule.objects.filter(name=SPACE_SNAPSHOT_SCHEDULE_NAME).delete()
 
-            monitor_url = reverse("core:storage_monitor", args=[storage.mount_ref])
+            monitor_url = browser_url(storage.mount_ref).replace("/files/", "/monitor/")
             response = self.client.get(monitor_url)
             invalid_page_response = self.client.get(
                 monitor_url,
@@ -3638,18 +3714,19 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             "core.views.common.fetch_live_guest_status",
             side_effect=AssertionError("storage views must not perform provider status reads"),
         ):
-            response = self.client.get(reverse("core:storage_vms", args=[storage.mount_ref]))
-            second_response = self.client.get(reverse("core:storage_vms", args=[storage.mount_ref]))
+            vms_url = browser_url(storage.mount_ref).replace("/files/", "/vms/")
+            response = self.client.get(vms_url)
+            second_response = self.client.get(vms_url)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
         self.assertContains(response, "Power state updates immediately after operations")
-        self.assertContains(response, "Disk references are from inventory scanned")
         self.assertContains(response, "stopped")
-        self.assertContains(response, "Scheduled Tasks")
-        self.assertContains(response, "Night shutdown")
-        self.assertContains(response, "Never run")
-        self.assertContains(response, "target=gr1%3Adefault%3Avm%3A100")
+        # Scheduling belongs to the guest views; the storage tab only answers
+        # "which guests consume this datastore".
+        self.assertNotContains(response, "<th>Scheduled Tasks</th>")
+        self.assertNotContains(response, "Night shutdown")
+        self.assertNotContains(response, "target=gr1%3Adefault%3Avm%3A100")
         self.assertContains(second_response, "stopped")
         cache.clear()
 
@@ -3730,7 +3807,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             },
         )
 
-        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/501"})
+        response = self.client.get(browser_url("nfs-vm"), {"path": "images/501"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Virtual Size")
@@ -3793,7 +3870,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             },
         )
 
-        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/501"})
+        response = self.client.get(browser_url("nfs-vm"), {"path": "images/501"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-can-inflate-metadata="false"')
@@ -3856,7 +3933,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             },
         )
 
-        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/501"})
+        response = self.client.get(browser_url("nfs-vm"), {"path": "images/501"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-can-inflate-metadata="false"')
@@ -3881,6 +3958,21 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             name="stale-running-test",
             status="running",
             disk_references=["nfs-vm:505/vm-505-disk-0.qcow2"],
+        )
+        # The datastore this mount belongs to is bound to a cluster, so the
+        # reference read is the current guest inventory rather than the scan
+        # snapshot. "Stale" here is that inventory still saying running.
+        CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
+            source_scan=scan,
+            node="pve-node-1",
+            object_type=CurrentGuestInventory.ObjectType.VM,
+            vmid=505,
+            name="stale-running-test",
+            status="running",
+            runtime_observed_at=timezone.now(),
+            disk_references=["nfs-vm:505/vm-505-disk-0.qcow2"],
+            observed_at=timezone.now(),
         )
         FileInventory.objects.create(
             scan_run=scan,
@@ -3918,7 +4010,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             },
         )
 
-        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "images/505"})
+        response = self.client.get(browser_url("nfs-vm"), {"path": "images/505"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-can-action="false"')
@@ -3982,6 +4074,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             original_stat = disk.stat()
             with (
                 patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
+                patch("core.services.storage_catalog.refresh_storage_catalog"),
                 patch("core.services.storage_actions.os.chown") as chown_mock,
                 patch("core.services.storage_actions.os.chmod") as chmod_mock,
             ):
@@ -4184,10 +4277,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="vm_disk",
                 classification=FileInventory.Classification.REFERENCED,
             )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=images%2F501"
+            expected_browser_url = unbound_files_url("default", "nfs-vm", "images%2F501")
 
             with (
                 patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
+                patch("core.services.storage_catalog.refresh_storage_catalog"),
                 patch("core.services.storage_actions.os.geteuid", return_value=999999),
                 patch("core.services.storage_actions.os.getegid", return_value=999999),
                 patch("core.views.common.async_task", return_value="inflate-task-1") as async_task_mock,
@@ -4199,11 +4293,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                         "confirm_basic": "yes",
                         "confirm_risk": "yes",
                         "target_preallocation": "metadata",
-                        "next": browser_url,
+                        "next": expected_browser_url,
                     },
                 )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             async_task_mock.assert_called_once_with(
                 "core.tasks.inflate_storage_file_task",
                 storage.id,
@@ -4610,7 +4704,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.UNKNOWN,
             )
 
-        response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]))
+        response = self.client.get(browser_url("nfs-vm"))
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(
@@ -4622,7 +4716,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertIn("hidden", self._folder_node_tag(response, "template/iso"))
 
         response = self.client.get(
-            reverse("core:storage_browser", args=["nfs-vm"]),
+            browser_url("nfs-vm"),
             {"path": "template/iso"},
         )
 
@@ -4669,7 +4763,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 )
 
             with self.settings(FILE_UPLOAD_TEMP_DIR=upload_tmp.as_posix()):
-                response = self.client.get(reverse("core:storage_browser", args=["nfs-fs"]))
+                response = self.client.get(browser_url("nfs-fs"))
 
             self.assertEqual(response.status_code, 200)
             self.assertNotContains(response, ".pve-helper-upload-tmp")
@@ -4701,7 +4795,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             ]
         )
 
-        response = self.client.get(reverse("core:storage_browser", args=[storage.mount_ref]))
+        response = self.client.get(browser_url(storage.mount_ref))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "file-000.iso")
@@ -4711,7 +4805,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "200 of 205")
 
         response = self.client.get(
-            reverse("core:storage_browser", args=[storage.mount_ref]),
+            browser_url(storage.mount_ref),
             {"file_offset": "200", "file_partial": "1"},
         )
 
@@ -4722,7 +4816,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertFalse(payload["has_next"])
 
         response = self.client.get(
-            reverse("core:storage_browser", args=[storage.mount_ref]),
+            browser_url(storage.mount_ref),
             {"q": "file-204"},
         )
 
@@ -5285,7 +5379,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 size_bytes=backup_file.stat().st_size,
             )
 
-            response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]), {"path": "dump"})
+            response = self.client.get(browser_url("nfs-vm"), {"path": "dump"})
 
             self.assertEqual(response.status_code, 200)
             self.assertContains(response, "data-file-download-action")
@@ -5340,7 +5434,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
 
-            response = self.client.get(reverse("core:storage_browser", args=["nfs-vm"]))
+            response = self.client.get(browser_url("nfs-vm"))
             self.assertEqual(response.status_code, 200)
             self.assertNotContains(response, "Upload")
             self.assertNotContains(response, "Move to Recycle Bin")
@@ -5371,7 +5465,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
             read_only_info = StorageSpaceInfo(
                 ok=True,
                 access_mode="read_only",
@@ -5384,8 +5478,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             with (
                 patch("core.views.common.storage_space_info", return_value=read_only_info),
                 patch("core.views.storage.registered_mount_health", return_value=read_only_health),
+                # The datastore header reads write capability from the catalog's
+                # capabilities, which resolve the mount's health themselves.
+                patch("core.services.storage_catalog.mount_health", return_value=read_only_health),
             ):
-                response = self.client.get(browser_url)
+                response = self.client.get(expected_browser_url)
 
             self.assertEqual(response.status_code, 200)
             self.assertContains(response, "PVE-helper access")
@@ -5399,12 +5496,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 response = self.client.post(
                     reverse("core:storage_upload", args=[storage.mount_ref]),
                     {
-                        "next": browser_url,
+                        "next": expected_browser_url,
                         "file": SimpleUploadedFile("test.txt", b"blocked"),
                     },
                 )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse((Path(tmp) / "test.txt").exists())
             self.assertFalse(AuditEvent.objects.filter(action="file.uploaded").exists())
 
@@ -5422,9 +5519,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
-            response = self.client.get(browser_url)
+            response = self.client.get(expected_browser_url)
             self.assertContains(response, "Upload")
             self.assertNotContains(response, "Register VM")
             self.assertContains(response, "Inflate")
@@ -5434,12 +5531,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:storage_upload", args=[storage.mount_ref]),
                 {
                     "path": "",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                     "file": SimpleUploadedFile("upload.txt", b"hello"),
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertEqual((root / "upload.txt").read_bytes(), b"hello")
             self.assertTrue(
                 FileInventory.objects.filter(scan_run__status=ScanRun.Status.COMPLETED, path="upload.txt").exists()
@@ -5452,12 +5549,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 reverse("core:storage_upload", args=[storage.mount_ref]),
                 {
                     "path": "",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                     "file": SimpleUploadedFile("upload.txt", b"overwrite"),
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertEqual((root / "upload.txt").read_bytes(), b"hello")
             self.assertEqual(AuditEvent.objects.filter(action="file.uploaded").count(), 1)
 
@@ -5475,13 +5572,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_upload_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                     "relative_path": ["folder/a.txt", "folder/nested/b.txt"],
                     "files": [
                         SimpleUploadedFile("a.txt", b"a"),
@@ -5490,7 +5587,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertEqual((root / "folder" / "a.txt").read_bytes(), b"a")
             self.assertEqual((root / "folder" / "nested" / "b.txt").read_bytes(), b"b")
             self.assertTrue(
@@ -5519,13 +5616,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_upload_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                     "relative_path": ["folder/a.txt"],
                     "files": [SimpleUploadedFile("a.txt", b"a")],
                 },
@@ -5533,7 +5630,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
 
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), {"ok": True, "redirect": browser_url})
+            self.assertEqual(response.json(), {"ok": True, "redirect": expected_browser_url})
             self.assertEqual((root / "folder" / "a.txt").read_bytes(), b"a")
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
@@ -5550,13 +5647,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_upload_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                     "relative_path": ["folder/a.txt", "../outside.txt"],
                     "files": [
                         SimpleUploadedFile("a.txt", b"a"),
@@ -5565,7 +5662,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse((root / "folder" / "a.txt").exists())
             self.assertFalse((root.parent / "outside.txt").exists())
             self.assertFalse(AuditEvent.objects.filter(action="file.folder_uploaded").exists())
@@ -5584,18 +5681,18 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 expected_consumers=["pve-node-1"],
             )
             ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_create_folder", args=[storage.mount_ref]),
                 {
                     "path": "",
                     "folder_name": "iso-imports",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertEqual(list(get_messages(response.wsgi_request)), [])
             self.assertTrue((root / "iso-imports").is_dir())
             self.assertTrue(
@@ -5948,14 +6045,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.LIKELY_ORPHAN,
                 classification_reason="No matching Proxmox disk reference.",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_trash_file", args=[storage.mount_ref]),
-                {"path": "dump/orphan.vma.zst", "confirm_basic": "yes", "next": browser_url},
+                {"path": "dump/orphan.vma.zst", "confirm_basic": "yes", "next": expected_browser_url},
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(original.exists())
             trash_item = TrashItem.objects.get()
             trash_path = root / trash_item.trash_path
@@ -6013,7 +6110,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.UNKNOWN,
                 content_category="unknown",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_trash_file", args=[storage.mount_ref]),
@@ -6021,11 +6118,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "path": "template/iso/upload-folder",
                     "confirm_basic": "yes",
                     "confirm_risk": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(folder.exists())
             trash_item = TrashItem.objects.get()
             trash_path = root / trash_item.trash_path
@@ -6068,7 +6165,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.UNKNOWN,
                 content_category="vm_image_directory",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_trash_file", args=[storage.mount_ref]),
@@ -6076,11 +6173,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "path": "images/505",
                     "confirm_basic": "yes",
                     "confirm_risk": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(folder.exists())
             trash_item = TrashItem.objects.get()
             self.assertTrue((root / trash_item.trash_path).is_dir())
@@ -6119,7 +6216,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 classification=FileInventory.Classification.UNKNOWN,
                 content_category="vm_disk",
             )
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_trash_file", args=[storage.mount_ref]),
@@ -6127,11 +6224,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "path": "images/505",
                     "confirm_basic": "yes",
                     "confirm_risk": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertTrue(folder.exists())
             self.assertFalse(TrashItem.objects.exists())
             messages = [str(message) for message in get_messages(response.wsgi_request)]
@@ -6165,18 +6262,18 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     entry_type=FileInventory.EntryType.FILE,
                     classification=FileInventory.Classification.LIKELY_ORPHAN,
                 )
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             response = self.client.post(
                 reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": ["dump/first.vma.zst", "dump/second.vma.zst"],
                     "confirm_basic": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(first.exists())
             self.assertFalse(second.exists())
             self.assertEqual(TrashItem.objects.count(), 2)
@@ -6212,7 +6309,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     entry_type=FileInventory.EntryType.FILE,
                     classification=FileInventory.Classification.LIKELY_ORPHAN,
                 )
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = browser_url(storage.mount_ref)
 
             real_trash = move_file_to_trash
 
@@ -6224,10 +6321,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             with patch("core.views.storage.move_file_to_trash", side_effect=fail_the_second):
                 response = self.client.post(
                     reverse("core:storage_trash_file", args=[storage.mount_ref]),
-                    {"path": paths, "confirm_basic": "yes", "next": browser_url},
+                    {"path": paths, "confirm_basic": "yes", "next": expected_browser_url},
                 )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             # The two that worked really happened, and are recorded as such.
             self.assertEqual(TrashItem.objects.count(), 2)
             self.assertEqual(AuditEvent.objects.filter(action="file.trashed").count(), 2)
@@ -6317,18 +6414,18 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="vm_disk",
                 classification=FileInventory.Classification.REFERENCED,
             )
-            browser_url = reverse("core:storage_browser", args=[storage.mount_ref])
+            expected_browser_url = unbound_files_url("default", "nfs-vm")
 
             response = self.client.post(
                 reverse("core:storage_trash_file", args=[storage.mount_ref]),
                 {
                     "path": "images/100/vm-100-disk-0.qcow2",
                     "confirm_basic": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertTrue(disk.exists())
             self.assertFalse(TrashItem.objects.exists())
 
@@ -6339,11 +6436,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                         "path": "images/100/vm-100-disk-0.qcow2",
                         "confirm_basic": "yes",
                         "confirm_risk": "yes",
-                        "next": browser_url,
+                        "next": expected_browser_url,
                     },
                 )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(disk.exists())
             self.assertTrue(TrashItem.objects.exists())
 
@@ -6393,7 +6490,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "path": "images/100/vm-100-disk-0.qcow2",
                     "confirm_basic": "yes",
                     "confirm_risk": "yes",
-                    "next": reverse("core:storage_browser", args=[storage.mount_ref]),
+                    "next": browser_url(storage.mount_ref),
                 },
             )
 
@@ -6445,7 +6542,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="iso",
                 classification=FileInventory.Classification.UNKNOWN,
             )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=template%2Fiso"
+            expected_browser_url = f"{browser_url(storage.mount_ref)}?path=template%2Fiso"
 
             response = self.client.post(
                 reverse("core:storage_rename_file", args=[storage.mount_ref]),
@@ -6453,11 +6550,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "path": "template/iso/old.iso",
                     "new_name": "new.iso",
                     "confirm_basic": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(original.exists())
             self.assertEqual((iso_dir / "new.iso").read_bytes(), b"iso")
             self.assertFalse(FileInventory.objects.filter(scan_run=scan, path="template/iso/old.iso").exists())
@@ -6516,7 +6613,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="iso",
                 classification=FileInventory.Classification.UNKNOWN,
             )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=template%2Fiso"
+            expected_browser_url = f"{browser_url(storage.mount_ref)}?path=template%2Fiso"
 
             response = self.client.post(
                 reverse("core:storage_move_file", args=[storage.mount_ref]),
@@ -6524,11 +6621,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "path": "template/iso/move-me.iso",
                     "new_path": "snippets",
                     "confirm_basic": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(original.exists())
             self.assertEqual((target_dir / "move-me.iso").read_bytes(), b"move")
             self.assertFalse(FileInventory.objects.filter(scan_run=scan, path="template/iso/move-me.iso").exists())
@@ -6577,7 +6674,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     content_category=category,
                     classification=FileInventory.Classification.UNKNOWN,
                 )
-            browser_url = f"{reverse('core:storage_browser', args=[storage.mount_ref])}?path=template%2Fiso"
+            expected_browser_url = f"{browser_url(storage.mount_ref)}?path=template%2Fiso"
 
             response = self.client.post(
                 reverse("core:storage_move_file", args=[storage.mount_ref]),
@@ -6585,11 +6682,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "path": ["template/iso/first.iso", "template/iso/second.iso"],
                     "new_path": "snippets",
                     "confirm_basic": "yes",
-                    "next": browser_url,
+                    "next": expected_browser_url,
                 },
             )
 
-            self.assertRedirects(response, browser_url)
+            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse(first.exists())
             self.assertFalse(second.exists())
             self.assertEqual((target_dir / "first.iso").read_bytes(), b"first")
@@ -9318,11 +9415,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             reverse("core:start_scan"),
             {
                 "storage_id": storage.storage_id,
-                "next": reverse("core:storage_browser", args=[storage.mount_ref]),
+                "next": browser_url(storage.mount_ref),
             },
         )
 
-        self.assertRedirects(response, reverse("core:storage_browser", args=[storage.mount_ref]))
+        self.assertRedirects(response, browser_url(storage.mount_ref))
         scan = ScanRun.objects.latest("created_at")
         self.assertEqual(scan.target_storage, storage)
         self.assertEqual(scan.target_label, "nfs-fs")

@@ -21,6 +21,7 @@ from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
     derived_backend_identity,
+    mount_datastore_scope,
     mount_health,
     mountinfo_entries,
     near_match_mounts,
@@ -112,16 +113,6 @@ def _requested_storage_cluster(request, storage: StorageMount):
     if requested_key:
         return next((cluster for cluster in clusters if cluster.key == requested_key), None), clusters
     return (clusters[0] if len(clusters) == 1 else None), clusters
-
-
-def _storage_tab_context(storage: StorageMount, latest_scan, active_tab: str) -> dict:
-    return {
-        **navigation_context("storage_browser", active_storage_id=storage.storage_id),
-        "storage": storage,
-        "latest_scan": latest_scan,
-        "active_scan": _active_scan(),
-        "active_storage_tab": active_tab,
-    }
 
 
 def _mount_or_404(reference: str, *, enabled: bool = True) -> StorageMount:
@@ -618,6 +609,10 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
             else (f"Node-local datastore on {node}" if node else "Datastore")
         ),
         "scope_nodes": scope_nodes,
+        # The header offers a file scan whenever pve-helper has a mount to scan:
+        # refreshing the catalog and scanning the file tree are the two things an
+        # operator starts from a datastore, one per layer.
+        "active_scan": _active_scan(),
         "nodes_tab_url": datastore_url("core:api_storage_nodes", cluster.key, storage, node),
         "files_tab_url": datastore_url("core:api_storage_files", cluster.key, storage, node),
         "cluster_key": cluster.key,
@@ -886,8 +881,6 @@ def api_storage_vms(request, cluster_key: str, storage: str, node: str = ""):
         if matching:
             obj.matching_disk_references = _display_disk_references(obj.vmid, matching, lineage)
             guests.append(obj)
-    if guests:
-        _decorate_guests_with_scheduled_actions(guests)
     context = _api_storage_context(cluster, definition, storage, node, "vms")
     context.update({"guests": guests, "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS})
     return render(request, "core/storage_api/vms.html", context)
@@ -1372,6 +1365,10 @@ def _storage_browser_context(request, storage):
     context = {
         "mount": storage,
         "latest_scan": latest_scan,
+        # The file manager's folder tree, breadcrumbs and parent row all link back
+        # into itself. They go through this rather than reversing a mount-keyed
+        # route, so the browser stays embeddable on the datastore page.
+        "files_base_url": _storage_browser_url(storage),
         "current_path": current_path,
         "parent_path": parent_path,
         "breadcrumbs": _browser_breadcrumbs(current_path),
@@ -1405,20 +1402,6 @@ def _storage_browser_context(request, storage):
             }
         )
     return context
-
-
-@app_login_required
-def storage_browser(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
-    result = _storage_browser_context(request, storage)
-    if isinstance(result, JsonResponse):
-        return result
-    latest_scan = result["latest_scan"]
-    return render(
-        request,
-        "core/storage_browser.html",
-        {**_storage_tab_context(storage, latest_scan, "files"), **result},
-    )
 
 
 @app_login_required
@@ -1636,8 +1619,9 @@ def storage_trash(request, storage_id: str):
         if not is_nfs_silly_rename_path(item.original_path) and not is_nfs_silly_rename_path(item.trash_path)
     ]
     context = {
-        **navigation_context("storage_browser", active_storage_id=storage.storage_id),
+        **navigation_context("datastore"),
         "storage": storage,
+        "files_base_url": _storage_browser_url(storage),
         "items": _trash_rows(storage, items),
     }
     return render(request, "core/storage_trash.html", context)
@@ -1701,91 +1685,6 @@ def _trash_rows(storage: StorageMount, items: list[TrashItem]) -> list[dict[str,
     return rows
 
 
-@app_login_required
-def storage_summary(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-
-    classification_counts = {}
-    total_file_count = 0
-    if latest_scan:
-        classification_counts = _classification_counts(
-            FileInventory.objects.filter(scan_run=latest_scan, storage=storage)
-        )
-        total_file_count = sum(classification_counts.values())
-
-    gate_status = {}
-    if latest_scan and latest_scan.storage_gate_status:
-        gate_status = latest_scan.storage_gate_status.get(storage.storage_id, {})
-
-    consumers = list(storage.consumer_statuses.order_by("expected_node_name"))
-
-    context = {
-        **_storage_tab_context(storage, latest_scan, "summary"),
-        "classification_counts": classification_counts,
-        "total_file_count": total_file_count,
-        "gate_status": gate_status,
-        "consumers": consumers,
-    }
-    return render(request, "core/storage_summary.html", context)
-
-
-@app_login_required
-def storage_monitor(request, storage_id: str):
-    MONITOR_PAGE_SIZE = 10
-    ACTIVITY_RETENTION_DAYS = 7
-
-    storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-
-    scan_page = max(0, _int_request_param(request, "scan_page", 0))
-    event_page = max(0, _int_request_param(request, "event_page", 0))
-
-    activity_cutoff = tz.now() - timedelta(days=ACTIVITY_RETENTION_DAYS)
-    all_scans = ScanRun.objects.filter(
-        target_storage=storage,
-        created_at__gte=activity_cutoff,
-    ).order_by("-created_at")
-    scan_total = all_scans.count()
-    scan_start = scan_page * MONITOR_PAGE_SIZE
-    scan_end = scan_start + MONITOR_PAGE_SIZE
-    recent_scans = list(all_scans[scan_start:scan_end])
-
-    all_events = AuditEvent.objects.filter(
-        storage_id=storage.storage_id,
-        timestamp__gte=activity_cutoff,
-    ).order_by("-timestamp")
-    event_total = all_events.count()
-    event_start = event_page * MONITOR_PAGE_SIZE
-    event_end = event_start + MONITOR_PAGE_SIZE
-    recent_events = list(all_events[event_start:event_end])
-    _decorate_audit_events(recent_events)
-
-    space_chart_data = _storage_space_chart_data(storage, tz.now())
-
-    context = {
-        **_storage_tab_context(storage, latest_scan, "monitor"),
-        "recent_scans": recent_scans,
-        "scan_page": scan_page,
-        "scan_total": scan_total,
-        "scan_start": min(scan_start + 1, scan_total),
-        "scan_end": min(scan_end, scan_total),
-        "scan_has_prev": scan_page > 0,
-        "scan_has_next": scan_end < scan_total,
-        "recent_events": recent_events,
-        "event_page": event_page,
-        "event_total": event_total,
-        "event_start": min(event_start + 1, event_total),
-        "event_end": min(event_end, event_total),
-        "event_has_prev": event_page > 0,
-        "event_has_next": event_end < event_total,
-        "space_chart_data_json": json.dumps(space_chart_data),
-    }
-    return render(request, "core/storage_monitor.html", context)
-
-
 def _storage_space_chart_data(storage: StorageMount, now) -> list[dict[str, object]]:
     return _space_chart_from_queryset(StorageSpaceSnapshot.objects.filter(storage=storage), now)
 
@@ -1838,36 +1737,6 @@ def _space_chart_from_queryset(base_qs, now) -> list[dict[str, object]]:
     ]
 
 
-@app_login_required
-def storage_configure(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-    context = {
-        **_storage_tab_context(storage, latest_scan, "configure"),
-    }
-    return render(request, "core/storage_configure.html", context)
-
-
-@app_login_required
-def storage_content(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-    content_scan = _latest_storage_content_scan(storage) or latest_scan
-    cluster, storage_clusters = _requested_storage_cluster(request, storage)
-    current_content = _live_storage_content_values(storage, cluster=cluster)
-    context = {
-        **_storage_tab_context(storage, latest_scan, "content"),
-        "content_options": _storage_content_options(storage, content_scan, current_content=current_content),
-        "current_content": current_content,
-        "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
-        "storage_cluster": cluster,
-        "storage_clusters": storage_clusters,
-    }
-    return render(request, "core/storage_content.html", context)
-
-
 @require_POST
 @app_login_required
 def update_storage_content(request, storage_id: str):
@@ -1887,7 +1756,7 @@ def update_storage_content(request, storage_id: str):
         return redirect("core:storage_content", storage_id=storage.storage_id)
     current_content = _live_storage_content_values(storage, cluster=cluster)
     requested_content = _ordered_storage_content(request.POST.getlist("content"), current_content)
-    redirect_to = f"{reverse('core:storage_content', args=[storage.mount_ref])}?{urlencode({'cluster': cluster.key})}"
+    redirect_to = _storage_browser_url(storage)
 
     if not requested_content:
         messages.error(request, "Select at least one content type.")
@@ -2232,47 +2101,6 @@ def _update_latest_storage_config_content(
         obj.save(update_fields=["config", "updated_at"])
 
 
-@app_login_required
-def storage_permissions_view(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-
-    perms = get_permissions(str(storage_mount_root(storage)))
-
-    context = {
-        **_storage_tab_context(storage, latest_scan, "permissions"),
-        "permissions": perms,
-    }
-    return render(request, "core/storage_permissions.html", context)
-
-
-@app_login_required
-def storage_hosts(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-
-    consumers = list(storage.consumer_statuses.order_by("expected_node_name"))
-
-    proxmox_storage_entries = []
-    if latest_scan:
-        proxmox_storage_entries = list(
-            ProxmoxInventory.objects.filter(
-                scan_run=latest_scan,
-                object_type=ProxmoxInventory.ObjectType.STORAGE,
-                name=storage.storage_id,
-            ).order_by("node")
-        )
-
-    context = {
-        **_storage_tab_context(storage, latest_scan, "hosts"),
-        "consumers": consumers,
-        "proxmox_storage_entries": proxmox_storage_entries,
-    }
-    return render(request, "core/storage_hosts.html", context)
-
-
 def _display_disk_references(vmid: int | None, matching: list[str], lineage: dict[int, int]) -> list[dict]:
     """Clean up a linked clone's disk references for display: show its own overlay
     disks annotated '(backed by base-<templateid>)' and drop the template's base
@@ -2282,37 +2110,6 @@ def _display_disk_references(vmid: int | None, matching: list[str], lineage: dic
         return [{"volid": ref, "backed_by": ""} for ref in matching]
     base_marker = f"base-{parent}-disk-"
     return [{"volid": ref, "backed_by": f"base-{parent}"} for ref in matching if base_marker not in ref]
-
-
-@app_login_required
-def storage_vms(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-
-    guests = []
-    prefix = f"{storage.storage_id}:"
-    lineage_by_cluster = _lineage_by_cluster()
-    for obj in CurrentGuestInventory.objects.all().order_by("object_type", "vmid"):
-        matching_refs = [ref for ref in (obj.disk_references or []) if ref.startswith(prefix)]
-        if matching_refs:
-            obj.matching_disk_references = _display_disk_references(
-                obj.vmid,
-                matching_refs,
-                lineage_by_cluster.get(obj.cluster.key, {}),
-            )
-            guests.append(obj)
-
-    if guests:
-        _decorate_guests_with_scheduled_actions(guests)
-
-    context = {
-        **_storage_tab_context(storage, latest_scan, "vms"),
-        "guests": guests,
-        "inventory_scan_at": _scan_timestamp(latest_scan),
-        "live_status_cache_seconds": LIVE_GUEST_STATUS_CACHE_SECONDS,
-    }
-    return render(request, "core/storage_vms.html", context)
 
 
 @require_POST
@@ -2804,7 +2601,7 @@ def classified_files(request):
 
 def _browser_url_for_file(entry: FileInventory) -> str:
     """Link to the storage browser opened at the file's containing folder."""
-    url = reverse("core:storage_browser", args=[entry.storage.mount_ref])
+    url = _storage_browser_url(entry.storage)
     parent = PurePosixPath(entry.path).parent
     parent_str = "" if str(parent) in (".", "") else str(parent)
     if parent_str:
@@ -2947,7 +2744,10 @@ def _decorate_orphan_files_with_action_state(files: list[FileInventory]) -> None
 
 
 def _storage_browser_url(storage: StorageMount, path: str = "", **params: object) -> str:
-    url = reverse("core:storage_browser", args=[storage.mount_ref])
+    scope = mount_datastore_scope(storage)
+    if scope is None:
+        return reverse("core:settings_storage")
+    url = datastore_url("core:api_storage_files", *scope)
     query = {}
     if path:
         query["path"] = path

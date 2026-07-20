@@ -3,7 +3,7 @@
   <tr class="file-row parent-row" data-file-search="..">
     <td class="select-column"></td>
     <td class="browser-name">
-      <a href="{% url 'core:storage_browser' mount.mount_ref %}{% if parent_path %}?path={{ parent_path|urlencode }}{% endif %}">
+      <a href="{{ files_base_url }}{% if parent_path %}?path={{ parent_path|urlencode }}{% endif %}">
         <span class="file-icon"><i data-lucide="corner-up-left" aria-hidden="true"></i></span>
         <span>..</span>
       </a>
@@ -44,7 +44,7 @@
     </td>
     <td class="browser-name">
       {% if entry.entry_type == "directory" %}
-        <a href="{% url 'core:storage_browser' mount.mount_ref %}?path={{ entry.path|urlencode }}">
+        <a href="{{ files_base_url }}?path={{ entry.path|urlencode }}">
           <span class="file-icon directory"><i data-lucide="folder" aria-hidden="true"></i></span>
           <span>{{ entry.name }}</span>
         </a>
