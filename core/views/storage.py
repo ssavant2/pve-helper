@@ -500,37 +500,34 @@ def _api_num(value):
             return None
 
 
-def _api_storage_context(cluster, node: str, storage: str, active_tab: str, *, status=None, found=None, error=""):
-    # Both stay None when the caller supplies its own `status`, or when the
-    # storage is absent from the catalog: this page then renders the live API
-    # answer without any catalog-derived context.
-    definition = None
+def _api_storage_context(cluster, node: str, storage: str, active_tab: str):
+    # `view` stays None when the storage is absent from the catalog: the page
+    # then renders the not-found state without any catalog-derived context.
     view = None
-    if status is None:
-        definition = (
-            ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
-            .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
-            .first()
-        )
-        if definition is None:
-            status, found, error = {}, False, "Storage is not present in the latest catalog."
-        else:
-            view = storage_view(definition, node=node)
-            node_state = next((row for row in view.nodes if row.node == node), None)
-            status = {
-                **dict(definition.config or {}),
-                "storage": definition.storage_id,
-                "type": definition.storage_type,
-                "content": ",".join(definition.content),
-                "shared": int(definition.shared),
-                "enabled": int(not definition.disabled and bool(node_state and node_state.enabled)),
-                "active": int(bool(node_state and node_state.active)),
-                "total": node_state.total_bytes if node_state else None,
-                "used": node_state.used_bytes if node_state else None,
-                "avail": node_state.available_bytes if node_state else None,
-            }
-            found = True
-            error = view.coverage_reason if not view.coverage_complete else ""
+    definition = (
+        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
+        .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages", "volume_observations")
+        .first()
+    )
+    if definition is None:
+        status, found, error = {}, False, "Storage is not present in the latest catalog."
+    else:
+        view = storage_view(definition, node=node)
+        node_state = next((row for row in view.nodes if row.node == node), None)
+        status = {
+            **dict(definition.config or {}),
+            "storage": definition.storage_id,
+            "type": definition.storage_type,
+            "content": ",".join(definition.content),
+            "shared": int(definition.shared),
+            "enabled": int(not definition.disabled and bool(node_state and node_state.enabled)),
+            "active": int(bool(node_state and node_state.active)),
+            "total": node_state.total_bytes if node_state else None,
+            "used": node_state.used_bytes if node_state else None,
+            "avail": node_state.available_bytes if node_state else None,
+        }
+        found = True
+        error = view.coverage_reason if not view.coverage_complete else ""
     total = _api_num(status.get("total"))
     used = _api_num(status.get("used"))
     avail = _api_num(status.get("avail"))
