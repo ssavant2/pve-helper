@@ -19,62 +19,118 @@
         <span class="storage-summary-label">Used %</span>
         <span class="storage-summary-value">{% if capacity.used_pct != None %}{{ capacity.used_pct }}%{% else %}-{% endif %}</span>
       </div>
+      <div class="storage-summary-item">
+        <span class="storage-summary-label">Volumes</span>
+        <span class="storage-summary-value">{{ volume_count }}</span>
+      </div>
+      <div class="storage-summary-item">
+        <span class="storage-summary-label">Guests</span>
+        <span class="storage-summary-value">{{ guest_count }}</span>
+      </div>
+      <div class="storage-summary-item">
+        <span class="storage-summary-label">Filesystem</span>
+        <span class="storage-summary-value">{{ mount.space_info.filesystem_type|default:"-" }}</span>
+      </div>
+      <div class="storage-summary-item">
+        <span class="storage-summary-label">Access</span>
+        <span class="storage-summary-value">
+          {% if mount %}
+            <span class="badge {{ mount.space_info.access_class }}">{{ mount.space_info.access_label }}</span>
+          {% else %}
+            <span class="badge">API inventory</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="storage-summary-item">
+        <span class="storage-summary-label">Latest Scan</span>
+        <span class="storage-summary-value">
+          {% if mount_latest_scan %}
+            {{ mount_latest_scan.filesystem_scan_at|default:mount_latest_scan.finished_at|default:mount_latest_scan.created_at|date:"Y-m-d H:i:s" }}
+          {% else %}
+            -
+          {% endif %}
+        </span>
+      </div>
     </div>
 
-    {% if capacity.total %}
+    <div class="storage-metadata-strip">
+      {% for cell in metadata_cells %}
+        <div class="storage-metadata-cell">
+          <span class="storage-metadata-label">{{ cell.label }}</span>
+          <span>{{ cell.value }}</span>
+        </div>
+      {% endfor %}
+      <div class="storage-metadata-cell">
+        <span class="storage-metadata-label">Nodes</span>
+        <span><a href="{{ nodes_tab_url }}">{{ scope_nodes|length }}</a></span>
+      </div>
+      <div class="storage-metadata-cell">
+        <span class="storage-metadata-label">Active</span>
+        <span>{% if storage_active %}Yes{% else %}No{% endif %}</span>
+      </div>
+      <div class="storage-metadata-cell">
+        <span class="storage-metadata-label">Enabled</span>
+        <span>{{ storage_enabled|yesno:"Yes,No" }}</span>
+      </div>
+      <div class="storage-metadata-cell">
+        <span class="storage-metadata-label">Volume coverage</span>
+        <span>{% if catalog_view.coverage_complete %}Complete{% else %}{{ catalog_view.coverage_reason|default:"Incomplete" }}{% endif %}</span>
+      </div>
+    </div>
+
+    <div class="split-view">
       <div class="panel">
-        <div class="api-capacity">
-          <div class="usage-bar-bg" role="img" aria-label="{{ capacity.used_pct|default:0 }}% used">
-            <div class="usage-bar-fill{% if capacity.used_pct >= 90 %} danger{% elif capacity.used_pct >= 75 %} warning{% endif %}" style="width: {{ capacity.used_pct|default:0 }}%;"></div>
-          </div>
-        </div>
+        <div class="panel-heading">Classification</div>
+        {% if mount_unavailable_reason %}
+          <p class="muted panel-empty-note">{{ mount_unavailable_reason }} File classification comes from pve-helper's own scan of a registered mount.</p>
+        {% elif not mount_latest_scan %}
+          <p class="muted panel-empty-note">No scan has run for this datastore yet.</p>
+        {% else %}
+          {% include "core/partials/classification_legend.html" %}
+          {% include "core/partials/classification_counts.html" %}
+        {% endif %}
       </div>
-    {% endif %}
 
-    <div class="panel panel-spaced">
-      <div class="panel-heading">
-        <div>
-          <h2>Proxmox catalog</h2>
-          <p class="panel-meta">Layer 1 &mdash; what Proxmox reports through the API.</p>
-        </div>
+      <div class="panel storage-gate-panel">
+        <div class="panel-heading">Storage Gate</div>
+        {% if mount_unavailable_reason %}
+          <p class="muted panel-empty-note">{{ mount_unavailable_reason }} The shared gate only applies to a datastore pve-helper has its own mount for.</p>
+        {% else %}
+          {% include "core/partials/storage_gate_help.html" %}
+          <dl class="details-list">
+            <dt>Status</dt>
+            <dd>
+              {% if gate_status.status %}
+                <span class="badge {% if gate_status.ok %}completed{% else %}warning{% endif %}">{{ gate_status.status }}</span>
+              {% else %}
+                <span class="muted">No scan data</span>
+              {% endif %}
+            </dd>
+            <dt>Expected Consumers</dt>
+            <dd>{{ gate_status.expected_consumers|join:", "|default:"-" }}</dd>
+            {% if gate_status.missing_consumers %}
+              <dt>Missing Consumers</dt>
+              <dd>{{ gate_status.missing_consumers|join:", " }}</dd>
+            {% endif %}
+          </dl>
+          {% if consumers %}
+            <table class="data-table compact table-spaced">
+              <thead>
+                <tr><th>Node</th><th>Gate</th><th>Last Scan</th></tr>
+              </thead>
+              <tbody>
+                {% for consumer in consumers %}
+                  <tr>
+                    <td>{{ consumer.expected_node_name }}</td>
+                    <td><span class="badge {% if consumer.last_gate_status == 'ok' %}completed{% else %}failed{% endif %}">{{ consumer.last_gate_status|default:"-" }}</span></td>
+                    <td>{{ consumer.last_successful_inventory_scan|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% endif %}
+        {% endif %}
       </div>
-      <dl class="details-list">
-        <div><dt>Scope</dt><dd>{{ datastore_scope_label }}</dd></div>
-        <div>
-          <dt>Nodes</dt>
-          <dd><a href="{{ nodes_tab_url }}">{{ scope_nodes|length }} node{{ scope_nodes|length|pluralize }}</a></dd>
-        </div>
-        <div><dt>Type</dt><dd>{{ storage_type|default:"-" }}</dd></div>
-        <div><dt>Content</dt><dd>{% for c in content_types %}<span class="badge">{{ c }}</span> {% empty %}-{% endfor %}</dd></div>
-        <div><dt>Shared</dt><dd>{{ storage_shared|yesno:"Yes,No" }}</dd></div>
-        <div><dt>Active</dt><dd>{% if storage_active %}<span class="badge completed">Active</span>{% else %}<span class="badge">Inactive</span>{% endif %}</dd></div>
-        <div><dt>Enabled</dt><dd>{{ storage_enabled|yesno:"Yes,No" }}</dd></div>
-        <div><dt>Volumes</dt><dd>{{ volume_count }}</dd></div>
-        <div><dt>Guests using it</dt><dd>{{ guest_count }}</dd></div>
-      </dl>
-    </div>
-
-    <div class="panel panel-spaced">
-      <div class="panel-heading">
-        <div>
-          <h2>PVE-helper file access</h2>
-          <p class="panel-meta">Layer 2 &mdash; what pve-helper can read through its own mount.</p>
-        </div>
-      </div>
-      {% if catalog_view.mount %}
-        <dl class="details-list">
-          <div><dt>File browser</dt><dd><span class="badge completed">Available</span></dd></div>
-          <div><dt>Mount</dt><dd>{{ catalog_view.mount.display_name }}</dd></div>
-          <div><dt>Backend identity</dt><dd><code>{{ catalog_view.mount.backend_identity|default:"-" }}</code></dd></div>
-          <div><dt>Filesystem</dt><dd>{{ catalog_view.mount.filesystem_type|default:"-" }}</dd></div>
-          <div>
-            <dt>Writable</dt>
-            <dd>{% if catalog_view.capabilities.can_write_files %}Yes{% else %}No &mdash; {{ catalog_view.capabilities.write_files_reason }}{% endif %}</dd>
-          </div>
-        </dl>
-      {% else %}
-        <p class="muted panel-empty-note">{{ catalog_view.capabilities.browse_files_reason|default:"No host mount is registered for this datastore." }}</p>
-      {% endif %}
     </div>
   </section>
 {% endblock %}

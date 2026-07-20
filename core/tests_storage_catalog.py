@@ -1306,3 +1306,73 @@ class DatastoreNavHighlightTests(TestCase):
         self.assertNotIn("active", overview)
         # The Storage module itself must still read as the current one.
         self.assertIn("active-module", html)
+
+
+class DatastorePageKeepsEveryPanelTests(TestCase):
+    """The merged page must not quietly show less than the page it replaced.
+
+    Moving the tabs across is easy to do half-way: the shell renders, every tab
+    answers 200, and several panels are simply gone. This asserts the panels by
+    name, so dropping one fails here instead of being noticed in a screenshot.
+    """
+
+    SUMMARY_PANELS = ("Filesystem", "Access", "Latest Scan", "Classification", "Storage Gate")
+    CONFIGURE_PANELS = ("Proxmox Configuration", "App Configuration", "Filesystem")
+    METADATA_LABELS = ("Type", "Server", "Export", "PVE Path", "Content", "Options", "Preallocation", "Shared")
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="panels", display_name="Panels", enabled=True)
+        self.definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="TrueNAS-FS",
+            storage_type="nfs",
+            shared=True,
+            present=True,
+            content=["images", "iso"],
+            config={"storage": "TrueNAS-FS", "type": "nfs", "server": "10.10.20.10", "export": "/mnt/Pool/Proxmox"},
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=self.definition,
+            node="pve1",
+            present=True,
+            active=True,
+            enabled=True,
+            total_bytes=1000,
+            used_bytes=400,
+            available_bytes=600,
+        )
+
+    def test_summary_carries_every_panel_the_mount_page_had(self):
+        response = self.client.get("/clusters/panels/datastores/TrueNAS-FS/summary/")
+
+        for panel in self.SUMMARY_PANELS:
+            with self.subTest(panel=panel):
+                self.assertContains(response, panel)
+
+    def test_configuration_carries_every_panel_the_mount_page_had(self):
+        response = self.client.get("/clusters/panels/datastores/TrueNAS-FS/configure/")
+
+        for panel in self.CONFIGURE_PANELS:
+            with self.subTest(panel=panel):
+                self.assertContains(response, panel)
+
+    def test_the_definition_fields_come_from_the_catalog_not_a_filesystem_scan(self):
+        """The mount page read these from scan-derived `StorageMount.details` and
+        rendered a row of dashes on exactly the datastores that do have a
+        definition. The catalog holds the real values, so they are filled in."""
+        response = self.client.get("/clusters/panels/datastores/TrueNAS-FS/summary/")
+
+        for label in self.METADATA_LABELS:
+            with self.subTest(label=label):
+                self.assertContains(response, label)
+        self.assertContains(response, "10.10.20.10")
+        self.assertContains(response, "/mnt/Pool/Proxmox")
+        self.assertContains(response, "images, iso")
+
+    def test_the_mount_only_panels_say_why_they_are_empty(self):
+        """Without a registered mount the panels stay, and each states its reason
+        rather than vanishing and changing the shape of the page."""
+        response = self.client.get("/clusters/panels/datastores/TrueNAS-FS/configure/")
+
+        self.assertContains(response, "App Configuration")
+        self.assertContains(response, "No host mount is registered")

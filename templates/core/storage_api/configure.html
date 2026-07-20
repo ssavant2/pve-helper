@@ -2,17 +2,65 @@
 
 {% block api_storage_content %}
   <section class="storage-tab-content">
-    <div class="panel">
-      <div class="panel-heading"><span>Proxmox Configuration</span></div>
-      <p class="panel-meta">Read-only storage definition from the latest scan. Edit content types on the Content tab.</p>
-      {% if config_rows %}
+    <div class="split-view">
+      <div class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Proxmox Configuration</h2>
+            <p class="panel-meta">Layer 1 &mdash; the storage definition, read-only. Edit content types on the Content Types tab.</p>
+          </div>
+        </div>
         <dl class="details-list">
-          {% for row in config_rows %}
-            <div><dt>{{ row.key }}</dt><dd>{{ row.value }}</dd></div>
+          {% for cell in metadata_cells %}
+            <div><dt>{{ cell.label }}</dt><dd>{{ cell.value }}</dd></div>
           {% endfor %}
+          <div><dt>Active</dt><dd>{% if storage_active %}<span class="badge completed">Yes</span>{% else %}<span class="badge">No</span>{% endif %}</dd></div>
+          <div><dt>Enabled</dt><dd>{{ storage_enabled|yesno:"Yes,No" }}</dd></div>
+        </dl>
+        {% if config_rows %}
+          <div class="panel-heading panel-spaced"><span>Other definition keys</span></div>
+          <dl class="details-list">
+            {% for row in config_rows %}
+              <div><dt>{{ row.key }}</dt><dd>{{ row.value }}</dd></div>
+            {% endfor %}
+          </dl>
+        {% endif %}
+      </div>
+
+      <div class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>App Configuration</h2>
+            <p class="panel-meta">Layer 2 &mdash; pve-helper's own mount registration. Change it under PVE-helper Settings &rarr; Storage access.</p>
+          </div>
+        </div>
+        {% if mount %}
+          <dl class="details-list">
+            <div><dt>Storage ID</dt><dd>{{ mount.storage_id }}</dd></div>
+            <div><dt>Display Name</dt><dd>{{ mount.display_name }}</dd></div>
+            <div><dt>Backend identity</dt><dd><code>{{ mount.backend_identity|default:"-" }}</code></dd></div>
+            <div><dt>Container Path</dt><dd>{{ mount.path }}</dd></div>
+            <div><dt>Trash Path</dt><dd>{{ mount.trash_path|default:"-" }}</dd></div>
+            <div><dt>Expected Consumers</dt><dd>{{ mount.expected_consumers|join:", "|default:"-" }}</dd></div>
+            <div><dt>Enabled</dt><dd>{% if mount.enabled %}<span class="badge completed">Yes</span>{% else %}<span class="badge failed">No</span>{% endif %}</dd></div>
+          </dl>
+        {% else %}
+          <p class="muted panel-empty-note">{{ mount_unavailable_reason }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel panel-spaced">
+      <div class="panel-heading"><span>Filesystem</span></div>
+      {% if mount %}
+        <dl class="details-list">
+          <div><dt>Filesystem Type</dt><dd>{{ mount.space_info.filesystem_type|default:"-" }}</dd></div>
+          <div><dt>Source</dt><dd>{{ mount.space_info.source|default:"-" }}</dd></div>
+          <div><dt>Mount Point</dt><dd>{{ mount.space_info.mount_point|default:"-" }}</dd></div>
+          <div><dt>Access Mode</dt><dd><span class="badge {{ mount.space_info.access_class }}">{{ mount.space_info.access_label }}</span></dd></div>
         </dl>
       {% else %}
-        <p class="empty-state">No storage configuration in the latest scan.</p>
+        <p class="muted panel-empty-note">{{ mount_unavailable_reason }}</p>
       {% endif %}
     </div>
   </section>

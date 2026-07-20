@@ -78,52 +78,7 @@
       <div class="panel">
         <div class="panel-heading">Classification</div>
         {% include "core/partials/classification_legend.html" %}
-        <table class="data-table compact">
-          <thead>
-            <tr>
-              <th>Classification</th>
-              <th>Count</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><span class="badge referenced">Referenced</span></td>
-              <td>{{ classification_counts.referenced|default:0 }}</td>
-            </tr>
-            <tr>
-              <td><span class="badge likely_orphan">Likely Orphan</span></td>
-              <td>{{ classification_counts.likely_orphan|default:0 }}</td>
-            </tr>
-            <tr>
-              <td><span class="badge unknown">Unknown</span></td>
-              <td>{{ classification_counts.unknown|default:0 }}</td>
-            </tr>
-            <tr>
-              <td><span class="badge classification_blocked">Blocked</span></td>
-              <td>{{ classification_counts.classification_blocked|default:0 }}</td>
-            </tr>
-            <tr>
-              <td><span class="badge trash">Trash</span></td>
-              <td>{{ classification_counts.trash|default:0 }}</td>
-            </tr>
-            <tr>
-              <td><span class="badge infrastructure">Infrastructure</span></td>
-              <td>{{ classification_counts.infrastructure|default:0 }}</td>
-            </tr>
-            <tr>
-              <td><span class="badge proxmox_content">Proxmox content</span></td>
-              <td>{{ classification_counts.proxmox_content|default:0 }}</td>
-            </tr>
-            <tr>
-              <td><span class="badge import_source">Import source</span></td>
-              <td>{{ classification_counts.import_source|default:0 }}</td>
-            </tr>
-            <tr class="total-row">
-              <td><strong>Total Files</strong></td>
-              <td><strong>{{ total_file_count }}</strong></td>
-            </tr>
-          </tbody>
-        </table>
+        {% include "core/partials/classification_counts.html" %}
       </div>
 
       <div class="panel storage-gate-panel">

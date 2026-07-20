@@ -693,6 +693,74 @@ def storage_api_inventory(request, cluster_key: str, storage: str, node: str = "
     return _datastore_redirect(request, "core:api_storage_summary", cluster, storage, node)
 
 
+def _datastore_metadata(definition) -> list[dict]:
+    """The Proxmox definition's headline fields, in a fixed order.
+
+    Read from the catalog rather than from a filesystem scan: the mount page took
+    these from scan-derived `StorageMount.details`, which is empty for most
+    backends and rendered a row of dashes on exactly the datastores that do have
+    a definition to show.
+    """
+    config = dict((definition.config or {}) if definition is not None else {})
+
+    def value(*names: str) -> str:
+        for name in names:
+            found = str(config.get(name) or "").strip()
+            if found:
+                return found
+        return ""
+
+    return [
+        {"label": "Type", "value": (definition.storage_type if definition else "") or "-"},
+        {"label": "Server", "value": value("server", "portal", "monhost") or "-"},
+        {"label": "Export", "value": value("export", "share", "volume", "datastore", "pool", "vgname") or "-"},
+        {"label": "PVE Path", "value": value("path") or "-"},
+        {"label": "Content", "value": ", ".join(definition.content) if definition and definition.content else "-"},
+        {"label": "Options", "value": value("options") or "-"},
+        {"label": "Preallocation", "value": value("preallocation") or "-"},
+        {"label": "Shared", "value": ("Yes" if definition.shared else "No") if definition else "-"},
+    ]
+
+
+def _datastore_mount_facts(request, view):
+    """Everything the page can only know through pve-helper's own mount.
+
+    Returns the mount, its latest scan and the panels' data, or the single line
+    that explains why a datastore has none of it. Keeping the reason beside the
+    data is what lets every tab render the same shape for every backend.
+    """
+    mount = view.mount if view is not None else None
+    if mount is None:
+        return {
+            "mount": None,
+            "mount_latest_scan": None,
+            "classification_counts": {},
+            "total_file_count": 0,
+            "gate_status": {},
+            "consumers": [],
+            "mount_unavailable_reason": _no_mount_reason(view, "Filesystem details"),
+        }
+    _decorate_storage_with_space_info(mount)
+    latest_scan = _latest_storage_result_scan(mount)
+    counts = (
+        _classification_counts(FileInventory.objects.filter(scan_run=latest_scan, storage=mount))
+        if latest_scan
+        else {}
+    )
+    gate_status = {}
+    if latest_scan and latest_scan.storage_gate_status:
+        gate_status = latest_scan.storage_gate_status.get(mount.storage_id, {})
+    return {
+        "mount": mount,
+        "mount_latest_scan": latest_scan,
+        "classification_counts": counts,
+        "total_file_count": sum(counts.values()),
+        "gate_status": gate_status,
+        "consumers": list(mount.consumer_statuses.order_by("expected_node_name")),
+        "mount_unavailable_reason": "",
+    }
+
+
 @app_login_required
 def api_storage_summary(request, cluster_key: str, storage: str, node: str = ""):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
@@ -702,7 +770,14 @@ def api_storage_summary(request, cluster_key: str, storage: str, node: str = "")
     context = _api_storage_context(cluster, definition, storage, node, "summary")
     volumes, _found, _error = _api_storage_volumes(cluster, definition, node)
     vmids = {str(v["vmid"]) for v in volumes if v.get("vmid")}
-    context.update({"volume_count": len(volumes), "guest_count": len(vmids)})
+    context.update(
+        {
+            "volume_count": len(volumes),
+            "guest_count": len(vmids),
+            "metadata_cells": _datastore_metadata(definition),
+            **_datastore_mount_facts(request, context["catalog_view"]),
+        }
+    )
     return render(request, "core/storage_api/summary.html", context)
 
 
@@ -926,7 +1001,14 @@ def api_storage_configure(request, cluster_key: str, storage: str, node: str = "
         for key in sorted(config)
         if key not in skip and config[key] not in ("", None, [])
     ]
-    context.update({"storage_config": config, "config_rows": config_rows})
+    context.update(
+        {
+            "storage_config": config,
+            "config_rows": config_rows,
+            "metadata_cells": _datastore_metadata(definition),
+            **_datastore_mount_facts(request, context["catalog_view"]),
+        }
+    )
     return render(request, "core/storage_api/configure.html", context)
 
 
