@@ -1174,6 +1174,102 @@ class TrashDirectoryConventionTests(TestCase):
             self.assertIn("legacy-fs", logs.output[0])
 
 
+class StorageFoundationBackfillRemediationTests(TestCase):
+    """Migration 0018 refuses to guess, so its message is the whole handover.
+
+    Whoever sees it is mid-upgrade with a database between two releases. A bare
+    primary key tells them nothing about which table to open or what a valid
+    resolution looks like, so every abort names the conflicting values and the
+    runbook section that explains them.
+    """
+
+    RUNBOOK_HEADING = "Upgrade halted by the storage foundation backfill"
+
+    def _run_backfill(self):
+        from importlib import import_module
+
+        migration = import_module("core.migrations.0018_storage_catalog_foundation")
+        migration.backfill_storage_foundation(apps, None)
+
+    def _mount(self, storage_id="truenas-fs"):
+        return StorageMount.objects.create(
+            storage_id=storage_id,
+            display_name=storage_id,
+            export=f"nas:/mnt/{storage_id}",
+            path=f"/storages/{storage_id}",
+        )
+
+    def test_the_runbook_section_the_messages_point_at_exists(self):
+        runbook = (Path(settings.BASE_DIR) / "docs" / "deployment-runbook.md").read_text(encoding="utf-8")
+
+        self.assertIn(f"## {self.RUNBOOK_HEADING}", runbook)
+
+    def test_unattributable_trash_item_names_its_storage_id_and_the_runbook(self):
+        self._mount()
+        TrashItem.objects.create(
+            original_path="/storages/gone/template/iso/old.iso",
+            trash_path="/storages/gone/.trash/pve-helper/20260101T000000Z/old.iso",
+            storage_id="storage-that-was-removed",
+        )
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._run_backfill()
+
+        message = str(raised.exception)
+        self.assertIn("cannot be attributed to a unique storage mount", message)
+        self.assertIn("storage-that-was-removed", message)
+        self.assertIn(self.RUNBOOK_HEADING, message)
+        self.assertIn("deployment-runbook.md", message)
+
+    def test_unattributable_consumer_names_its_storage_and_the_runbook(self):
+        cluster = ProxmoxCluster.objects.create(key="cluster-0018", display_name="Cluster 0018")
+        ProxmoxStorageConsumer.objects.create(
+            storage=self._mount("never-scanned"),
+            cluster=cluster,
+            expected_node_name="pve1",
+        )
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._run_backfill()
+
+        message = str(raised.exception)
+        self.assertIn("cannot be attributed to a cluster storage definition", message)
+        self.assertIn("never-scanned", message)
+        self.assertIn(self.RUNBOOK_HEADING, message)
+
+    def test_conflicting_consumers_name_both_mounts_and_the_runbook(self):
+        cluster = ProxmoxCluster.objects.create(key="cluster-0018", display_name="Cluster 0018")
+        first = self._mount("shared-a")
+        second = self._mount("shared-b")
+        # Both host mounts claim the same shared cluster storage; the catalog can
+        # hold one, so the backfill must stop rather than pick.
+        for storage_id in ("shared-a", "shared-b"):
+            ClusterStorage.objects.create(
+                cluster=cluster,
+                storage_id=storage_id,
+                storage_type="nfs",
+                shared=True,
+                present=True,
+            )
+        for mount in (first, second):
+            ProxmoxStorageConsumer.objects.create(storage=mount, cluster=cluster, expected_node_name="pve1")
+        ClusterStorageMount.objects.create(
+            cluster_storage=ClusterStorage.objects.get(cluster=cluster, storage_id="shared-a"),
+            node=None,
+            mount=second,
+            scope="shared",
+        )
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._run_backfill()
+
+        message = str(raised.exception)
+        self.assertIn("map one cluster storage scope to multiple mounts", message)
+        self.assertIn("shared-a", message)
+        self.assertIn(f"mount {second.pk}", message)
+        self.assertIn(self.RUNBOOK_HEADING, message)
+
+
 class ClassificationTests(SimpleTestCase):
     def test_extracts_disk_references_from_nested_snapshot_config(self):
         config = {

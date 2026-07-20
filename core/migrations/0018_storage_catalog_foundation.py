@@ -6,6 +6,15 @@ import django.db.models.deletion
 from django.db import migrations, models
 
 
+# This backfill refuses to guess: legacy rows that cannot be attributed to
+# exactly one target abort the migration instead of being attached to a
+# plausible neighbour. Whoever hits that is mid-upgrade and needs to know what
+# to inspect, so every such message names this section, not just a primary key.
+REMEDIATION = (
+    "See 'Upgrade halted by the storage foundation backfill' in docs/deployment-runbook.md."
+)
+
+
 def _truthy(value):
     return str(value or "").lower() in {"1", "true", "yes", "on"}
 
@@ -75,7 +84,8 @@ def backfill_storage_foundation(apps, schema_editor):
         mount = mounts_by_legacy_id.get(str(storage_id))
         if mount is None:
             raise RuntimeError(
-                f"Trash item {item.pk} cannot be attributed to a unique storage mount."
+                f"Trash item {item.pk} cannot be attributed to a unique storage mount: "
+                f"no StorageMount has storage_id={storage_id!r}. {REMEDIATION}"
             )
         item.mount_id = mount.pk
         item.save(update_fields=["mount"])
@@ -157,8 +167,9 @@ def backfill_storage_foundation(apps, schema_editor):
         ).first()
         if definition is None:
             raise RuntimeError(
-                "Storage consumer cannot be attributed to a cluster storage "
-                f"definition: consumer={consumer.pk}."
+                "Storage consumer cannot be attributed to a cluster storage definition: "
+                f"consumer={consumer.pk}, cluster={consumer.cluster_id}, "
+                f"storage_id={consumer.storage.storage_id!r}. {REMEDIATION}"
             )
         if definition.shared:
             binding, _ = ClusterStorageMount.objects.get_or_create(
@@ -175,7 +186,9 @@ def backfill_storage_foundation(apps, schema_editor):
         if binding.mount_id != consumer.storage_id:
             raise RuntimeError(
                 "Storage consumers map one cluster storage scope to multiple mounts: "
-                f"consumer={consumer.pk}."
+                f"consumer={consumer.pk}, storage_id={consumer.storage.storage_id!r}, "
+                f"scope claims mount {binding.mount_id} and mount {consumer.storage_id}. "
+                f"{REMEDIATION}"
             )
 
 
