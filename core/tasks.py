@@ -68,7 +68,7 @@ from .services.storage_actions import (
     purge_trash_item,
 )
 from .services.storage_catalog import (
-    classify_mounted_volume,
+    MountedVolumeClassifier,
     refresh_storage_catalog,
     refresh_storage_metadata,
     refresh_storage_volumes,
@@ -1606,6 +1606,9 @@ def _run_scan(scan: ScanRun) -> None:
             str(storage_mount_root(storage)),
             ignored_paths=ignored_relative_paths_for_storage(storage),
         )
+        # Built once per storage: every disk on this mount is classified against
+        # the same bindings, storage views and guest references.
+        volume_classifier = MountedVolumeClassifier(storage)
         for entry in scanner.iter_entries():
             classification = classify_entry(
                 relative_path=entry.relative_path,
@@ -1619,7 +1622,7 @@ def _run_scan(scan: ScanRun) -> None:
             )
             legacy_classification = classification
             if entry.content_category in {"vm_disk", "base_image"}:
-                catalog_classification = classify_mounted_volume(storage, entry.relative_path)
+                catalog_classification = volume_classifier.classify(entry.relative_path)
                 if catalog_classification is not None:
                     classification = catalog_classification
                     classification.evidence["comparison"] = {

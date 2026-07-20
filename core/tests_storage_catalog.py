@@ -15,6 +15,7 @@ from core.models import (
     ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
     CurrentGuestInventory,
+    FileInventory,
     ProxmoxCluster,
     StorageCatalogState,
     StorageMount,
@@ -28,9 +29,11 @@ from core.services.refs import (
 )
 from core.services.storage_backends import backend_profile
 from core.services.storage_catalog import (
+    MountedVolumeClassifier,
     StorageCatalogChanged,
     StorageOperationScope,
     UsageState,
+    classify_mounted_volume,
     refresh_storage_metadata,
     refresh_storage_volumes,
     storage_view,
@@ -705,6 +708,79 @@ class StorageCatalogTests(TestCase):
         )
         incomplete = usage_preflight(shared, volid="shared:100/vm-100-disk-0.qcow2", fresh=False)
         self.assertEqual(incomplete.state, UsageState.UNKNOWN)
+
+    def test_classifying_many_volumes_of_one_mount_costs_one_setup(self):
+        """A scan classifies every disk it finds; the setup must not repeat.
+
+        The per-file cost used to include a storage view, the catalog state and a
+        full pass over the cluster's guests — identical work, once per disk, so a
+        larger datastore paid quadratically. Everything except the volume id is
+        resolved when the classifier is built, which makes classify() a pure
+        lookup: zero queries, no matter how many disks follow.
+        """
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        mount = StorageMount.objects.create(
+            storage_id="shared-hint",
+            display_name="Shared backend",
+            path="/storages/shared",
+            relative_path="shared",
+            backend_identity="nfs:server:/export",
+        )
+        bind_storage_mount(cluster_storage=shared, mount=mount)
+        CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
+            node="pve1",
+            object_type="vm",
+            vmid=100,
+            disk_references=["shared:100/vm-100-disk-0.qcow2"],
+            observed_at=timezone.now(),
+        )
+
+        classifier = MountedVolumeClassifier(mount)
+        with self.assertNumQueries(0):
+            referenced = classifier.classify("images/100/vm-100-disk-0.qcow2")
+            for index in range(20):
+                classifier.classify(f"images/900/vm-900-disk-{index}.qcow2")
+
+        self.assertEqual(referenced.classification, FileInventory.Classification.REFERENCED)
+
+    def test_classifier_and_single_volume_helper_agree(self):
+        # The one-shot helper must stay a thin wrapper: two implementations of a
+        # gate that authorizes destructive file actions would drift.
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        mount = StorageMount.objects.create(
+            storage_id="shared-hint",
+            display_name="Shared backend",
+            path="/storages/shared",
+            relative_path="shared",
+            backend_identity="nfs:server:/export",
+        )
+        bind_storage_mount(cluster_storage=shared, mount=mount)
+
+        classifier = MountedVolumeClassifier(mount)
+        for relative_path in ("images/100/vm-100-disk-0.qcow2", "images/900/vm-900-disk-0.qcow2"):
+            with self.subTest(relative_path=relative_path):
+                one_shot = classify_mounted_volume(mount, relative_path)
+                reused = classifier.classify(relative_path)
+                self.assertEqual(one_shot.classification, reused.classification)
+                self.assertEqual(one_shot.reason, reused.reason)
+                self.assertEqual(one_shot.evidence, reused.evidence)
+
+    def test_unbound_mount_has_nothing_to_classify(self):
+        mount = StorageMount.objects.create(
+            storage_id="orphan-hint",
+            display_name="Unbound",
+            path="/storages/orphan",
+            relative_path="orphan",
+        )
+
+        classifier = MountedVolumeClassifier(mount)
+
+        self.assertIsNone(classifier.classify("images/100/vm-100-disk-0.qcow2"))
 
     def test_usage_preflight_refuses_unverified_mount_identity(self):
         self._metadata()

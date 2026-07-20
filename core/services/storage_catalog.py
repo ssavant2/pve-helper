@@ -11,7 +11,7 @@ import json
 import logging
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 from urllib.parse import quote
@@ -102,6 +102,38 @@ class UsagePreflight:
     @property
     def permits_destructive_action(self) -> bool:
         return self.state is UsageState.UNREFERENCED
+
+
+@dataclass(frozen=True)
+class _GuestReferences:
+    """Guest labels indexed by the volume they reference, for one storage."""
+
+    by_volid: dict[str, set[str]] = field(default_factory=dict)
+    any_volume: set[str] = field(default_factory=set)
+
+    def matching(self, volid: str) -> set[str]:
+        # An empty volid asks "is anything on this storage referenced?", which is
+        # how the destructive-action gate asks about a whole storage.
+        return self.by_volid.get(volid, set()) if volid else self.any_volume
+
+
+@dataclass(frozen=True)
+class _CandidateScope:
+    """One other cluster's instance of the same physical backend."""
+
+    cluster_key: str
+    storage_id: str = ""
+    incomplete: bool = False
+    references: _GuestReferences = field(default_factory=_GuestReferences)
+
+
+@dataclass(frozen=True)
+class _UsageScope:
+    token: str
+    unknown_reason: str = ""
+    references: _GuestReferences = field(default_factory=_GuestReferences)
+    candidate_reason: str = ""
+    candidates: tuple[_CandidateScope, ...] = ()
 
 
 def _list(value: Any) -> list[str]:
@@ -957,23 +989,43 @@ class StorageOperationScope:
         return result
 
 
-def usage_preflight(
-    definition: ClusterStorage,
-    *,
-    volid: str = "",
-    node: str = "",
-    fresh: bool = True,
-) -> UsagePreflight:
-    if fresh:
-        refresh_storage_catalog(definition.cluster)
-        definition.refresh_from_db()
+def _guest_references(cluster: ProxmoxCluster, storage_id: str, node: str, shared: bool) -> _GuestReferences:
+    """Which guests reference which volume of one storage, read in a single pass.
+
+    Answering this per volume meant re-reading every guest row of the cluster per
+    volume. The set does not depend on the volume, so it is built once and then
+    looked up.
+    """
+    by_volid: dict[str, set[str]] = {}
+    any_volume: set[str] = set()
+    prefix = f"{storage_id}:"
+    rows = CurrentGuestInventory.objects.filter(cluster=cluster)
+    if node and not shared:
+        rows = rows.filter(node=node)
+    for guest in rows.only("object_type", "vmid", "disk_references"):
+        label = f"{guest.object_type}:{guest.vmid}"
+        for reference in guest.disk_references or []:
+            reference = str(reference)
+            if reference.startswith(prefix):
+                by_volid.setdefault(reference, set()).add(label)
+                any_volume.add(label)
+    return _GuestReferences(by_volid=by_volid, any_volume=any_volume)
+
+
+def _usage_scope(definition: ClusterStorage, node: str) -> _UsageScope:
+    """Everything a usage decision needs that does not depend on the volume.
+
+    Building this is the expensive half — a storage view, the catalog state, one
+    pass over the cluster's guests, and the same again for every other cluster
+    that may be the same physical backend. A caller classifying many volumes of
+    one storage builds it once; `usage_preflight` builds it for a single call.
+    """
     view = storage_view(definition, node=node)
     state = StorageCatalogState.objects.filter(cluster=definition.cluster).first()
     if state is None:
-        return UsagePreflight(
-            UsageState.UNKNOWN,
-            "Storage catalog has not completed its first refresh.",
-            f"::{definition.cluster.key}:{definition.storage_id}:{node}",
+        return _UsageScope(
+            token=f"::{definition.cluster.key}:{definition.storage_id}:{node}",
+            unknown_reason="Storage catalog has not completed its first refresh.",
         )
     token = ":".join(
         str(value or "")
@@ -986,51 +1038,76 @@ def usage_preflight(
         )
     )
     if not view.coverage_complete:
-        return UsagePreflight(UsageState.UNKNOWN, view.coverage_reason, token)
+        return _UsageScope(token=token, unknown_reason=view.coverage_reason)
 
-    references: set[str] = set()
-    prefix = f"{definition.storage_id}:"
-    guest_rows = CurrentGuestInventory.objects.filter(cluster=definition.cluster)
-    if node and not definition.shared:
-        guest_rows = guest_rows.filter(node=node)
-    for guest in guest_rows.only("object_type", "vmid", "disk_references"):
-        if any(str(ref).startswith(prefix) and (not volid or str(ref) == volid) for ref in guest.disk_references or []):
-            references.add(f"{guest.object_type}:{guest.vmid}")
+    references = _guest_references(definition.cluster, definition.storage_id, node, definition.shared)
+    candidates, candidate_reason = _cross_cluster_candidates(definition)
+    if candidate_reason:
+        return _UsageScope(token=token, references=references, candidate_reason=candidate_reason)
+
+    # Candidate order is significant: an incomplete candidate encountered before
+    # a matching one makes the whole answer UNKNOWN, so the decision walks this
+    # tuple in the order the candidate query produced it.
+    scopes: list[_CandidateScope] = []
+    for other, other_node in candidates:
+        if not storage_view(other, node=other_node).coverage_complete:
+            scopes.append(_CandidateScope(cluster_key=other.cluster.key, incomplete=True))
+            continue
+        scopes.append(
+            _CandidateScope(
+                cluster_key=other.cluster.key,
+                storage_id=other.storage_id,
+                references=_guest_references(other.cluster, other.storage_id, other_node, other.shared),
+            )
+        )
+    return _UsageScope(token=token, references=references, candidates=tuple(scopes))
+
+
+def _usage_decision(scope: _UsageScope, volid: str) -> UsagePreflight:
+    if scope.unknown_reason:
+        return UsagePreflight(UsageState.UNKNOWN, scope.unknown_reason, scope.token)
+
+    references = scope.references.matching(volid)
     if references:
         return UsagePreflight(
-            UsageState.REFERENCED, "Storage content is referenced by guests.", token, tuple(sorted(references))
+            UsageState.REFERENCED, "Storage content is referenced by guests.", scope.token, tuple(sorted(references))
         )
-
-    candidates, unknown_reason = _cross_cluster_candidates(definition)
-    if unknown_reason:
-        return UsagePreflight(UsageState.UNKNOWN, unknown_reason, token)
+    if scope.candidate_reason:
+        return UsagePreflight(UsageState.UNKNOWN, scope.candidate_reason, scope.token)
 
     relative = volid.split(":", 1)[1] if ":" in volid else ""
-    for other, other_node in candidates:
-        other_view = storage_view(other, node=other_node)
-        if not other_view.coverage_complete:
+    for candidate in scope.candidates:
+        if candidate.incomplete:
             return UsagePreflight(
                 UsageState.UNKNOWN,
                 "The same backend has incomplete coverage in another cluster.",
-                token,
+                scope.token,
             )
-        other_volid = f"{other.storage_id}:{relative}" if relative else ""
-        other_prefix = f"{other.storage_id}:"
-        guests = CurrentGuestInventory.objects.filter(cluster=other.cluster)
-        if other_node and not other.shared:
-            guests = guests.filter(node=other_node)
-        for guest in guests.only("object_type", "vmid", "disk_references"):
-            if any(
-                str(ref).startswith(other_prefix) and (not other_volid or str(ref) == other_volid)
-                for ref in guest.disk_references or []
-            ):
-                return UsagePreflight(
-                    UsageState.REFERENCED_ELSEWHERE,
-                    "The same backend is referenced by another cluster.",
-                    token,
-                    (f"{other.cluster.key}:{guest.object_type}:{guest.vmid}",),
-                )
-    return UsagePreflight(UsageState.UNREFERENCED, "Complete coverage found no references.", token)
+        other_volid = f"{candidate.storage_id}:{relative}" if relative else ""
+        matched = candidate.references.matching(other_volid)
+        if matched:
+            # Named deterministically. The old code reported whichever guest the
+            # unordered query happened to yield first.
+            return UsagePreflight(
+                UsageState.REFERENCED_ELSEWHERE,
+                "The same backend is referenced by another cluster.",
+                scope.token,
+                (f"{candidate.cluster_key}:{min(matched)}",),
+            )
+    return UsagePreflight(UsageState.UNREFERENCED, "Complete coverage found no references.", scope.token)
+
+
+def usage_preflight(
+    definition: ClusterStorage,
+    *,
+    volid: str = "",
+    node: str = "",
+    fresh: bool = True,
+) -> UsagePreflight:
+    if fresh:
+        refresh_storage_catalog(definition.cluster)
+        definition.refresh_from_db()
+    return _usage_decision(_usage_scope(definition, node), volid)
 
 
 def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[ClusterStorage, str]], str]:
@@ -1093,57 +1170,76 @@ def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[Cl
     return pairs, ""
 
 
+class MountedVolumeClassifier:
+    """Classifies many volumes of one host mount against the storage catalog.
+
+    A scan asks this per VM-disk file it finds, and everything except the volume
+    id is the same for all of them: the mount's bindings, each binding's storage
+    view, the guest references of every cluster involved, and which volumes
+    Proxmox actually reported. Resolving that per file made the scan quadratic in
+    datastore size — the cost grows with the number of disks, and each answer was
+    identical work. It is now resolved once, when the classifier is built.
+    """
+
+    def __init__(self, mount: StorageMount) -> None:
+        self._bindings = list(mount.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster"))
+        self._scopes = [
+            _usage_scope(binding.cluster_storage, binding.node or "") for binding in self._bindings
+        ]
+        self._observed: list[set[str]] = []
+        for binding in self._bindings:
+            observations = binding.cluster_storage.volume_observations
+            if binding.node:
+                observations = observations.filter(node=binding.node)
+            self._observed.append(set(observations.values_list("volid", flat=True)))
+
+    def classify(self, relative_path: str) -> ClassificationResult | None:
+        if not self._bindings:
+            return None
+        suffix = str(relative_path).lstrip("/").removeprefix("images/")
+        decisions = [
+            _usage_decision(scope, f"{binding.cluster_storage.storage_id}:{suffix}")
+            for binding, scope in zip(self._bindings, self._scopes, strict=True)
+        ]
+        evidence = {
+            "catalog_authoritative": True,
+            "catalog_decisions": [decision.state.value for decision in decisions],
+            "coverage_tokens": [decision.token for decision in decisions],
+        }
+        if any(decision.state in {UsageState.REFERENCED, UsageState.REFERENCED_ELSEWHERE} for decision in decisions):
+            return ClassificationResult(
+                FileInventory.Classification.REFERENCED,
+                "The API storage catalog found this volume referenced in an associated cluster.",
+                {},
+                evidence,
+            )
+        if any(decision.state is UsageState.UNKNOWN for decision in decisions):
+            return ClassificationResult(
+                FileInventory.Classification.CLASSIFICATION_BLOCKED,
+                "The API storage catalog lacks complete coverage for this volume.",
+                {},
+                evidence,
+            )
+        observed = any(
+            f"{binding.cluster_storage.storage_id}:{suffix}" in volids
+            for binding, volids in zip(self._bindings, self._observed, strict=True)
+        )
+        if not observed:
+            return ClassificationResult(
+                FileInventory.Classification.UNKNOWN,
+                "File resembles a VM disk but is absent from the complete Proxmox volume catalog.",
+                {},
+                evidence,
+            )
+        return ClassificationResult(
+            FileInventory.Classification.LIKELY_ORPHAN,
+            "Proxmox reports this volume, but complete catalog coverage found no guest reference.",
+            {},
+            evidence,
+        )
+
+
 def classify_mounted_volume(mount: StorageMount, relative_path: str) -> ClassificationResult | None:
-    bindings = list(mount.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster").all())
-    if not bindings:
-        return None
-    suffix = str(relative_path).lstrip("/").removeprefix("images/")
-    decisions: list[tuple[UsageState, str, str]] = []
-    for binding in bindings:
-        definition = binding.cluster_storage
-        preflight = usage_preflight(
-            definition,
-            volid=f"{definition.storage_id}:{suffix}",
-            node=binding.node or "",
-            fresh=False,
-        )
-        decisions.append((preflight.state, preflight.reason, preflight.token))
-    evidence = {
-        "catalog_authoritative": True,
-        "catalog_decisions": [state.value for state, _reason, _token in decisions],
-        "coverage_tokens": [token for _state, _reason, token in decisions],
-    }
-    if any(state in {UsageState.REFERENCED, UsageState.REFERENCED_ELSEWHERE} for state, _reason, _token in decisions):
-        return ClassificationResult(
-            FileInventory.Classification.REFERENCED,
-            "The API storage catalog found this volume referenced in an associated cluster.",
-            {},
-            evidence,
-        )
-    if any(state is UsageState.UNKNOWN for state, _reason, _token in decisions):
-        return ClassificationResult(
-            FileInventory.Classification.CLASSIFICATION_BLOCKED,
-            "The API storage catalog lacks complete coverage for this volume.",
-            {},
-            evidence,
-        )
-    observed = any(
-        binding.cluster_storage.volume_observations.filter(
-            volid=f"{binding.cluster_storage.storage_id}:{suffix}",
-            **({"node": binding.node} if binding.node else {}),
-        ).exists()
-        for binding in bindings
-    )
-    if not observed:
-        return ClassificationResult(
-            FileInventory.Classification.UNKNOWN,
-            "File resembles a VM disk but is absent from the complete Proxmox volume catalog.",
-            {},
-            evidence,
-        )
-    return ClassificationResult(
-        FileInventory.Classification.LIKELY_ORPHAN,
-        "Proxmox reports this volume, but complete catalog coverage found no guest reference.",
-        {},
-        evidence,
-    )
+    """Single-volume entry point. A caller with many volumes should build one
+    `MountedVolumeClassifier` instead of calling this in a loop."""
+    return MountedVolumeClassifier(mount).classify(relative_path)
