@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import uuid
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
@@ -43,6 +44,27 @@ class StorageActionError(Exception):
 
 class StorageOperationAborted(StorageActionError):
     """The published generation moved, so the remaining objects were not attempted."""
+
+
+@dataclass(frozen=True)
+class InflatePreflight:
+    """What the inflate preflight established, with each fact in its own field.
+
+    This used to be a `dict[str, object]`, which forced the caller to re-narrow
+    every value it read back (`str(...)`, `isinstance(..., Path)`) and put the
+    interpreter to execute in the same container as the operator-supplied image
+    path — so anything reading the dict inherited the path's provenance whether it
+    touched the path or not. The executable comes from `shutil.which`; the path
+    comes from a request. They are not the same kind of value and no longer travel
+    together.
+    """
+
+    qemu_img: str
+    path: Path
+    virtual_size_bytes: int
+    disk_size_bytes: int
+    target_preallocation: str
+    free_bytes: int
 
 
 def public_storage_upload_error(exc: StorageActionError) -> str:
@@ -619,7 +641,7 @@ def validate_inflate_storage_file(
     target_preallocation: str = INFLATE_PREALLOCATION_FULL,
     validate_owner_locally: bool = True,
     scope: StorageOperationScope | None = None,
-) -> dict[str, object]:
+) -> InflatePreflight:
     if target_preallocation not in INFLATE_PREALLOCATION_MODES:
         raise StorageActionError("Unknown inflate target.")
 
@@ -679,14 +701,14 @@ def validate_inflate_storage_file(
             f"Need at least {required_bytes} bytes free in the image directory."
         )
 
-    return {
-        "qemu_img": qemu_img,
-        "path": image_path,
-        "virtual_size_bytes": virtual_size,
-        "disk_size_bytes": disk_size,
-        "target_preallocation": target_preallocation,
-        "free_bytes": free_bytes,
-    }
+    return InflatePreflight(
+        qemu_img=qemu_img,
+        path=image_path,
+        virtual_size_bytes=virtual_size,
+        disk_size_bytes=disk_size,
+        target_preallocation=target_preallocation,
+        free_bytes=free_bytes,
+    )
 
 
 def inflate_storage_file(
@@ -701,10 +723,8 @@ def inflate_storage_file(
         target_preallocation=target_preallocation,
         validate_owner_locally=True,
     )
-    qemu_img = str(preflight["qemu_img"])
-    image_path = preflight["path"]
-    if not isinstance(image_path, Path):
-        raise StorageActionError("Invalid image path.")
+    qemu_img = preflight.qemu_img
+    image_path = preflight.path
 
     token = uuid.uuid4().hex
     temp_path = image_path.with_name(f".pve-helper-inflate-{token}-{image_path.name}")
@@ -720,7 +740,7 @@ def inflate_storage_file(
                 "-O",
                 "qcow2",
                 "-o",
-                f"preallocation={preflight['target_preallocation']}",
+                f"preallocation={preflight.target_preallocation}",
                 image_path.as_posix(),
                 temp_path.as_posix(),
             ],
@@ -739,7 +759,7 @@ def inflate_storage_file(
         )
         if converted_info.get("format") != "qcow2":
             raise StorageActionError("Converted image is not qcow2.")
-        if converted_info.get("virtual_size_bytes") != preflight["virtual_size_bytes"]:
+        if converted_info.get("virtual_size_bytes") != preflight.virtual_size_bytes:
             raise StorageActionError("Converted image virtual size does not match the original.")
         converted_allocation = converted_info.get("qcow2_allocation_percent")
         if not isinstance(converted_allocation, (int, float)) or converted_allocation < MIN_INFLATE_ALLOCATED_PERCENT:
@@ -775,10 +795,10 @@ def inflate_storage_file(
     return {
         "path": _normalize_relative_path(entry.path),
         "directory_path": _parent_relative(entry.path),
-        "target_preallocation": preflight["target_preallocation"],
+        "target_preallocation": preflight.target_preallocation,
         "before": {
-            "virtual_size_bytes": preflight["virtual_size_bytes"],
-            "disk_size_bytes": preflight["disk_size_bytes"],
+            "virtual_size_bytes": preflight.virtual_size_bytes,
+            "disk_size_bytes": preflight.disk_size_bytes,
         },
         "after": final_info,
     }

@@ -101,6 +101,7 @@ from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 from core.services.space_snapshot_schedule import SPACE_SNAPSHOT_INTERVAL_MINUTES, SPACE_SNAPSHOT_SCHEDULE_NAME
 from core.services.storage import StorageEntry, StorageScanner
 from core.services.storage_actions import (
+    InflatePreflight,
     StorageActionError,
     inflate_storage_file,
     move_file_to_trash,
@@ -4501,7 +4502,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"):
                 result = validate_inflate_storage_file(storage=storage, entry=entry)
 
-            self.assertEqual(result["virtual_size_bytes"], 32 * 1024**2)
+            self.assertEqual(result.virtual_size_bytes, 32 * 1024**2)
+            # The interpreter to execute and the request-derived image path are
+            # separate fields, not two reads out of one untyped dict. Collapsing
+            # them again gives the executable the path's provenance.
+            self.assertIsInstance(result, InflatePreflight)
+            self.assertEqual(result.qemu_img, shutil.which("qemu-img"))
+            self.assertEqual(result.path.name, "vm-501-disk-0.qcow2")
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_inflate_blocks_repeated_full_even_when_inventory_mtime_is_newer(self):
