@@ -1,0 +1,64 @@
+{% extends "core/storage_api/base.html" %}
+
+{% block api_storage_content %}
+  <section class="storage-tab-content">
+    {% if gate_note %}
+      <p class="muted panel-note">{{ gate_note }}</p>
+    {% endif %}
+    <div class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Nodes</h2>
+          <p class="panel-meta">Where Proxmox reports this datastore, and what pve-helper's own scan saw there.</p>
+        </div>
+      </div>
+      <table class="data-table compact">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Status</th>
+            <th>Enabled</th>
+            <th>Used</th>
+            <th>Total</th>
+            <th>Shared gate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in node_rows %}
+            <tr{% if row.is_current %} class="row-current"{% endif %}>
+              <td>
+                {% if row.is_current %}<strong>{{ row.node }}</strong>{% else %}<a href="{{ row.url }}">{{ row.node }}</a>{% endif %}
+              </td>
+              <td>
+                {% if row.active %}<span class="badge completed">Active</span>{% else %}<span class="badge failed">Inactive</span>{% endif %}
+              </td>
+              <td>{{ row.enabled|yesno:"Yes,No" }}</td>
+              <td>{% if row.used != None %}{{ row.used|filesizeformat }}{% else %}-{% endif %}</td>
+              <td>{% if row.total %}{{ row.total|filesizeformat }}{% else %}-{% endif %}</td>
+              <td>
+                {% if row.gate %}
+                  <span class="badge {% if row.gate.last_gate_status == 'ok' %}completed{% else %}failed{% endif %}">{{ row.gate.last_gate_status|default:"-" }}</span>
+                  {% if row.gate.last_successful_inventory_scan %}
+                    <span class="muted">{{ row.gate.last_successful_inventory_scan|date:"Y-m-d H:i" }}</span>
+                  {% endif %}
+                {% else %}
+                  <span class="muted">-</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6" class="empty-state">The latest catalog reports no node holding this datastore.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if sibling_rows %}
+      <p class="muted storage-footnote">
+        Proxmox gives every node's local storage the same name. <strong>{{ storage }}</strong> also exists on
+        {% for row in sibling_rows %}<a href="{{ row.url }}">{{ row.node }}</a>{% if not forloop.last %}, {% endif %}{% endfor %} —
+        {{ sibling_rows|length|add:1 }} separate disks that share a name.
+      </p>
+    {% endif %}
+  </section>
+{% endblock %}

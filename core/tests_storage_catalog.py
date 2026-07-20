@@ -1205,3 +1205,77 @@ class DatastoreScopeUrlTests(TestCase):
         response = self.client.get("/clusters/scope/nodes/pve2/datastores/local/summary/")
 
         self.assertEqual(response.status_code, 404)
+
+
+class DatastoreTabsAreUniformTests(TestCase):
+    """Every datastore shows every tab; a backend that cannot answer says so.
+
+    The point is that the page's shape never depends on the backend. An iSCSI LUN
+    has no file tree and an unregistered NFS export has no permissions to read,
+    and both used to mean a different set of tabs — or a different page entirely.
+    """
+
+    TABS = ("summary", "monitor", "configure", "content", "permissions", "files", "volumes", "nodes", "vms")
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="tabs", display_name="Tabs", enabled=True)
+
+    def _definition(self, storage_id, storage_type, *, shared=True, nodes=("pve1",)):
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id=storage_id,
+            storage_type=storage_type,
+            shared=shared,
+            present=True,
+            content=["images"],
+            config={"storage": storage_id},
+        )
+        for node in nodes:
+            ClusterStorageNodeState.objects.create(
+                cluster_storage=definition, node=node, present=True, active=True, enabled=True
+            )
+        return definition
+
+    def test_a_block_backend_without_a_file_tree_still_has_every_tab(self):
+        self._definition("iscsi-lun", "iscsi")
+
+        for tab in self.TABS:
+            with self.subTest(tab=tab):
+                response = self.client.get(f"/clusters/tabs/datastores/iscsi-lun/{tab}/")
+                self.assertEqual(response.status_code, 200)
+
+    def test_the_files_tab_states_why_a_block_backend_has_none(self):
+        self._definition("iscsi-lun", "iscsi")
+
+        response = self.client.get("/clusters/tabs/datastores/iscsi-lun/files/")
+
+        self.assertContains(response, "Files are unavailable")
+        self.assertContains(response, "not a browsable file-tree backend")
+
+    def test_the_permissions_tab_states_that_no_mount_is_registered(self):
+        self._definition("TrueNAS-VM", "nfs")
+
+        response = self.client.get("/clusters/tabs/datastores/TrueNAS-VM/permissions/")
+
+        self.assertContains(response, "Permissions are unavailable")
+        self.assertContains(response, "No host mount is registered")
+
+    def test_the_nodes_tab_lists_every_instance_of_a_shared_datastore(self):
+        self._definition("TrueNAS-VM", "nfs", nodes=("pve1", "pve2", "pve3"))
+
+        response = self.client.get("/clusters/tabs/datastores/TrueNAS-VM/nodes/")
+
+        for node in ("pve1", "pve2", "pve3"):
+            self.assertContains(response, f">{node}<")
+        self.assertContains(response, "pve-helper&#x27;s shared-mount gate")
+
+    def test_the_nodes_tab_names_the_same_named_disks_on_the_other_nodes(self):
+        """`local` is a different disk on every node and Proxmox names them all
+        alike, so this tab is the only place the UI can say they are not one."""
+        self._definition("local", "dir", shared=False, nodes=("pve1", "pve2", "pve3"))
+
+        response = self.client.get("/clusters/tabs/nodes/pve1/datastores/local/nodes/")
+
+        self.assertContains(response, "3 separate disks that share a name")
+        self.assertContains(response, "/clusters/tabs/nodes/pve2/datastores/local/nodes/")
+        self.assertContains(response, "/clusters/tabs/nodes/pve3/datastores/local/nodes/")

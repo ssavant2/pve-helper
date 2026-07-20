@@ -33,11 +33,11 @@ class MulticlusterRouteInventoryTests(SimpleTestCase):
         self.assertEqual(sum(route.startswith("vms/<str:cluster_key>/<str:object_type>") for route in routes), 37)
         self.assertEqual(sum(route.startswith("vms/<str:cluster_key>/") for route in routes), 40)
         self.assertEqual(sum(route.startswith("vms/<str:object_type>") for route in routes), 37)
-        # The datastore object view: eight tabs in two scope shapes each, plus the
-        # cluster-wide catalog refresh.
-        self.assertEqual(sum(route.startswith("clusters/<str:cluster_key>/datastores/") for route in routes), 9)
+        # The datastore object view: eleven tab routes in two scope shapes each,
+        # plus the cluster-wide catalog refresh.
+        self.assertEqual(sum(route.startswith("clusters/<str:cluster_key>/datastores/") for route in routes), 12)
         self.assertEqual(
-            sum(route.startswith("clusters/<str:cluster_key>/nodes/<str:node>/datastores/") for route in routes), 8
+            sum(route.startswith("clusters/<str:cluster_key>/nodes/<str:node>/datastores/") for route in routes), 11
         )
         self.assertEqual(sum(route.startswith("storage-api/<str:node>/<str:storage>/") for route in routes), 8)
 

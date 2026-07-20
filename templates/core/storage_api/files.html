@@ -1,0 +1,13 @@
+{% extends "core/storage_api/base.html" %}
+
+{% block api_storage_content %}
+  {% if unavailable_reason %}
+    <section class="storage-tab-content">
+      <div class="panel">
+        <p class="muted panel-empty-note">{{ unavailable_reason }}</p>
+      </div>
+    </section>
+  {% else %}
+    {% include "core/partials/storage_files_body.html" %}
+  {% endif %}
+{% endblock %}

@@ -392,6 +392,9 @@ urlpatterns = [
     *datastore_routes("content/", views.api_storage_content, "api_storage_content"),
     *datastore_routes("content/update/", views.update_api_storage_content, "update_api_storage_content"),
     *datastore_routes("configure/", views.api_storage_configure, "api_storage_configure"),
+    *datastore_routes("permissions/", views.api_storage_permissions, "api_storage_permissions"),
+    *datastore_routes("files/", views.api_storage_files, "api_storage_files"),
+    *datastore_routes("nodes/", views.api_storage_nodes, "api_storage_nodes"),
     path(
         "clusters/<str:cluster_key>/datastores/<str:storage>/refresh/",
         views.storage_catalog_refresh_view,

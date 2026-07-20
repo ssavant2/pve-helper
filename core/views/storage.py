@@ -7,7 +7,7 @@ from typing import BinaryIO
 
 from django.template.defaultfilters import filesizeformat
 
-from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
+from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster, ProxmoxStorageConsumer
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.datastore_nav import datastore_url, nav_datastore_key
 from core.services.storage_backends import backend_profile
@@ -498,13 +498,20 @@ def _live_status_for(statuses: dict, node: str, object_type: str, vmid: int, def
 # answer for the volumes it shows.
 # ---------------------------------------------------------------------------
 
+# Every datastore shows every tab. A backend that cannot answer one — an iSCSI
+# LUN has no file tree, an unregistered NFS export has no permissions to read —
+# states that in one line inside the tab rather than hiding it, so the shape of
+# the page never depends on the backend.
 _API_STORAGE_TABS = [
     ("summary", "Summary", "core:api_storage_summary"),
     ("monitor", "Monitor", "core:api_storage_monitor"),
-    ("volumes", "Volumes", "core:api_storage_volumes"),
-    ("vms", "VMs/CTs", "core:api_storage_vms"),
-    ("content", "Content Types", "core:api_storage_content"),
     ("configure", "Configuration", "core:api_storage_configure"),
+    ("content", "Content Types", "core:api_storage_content"),
+    ("permissions", "Permissions", "core:api_storage_permissions"),
+    ("files", "Files", "core:api_storage_files"),
+    ("volumes", "Volumes", "core:api_storage_volumes"),
+    ("nodes", "Nodes", "core:api_storage_nodes"),
+    ("vms", "VMs/CTs", "core:api_storage_vms"),
 ]
 
 
@@ -608,6 +615,7 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
             else (f"Node-local datastore on {node}" if node else "Datastore")
         ),
         "scope_nodes": scope_nodes,
+        "nodes_tab_url": datastore_url("core:api_storage_nodes", cluster.key, storage, node),
         "cluster_key": cluster.key,
         "selected_cluster": cluster,
         "storage": storage,
@@ -919,6 +927,88 @@ def api_storage_configure(request, cluster_key: str, storage: str, node: str = "
     return render(request, "core/storage_api/configure.html", context)
 
 
+@app_login_required
+def api_storage_nodes(request, cluster_key: str, storage: str, node: str = ""):
+    """Which nodes this datastore is attached to, and what each one reports.
+
+    Two independent bodies of evidence live here on purpose. The catalog's node
+    states are what Proxmox says; the shared gate is what pve-helper's own scan
+    saw. Neither implies the other, and a destructive file action must pass both,
+    so showing them in one table with separate columns is the honest rendering.
+    """
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_nodes", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "nodes")
+    view = context["catalog_view"]
+
+    gate_by_node: dict[str, ProxmoxStorageConsumer] = {}
+    gate_note = ""
+    if view is None:
+        gate_note = "This datastore is not in the latest catalog, so no node state is available."
+    elif view.mount is None:
+        gate_note = (
+            "No host mount is registered for this datastore, so pve-helper's shared-mount gate "
+            "does not apply. The node states below come from the Proxmox API alone."
+        )
+    else:
+        gate_by_node = {
+            consumer.expected_node_name: consumer
+            for consumer in view.mount.consumer_statuses.filter(cluster=cluster)
+        }
+
+    rows = [
+        {
+            "node": state.node,
+            "active": state.active,
+            "enabled": state.enabled,
+            "total": state.total_bytes,
+            "used": state.used_bytes,
+            "avail": state.available_bytes,
+            "gate": gate_by_node.get(state.node),
+            "is_current": bool(node) and state.node == node,
+            "url": datastore_url("core:api_storage_nodes", cluster.key, storage, state.node),
+        }
+        for state in (view.nodes if view is not None else ())
+    ]
+    # A node-local datastore's siblings carry the same name on other nodes and are
+    # different disks. Naming them here is the only place the UI can say so, since
+    # Proxmox gives the operator no way to tell them apart by name.
+    siblings = [row for row in rows if not row["is_current"]] if node else []
+    context.update({"node_rows": rows, "gate_note": gate_note, "sibling_rows": siblings})
+    return render(request, "core/storage_api/nodes.html", context)
+
+
+@app_login_required
+def api_storage_permissions(request, cluster_key: str, storage: str, node: str = ""):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_permissions", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "permissions")
+    view = context["catalog_view"]
+    mount = view.mount if view is not None else None
+    context.update(
+        {
+            "mount": mount,
+            "permissions": get_permissions(str(storage_mount_root(mount))) if mount else None,
+            "unavailable_reason": (
+                "" if mount else _no_mount_reason(view, "Permissions")
+            ),
+        }
+    )
+    return render(request, "core/storage_api/permissions.html", context)
+
+
+def _no_mount_reason(view, subject: str) -> str:
+    """Why a filesystem-backed tab has nothing to show, in one operator sentence."""
+    if view is None:
+        return f"{subject} are unavailable: this datastore is not in the latest catalog."
+    reason = view.capabilities.browse_files_reason
+    return f"{subject} are unavailable. {reason}" if reason else f"{subject} are unavailable."
+
+
 def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan: ScanRun | None) -> None:
     for storage in storages:
         storage_result_scan = _latest_storage_result_scan(storage)
@@ -939,9 +1029,12 @@ def _decorate_storages_with_scan_state(storages: list[StorageMount], result_scan
         storage.details = storage_details(storage, storage_result_scan, storage.space_info)
 
 
-@app_login_required
-def storage_browser(request, storage_id: str):
-    storage = _mount_or_404(storage_id)
+def _storage_browser_context(request, storage):
+    """The file manager's context for one mount, shared by both pages it appears on.
+
+    Returns a `JsonResponse` instead when the request is the incremental row fetch,
+    because paging must answer identically wherever the browser is embedded.
+    """
     _decorate_storage_with_space_info(storage)
     latest_scan = _latest_storage_result_scan(storage)
     current_path = _normalize_browser_path(request.GET.get("path", ""))
@@ -1098,7 +1191,8 @@ def storage_browser(request, storage_id: str):
     storage.backup_restore_clusters = list(restore_clusters.values())
 
     context = {
-        **_storage_tab_context(storage, latest_scan, "files"),
+        "mount": storage,
+        "latest_scan": latest_scan,
         "current_path": current_path,
         "parent_path": parent_path,
         "breadcrumbs": _browser_breadcrumbs(current_path),
@@ -1131,7 +1225,40 @@ def storage_browser(request, storage_id: str):
                 "end": context["file_end"],
             }
         )
-    return render(request, "core/storage_browser.html", context)
+    return context
+
+
+@app_login_required
+def storage_browser(request, storage_id: str):
+    storage = _mount_or_404(storage_id)
+    result = _storage_browser_context(request, storage)
+    if isinstance(result, JsonResponse):
+        return result
+    latest_scan = result["latest_scan"]
+    return render(
+        request,
+        "core/storage_browser.html",
+        {**_storage_tab_context(storage, latest_scan, "files"), **result},
+    )
+
+
+@app_login_required
+def api_storage_files(request, cluster_key: str, storage: str, node: str = ""):
+    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_files", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "files")
+    view = context["catalog_view"]
+    mount = view.mount if view is not None else None
+    if mount is None:
+        context.update({"mount": None, "unavailable_reason": _no_mount_reason(view, "Files")})
+        return render(request, "core/storage_api/files.html", context)
+    result = _storage_browser_context(request, mount)
+    if isinstance(result, JsonResponse):
+        return result
+    context.update({**result, "unavailable_reason": ""})
+    return render(request, "core/storage_api/files.html", context)
 
 
 @app_login_required

@@ -2,59 +2,6 @@
 
 {% block storage_content %}
   <section class="storage-tab-content">
-    {% if not permissions.ok %}
-      <div class="panel">
-        <div class="panel-heading">Permissions</div>
-        <p class="empty-state panel-empty-note">Could not read permissions: {{ permissions.error }}</p>
-      </div>
-    {% else %}
-      <div class="panel">
-        <div class="panel-heading">POSIX Permissions</div>
-        <dl class="details-list">
-          <dt>Path</dt>
-          <dd><code>{{ permissions.path }}</code></dd>
-          <dt>Owner</dt>
-          <dd>{{ permissions.owner }} (uid {{ permissions.owner_uid }})</dd>
-          <dt>Group</dt>
-          <dd>{{ permissions.group }} (gid {{ permissions.group_gid }})</dd>
-          <dt>Mode</dt>
-          <dd><code>{{ permissions.mode_symbolic }}</code> ({{ permissions.mode_octal }})</dd>
-        </dl>
-      </div>
-
-      <div class="panel panel-spaced">
-        <div class="panel-heading">ACL Entries</div>
-        {% if not permissions.acl_available %}
-          <p class="muted panel-note">ACL information requires <code>getfacl</code> to be installed in the container.</p>
-        {% elif not permissions.acl_entries %}
-          <p class="muted panel-note">No ACL entries found (standard POSIX permissions only).</p>
-        {% else %}
-          <table class="data-table compact">
-            <thead>
-              <tr>
-                <th>Scope</th>
-                <th>Type</th>
-                <th>Principal</th>
-                <th>Permissions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for entry in permissions.acl_entries %}
-                <tr>
-                  <td>{% if entry.default %}<span class="badge">default</span>{% else %}access{% endif %}</td>
-                  <td>{{ entry.entry_type }}</td>
-                  <td>{{ entry.principal|default:"-" }}</td>
-                  <td><code>{{ entry.permissions }}</code></td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% endif %}
-      </div>
-
-      <p class="muted storage-footnote">
-        Permissions shown are from the container's perspective (uid/gid names resolved inside the container).
-      </p>
-    {% endif %}
+    {% include "core/partials/storage_permissions_body.html" %}
   </section>
 {% endblock storage_content %}

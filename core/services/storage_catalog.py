@@ -105,6 +105,11 @@ class StorageView:
     definition: ClusterStorage
     nodes: tuple[ClusterStorageNodeState, ...]
     volume_scopes: tuple[VolumeScope, ...]
+    # The host mount pve-helper reads this scope's files through, or None. Carried
+    # here because deciding it is exactly what `capabilities.can_browse_files`
+    # already did; a caller that needs the mount would otherwise redo the binding
+    # lookup and could reach a different answer than the capability it trusts.
+    mount: StorageMount | None
     capabilities: StorageCapabilities
     metadata_stale: bool
     volumes_stale: bool
@@ -906,6 +911,7 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         definition=definition,
         nodes=nodes,
         volume_scopes=volume_scopes,
+        mount=binding.mount if binding is not None else None,
         capabilities=StorageCapabilities(can_list, list_reason, can_browse, browse_reason, can_write, write_reason),
         metadata_stale=not state.metadata_complete,
         volumes_stale=not coverage_complete,
