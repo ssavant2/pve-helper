@@ -83,7 +83,7 @@ from core.services.proxmox import (
     _fetch_live_guest_inventory_uncached,
     _fetch_live_guest_status_uncached,
 )
-from core.services.recent_tasks import recent_task_page
+from core.services.recent_tasks import RECENT_TASK_RETENTION_MINUTES, recent_task_page
 from core.services.refs import GuestRef, NodeRef, RefParseError
 from core.services.runtime_bootstrap import ensure_bootstrap
 from core.services.scan_retention import prune_scan_history
@@ -879,6 +879,22 @@ class ShutdownForceStopOfferTests(TestCase):
         self.assertTrue(json.loads(response.content)["ok"])
         event.refresh_from_db()
         self.assertTrue(event.details["force_stop_dismissed"])
+
+    def test_open_offer_survives_the_retention_window(self):
+        from core.services.recent_tasks import _visible_guest_tasks
+
+        event = self._event("guest.power.shutdown", "got timeout")
+        AuditEvent.objects.filter(pk=event.pk).update(
+            timestamp=timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES + 5)
+        )
+        # Nothing has been dismissed, so the details hold neither flag. That is the
+        # ordinary shape of an open question, and it must not be what evicts it.
+        self.assertIn(event.id, [visible.id for visible in _visible_guest_tasks()])
+
+        details = dict(event.details)
+        details["force_stop_dismissed"] = True
+        AuditEvent.objects.filter(pk=event.pk).update(details=details)
+        self.assertNotIn(event.id, [visible.id for visible in _visible_guest_tasks()])
 
     def test_non_timeout_shutdown_failure_does_not_offer(self):
         event = self._event("guest.power.shutdown", "permission denied")
@@ -6340,10 +6356,21 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertTrue(any("2 of 3 moved to trash" in message for message in reported))
             self.assertTrue(any(paths[1] in message for message in reported))
 
-            # The unanswered question is pinned, counted and outlives retention.
+            # The unanswered question is pinned and counted.
             page = recent_task_page(limit=5)
             self.assertEqual(page.questions_pending, 1)
             self.assertEqual(page.tasks[0]["question"]["kind"], "bulk_file_partial")
+
+            # And it outlives retention. Age it past the cutoff so the only clause
+            # that can still keep it is the unanswered-question one: while it was
+            # fresh, the timestamp clause matched on its own and hid whether that
+            # second clause worked at all.
+            AuditEvent.objects.filter(pk=bulk.pk).update(
+                timestamp=timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES + 5)
+            )
+            aged = recent_task_page(limit=5)
+            self.assertEqual(aged.questions_pending, 1)
+            self.assertEqual(aged.tasks[0]["question"]["kind"], "bulk_file_partial")
 
             self.client.post(
                 reverse("core:dismiss_task_question"),

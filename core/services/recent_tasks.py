@@ -306,9 +306,21 @@ def _scan_task(scan: ScanRun, initiator: str) -> dict[str, object]:
     }
 
 
+def _dismissed_flag_q(flag: str) -> Q:
+    """True only where `details[flag]` exists and is set.
+
+    The `has_key` half is what makes the negation below sound. A bare
+    `details__flag=True` on a row that lacks the key is SQL NULL, not false, so
+    `~Q(...)` drops that row instead of keeping it — and a question that was never
+    answered lacks the key by definition. Pairing the comparison with `has_key`
+    keeps the expression boolean, so its negation means what it reads as.
+    """
+    return Q(details__has_key=flag) & Q(**{f"details__{flag}": True})
+
+
 def _unanswered_question_q() -> Q:
     """An open question outlives the retention window; it is not history yet."""
-    return ~Q(details__question_dismissed=True) & ~Q(details__force_stop_dismissed=True)
+    return ~(_dismissed_flag_q("question_dismissed") | _dismissed_flag_q("force_stop_dismissed"))
 
 
 def _open_force_stop_question_q() -> Q:
