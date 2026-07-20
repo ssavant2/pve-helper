@@ -361,7 +361,14 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
             permitted = set(definition.nodes) if definition.nodes else set(node_online)
             for node in sorted(permitted):
                 raw_state = by_storage_node.get((storage_id, node), {})
-                present = bool(raw_state) and node_online.get(node, False)
+                online = node_online.get(node, False)
+                present = bool(raw_state) and online
+                # Not present has two causes that must not be confused: the node
+                # answered and the storage is not there, or the node never answered.
+                # Both keep `present` False so every gate still refuses — absence
+                # requires proof — but only the second is an unknown, and an unknown
+                # must stay visible rather than read as "these disks are gone".
+                unreachable = not online
                 node_state, _ = ClusterStorageNodeState.objects.update_or_create(
                     cluster_storage=definition,
                     node=node,
@@ -372,6 +379,7 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
                         "used_bytes": _int(raw_state.get("used")),
                         "available_bytes": _int(raw_state.get("avail")),
                         "present": present,
+                        "unreachable": unreachable,
                         "observed_metadata_generation": generation,
                         "last_seen_at": observed_at,
                     },
@@ -381,7 +389,7 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
             present=False, retired_at=observed_at
         )
         ClusterStorageNodeState.objects.filter(cluster_storage__cluster=cluster).exclude(pk__in=seen_node_ids).update(
-            present=False, active=False
+            present=False, active=False, unreachable=False
         )
         state.metadata_generation = generation
         state.metadata_refreshed_at = observed_at

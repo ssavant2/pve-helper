@@ -619,6 +619,7 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
         ),
         "scope_nodes": scope_nodes,
         "nodes_tab_url": datastore_url("core:api_storage_nodes", cluster.key, storage, node),
+        "files_tab_url": datastore_url("core:api_storage_files", cluster.key, storage, node),
         "cluster_key": cluster.key,
         "selected_cluster": cluster,
         "storage": storage,
@@ -722,6 +723,32 @@ def _datastore_metadata(definition) -> list[dict]:
     ]
 
 
+_CLASSIFICATION_CHIP_LABELS = [
+    ("referenced", "Referenced"),
+    ("likely_orphan", "Likely orphan"),
+    ("classification_blocked", "Blocked"),
+    ("unknown", "Unknown"),
+    ("infrastructure", "Infrastructure"),
+    ("proxmox_content", "Proxmox content"),
+    ("import_source", "Import source"),
+    ("trash", "Trash"),
+]
+
+
+def _classification_chips(counts: dict) -> list[dict]:
+    """The scan's classification counts as one row instead of a nine-row table.
+
+    Summary is a page an operator reads at a glance; a table whose rows are almost
+    all zero spent most of its height saying nothing. The zero classes stay listed
+    — a missing class would read as "not evaluated" rather than "none found" — but
+    they no longer each cost a row.
+    """
+    return [
+        {"key": key, "label": label, "count": counts.get(key, 0)}
+        for key, label in _CLASSIFICATION_CHIP_LABELS
+    ]
+
+
 def _datastore_mount_facts(request, view):
     """Everything the page can only know through pve-helper's own mount.
 
@@ -754,6 +781,7 @@ def _datastore_mount_facts(request, view):
         "mount": mount,
         "mount_latest_scan": latest_scan,
         "classification_counts": counts,
+        "classification_chips": _classification_chips(counts),
         "total_file_count": sum(counts.values()),
         "gate_status": gate_status,
         "consumers": list(mount.consumer_statuses.order_by("expected_node_name")),
@@ -1048,6 +1076,8 @@ def api_storage_nodes(request, cluster_key: str, storage: str, node: str = ""):
             "node": state.node,
             "active": state.active,
             "enabled": state.enabled,
+            "present": state.present,
+            "unreachable": state.unreachable,
             "total": state.total_bytes,
             "used": state.used_bytes,
             "avail": state.available_bytes,

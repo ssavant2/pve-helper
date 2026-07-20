@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from django.core.cache import cache
+from django.db import models
 from django.urls import reverse
 
 from core.models import ClusterStorageNodeState
 from core.services.cluster_state_identity import cluster_cache_key
 
-_CACHE_NAMESPACE = "nav-datastores:v4"
+_CACHE_NAMESPACE = "nav-datastores:v5"
 _CACHE_SECONDS = 60
 
 
@@ -71,6 +72,7 @@ def _entry(row, *, cluster_key: str, link_node: str, shared: bool) -> dict:
         "avail": row.available_bytes,
         "used_pct": round(used / total * 100) if total and used is not None and total > 0 else None,
         "active": row.active,
+        "unreachable": row.unreachable,
         # Empty for a shared datastore, which has one cluster-wide page. For a
         # node-local one the node is part of the page's identity: `local` is a
         # different disk on every node, so the three leaves must not lead to one
@@ -83,7 +85,11 @@ def _entry(row, *, cluster_key: str, link_node: str, shared: bool) -> dict:
 def _build(cluster):
     rows = (
         ClusterStorageNodeState.objects.select_related("cluster_storage")
-        .filter(cluster_storage__cluster=cluster, cluster_storage__present=True, present=True)
+        # Unreachable instances stay in the tree. A node taken down for patching
+        # has not had its disks removed, and a datastore that silently disappears
+        # from navigation is indistinguishable from one that was deleted.
+        .filter(cluster_storage__cluster=cluster, cluster_storage__present=True)
+        .filter(models.Q(present=True) | models.Q(unreachable=True))
         .order_by("node", "cluster_storage__storage_id")
     )
     nodes: dict[str, list[dict]] = {}
@@ -99,7 +105,10 @@ def _build(cluster):
     for candidates in shared_rows.values():
         # First active instance, else the first present one — the rule in
         # `_storage_catalog_rows`. `rows` is already node-ordered, so this is stable.
-        chosen = next((row for row in candidates if row.active), candidates[0])
+        chosen = next(
+            (row for row in candidates if row.active),
+            next((row for row in candidates if row.present), candidates[0]),
+        )
         shared.append(_entry(chosen, cluster_key=cluster.key, link_node="", shared=True))
     shared.sort(key=lambda entry: entry["storage_id"])
     return {

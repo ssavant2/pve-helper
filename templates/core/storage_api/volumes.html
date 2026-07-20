@@ -6,7 +6,14 @@
       <div class="panel-heading">
         <h2>Volumes <span class="muted">({{ volumes|length }})</span></h2>
       </div>
-      <p class="panel-meta">Read-only via the Proxmox API &mdash; local storage cannot be browsed as files.</p>
+      <p class="panel-meta">
+        What Proxmox lists for this datastore, read-only.
+        {% if catalog_view.capabilities.can_browse_files %}
+          The <a href="{{ files_tab_url }}">Files</a> tab shows the same storage as a file tree.
+        {% else %}
+          {{ catalog_view.capabilities.browse_files_reason }}
+        {% endif %}
+      </p>
       <table class="data-table compact">
         <thead>
           <tr>

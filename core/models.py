@@ -521,6 +521,13 @@ class ClusterStorageNodeState(TimestampedModel):
     used_bytes = models.BigIntegerField(null=True, blank=True)
     available_bytes = models.BigIntegerField(null=True, blank=True)
     present = models.BooleanField(default=True)
+    # Whether the node itself failed to answer, as opposed to answering that the
+    # storage is not there. Both leave `present` False, because absence still
+    # requires proof and every gate that reads `present` must keep refusing. The
+    # distinction is for the operator: a node taken down for patching must stay
+    # visible and be labelled unknown, not silently vanish from the tree as if
+    # its disks had been removed.
+    unreachable = models.BooleanField(default=False)
     observed_metadata_generation = models.UUIDField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
 

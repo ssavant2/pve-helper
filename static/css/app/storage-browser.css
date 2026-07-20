@@ -618,3 +618,96 @@
 .panel-note {
   padding: 16px;
 }
+
+/* The datastore object view packs more into Summary than the mounted-storage page
+   did — nine facts, a twelve-cell definition strip and two panels — so it uses a
+   denser variant. The goal is that Summary fits without scrolling on a laptop;
+   reference material that is read once (the classification legend, the gate's
+   explanation) collapses instead of being cut. */
+.datastore-summary .storage-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.datastore-summary .storage-summary-item {
+  min-height: 0;
+  padding: 7px 10px;
+}
+
+.datastore-summary .storage-summary-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.datastore-summary .storage-summary-value {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.datastore-summary .storage-metadata-strip {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-bottom: 10px;
+}
+
+.datastore-summary .storage-metadata-strip div {
+  padding: 6px 10px;
+}
+
+.panel-help > summary {
+  padding: 6px 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.panel-help[open] > summary {
+  margin-bottom: 4px;
+}
+
+.tree-badge {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.classification-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 4px 0 2px;
+  list-style: none;
+}
+
+.classification-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.classification-chips li.is-zero {
+  opacity: 0.45;
+}
+
+.classification-chips strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.classification-chips .chip-total {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.datastore-summary .split-view {
+  align-items: start;
+}

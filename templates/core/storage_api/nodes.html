@@ -30,11 +30,17 @@
                 {% if row.is_current %}<strong>{{ row.node }}</strong>{% else %}<a href="{{ row.url }}">{{ row.node }}</a>{% endif %}
               </td>
               <td>
-                {% if row.active %}<span class="badge completed">Active</span>{% else %}<span class="badge failed">Inactive</span>{% endif %}
+                {% if row.unreachable %}
+                  <span class="badge warning" title="The node did not answer, so pve-helper cannot say whether the datastore is available there.">Unknown</span>
+                {% elif row.active %}
+                  <span class="badge completed">Active</span>
+                {% else %}
+                  <span class="badge failed">Inactive</span>
+                {% endif %}
               </td>
-              <td>{{ row.enabled|yesno:"Yes,No" }}</td>
-              <td>{% if row.used != None %}{{ row.used|filesizeformat }}{% else %}-{% endif %}</td>
-              <td>{% if row.total %}{{ row.total|filesizeformat }}{% else %}-{% endif %}</td>
+              <td>{% if row.unreachable %}<span class="muted">-</span>{% else %}{{ row.enabled|yesno:"Yes,No" }}{% endif %}</td>
+              <td>{% if row.used != None and not row.unreachable %}{{ row.used|filesizeformat }}{% else %}-{% endif %}</td>
+              <td>{% if row.total and not row.unreachable %}{{ row.total|filesizeformat }}{% else %}-{% endif %}</td>
               <td>
                 {% if row.gate %}
                   <span class="badge {% if row.gate.last_gate_status == 'ok' %}completed{% else %}failed{% endif %}">{{ row.gate.last_gate_status|default:"-" }}</span>
@@ -51,6 +57,10 @@
           {% endfor %}
         </tbody>
       </table>
+      <p class="muted panel-note">
+        <strong>Unknown</strong> means the node did not answer the last refresh, not that the datastore was removed
+        from it. A node taken down for patching keeps its entry here and in the navigation tree.
+      </p>
     </div>
 
     {% if sibling_rows %}

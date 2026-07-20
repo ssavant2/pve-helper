@@ -19,6 +19,7 @@ from core.models import (
     CurrentGuestInventory,
     FileInventory,
     ProxmoxCluster,
+    ScanRun,
     StorageCatalogState,
     StorageMount,
 )
@@ -1317,6 +1318,12 @@ class DatastorePageKeepsEveryPanelTests(TestCase):
     """
 
     SUMMARY_PANELS = ("Filesystem", "Access", "Latest Scan", "Classification", "Storage Gate")
+    # Every class stays listed even at zero: a missing one would read as "not
+    # evaluated" rather than "none found".
+    CLASSIFICATION_CHIPS = (
+        "Referenced", "Likely orphan", "Blocked", "Unknown",
+        "Infrastructure", "Proxmox content", "Import source", "Trash",
+    )
     CONFIGURE_PANELS = ("Proxmox Configuration", "App Configuration", "Filesystem")
     METADATA_LABELS = ("Type", "Server", "Export", "PVE Path", "Content", "Options", "Preallocation", "Shared")
 
@@ -1368,6 +1375,30 @@ class DatastorePageKeepsEveryPanelTests(TestCase):
         self.assertContains(response, "10.10.20.10")
         self.assertContains(response, "/mnt/Pool/Proxmox")
         self.assertContains(response, "images, iso")
+
+    def test_summary_lists_every_classification_without_a_row_each(self):
+        mount = StorageMount.objects.create(
+            storage_id="TrueNAS-FS", display_name="TrueNAS-FS", path="/storages/truenas-fs",
+            relative_path="truenas-fs", enabled=True,
+        )
+        ClusterStorageMount.objects.create(
+            cluster_storage=self.definition, mount=mount, node=None,
+            scope=ClusterStorageMount.Scope.SHARED,
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, finished_at=timezone.now())
+        FileInventory.objects.create(
+            scan_run=scan, storage=mount, path="images/101/vm-101-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            classification=FileInventory.Classification.REFERENCED,
+        )
+
+        response = self.client.get("/clusters/panels/datastores/TrueNAS-FS/summary/")
+
+        for chip in self.CLASSIFICATION_CHIPS:
+            with self.subTest(chip=chip):
+                self.assertContains(response, chip)
+        self.assertContains(response, "classification-chips")
+        self.assertContains(response, "Total files")
 
     def test_the_mount_only_panels_say_why_they_are_empty(self):
         """Without a registered mount the panels stay, and each states its reason

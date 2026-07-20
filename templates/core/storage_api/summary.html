@@ -1,7 +1,7 @@
 {% extends "core/storage_api/base.html" %}
 
 {% block api_storage_content %}
-  <section class="storage-tab-content">
+  <section class="storage-tab-content datastore-summary">
     <div class="storage-summary-grid">
       <div class="storage-summary-item">
         <span class="storage-summary-label">Total</span>
@@ -86,8 +86,19 @@
         {% elif not mount_latest_scan %}
           <p class="muted panel-empty-note">No scan has run for this datastore yet.</p>
         {% else %}
-          {% include "core/partials/classification_legend.html" %}
-          {% include "core/partials/classification_counts.html" %}
+          <ul class="classification-chips">
+            {% for chip in classification_chips %}
+              <li{% if not chip.count %} class="is-zero"{% endif %}>
+                <span class="badge {{ chip.key }}">{{ chip.label }}</span>
+                <strong>{{ chip.count }}</strong>
+              </li>
+            {% endfor %}
+            <li class="chip-total"><span>Total files</span><strong>{{ total_file_count }}</strong></li>
+          </ul>
+          <details class="panel-help">
+            <summary>What these classifications mean</summary>
+            {% include "core/partials/classification_legend.html" %}
+          </details>
         {% endif %}
       </div>
 
@@ -96,7 +107,10 @@
         {% if mount_unavailable_reason %}
           <p class="muted panel-empty-note">{{ mount_unavailable_reason }} The shared gate only applies to a datastore pve-helper has its own mount for.</p>
         {% else %}
-          {% include "core/partials/storage_gate_help.html" %}
+          <details class="panel-help">
+            <summary>How this gate relates to volume coverage</summary>
+            {% include "core/partials/storage_gate_help.html" %}
+          </details>
           <dl class="details-list">
             <dt>Status</dt>
             <dd>
