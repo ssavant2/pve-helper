@@ -17,17 +17,11 @@ class FilesystemMode(StrEnum):
     NETWORK_MOUNT = "network-mount"
 
 
-class VolumeDeleteMode(StrEnum):
-    PVE_API = "pve-api"
-    DISABLED = "disabled"
-
-
 @dataclass(frozen=True)
 class StorageBackendProfile:
     storage_type: str
     content_list_mode: ContentListMode
     filesystem_mode: FilesystemMode
-    volume_delete_mode: VolumeDeleteMode
     expected_filesystems: frozenset[str] = frozenset()
     known: bool = True
 
@@ -45,11 +39,16 @@ def _profile(storage_type: str, filesystem_mode: FilesystemMode, *filesystems: s
         storage_type=storage_type,
         content_list_mode=ContentListMode.PVE_API,
         filesystem_mode=filesystem_mode,
-        volume_delete_mode=VolumeDeleteMode.PVE_API,
         expected_filesystems=frozenset(filesystems),
     )
 
 
+# Absence here is not cosmetic: an unknown type is skipped by volume collection
+# entirely (`storage_catalog.collect_*`), so the operator gets no inventory at all
+# rather than an inventory without a browse button. The list therefore tracks the
+# plugins the declared PVE 9.2+ baseline ships, and a type's filesystem mode follows
+# how its plugin stores data — block-level backends are NONE even though Proxmox
+# lists their content perfectly well over the API.
 _PROFILES = {
     "dir": _profile("dir", FilesystemMode.DIRECTORY),
     "nfs": _profile("nfs", FilesystemMode.NETWORK_MOUNT, "nfs", "nfs4"),
@@ -57,11 +56,16 @@ _PROFILES = {
     "cephfs": _profile("cephfs", FilesystemMode.NETWORK_MOUNT, "ceph", "cephfs"),
     "glusterfs": _profile("glusterfs", FilesystemMode.NETWORK_MOUNT, "fuse.glusterfs", "glusterfs"),
     "btrfs": _profile("btrfs", FilesystemMode.DIRECTORY, "btrfs"),
+    # Configured with a path and laid out like `dir`, so the file browser applies.
+    "bcachefs": _profile("bcachefs", FilesystemMode.DIRECTORY, "bcachefs"),
     "lvm": _profile("lvm", FilesystemMode.NONE),
     "lvmthin": _profile("lvmthin", FilesystemMode.NONE),
     "iscsi": _profile("iscsi", FilesystemMode.NONE),
     "iscsidirect": _profile("iscsidirect", FilesystemMode.NONE),
     "zfspool": _profile("zfspool", FilesystemMode.NONE),
+    # ZFS over iSCSI: ZVOLs on a remote host reached as block devices. There is no
+    # file tree to browse even where a mount happens to exist.
+    "zfs": _profile("zfs", FilesystemMode.NONE),
     "rbd": _profile("rbd", FilesystemMode.NONE),
     "pbs": _profile("pbs", FilesystemMode.NONE),
     "esxi": _profile("esxi", FilesystemMode.NONE),
@@ -77,7 +81,6 @@ def backend_profile(storage_type: str) -> StorageBackendProfile:
         storage_type=normalized or "unknown",
         content_list_mode=ContentListMode.UNSUPPORTED,
         filesystem_mode=FilesystemMode.NONE,
-        volume_delete_mode=VolumeDeleteMode.DISABLED,
         known=False,
     )
 

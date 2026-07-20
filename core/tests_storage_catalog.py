@@ -31,7 +31,7 @@ from core.services.refs import (
     StorageInstanceRef,
     VolumeRef,
 )
-from core.services.storage_backends import backend_profile
+from core.services.storage_backends import ContentListMode, FilesystemMode, backend_profile
 from core.services.storage_catalog import (
     MountedVolumeClassifier,
     StorageCatalogChanged,
@@ -968,6 +968,46 @@ class StorageMountIdentityTests(TestCase):
         self.assertEqual(resolve_storage_mount(str(second.mount_key)), second)
         with self.assertRaises(StorageMount.DoesNotExist):
             resolve_storage_mount("shared")
+
+
+class BackendProfileCoverageTests(SimpleTestCase):
+    """Which Proxmox storage plugins the catalog can speak for, and how.
+
+    A missing type is not a cosmetic gap: `storage_catalog` skips volume collection
+    for anything the profile table does not know, so the operator gets no inventory
+    at all for a backend Proxmox lists content for perfectly well. Failing closed is
+    still the right default for a genuinely unknown type — these tests pin which
+    types are supposed to be known, and pin the filesystem mode separately, because
+    the two answers come apart: a backend can be fully listable over the API and have
+    no file tree to browse.
+    """
+
+    def test_block_level_backends_are_listable_but_not_browsable(self):
+        for storage_type in ("zfs", "zfspool", "lvm", "lvmthin", "iscsi", "iscsidirect", "rbd"):
+            with self.subTest(storage_type=storage_type):
+                profile = backend_profile(storage_type)
+                self.assertTrue(profile.known)
+                self.assertIs(profile.content_list_mode, ContentListMode.PVE_API)
+                self.assertFalse(profile.filesystem_eligible)
+
+    def test_bcachefs_is_a_directory_backend_like_dir_and_btrfs(self):
+        """It is configured with a path and laid out like `dir`.
+
+        Marking it unbrowsable would refuse the file browser to a backend that does
+        have a file tree — the same defect as leaving it out, only relocated.
+        """
+        profile = backend_profile("bcachefs")
+
+        self.assertTrue(profile.known)
+        self.assertIs(profile.filesystem_mode, FilesystemMode.DIRECTORY)
+        self.assertFalse(profile.requires_mountpoint)
+
+    def test_an_unknown_type_still_fails_closed(self):
+        profile = backend_profile("something-proxmox-does-not-ship")
+
+        self.assertFalse(profile.known)
+        self.assertIs(profile.content_list_mode, ContentListMode.UNSUPPORTED)
+        self.assertFalse(profile.filesystem_eligible)
 
 
 class StorageMountHealthTests(TestCase):

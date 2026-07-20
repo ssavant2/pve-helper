@@ -37,8 +37,9 @@ older Docker/kernel combinations are unsupported; see the installation guide
 for the feature and storage-safety reasons behind these minimums.
 
 Storage and volume inventory comes from the Proxmox API. A host mount is optional
-and adds file browsing only for file-tree backends. Production starts with
-application writes disabled, and file writes must be enabled deliberately. This
+and adds file browsing only for file-tree backends. Application writes are enabled
+by default; a datastore mounted read-only stays read-only regardless, and the
+global setting can be turned off to freeze writes during maintenance. This
 project targets internal homelab and small-operations use; it is not an enterprise
 storage-management product.
 
