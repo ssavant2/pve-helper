@@ -3191,6 +3191,27 @@ class GuestModuleBoundaryTests(SimpleTestCase):
         self.assertNotIn("_surface_private", source)
         self.assertNotIn("globals().update", source)
 
+    def test_no_template_hand_versions_a_static_url(self):
+        """`{% static %}` already busts the cache; a `?v=` suffix after it does not.
+
+        `CompressedManifestStaticFilesStorage` emits content-hashed filenames, so a
+        hand-maintained suffix changes nothing and has to be remembered forever. The
+        failure mode this guards against is quiet: a stale asset looks like a caching
+        problem, someone bumps a `?v=` that was never doing anything, the real cause
+        (an unbuilt image, an unrun collectstatic) stays hidden, and the suffixes drift
+        apart — as twenty of them had, into seven different values.
+
+        Under DEBUG the tag does return unhashed names and a suffix would matter, but
+        no deployed configuration runs that way and a developer who does needs a hard
+        reload for templates and Python regardless.
+        """
+        offenders = [
+            f"{path.relative_to(settings.BASE_DIR)}: {match.group(0)}"
+            for path in Path(settings.BASE_DIR).joinpath("templates").rglob("*.html")
+            for match in re.finditer(r"\{%\s*static\s[^%]*%\}\?v=[\w.-]*", path.read_text(encoding="utf-8"))
+        ]
+        self.assertEqual(offenders, [])
+
     def test_soft_navigation_breaks_the_previous_feature_import_cycle(self):
         navigation = self._source("static/js/app/navigation.js")
         scheduling = self._source("static/js/app/scheduling.js")
