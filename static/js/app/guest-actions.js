@@ -587,7 +587,8 @@ const forceStopGuest = async (target, label) => {
 
 // Mark a task's question as answered so it stops pulsing/pinning. Any close of
 // the dialog counts as answering it (acted on it, or actively chose to ignore).
-const dismissTaskQuestion = async (taskId) => {
+// `answer` records *which* way it was answered, so Audit keeps the decision.
+const dismissTaskQuestion = async (taskId, answer = "") => {
   const taskbar = document.querySelector("[data-recent-tasks]");
   const url = taskbar?.dataset.dismissQuestionUrl || "";
   const csrf = taskbar?.dataset.csrfToken || "";
@@ -602,7 +603,7 @@ const dismissTaskQuestion = async (taskId) => {
         "X-CSRFToken": csrf,
         "X-Requested-With": "fetch",
       },
-      body: new URLSearchParams({ task_id: taskId }),
+      body: new URLSearchParams(answer ? { task_id: taskId, answer } : { task_id: taskId }),
     });
   } catch (_error) {
     // Best effort; the next poll still reflects server state.

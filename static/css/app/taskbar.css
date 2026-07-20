@@ -11,10 +11,13 @@
   font-size: 12px;
 }
 
+/* No justify-content here: .taskbar-controls carries margin-left:auto, which
+   absorbs the free space and pins the controls right. space-between would be
+   inert while they are visible and actively wrong once they are hidden in the
+   collapsed state, where it would fling the attention pill to the far edge. */
 .taskbar-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   min-height: 36px;
   border-bottom: 1px solid var(--line);
   background: var(--taskbar-bg);

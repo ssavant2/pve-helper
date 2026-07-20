@@ -24,8 +24,9 @@ AUDIT_MODULE_FILTERS = [
     {"key": "system", "label": "System"},
 ]
 AUDIT_VALID_MODULES = {item["key"] for item in AUDIT_MODULE_FILTERS}
-AUDIT_EXPORT_COLUMNS = ["Time", "Cluster", "Module", "User", "Source IP", "Action", "Object", "Outcome"]
-AUDIT_EXPORT_TECH_COLUMNS = ["Raw Action", "Object Type", "Object ID", "Details"]
+AUDIT_EXPORT_COLUMNS = ["Time", "Cluster", "Module", "User", "Source IP", "Action", "Object", "Details", "Outcome"]
+# "Raw Details" is the whole payload; "Details" above is the readable one-liner.
+AUDIT_EXPORT_TECH_COLUMNS = ["Raw Action", "Object Type", "Object ID", "Raw Details"]
 # XLSX must be assembled as a ZIP archive in the web worker. CSV/JSON are
 # streamed instead, so keep the only in-memory format deliberately bounded.
 AUDIT_XLSX_MAX_ROWS = 5_000
@@ -212,6 +213,7 @@ def _audit_export_row(event: AuditEvent, *, include_technical: bool) -> dict[str
         "Source IP": str(event.source_ip or "-"),
         "Action": event.display_action,
         "Object": event.guest_identity.full_label if event.guest_identity else event.display_object,
+        "Details": event.display_detail or "-",
         "Outcome": event.outcome or "-",
     }
     if include_technical:
@@ -220,7 +222,7 @@ def _audit_export_row(event: AuditEvent, *, include_technical: bool) -> dict[str
                 "Raw Action": event.action or "",
                 "Object Type": event.object_type or "",
                 "Object ID": event.object_id or "",
-                "Details": json.dumps(event.details or {}, sort_keys=True, ensure_ascii=False),
+                "Raw Details": json.dumps(event.details or {}, sort_keys=True, ensure_ascii=False),
             }
         )
     return row

@@ -54,6 +54,7 @@
           <th data-column="source" data-sort="text">Source IP</th>
           <th data-column="action" data-sort="text">Action</th>
           <th data-column="object" data-sort="text">Object</th>
+          <th data-column="detail" data-sort="text">Details</th>
           <th data-column="outcome" data-sort="text">Outcome</th>
         </tr>
       </thead>
@@ -73,12 +74,13 @@
                 {{ event.display_object }}
               {% endif %}
             </td>
+            <td data-column="detail" data-sort-value="{{ event.display_detail }}" title="{{ event.display_detail }}">{{ event.display_detail|default:"-" }}</td>
             <td data-column="outcome" data-sort-value="{{ event.outcome }}"><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
           </tr>
         {% endfor %}
         {% if not events %}
           <tr>
-            <td colspan="8" class="empty-state">{% if audit_filter != 'all' or audit_query or audit_cluster %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+            <td colspan="9" class="empty-state">{% if audit_filter != 'all' or audit_query or audit_cluster %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
           </tr>
         {% endif %}
       </tbody>

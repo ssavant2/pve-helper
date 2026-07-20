@@ -4787,6 +4787,45 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertNotContains(response, "trash.purge.schedule.updated")
         self.assertNotContains(response, "scan.retention.purge")
 
+    def test_audit_log_describes_bulk_file_operations_and_their_answer(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.bulk_operation",
+            object_type="file",
+            object_id="nfs-fs:trash",
+            outcome="warning",
+            details={
+                "operation": "trash",
+                "storage_id": "nfs-fs",
+                "storage_name": "nfs-fs",
+                "summary": "2 of 3 moved to trash",
+                "total": 3,
+                "succeeded": ["dump/a.vma.zst", "dump/b.vma.zst"],
+                "failed": [{"path": "images/100/vm-100-disk-0.qcow2", "error": "Blocked by preflight."}],
+                "skipped": [],
+            },
+        )
+        AuditEvent.objects.create(
+            username="viewer",
+            action="file.bulk_operation.answered",
+            object_type="file",
+            object_id="nfs-fs:trash",
+            details={"operation": "trash", "storage_name": "nfs-fs", "answer": "accepted", "remaining": 1},
+        )
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        # The label carries the outcome; the detail column names what failed.
+        self.assertContains(response, "Move files to trash (2 of 3)")
+        self.assertContains(response, "images/100/vm-100-disk-0.qcow2: Blocked by preflight.")
+        self.assertContains(response, "Move files to trash — outcome accepted")
+        self.assertContains(response, "Operator accepted the outcome; 1 file(s) left as they were")
+        self.assertNotContains(response, "file.bulk_operation")
+
     def test_audit_log_uses_readable_scheduled_task_labels(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
@@ -5958,10 +5997,27 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertEqual(page.questions_pending, 1)
             self.assertEqual(page.tasks[0]["question"]["kind"], "bulk_file_partial")
 
-            self.client.post(reverse("core:dismiss_task_question"), {"task_id": f"file:{bulk.id}"})
+            self.client.post(
+                reverse("core:dismiss_task_question"),
+                {"task_id": f"file:{bulk.id}", "answer": "accepted"},
+            )
             bulk.refresh_from_db()
             self.assertTrue(bulk.details["question_dismissed"])
             self.assertEqual(recent_task_page(limit=5).questions_pending, 0)
+
+            # The decision is its own durable fact, not a rewrite of the question.
+            answered = AuditEvent.objects.get(action="file.bulk_operation.answered")
+            self.assertEqual(answered.details["answer"], "accepted")
+            self.assertEqual(answered.details["remaining"], 1)
+            self.assertEqual(answered.details["question_event_id"], bulk.id)
+            self.assertEqual(answered.module, "storage")
+
+            # Answering twice must not log the decision twice.
+            self.client.post(
+                reverse("core:dismiss_task_question"),
+                {"task_id": f"file:{bulk.id}", "answer": "retried"},
+            )
+            self.assertEqual(AuditEvent.objects.filter(action="file.bulk_operation.answered").count(), 1)
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_referenced_stopped_file_requires_double_confirmation_then_moves_to_trash(self):

@@ -45,6 +45,9 @@
   --surface: #ffffff;
   --surface-alt: #f7f8fa;
   --line: #cfd6dd;
+  /* One step stronger than --line, for borders that must read as an edge in
+     their own right: secondary buttons and inputs sitting on --surface. */
+  --line-strong: #9fadba;
   --text: #1e252c;
   --muted: #65717d;
   --accent: #1f6fb2;
@@ -106,6 +109,7 @@
   --surface: #1c2f38;
   --surface-alt: #26414c;
   --line: #35505c;
+  --line-strong: #4d6f7e;
   --text: #e8f0f4;
   --muted: #b2c1c8;
   --accent: #4db6e8;

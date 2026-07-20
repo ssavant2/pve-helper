@@ -270,12 +270,45 @@ def dismiss_task_question(request):
     if event is None:
         return JsonResponse({"ok": False, "error": "Task not found."}, status=404)
     details = dict(event.details) if isinstance(event.details, dict) else {}
+    already_answered = bool(details.get("question_dismissed"))
     details["question_dismissed"] = True
     if kind == "guest":
         details["force_stop_dismissed"] = True
     event.details = details
     event.save(update_fields=["details"])
+    answer = request.POST.get("answer", "").strip()
+    if kind == "file" and not already_answered and answer in {"retried", "accepted"}:
+        _record_bulk_file_answer(request, event, details, answer)
     return JsonResponse({"ok": True})
+
+
+def _record_bulk_file_answer(request, event: AuditEvent, details: dict, answer: str) -> None:
+    """Log the decision as its own event.
+
+    The question and its answer are two separate facts at two separate times.
+    Folding the answer into the original event would rewrite history and lose
+    who decided, and when.
+    """
+    failed = details.get("failed") if isinstance(details.get("failed"), list) else []
+    skipped = details.get("skipped") if isinstance(details.get("skipped"), list) else []
+    record_audit_event(
+        request,
+        action="file.bulk_operation.answered",
+        object_type="file",
+        object_id=event.object_id,
+        outcome="success",
+        cluster=event.cluster,
+        cluster_key_snapshot=event.cluster_key_snapshot,
+        details={
+            "operation": details.get("operation") or "",
+            "storage_id": details.get("storage_id") or event.storage_id,
+            "storage_name": details.get("storage_name") or "",
+            "answer": answer,
+            "remaining": len(failed) + len(skipped),
+            "question_event_id": event.id,
+            "summary": details.get("summary") or "",
+        },
+    )
 
 
 def _cancel_guest_recent_task(request, event_id: int) -> None:

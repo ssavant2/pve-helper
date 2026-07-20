@@ -370,6 +370,7 @@ def _decorate_audit_events(events: list[AuditEvent]) -> None:
         event.display_action = _audit_action_label(event)
         event.guest_identity = _audit_guest_identity(event)
         event.display_object = _audit_object_label(event)
+        event.display_detail = _audit_detail_label(event)
         event.search_text = " ".join(
             [
                 event.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
@@ -377,6 +378,7 @@ def _decorate_audit_events(events: list[AuditEvent]) -> None:
                 event.display_module,
                 event.display_action,
                 event.display_object,
+                event.display_detail,
                 event.outcome or "",
             ]
         )
@@ -479,6 +481,10 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Move file to trash"
     if event.action == "file.restored":
         return "Restore file"
+    if event.action == "file.bulk_operation":
+        return _bulk_file_action_label(details)
+    if event.action == "file.bulk_operation.answered":
+        return _bulk_file_answer_label(details)
     if event.action == "file.inflate_queued":
         return _inflate_action_label("Disk inflate queued", details)
     if event.action == "file.inflated":
@@ -616,6 +622,77 @@ def _inflate_action_label(base_label: str, details: dict) -> str:
     return base_label
 
 
+_AUDIT_DETAIL_FAILURES_SHOWN = 3
+
+
+def _audit_detail_label(event: AuditEvent) -> str:
+    """What actually happened, beyond the action name.
+
+    Kept to one line: the column is scannable, and the full payload stays in the
+    exported event for anyone who needs every path.
+    """
+    details = event.details if isinstance(event.details, dict) else {}
+    if event.action == "file.bulk_operation":
+        return _bulk_file_detail(details)
+    if event.action == "file.bulk_operation.answered":
+        return _bulk_file_answer_detail(details)
+    return str(details.get("summary") or details.get("error_reason") or "")
+
+
+def _bulk_file_detail(details: dict) -> str:
+    failed = details.get("failed") if isinstance(details.get("failed"), list) else []
+    skipped = details.get("skipped") if isinstance(details.get("skipped"), list) else []
+    parts = [
+        f"{item.get('path') or '?'}: {item.get('error') or 'failed'}"
+        for item in failed[:_AUDIT_DETAIL_FAILURES_SHOWN]
+        if isinstance(item, dict)
+    ]
+    remaining = len(failed) - len(parts)
+    if remaining > 0:
+        parts.append(f"and {remaining} more failed")
+    if skipped:
+        parts.append(f"{len(skipped)} not attempted")
+    return "; ".join(parts)
+
+
+def _bulk_file_answer_detail(details: dict) -> str:
+    answer = str(details.get("answer") or "")
+    count = details.get("remaining")
+    count = count if isinstance(count, int) else 0
+    if answer == "retried":
+        return f"Operator retried the {count} remaining file(s)"
+    if answer == "accepted":
+        return f"Operator accepted the outcome; {count} file(s) left as they were"
+    return "Operator answered the question"
+
+
+_BULK_FILE_OPERATION_LABELS = {
+    "trash": "Move files to trash",
+    "move": "Move files",
+}
+
+
+def _bulk_file_operation_label(details: dict) -> str:
+    operation = str(details.get("operation") or "")
+    return _BULK_FILE_OPERATION_LABELS.get(operation, "Bulk file operation")
+
+
+def _bulk_file_action_label(details: dict) -> str:
+    """Carry the outcome in the label: a fan-out's whole point is "how many"."""
+    base = _bulk_file_operation_label(details)
+    succeeded = details.get("succeeded")
+    total = details.get("total")
+    if isinstance(succeeded, list) and isinstance(total, int) and total:
+        return f"{base} ({len(succeeded)} of {total})"
+    return base
+
+
+def _bulk_file_answer_label(details: dict) -> str:
+    answer = str(details.get("answer") or "")
+    verb = {"retried": "retried", "accepted": "accepted"}.get(answer, "answered")
+    return f"{_bulk_file_operation_label(details)} — outcome {verb}"
+
+
 def _audit_object_label(event: AuditEvent) -> str:
     details = event.details if isinstance(event.details, dict) else {}
     cluster_label = (
@@ -645,6 +722,15 @@ def _audit_object_label(event: AuditEvent) -> str:
             cluster_key=event.cluster_key_snapshot or details.get("cluster_key") or "",
             node=details.get("node") or details.get("target_node") or "",
         ).full_label_with_type
+    if event.object_type == "file":
+        # object_id is an internal ref ("<mount_ref>:<operation>" for a fan-out);
+        # the operator reads the storage and the path instead.
+        storage_label = details.get("storage_name") or details.get("storage_id") or event.storage_id
+        path = details.get("path") or event.path
+        if storage_label and path:
+            return f"{storage_label} · {path}"
+        if storage_label:
+            return str(storage_label)
     if event.object_type == "scan_run" and event.object_id:
         return "Storage inventory scan"
     if event.object_type == "scan_retention":

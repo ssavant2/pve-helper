@@ -951,8 +951,9 @@ const openBulkFilePartialDialog = async (payload, taskId) => {
     confirmLabel: `Retry ${retryPaths.length} file(s)`,
     danger: false,
   });
-  await dismissTaskQuestion(taskId);
-  if (!retryRequested || !retry.url || !retryPaths.length) {
+  const retrying = Boolean(retryRequested && retry.url && retryPaths.length);
+  await dismissTaskQuestion(taskId, retrying ? "retried" : "accepted");
+  if (!retrying) {
     return;
   }
   const taskbar = document.querySelector("[data-recent-tasks]");
