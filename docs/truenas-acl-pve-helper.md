@@ -234,10 +234,10 @@ If it still fails, remount the exports on the Docker host:
 ```bash
 cd /docker-apps/pve-helper
 docker compose stop web worker
-sudo umount /mnt/pve-helper/truenas-fs
-sudo umount /mnt/pve-helper/truenas-vm
-sudo mount /mnt/pve-helper/truenas-fs
-sudo mount /mnt/pve-helper/truenas-vm
+sudo umount /mnt/pve-helper/nas-files
+sudo umount /mnt/pve-helper/nas-vms
+sudo mount /mnt/pve-helper/nas-files
+sudo mount /mnt/pve-helper/nas-vms
 docker compose up -d web worker
 ```
 
@@ -246,7 +246,7 @@ docker compose up -d web worker
 The app user must be able to list the VM directory:
 
 ```bash
-docker compose exec -T web sh -c 'id; ls -la /storages/truenas-vm/images/<vmid>'
+docker compose exec -T web sh -c 'id; ls -la /storages/nas-vms/images/<vmid>'
 ```
 
 Expected:
@@ -275,9 +275,9 @@ or at least no `PermissionError` for `images/<vmid>`.
 To verify write access for a writable storage:
 
 ```bash
-docker compose exec -T web sh -c 'printf test > /storages/truenas-fs/template/iso/.pve-helper-write-test && rm -f /storages/truenas-fs/template/iso/.pve-helper-write-test'
-docker compose exec -T web sh -c 'printf test > /storages/truenas-vm/images/<vmid>/.pve-helper-write-test && rm -f /storages/truenas-vm/images/<vmid>/.pve-helper-write-test'
-docker compose exec -T worker sh -c 'printf test > /storages/truenas-vm/images/<vmid>/.pve-helper-worker-write-test && rm -f /storages/truenas-vm/images/<vmid>/.pve-helper-worker-write-test'
+docker compose exec -T web sh -c 'printf test > /storages/nas-files/template/iso/.pve-helper-write-test && rm -f /storages/nas-files/template/iso/.pve-helper-write-test'
+docker compose exec -T web sh -c 'printf test > /storages/nas-vms/images/<vmid>/.pve-helper-write-test && rm -f /storages/nas-vms/images/<vmid>/.pve-helper-write-test'
+docker compose exec -T worker sh -c 'printf test > /storages/nas-vms/images/<vmid>/.pve-helper-worker-write-test && rm -f /storages/nas-vms/images/<vmid>/.pve-helper-worker-write-test'
 ```
 
 ## Notes

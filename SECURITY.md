@@ -45,6 +45,6 @@ location or resource limits.
 ## Scope
 
 The report should concern pve-helper code, its published images or its release
-configuration. Vulnerabilities in Proxmox, Authentik, Docker, an external
+configuration. Vulnerabilities in Proxmox, your OIDC provider, Docker, an external
 reverse proxy, a storage appliance or the underlying operating system should be
 reported to the corresponding project or vendor.

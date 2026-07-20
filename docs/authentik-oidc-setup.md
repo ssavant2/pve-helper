@@ -1,9 +1,10 @@
 # Authentik OIDC setup for pve-helper
 
-This is the intended setup for `pve-helper` when the app skeleton is ready.
+This is the provider-specific Authentik recipe for `pve-helper`. For the generic
+provider contract, see `docs/oidc-setup.md`.
 
-The app uses native OIDC login against Authentik. A reverse proxy (e.g. Nginx Proxy
-Manager) is only the TLS/reverse-proxy entrypoint, **not** the only authentication
+The app uses native OIDC login against Authentik. An external reverse proxy is only
+the TLS/reverse-proxy entrypoint, **not** the only authentication
 boundary. The app validates the OIDC session and the required group itself.
 
 This guide is written to be followed top to bottom by someone who is not fluent in
@@ -220,7 +221,6 @@ and **Client Secret** into `.env`:
 OIDC_ISSUER_URL=https://auth.example.com/application/o/pve-helper/
 OIDC_CLIENT_ID=<from-authentik>
 OIDC_CLIENT_SECRET=<from-authentik>
-OIDC_REDIRECT_URI=https://pve-helper.example.com/auth/oidc/callback
 OIDC_REQUIRED_GROUP=pve-helper-admins
 OIDC_SCOPES=openid profile email groups
 ```

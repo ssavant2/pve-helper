@@ -116,11 +116,11 @@ upload directory on real writable storage, then set:
 
 ```env
 STORAGE_WRITE_ENABLED=true
-FILE_UPLOAD_TEMP_DIR=/storages/truenas-fs/.pve-helper-upload-tmp
+FILE_UPLOAD_TEMP_DIR=/storages/nas-files/.pve-helper-upload-tmp
 ```
 
 See `docs/deployment-runbook.md` for NFS mount guidance, upload temporary-space
-requirements, Authentik, reverse proxies and database role separation.
+requirements, OIDC providers, reverse proxies and database role separation.
 
 ## Update
 

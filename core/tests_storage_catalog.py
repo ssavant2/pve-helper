@@ -92,7 +92,7 @@ class StorageReadModelSourceInvariantTests(SimpleTestCase):
             self.assertIn("propagation: rprivate", source)
             self.assertIn("recursive: readonly", source)
             self.assertIn("storage_accel_state:/storage-accel-state", source)
-            self.assertNotIn("TRUENAS_FS_HOST_PATH", source)
+            self.assertNotIn("TRUENAS_", source)
 
     def test_catalog_refresh_is_owned_by_the_operation_scope(self):
         """Preflight is an operation-grain contract; no fan-out may refresh per file."""

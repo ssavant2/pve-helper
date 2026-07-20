@@ -24,14 +24,8 @@ from core.models import (
     ProxmoxCluster,
     ProxmoxEndpoint,
     RuntimeConfigurationState,
-    StorageMount,
 )
-from core.services.config import (
-    configured_endpoint_definitions,
-    configured_storage_definitions,
-    sync_storage_consumers,
-)
-from core.services.storage_mounts import normalized_backend_identity
+from core.services.config import configured_endpoint_definitions
 
 DEFAULT_CLUSTER_KEY = "default"
 DEFAULT_CLUSTER_DISPLAY_NAME = "Default cluster"
@@ -51,15 +45,6 @@ def environment_fingerprint() -> str:
     """Stable digest of the environment configuration a bootstrap would import."""
     payload = {
         "endpoints": sorted([definition.name, definition.url] for definition in configured_endpoint_definitions()),
-        "storages": sorted(
-            [
-                definition.storage_id,
-                definition.export,
-                definition.path,
-                sorted(definition.expected_consumers),
-            ]
-            for definition in configured_storage_definitions()
-        ),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -106,7 +91,6 @@ def _import_environment(state: RuntimeConfigurationState) -> None:
     onboarding state and make environment bootstrap own identity again.
     """
     endpoint_definitions = configured_endpoint_definitions()
-    storage_definitions = configured_storage_definitions()
     cluster = None
     if endpoint_definitions:
         cluster, _ = ProxmoxCluster.objects.get_or_create(
@@ -122,24 +106,6 @@ def _import_environment(state: RuntimeConfigurationState) -> None:
         if not created and endpoint.cluster_id is None:
             endpoint.cluster = cluster
             endpoint.save(update_fields=["cluster", "updated_at"])
-
-    for definition in storage_definitions:
-        storage, _ = StorageMount.objects.get_or_create(
-            storage_id=definition.storage_id,
-            defaults={
-                "display_name": definition.display_name,
-                "export": definition.export,
-                "path": definition.path,
-                "relative_path": definition.relative_path,
-                "trash_path": definition.trash_path,
-                "trash_relative_path": definition.trash_relative_path,
-                "backend_identity": normalized_backend_identity(definition.export),
-                "expected_consumers": definition.expected_consumers,
-                "enabled": True,
-            },
-        )
-        if cluster is not None:
-            sync_storage_consumers(storage, cluster)
 
     state.bootstrap_completed = True
     state.bootstrap_completed_at = timezone.now()

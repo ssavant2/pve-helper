@@ -11,7 +11,7 @@ from mozilla_django_oidc.views import (
 )
 
 if settings.APP_REQUIRE_LOGIN:
-    # Route /admin/ through the same OIDC (Authentik) flow as the rest of the site
+    # Route /admin/ through the same OIDC flow as the rest of the site.
     # instead of Django admin's standalone username/password form. Must run before
     # admin.site.urls is built below.
     admin.site.login = login_required(admin.site.login)

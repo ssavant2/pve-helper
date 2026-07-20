@@ -52,7 +52,8 @@ development. `INSTALL.md` is the canonical installation reference.
 
 - Deployment: `docs/deployment-runbook.md`
 - End-user guide: `docs/user-manual.md`
-- OIDC / Authentik setup: `docs/authentik-oidc-setup.md`
+- Authentication and generic OIDC setup: `docs/oidc-setup.md`
+- Authentik-specific OIDC example: `docs/authentik-oidc-setup.md`
 - Security policy and vulnerability reporting: `SECURITY.md`
 
 ## License

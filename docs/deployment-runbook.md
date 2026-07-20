@@ -137,7 +137,7 @@ cgroup counters of the running container.
    docker compose up -d nginx web worker worker-bulk console
    ```
 
-7. Open `http://dockerhost:21080` directly or configure NPM for
+7. Open `http://dockerhost:21080` directly or configure an external reverse proxy for
    `https://pve-helper.example.com`. Choose **Clusters → Connections → Add
    cluster** and complete the verified onboarding flow. No cluster record or
    credential is saved until transport, permissions and CA identity pass.
@@ -193,17 +193,16 @@ retries — and thus double-runs — a job that is still legitimately running.
 ### Optional external reverse proxy
 
 By default, audit events record the direct peer of pve-helper's nginx sidecar.
-That is safe: client-supplied `X-Forwarded-For` values are ignored. If Nginx
-Proxy Manager (NPM) is in front of the app and audit events should retain the
-browser's IP, explicitly trust *only* NPM's fixed IP address or private subnet:
+That is safe: client-supplied `X-Forwarded-For` values are ignored. If an external
+reverse proxy is in front of the app and audit events should retain the browser's
+IP, explicitly trust *only* that proxy's fixed IP address or private subnet:
 
 ```env
-# Example only — use NPM's actual address or subnet, never 0.0.0.0/0.
+# Example only — use the proxy's actual address or subnet, never 0.0.0.0/0.
 NGINX_TRUSTED_PROXY=192.0.2.20
 ```
 
-In the NPM Proxy Host's Advanced configuration, preserve the normal proxy
-headers (these are NPM's usual defaults, but make them explicit if customised):
+Configure the external proxy to preserve these standard forwarding headers:
 
 ```nginx
 proxy_set_header X-Real-IP $remote_addr;
@@ -214,7 +213,7 @@ proxy_set_header X-Forwarded-Proto $scheme;
 Recreate the pve-helper `nginx` service after changing `NGINX_TRUSTED_PROXY`
 (`docker compose up -d nginx`) — a plain `restart` reuses the existing container
 and will not pick up the new value. Setting `NGINX_TRUSTED_PROXY` is the required
-step; the header block above is usually already NPM's default. The nginx
+step; the header block above is a common reverse-proxy default. The nginx
 sidecar trusts `X-Forwarded-For` and `X-Forwarded-Proto` only when the original
 TCP peer matches `NGINX_TRUSTED_PROXY`, then passes the validated client IP and
 external scheme to the app. Direct HTTP access remains supported, but a direct
@@ -225,7 +224,7 @@ restriction is deployment-specific rather than an application requirement.
 
 The application emits its own enforced Content-Security-Policy. A reverse proxy should
 pass that response header through unchanged; do not replace it with a broader policy or
-add inline-script exceptions in NPM.
+add inline-script exceptions in the external proxy.
 
 ## NFS mounts
 
@@ -243,15 +242,15 @@ sudo apt install nfs-common
 Create the mount points:
 
 ```bash
-sudo mkdir -p /mnt/pve-helper/truenas-fs /mnt/pve-helper/truenas-vm
+sudo mkdir -p /mnt/pve-helper/nas-files /mnt/pve-helper/nas-vms
 ```
 
 The examples use two storages:
 
-- `nfs-fs` for general files such as ISOs, backups, templates, and other
+- `nas-files` for general files such as ISOs, backups, templates, and other
   capacity-oriented content. In a home lab this might be backed by spinning
   disks.
-- `nfs-vm` for VM disk images. In a home lab this might be backed by SSDs.
+- `nas-vms` for VM disk images. In a home lab this might be backed by SSDs.
 
 These names are only examples. Use storage IDs that match your Proxmox storage
 configuration.
@@ -260,18 +259,18 @@ Recommended `/etc/fstab` entries (use `ro` instead of `rw` when the host itself
 must enforce read-only access):
 
 ```fstab
-truenas.example.com:/mnt/tank/proxmox-fs /mnt/pve-helper/truenas-fs nfs4 rw,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail 0 0
-truenas.example.com:/mnt/tank/proxmox-vm /mnt/pve-helper/truenas-vm nfs4 rw,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail 0 0
+nas.example.com:/export/proxmox-files /mnt/pve-helper/nas-files nfs4 rw,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail 0 0
+nas.example.com:/export/proxmox-vms /mnt/pve-helper/nas-vms nfs4 rw,vers=4.2,proto=tcp,nconnect=4,hard,timeo=600,retrans=2,noatime,_netdev,nofail 0 0
 ```
 
 Apply and verify:
 
 ```bash
 sudo systemctl daemon-reload
-sudo mount /mnt/pve-helper/truenas-fs
-sudo mount /mnt/pve-helper/truenas-vm
-findmnt -T /mnt/pve-helper/truenas-fs
-findmnt -T /mnt/pve-helper/truenas-vm
+sudo mount /mnt/pve-helper/nas-files
+sudo mount /mnt/pve-helper/nas-vms
+findmnt -T /mnt/pve-helper/nas-files
+findmnt -T /mnt/pve-helper/nas-vms
 ```
 
 Compose binds the single host root from `PVE_HELPER_STORAGE_ROOT` to `/storages`.
@@ -284,8 +283,8 @@ The app discovers Proxmox storage definitions from its API catalog independently
 of these mounts. After a file-tree submount exists, register it from **Datastores →
 Register mount** and select the cluster storage plus shared or node-local scope.
 The association is explicit so equal storage IDs in different clusters cannot
-silently collide. The legacy `TRUENAS_*` variables are retained only for one-time
-upgrade import; leave their storage IDs blank on a new installation.
+silently collide. There is no environment-defined storage list: discovered
+definitions and operator-registered host mounts are the sole configuration path.
 
 Definitions/node state and volume content have separate periodic costs. The public
 defaults are one and five minutes respectively via
@@ -343,7 +342,7 @@ can kill the Gunicorn worker with out-of-memory errors before the app code sees 
 file. Put `FILE_UPLOAD_TEMP_DIR` on real storage with enough free space, for example:
 
 ```env
-FILE_UPLOAD_TEMP_DIR=/storages/truenas-fs/.pve-helper-upload-tmp
+FILE_UPLOAD_TEMP_DIR=/storages/nas-files/.pve-helper-upload-tmp
 ```
 
 Create that directory on the writable storage and make sure the app UID/GID can write
@@ -367,8 +366,9 @@ expected file transfer. The container disables Gunicorn `sendfile` and sends
 `X-Accel-Buffering: no` on downloads to avoid bursty NFS-to-proxy buffering for large
 files.
 
-For Nginx Proxy Manager, add equivalent settings in the proxy host's advanced
-configuration when this app is used for large datastore uploads/downloads:
+Configure equivalent settings in the external proxy when this app is used for
+large datastore uploads/downloads. The syntax below is for nginx-compatible proxies;
+use the corresponding controls in another product:
 
 ```nginx
 proxy_buffering off;
@@ -380,7 +380,7 @@ send_timeout 86400s;
 client_max_body_size 0;
 ```
 
-`client_max_body_size 0` removes the NPM upload limit. Use a concrete size instead if
+`client_max_body_size 0` removes the nginx upload limit. Use a concrete size instead if
 your deployment should enforce a proxy-level upload policy.
 
 Browser note for large transfers:
@@ -567,9 +567,10 @@ rolling the code back resumes reading them, and re-import is idempotent. **Do no
 remove the legacy token from the environment until the identity contract version 1
 boundary has succeeded.**
 
-## Authentik
+## OIDC authentication
 
-Follow `docs/authentik-oidc-setup.md`.
+Follow `docs/oidc-setup.md` for the provider-neutral contract. An additional
+step-by-step recipe is available in `docs/authentik-oidc-setup.md` for Authentik.
 
 For a new installation, leave the legacy `PVE_ENDPOINTS`,
 `PVE_API_TOKEN_ID`, `PVE_API_TOKEN_SECRET` and `PVE_CA_BUNDLE` fields empty.
@@ -584,18 +585,18 @@ older/single-cluster deployment:
 ```env
 APP_REQUIRE_LOGIN=true
 OIDC_ISSUER_URL=https://auth.example.com/application/o/pve-helper/
-OIDC_CLIENT_ID=<from-authentik>
-OIDC_CLIENT_SECRET=<from-authentik>
+OIDC_CLIENT_ID=<from-oidc-provider>
+OIDC_CLIENT_SECRET=<from-oidc-provider>
 OIDC_REQUIRED_GROUP=pve-helper-admins
 ```
 
-For an internal-only deployment, point `OIDC_ISSUER_URL` at the internal Authentik URL
-that fully serves the flow UI. If that URL (or Proxmox) uses an internal/private CA, the
+For an internal-only deployment, use an issuer URL reachable by both the browser and
+the app's back-channel calls. If that URL (or Proxmox) uses an internal/private CA, the
 container must trust it for back-channel TLS — see the next section.
 
 ## Internal CA trust (back-channel TLS)
 
-The app makes server-to-server HTTPS calls: OIDC token/JWKS to Authentik, and the Proxmox
+The app makes server-to-server HTTPS calls to the OIDC provider and the Proxmox
 API. If those hosts present internal-CA-signed certificates, the container must trust that
 CA or the calls fail with `SSLError` (visible as a 500 right after the OIDC redirect).
 

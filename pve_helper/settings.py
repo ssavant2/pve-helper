@@ -166,7 +166,7 @@ LOGIN_URL = "/auth/oidc/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
 
-# Production is OIDC-only: Authentik is the sole way in, Django admin included.
+# Production is OIDC-only: the configured provider is the sole way in, Django admin included.
 # The username/password backend (admin login form, createsuperuser) is kept only
 # for the dev/E2E path, where login is not the enforced OIDC gate.
 AUTHENTICATION_BACKENDS = ["core.auth.PveHelperOIDCBackend"]
@@ -180,20 +180,22 @@ OIDC_RP_SCOPES = env("OIDC_SCOPES", "openid profile email groups")
 OIDC_REQUIRED_GROUP = env("OIDC_REQUIRED_GROUP", "pve-helper-admins")
 OIDC_CREATE_USER = True
 # mozilla-django-oidc does NOT perform OIDC discovery (.well-known); the OP endpoints
-# must be set explicitly. Defaults below follow Authentik's URL scheme and are derived
-# from the issuer URL. authorize/token/userinfo are global under /application/o/, while
-# jwks is per-application (includes the provider slug). Each is overridable via env.
+# must be set explicitly. Defaults below follow Authentik's URL scheme for the bundled
+# provider-specific recipe. Other providers must override every endpoint via env.
 _oidc_o_base = OIDC_ISSUER_URL.rsplit("/", 1)[0]  # e.g. https://auth.example.com/application/o
-OIDC_OP_AUTHORIZATION_ENDPOINT = env("OIDC_OP_AUTHORIZATION_ENDPOINT", f"{_oidc_o_base}/authorize/")
-OIDC_OP_TOKEN_ENDPOINT = env("OIDC_OP_TOKEN_ENDPOINT", f"{_oidc_o_base}/token/")
-OIDC_OP_USER_ENDPOINT = env("OIDC_OP_USER_ENDPOINT", f"{_oidc_o_base}/userinfo/")
-OIDC_OP_JWKS_ENDPOINT = env("OIDC_OP_JWKS_ENDPOINT", f"{OIDC_ISSUER_URL}/jwks/")
-OIDC_OP_END_SESSION_ENDPOINT = env("OIDC_OP_END_SESSION_ENDPOINT", f"{OIDC_ISSUER_URL}/end-session/")
+OIDC_OP_AUTHORIZATION_ENDPOINT = env("OIDC_OP_AUTHORIZATION_ENDPOINT", "") or f"{_oidc_o_base}/authorize/"
+OIDC_OP_TOKEN_ENDPOINT = env("OIDC_OP_TOKEN_ENDPOINT", "") or f"{_oidc_o_base}/token/"
+OIDC_OP_USER_ENDPOINT = env("OIDC_OP_USER_ENDPOINT", "") or f"{_oidc_o_base}/userinfo/"
+OIDC_OP_JWKS_ENDPOINT = env("OIDC_OP_JWKS_ENDPOINT", "") or f"{OIDC_ISSUER_URL}/jwks/"
+_oidc_end_session = env("OIDC_OP_END_SESSION_ENDPOINT", "")
+OIDC_OP_END_SESSION_ENDPOINT = (
+    "" if _oidc_end_session.lower() == "local" else _oidc_end_session or f"{OIDC_ISSUER_URL}/end-session/"
+)
 OIDC_RP_SIGN_ALGO = "RS256"
 
-# RP-initiated logout: also end the Authentik SSO session, otherwise local logout is
+# RP-initiated logout: also end the provider SSO session, otherwise local logout can be
 # immediately undone by silent re-authentication. Storing the id token lets us pass
-# id_token_hint so Authentik can log out without an extra confirmation prompt.
+# id_token_hint so a conforming provider can identify the session.
 OIDC_STORE_ID_TOKEN = True
 OIDC_OP_LOGOUT_URL_METHOD = "core.auth.provider_logout"
 
@@ -227,7 +229,6 @@ PVE_API_TOKEN_SECRET = env("PVE_API_TOKEN_SECRET", "")
 # Only enabled by pve_helper.test_settings: turns an unmocked Proxmox request
 # into an immediate test failure instead of a real infrastructure call.
 PVE_TEST_NETWORK_DISABLED = env_bool("PVE_TEST_NETWORK_DISABLED", False)
-PVE_EXPECTED_CONSUMERS = env_list("PVE_EXPECTED_CONSUMERS", "pve-node-1")
 SCHEDULED_ACTION_TIMEOUT_SECONDS = env_int("SCHEDULED_ACTION_TIMEOUT_SECONDS", 1800)
 # Backups and restores can legitimately run far longer than a power action.
 # Keep this independently configurable without weakening scheduled-action timeouts.
@@ -235,12 +236,6 @@ BACKUP_TASK_TIMEOUT_SECONDS = env_int("BACKUP_TASK_TIMEOUT_SECONDS", 21600)
 SCHEDULED_ACTION_POLL_INTERVAL_SECONDS = env_int("SCHEDULED_ACTION_POLL_INTERVAL_SECONDS", 5)
 SCHEDULED_ACTION_RUN_RETENTION_DAYS = env_int("SCHEDULED_ACTION_RUN_RETENTION_DAYS", 90)
 
-TRUENAS_FS_STORAGE_ID = env("TRUENAS_FS_STORAGE_ID", "")
-TRUENAS_VM_STORAGE_ID = env("TRUENAS_VM_STORAGE_ID", "")
-TRUENAS_FS_EXPORT = env("TRUENAS_FS_EXPORT", "")
-TRUENAS_VM_EXPORT = env("TRUENAS_VM_EXPORT", "")
-TRUENAS_FS_CONTAINER_PATH = env("TRUENAS_FS_CONTAINER_PATH", "/storages/truenas-fs")
-TRUENAS_VM_CONTAINER_PATH = env("TRUENAS_VM_CONTAINER_PATH", "/storages/truenas-vm")
 STORAGE_WRITE_ENABLED = env_bool("STORAGE_WRITE_ENABLED", True)
 CONSOLE_ENABLED = env_bool("CONSOLE_ENABLED", True)
 CONSOLE_SESSION_TTL_SECONDS = env_int("CONSOLE_SESSION_TTL_SECONDS", 30)

@@ -1065,22 +1065,10 @@ class TrashDirectoryConventionTests(TestCase):
     """
 
     def test_every_writer_derives_the_same_trash_path(self):
-        from core.services.config import _bootstrap_storage_definition
         from core.services.storage_paths import default_trash_relative_path
 
-        bootstrap = _bootstrap_storage_definition("truenas-fs", "nas:/fs", "/storages/truenas-fs", [])
-
-        self.assertEqual(bootstrap.trash_relative_path, default_trash_relative_path("truenas-fs"))
-        self.assertEqual(bootstrap.trash_path, "/storages/truenas-fs/.trash/pve-helper")
+        self.assertEqual(default_trash_relative_path("nas-files"), "nas-files/.trash/pve-helper")
         self.assertEqual(categorize_proxmox_path(".trash/pve-helper/20260101T000000Z/x.iso"), "trash")
-
-    def test_unconfigured_bootstrap_entry_has_no_trash_path(self):
-        from core.services.config import _bootstrap_storage_definition
-
-        definition = _bootstrap_storage_definition("replace-with-fs", "", "", [])
-
-        self.assertEqual(definition.trash_relative_path, "")
-        self.assertEqual(definition.trash_path, "")
 
     def test_legacy_trash_directory_still_classifies_as_trash(self):
         # Until a mount is migrated its files must not be labelled Infrastructure.
@@ -1455,13 +1443,6 @@ class ClassificationTests(SimpleTestCase):
 
 @override_settings(
     PVE_ENDPOINTS=["https://pve-node-1.example.com:8006"],
-    PVE_EXPECTED_CONSUMERS=["pve-node-1"],
-    TRUENAS_FS_STORAGE_ID="nfs-fs",
-    TRUENAS_VM_STORAGE_ID="nfs-vm",
-    TRUENAS_FS_EXPORT="truenas.example.com:/mnt/tank/proxmox-fs",
-    TRUENAS_VM_EXPORT="truenas.example.com:/mnt/tank/proxmox-vm",
-    TRUENAS_FS_CONTAINER_PATH="/storages/truenas-fs",
-    TRUENAS_VM_CONTAINER_PATH="/storages/truenas-vm",
 )
 class RuntimeConfigurationTests(TestCase):
     def test_empty_endpoint_environment_records_bootstrap_without_inventing_a_cluster(self):
@@ -1473,11 +1454,7 @@ class RuntimeConfigurationTests(TestCase):
         self.assertEqual(first.pk, second.pk)
         self.assertFalse(ProxmoxCluster.objects.exists())
         self.assertFalse(ProxmoxEndpoint.objects.exists())
-        self.assertEqual(
-            set(StorageMount.objects.values_list("storage_id", flat=True)),
-            {"nfs-fs", "nfs-vm"},
-        )
-        self.assertFalse(ProxmoxStorageConsumer.objects.exists())
+        self.assertFalse(StorageMount.objects.exists())
 
     def test_bootstrap_imports_environment_into_default_cluster(self):
         state = ensure_bootstrap()
@@ -1489,11 +1466,6 @@ class RuntimeConfigurationTests(TestCase):
         cluster = ProxmoxCluster.objects.get(key="default")
         self.assertEqual(ProxmoxEndpoint.objects.get(name="pve-node-1").url, "https://pve-node-1.example.com:8006")
         self.assertEqual(ProxmoxEndpoint.objects.get(name="pve-node-1").cluster, cluster)
-        self.assertEqual(
-            set(StorageMount.objects.values_list("storage_id", flat=True)),
-            {"nfs-fs", "nfs-vm"},
-        )
-        self.assertEqual(StorageMount.objects.get(storage_id="nfs-vm").expected_consumers, ["pve-node-1"])
 
     def test_bootstrap_does_not_reapply_environment_after_marker_exists(self):
         ensure_bootstrap()
@@ -1501,19 +1473,13 @@ class RuntimeConfigurationTests(TestCase):
         endpoint = ProxmoxEndpoint.objects.get(name="pve-node-1")
         endpoint.url = "https://operator-chosen.example.com:8006"
         endpoint.save(update_fields=["url"])
-        storage = StorageMount.objects.get(storage_id="nfs-vm")
-        storage.display_name = "Operator renamed"
-        storage.save(update_fields=["display_name"])
-
         # A later environment change must not mutate DB-owned configuration: the
         # database is the sole runtime authority once the marker exists.
         with self.settings(PVE_ENDPOINTS=["https://env-changed.example.com:8006"]):
             ensure_bootstrap()
 
         endpoint.refresh_from_db()
-        storage.refresh_from_db()
         self.assertEqual(endpoint.url, "https://operator-chosen.example.com:8006")
-        self.assertEqual(storage.display_name, "Operator renamed")
         self.assertFalse(ProxmoxEndpoint.objects.filter(name="env-changed").exists())
 
     def test_bootstrap_is_idempotent_and_keeps_one_default_cluster(self):

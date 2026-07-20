@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class PveHelperOIDCBackend(OIDCAuthenticationBackend):
-    """Authentik OIDC backend with explicit group enforcement."""
+    """OIDC backend with stable-subject identity and explicit group enforcement."""
 
     def verify_claims(self, claims: dict[str, Any]) -> bool:
         if not super().verify_claims(claims):
@@ -128,11 +128,11 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
 
 
 def provider_logout(request) -> str:
-    """Build the Authentik RP-initiated logout (end-session) URL.
+    """Build the provider's RP-initiated logout (end-session) URL.
 
     Used as ``OIDC_OP_LOGOUT_URL_METHOD``. Ending only the local Django session is
-    not enough: the Authentik SSO session would silently re-authenticate the user on
-    the next protected request. Passing ``id_token_hint`` lets Authentik end the
+    not enough: the provider's SSO session could silently re-authenticate the user on
+    the next protected request. Passing ``id_token_hint`` lets the provider end the
     session without a confirmation prompt; ``post_logout_redirect_uri`` returns the
     user to the app (it must be registered in the provider's redirect URIs).
     """
