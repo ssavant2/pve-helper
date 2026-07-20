@@ -708,6 +708,26 @@
   font-size: 12px;
 }
 
+/* Classification and Storage Gate are read side by side, so they share the width
+   evenly and stay the same height rather than one ending in a short stub. */
 .datastore-summary .split-view {
-  align-items: start;
+  grid-template-columns: 1fr 1fr;
+  align-items: stretch;
+}
+
+.datastore-summary .split-view > .panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The Nodes table's header reads as part of the object, like the node links
+   under it, instead of as plain body text. */
+.datastore-node-table thead th {
+  color: var(--accent);
+  border-bottom: 1px solid var(--accent);
+}
+
+/* The filter aligns with the meta line above it rather than the panel edge. */
+.datastore-file-toolbar-compact {
+  padding-left: 12px;
 }

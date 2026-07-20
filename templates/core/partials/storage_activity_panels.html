@@ -1,0 +1,75 @@
+{% comment %}
+Recent scans and file actions for one mount, paged. Shared by the datastore
+page's Monitor tab and the registered-mount page.
+{% endcomment %}
+    <div class="split-view monitor-split-view panel-spaced">
+      <div class="panel monitor-activity-panel">
+        <div class="panel-heading">
+          <span>File Actions (last 7 days)</span>
+          <span class="panel-heading-controls">
+            <a class="page-button{% if not event_has_prev %} disabled{% endif %}" href="?scan_page={{ scan_page }}&amp;event_page={{ event_page|add:"-1" }}">Previous 10</a>
+            <span class="page-label">{{ event_start }}-{{ event_end }} of {{ event_total }}</span>
+            <a class="page-button{% if not event_has_next %} disabled{% endif %}" href="?scan_page={{ scan_page }}&amp;event_page={{ event_page|add:"1" }}">Next 10</a>
+          </span>
+        </div>
+        <table class="data-table compact">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Action</th>
+              <th>Path</th>
+              <th>User</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for event in recent_events %}
+              <tr>
+                <td>{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
+                <td>{{ event.display_action|default:event.action }}</td>
+                <td class="truncate-cell" title="{{ event.details.path|default:event.object_id }}">{{ event.details.path|default:event.object_id }}</td>
+                <td>{{ event.username|default:"-" }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="empty-state">No file actions in the last 7 days.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel monitor-activity-panel">
+        <div class="panel-heading">
+          <span>Recent Scans (last 7 days)</span>
+          <span class="panel-heading-controls">
+            <a class="page-button{% if not scan_has_prev %} disabled{% endif %}" href="?scan_page={{ scan_page|add:"-1" }}&amp;event_page={{ event_page }}">Previous 10</a>
+            <span class="page-label">{{ scan_start }}-{{ scan_end }} of {{ scan_total }}</span>
+            <a class="page-button{% if not scan_has_next %} disabled{% endif %}" href="?scan_page={{ scan_page|add:"1" }}&amp;event_page={{ event_page }}">Next 10</a>
+          </span>
+        </div>
+        <table class="data-table compact">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Started</th>
+              <th>Finished</th>
+              <th>Progress</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for scan in recent_scans %}
+              <tr>
+                <td>
+                  <span class="badge {% if scan.status == 'completed' %}completed{% elif scan.status == 'failed' %}failed{% elif scan.status == 'running' %}warning{% endif %}">
+                    {{ scan.status }}
+                  </span>
+                </td>
+                <td>{{ scan.started_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                <td>{{ scan.finished_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
+                <td>{{ scan.progress_message|default:"-" }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="empty-state">No scans in the last 7 days.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>

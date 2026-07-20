@@ -95,7 +95,7 @@
             {% endfor %}
             <li class="chip-total"><span>Total files</span><strong>{{ total_file_count }}</strong></li>
           </ul>
-          <details class="panel-help">
+          <details class="panel-help" open>
             <summary>What these classifications mean</summary>
             {% include "core/partials/classification_legend.html" %}
           </details>
@@ -107,7 +107,7 @@
         {% if mount_unavailable_reason %}
           <p class="muted panel-empty-note">{{ mount_unavailable_reason }} The shared gate only applies to a datastore pve-helper has its own mount for.</p>
         {% else %}
-          <details class="panel-help">
+          <details class="panel-help" open>
             <summary>How this gate relates to volume coverage</summary>
             {% include "core/partials/storage_gate_help.html" %}
           </details>

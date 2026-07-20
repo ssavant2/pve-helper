@@ -735,6 +735,48 @@ _CLASSIFICATION_CHIP_LABELS = [
 ]
 
 
+def _storage_activity_context(request, mount) -> dict:
+    """Recent scans and file actions for one mount, paged.
+
+    Extracted so the datastore page's Monitor tab shows the same activity as the
+    registered-mount page rather than only the disk-space chart.
+    """
+    page_size = 10
+    retention_days = 7
+    scan_page = max(0, _int_request_param(request, "scan_page", 0))
+    event_page = max(0, _int_request_param(request, "event_page", 0))
+    cutoff = tz.now() - timedelta(days=retention_days)
+
+    all_scans = ScanRun.objects.filter(target_storage=mount, created_at__gte=cutoff).order_by("-created_at")
+    scan_total = all_scans.count()
+    scan_start = scan_page * page_size
+    scan_end = scan_start + page_size
+
+    all_events = AuditEvent.objects.filter(storage_id=mount.storage_id, timestamp__gte=cutoff).order_by("-timestamp")
+    event_total = all_events.count()
+    event_start = event_page * page_size
+    event_end = event_start + page_size
+    recent_events = list(all_events[event_start:event_end])
+    _decorate_audit_events(recent_events)
+
+    return {
+        "recent_scans": list(all_scans[scan_start:scan_end]),
+        "scan_page": scan_page,
+        "scan_total": scan_total,
+        "scan_start": min(scan_start + 1, scan_total),
+        "scan_end": min(scan_end, scan_total),
+        "scan_has_prev": scan_page > 0,
+        "scan_has_next": scan_end < scan_total,
+        "recent_events": recent_events,
+        "event_page": event_page,
+        "event_total": event_total,
+        "event_start": min(event_start + 1, event_total),
+        "event_end": min(event_end, event_total),
+        "event_has_prev": event_page > 0,
+        "event_has_next": event_end < event_total,
+    }
+
+
 def _classification_chips(counts: dict) -> list[dict]:
     """The scan's classification counts as one row instead of a nine-row table.
 
@@ -743,10 +785,7 @@ def _classification_chips(counts: dict) -> list[dict]:
     — a missing class would read as "not evaluated" rather than "none found" — but
     they no longer each cost a row.
     """
-    return [
-        {"key": key, "label": label, "count": counts.get(key, 0)}
-        for key, label in _CLASSIFICATION_CHIP_LABELS
-    ]
+    return [{"key": key, "label": label, "count": counts.get(key, 0)} for key, label in _CLASSIFICATION_CHIP_LABELS]
 
 
 def _datastore_mount_facts(request, view):
@@ -770,9 +809,7 @@ def _datastore_mount_facts(request, view):
     _decorate_storage_with_space_info(mount)
     latest_scan = _latest_storage_result_scan(mount)
     counts = (
-        _classification_counts(FileInventory.objects.filter(scan_run=latest_scan, storage=mount))
-        if latest_scan
-        else {}
+        _classification_counts(FileInventory.objects.filter(scan_run=latest_scan, storage=mount)) if latest_scan else {}
     )
     gate_status = {}
     if latest_scan and latest_scan.storage_gate_status:
@@ -996,6 +1033,16 @@ def api_storage_monitor(request, cluster_key: str, storage: str, node: str = "")
         return _datastore_redirect(request, "core:api_storage_monitor", cluster, storage, node)
     context = _api_storage_context(cluster, definition, storage, node, "monitor")
     chart_data = _api_storage_space_chart_data(cluster, node, storage, tz.now())
+    facts = _datastore_mount_facts(request, context["catalog_view"])
+    context.update(facts)
+    if facts["mount"] is not None:
+        # Capacity history is sampled twice over: through the Proxmox API keyed on
+        # (cluster, node, storage), and through the mount's own filesystem. A
+        # mounted datastore only ever gets the second, so preferring it is what
+        # keeps the chart from being empty on exactly the datastores pve-helper
+        # knows best.
+        chart_data = _storage_space_chart_data(facts["mount"], tz.now()) or chart_data
+        context.update(_storage_activity_context(request, facts["mount"]))
     context["space_chart_data_json"] = json.dumps(chart_data)
     return render(request, "core/storage_api/monitor.html", context)
 
@@ -1007,23 +1054,38 @@ def api_storage_configure(request, cluster_key: str, storage: str, node: str = "
     if moved:
         return _datastore_redirect(request, "core:api_storage_configure", cluster, storage, node)
     context = _api_storage_context(cluster, definition, storage, node, "configure")
-    scan = _latest_result_scan()
-    config = {}
-    if scan:
-        rows = ProxmoxInventory.objects.filter(
-            scan_run=scan,
-            cluster=cluster,
-            object_type=ProxmoxInventory.ObjectType.STORAGE,
-            name=storage,
-        )
-        # A shared datastore's definition is cluster-wide, so any node's scan row
-        # carries the same configuration; a node-local one must come from its node.
-        row = (rows.filter(node=node) if node else rows.order_by("node")).first()
-        if row and isinstance(row.config, dict):
-            config = row.config
+    # From the catalog, not from a filesystem scan: `ProxmoxInventory` only holds
+    # storage rows for scans that ran against a registered mount, so this panel was
+    # empty on every datastore pve-helper does not mount — and on several that it
+    # does. `ClusterStorage.config` is the definition Proxmox returned.
+    config = dict(definition.config or {}) if definition is not None else {}
     # Present the interesting config keys in a stable order; skip the nested
     # node_status blob and empty values.
-    skip = {"node_status", "storage", "total", "used", "avail", "used_fraction"}
+    # Keys the named rows above already show, plus the noise Proxmox mixes in.
+    skip = {
+        "node_status",
+        "storage",
+        "total",
+        "used",
+        "avail",
+        "used_fraction",
+        "type",
+        "server",
+        "portal",
+        "monhost",
+        "export",
+        "share",
+        "volume",
+        "datastore",
+        "pool",
+        "vgname",
+        "path",
+        "content",
+        "options",
+        "preallocation",
+        "shared",
+        "digest",
+    }
     config_rows = [
         {"key": key, "value": config[key]}
         for key in sorted(config)
@@ -1067,8 +1129,7 @@ def api_storage_nodes(request, cluster_key: str, storage: str, node: str = ""):
         )
     else:
         gate_by_node = {
-            consumer.expected_node_name: consumer
-            for consumer in view.mount.consumer_statuses.filter(cluster=cluster)
+            consumer.expected_node_name: consumer for consumer in view.mount.consumer_statuses.filter(cluster=cluster)
         }
 
     rows = [
@@ -1108,9 +1169,7 @@ def api_storage_permissions(request, cluster_key: str, storage: str, node: str =
         {
             "mount": mount,
             "permissions": get_permissions(str(storage_mount_root(mount))) if mount else None,
-            "unavailable_reason": (
-                "" if mount else _no_mount_reason(view, "Permissions")
-            ),
+            "unavailable_reason": ("" if mount else _no_mount_reason(view, "Permissions")),
         }
     )
     return render(request, "core/storage_api/permissions.html", context)
@@ -1727,15 +1786,18 @@ def _storage_space_chart_data(storage: StorageMount, now) -> list[dict[str, obje
 
 
 def _api_storage_space_chart_data(cluster, node: str, storage_id: str, now) -> list[dict[str, object]]:
-    return _space_chart_from_queryset(
-        StorageSpaceSnapshot.objects.filter(
-            storage__isnull=True,
-            cluster=cluster,
-            node=node,
-            api_storage_id=storage_id,
-        ),
-        now,
+    # Snapshots are always recorded per node, because that is how the Proxmox API
+    # reports capacity. A shared datastore has no node in its scope, so pinning the
+    # query to one would have left its chart permanently empty; every node sees the
+    # same backend, so the samples are read across the cluster and bucketed.
+    samples = StorageSpaceSnapshot.objects.filter(
+        storage__isnull=True,
+        cluster=cluster,
+        api_storage_id=storage_id,
     )
+    if node:
+        samples = samples.filter(node=node)
+    return _space_chart_from_queryset(samples, now)
 
 
 def _space_chart_from_queryset(base_qs, now) -> list[dict[str, object]]:

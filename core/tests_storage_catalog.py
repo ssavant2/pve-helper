@@ -22,6 +22,7 @@ from core.models import (
     ScanRun,
     StorageCatalogState,
     StorageMount,
+    StorageSpaceSnapshot,
 )
 from core.services.proxmox import _fetch_live_guest_lineage_uncached
 from core.services.refs import (
@@ -1321,8 +1322,14 @@ class DatastorePageKeepsEveryPanelTests(TestCase):
     # Every class stays listed even at zero: a missing one would read as "not
     # evaluated" rather than "none found".
     CLASSIFICATION_CHIPS = (
-        "Referenced", "Likely orphan", "Blocked", "Unknown",
-        "Infrastructure", "Proxmox content", "Import source", "Trash",
+        "Referenced",
+        "Likely orphan",
+        "Blocked",
+        "Unknown",
+        "Infrastructure",
+        "Proxmox content",
+        "Import source",
+        "Trash",
     )
     CONFIGURE_PANELS = ("Proxmox Configuration", "App Configuration", "Filesystem")
     METADATA_LABELS = ("Type", "Server", "Export", "PVE Path", "Content", "Options", "Preallocation", "Shared")
@@ -1378,16 +1385,23 @@ class DatastorePageKeepsEveryPanelTests(TestCase):
 
     def test_summary_lists_every_classification_without_a_row_each(self):
         mount = StorageMount.objects.create(
-            storage_id="TrueNAS-FS", display_name="TrueNAS-FS", path="/storages/truenas-fs",
-            relative_path="truenas-fs", enabled=True,
+            storage_id="TrueNAS-FS",
+            display_name="TrueNAS-FS",
+            path="/storages/truenas-fs",
+            relative_path="truenas-fs",
+            enabled=True,
         )
         ClusterStorageMount.objects.create(
-            cluster_storage=self.definition, mount=mount, node=None,
+            cluster_storage=self.definition,
+            mount=mount,
+            node=None,
             scope=ClusterStorageMount.Scope.SHARED,
         )
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, finished_at=timezone.now())
         FileInventory.objects.create(
-            scan_run=scan, storage=mount, path="images/101/vm-101-disk-0.qcow2",
+            scan_run=scan,
+            storage=mount,
+            path="images/101/vm-101-disk-0.qcow2",
             entry_type=FileInventory.EntryType.FILE,
             classification=FileInventory.Classification.REFERENCED,
         )
@@ -1399,6 +1413,45 @@ class DatastorePageKeepsEveryPanelTests(TestCase):
                 self.assertContains(response, chip)
         self.assertContains(response, "classification-chips")
         self.assertContains(response, "Total files")
+
+    def test_monitor_carries_the_activity_panels_and_says_when_it_cannot(self):
+        response = self.client.get("/clusters/panels/datastores/TrueNAS-FS/monitor/")
+
+        self.assertContains(response, "Disk Space")
+        self.assertContains(response, "Activity")
+        self.assertContains(response, "No host mount is registered")
+
+    def test_a_shared_datastore_charts_capacity_sampled_on_any_node(self):
+        """Snapshots are recorded per node because that is how Proxmox reports
+        capacity. A shared datastore carries no node, so pinning the query to one
+        left its chart permanently empty."""
+        from core.views.storage import _api_storage_space_chart_data
+
+        for node, used in (("pve1", 400), ("pve2", 420)):
+            StorageSpaceSnapshot.objects.create(
+                cluster=self.cluster,
+                node=node,
+                api_storage_id="TrueNAS-FS",
+                total_bytes=1000,
+                used_bytes=used,
+                available_bytes=1000 - used,
+                recorded_at=timezone.now(),
+            )
+
+        # Node-local scope still reads only its own node; the shared scope, which
+        # carries no node, reads the cluster's samples instead of nothing.
+        self.assertTrue(_api_storage_space_chart_data(self.cluster, "pve1", "TrueNAS-FS", timezone.now()))
+        self.assertTrue(_api_storage_space_chart_data(self.cluster, "", "TrueNAS-FS", timezone.now()))
+        self.assertFalse(_api_storage_space_chart_data(self.cluster, "pve9", "TrueNAS-FS", timezone.now()))
+
+    def test_configuration_reads_the_definition_from_the_catalog(self):
+        """ProxmoxInventory only holds storage rows for scans run against a
+        registered mount, so this panel was empty on every datastore pve-helper
+        does not mount. The catalog has the definition Proxmox returned."""
+        response = self.client.get("/clusters/panels/datastores/TrueNAS-FS/configure/")
+
+        self.assertContains(response, "10.10.20.10")
+        self.assertContains(response, "/mnt/Pool/Proxmox")
 
     def test_the_mount_only_panels_say_why_they_are_empty(self):
         """Without a registered mount the panels stay, and each states its reason
