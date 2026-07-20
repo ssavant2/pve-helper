@@ -362,6 +362,15 @@ accelerated after the next ordinary nginx restart/deployment. This fallback is a
 security boundary: Linux/Docker do not force a later `rslave` submount read-only in
 an already-running namespace, even with recursive read-only requested.
 
+The manifest records each datastore's device (`st_dev`) alongside its name, and the
+app compares that number before emitting `X-Accel-Redirect`. nginx holds its
+`/storages` bind `rprivate`, so it keeps the filesystem it started with while the app
+follows the host through `rslave`. Unmounting an export and mounting a *different*
+filesystem at the same path leaves the name matching but changes the device, and the
+download streams through Django — from the filesystem the app itself validated —
+until nginx is restarted. A manifest written by an older sidecar has no device and is
+likewise not accelerated.
+
 Set `STORAGE_DOWNLOAD_ACCEL_ENABLED=false` to fall back to Django/Gunicorn streaming.
 When fallback streaming is used, keep `GUNICORN_TIMEOUT` high enough for the largest
 expected file transfer. The container disables Gunicorn `sendfile` and sends

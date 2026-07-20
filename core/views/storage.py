@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
 from django.template.defaultfilters import filesizeformat
@@ -3129,7 +3129,38 @@ def _download_response(request, storage: StorageMount, relative_path: str, file_
     return response
 
 
+def _accel_manifest_devices() -> dict[str, int]:
+    """Top-level datastore name to the device nginx saw when it started.
+
+    A line without a device is not treated as a match on the name alone. That is the
+    case during a version skew where `web` is newer than the nginx sidecar, and an
+    entry whose identity cannot be established is exactly the entry this function
+    exists to distrust — the cost of refusing it is a streamed download.
+    """
+    devices: dict[str, int] = {}
+    for line in settings.STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH.read_text(encoding="utf-8").splitlines():
+        name, separator, device = line.partition("\t")
+        if not separator or not name.strip() or not device.strip().isdigit():
+            continue
+        devices[name.strip()] = int(device.strip())
+    return devices
+
+
 def _download_accel_available(storage: StorageMount) -> bool:
+    """Whether nginx can serve this mount's bytes, and serve the *same* filesystem.
+
+    nginx keeps its own copy of every submount for the container's lifetime
+    (rprivate + recursive-readonly) while the app follows the host through rslave.
+    Matching on the name alone therefore survives a host remount, and an authorized
+    download would return bytes from the detached original while every check ran
+    against the replacement. Comparing the device catches that: bind mounts share
+    the superblock, so the numbers agree while it is one filesystem and diverge the
+    moment it is two.
+
+    Every failure here disables acceleration, which is the same path a mount added
+    after nginx started already takes — Django streams the file from the filesystem
+    the app itself validated.
+    """
     if not settings.STORAGE_DOWNLOAD_ACCEL_ENABLED:
         return False
     relative = storage.relative_path
@@ -3137,14 +3168,13 @@ def _download_accel_available(storage: StorageMount) -> bool:
         relative = storage.storage_id
     try:
         relative = normalized_relative_path(relative).split("/", 1)[0]
-        available = {
-            line.strip()
-            for line in settings.STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        }
-    except (OSError, StorageMountError):
+        expected = _accel_manifest_devices().get(relative)
+        if expected is None:
+            return False
+        current = os.stat(Path(settings.PVE_HELPER_STORAGE_CONTAINER_ROOT) / relative).st_dev
+    except (OSError, StorageMountError, ValueError):
         return False
-    return relative in available
+    return current == expected
 
 
 def _decorate_download_response(response, file_name: str) -> None:

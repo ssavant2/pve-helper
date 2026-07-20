@@ -9,6 +9,7 @@ import subprocess
 import threading
 import uuid
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -5710,22 +5711,29 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertEqual(response["Accept-Ranges"], "bytes")
             self.assertEqual(response["X-Accel-Buffering"], "no")
 
-    @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=True)
-    def test_storage_file_download_can_use_nginx_internal_redirect(self):
-        user = get_user_model().objects.create_user(username="viewer", password="unused")
-        self.client.force_login(user)
+    @contextmanager
+    def _accel_datastore(self, *, manifest_device: int | None = "self"):
+        """A datastore laid out the way the containers actually see one.
 
+        The mount lives at `<container root>/nfs-vm`, which is the directory an
+        accelerated URL resolves against and the one nginx recorded, so the device
+        comparison has something real to compare. `manifest_device` writes a
+        different number to stand in for the host having remounted a different
+        filesystem at that path after nginx took its snapshot, or None to write a
+        legacy name-only line.
+        """
         with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            dump_dir = root / "dump"
-            dump_dir.mkdir()
-            backup_file = dump_dir / "backup with space.vma.zst"
+            container_root = Path(tmp)
+            root = container_root / "nfs-vm"
+            (root / "dump").mkdir(parents=True)
+            backup_file = root / "dump" / "backup with space.vma.zst"
             backup_file.write_bytes(b"backup data")
 
             storage = StorageMount.objects.create(
                 storage_id="nfs-vm",
                 display_name="nfs-vm",
                 path=root.as_posix(),
+                relative_path="nfs-vm",
                 expected_consumers=["pve-node-1"],
             )
             scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
@@ -5738,23 +5746,77 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="backup",
                 classification=FileInventory.Classification.UNKNOWN,
             )
-            manifest = root / "accel-mounts"
-            manifest.write_text("nfs-vm\n", encoding="utf-8")
+            manifest = container_root / "accel-mounts"
+            if manifest_device is None:
+                manifest.write_text("nfs-vm\n", encoding="utf-8")
+            else:
+                device = os.stat(root).st_dev if manifest_device == "self" else manifest_device
+                manifest.write_text(f"nfs-vm\t{device}\n", encoding="utf-8")
 
-            with override_settings(STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH=manifest):
-                response = self.client.get(
-                    reverse("core:storage_download", args=["nfs-vm"]),
-                    {"path": "dump/backup with space.vma.zst"},
-                )
+            with override_settings(
+                STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH=manifest,
+                PVE_HELPER_STORAGE_CONTAINER_ROOT=container_root,
+            ):
+                yield
 
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(
-                response["X-Accel-Redirect"], "/_pve_helper_download/nfs-vm/dump/backup%20with%20space.vma.zst"
-            )
-            self.assertEqual(response["Accept-Ranges"], "bytes")
-            self.assertIn("attachment", response["Content-Disposition"])
-            self.assertIn("backup with space.vma.zst", response["Content-Disposition"])
-            self.assertEqual(response.content, b"")
+    def _download_backup(self):
+        return self.client.get(
+            reverse("core:storage_download", args=["nfs-vm"]),
+            {"path": "dump/backup with space.vma.zst"},
+        )
+
+    @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=True)
+    def test_storage_file_download_can_use_nginx_internal_redirect(self):
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with self._accel_datastore():
+            response = self._download_backup()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["X-Accel-Redirect"], "/_pve_helper_download/nfs-vm/dump/backup%20with%20space.vma.zst"
+        )
+        self.assertEqual(response["Accept-Ranges"], "bytes")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertIn("backup with space.vma.zst", response["Content-Disposition"])
+        self.assertEqual(response.content, b"")
+
+    @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=True)
+    def test_a_remounted_datastore_streams_instead_of_trusting_nginx_snapshot(self):
+        """nginx keeps the filesystem it started with; the app follows the host.
+
+        After a remount the name still matches, so without the device the sidecar
+        would serve bytes out of the detached original while every check ran against
+        its replacement — an authorized download of a file nobody inspected, with no
+        error raised anywhere. Streaming is the correct answer: those bytes come from
+        the filesystem the app itself validated.
+        """
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with self._accel_datastore(manifest_device=1):
+            response = self._download_backup()
+
+        self.assertNotIn("X-Accel-Redirect", response)
+        self.assertEqual(b"".join(response.streaming_content), b"backup data")
+
+    @override_settings(STORAGE_DOWNLOAD_ACCEL_ENABLED=True)
+    def test_a_manifest_without_a_device_is_not_trusted_on_the_name_alone(self):
+        """The version skew where `web` is newer than the nginx sidecar.
+
+        The old manifest cannot establish identity, and an entry whose identity
+        cannot be established is the one this check exists to distrust. The cost is a
+        streamed download until the sidecar is restarted.
+        """
+        user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(user)
+
+        with self._accel_datastore(manifest_device=None):
+            response = self._download_backup()
+
+        self.assertNotIn("X-Accel-Redirect", response)
+        self.assertEqual(b"".join(response.streaming_content), b"backup data")
 
     def test_storage_file_download_action_is_excluded_from_soft_navigation(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
