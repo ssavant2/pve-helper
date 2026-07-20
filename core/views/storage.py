@@ -5,9 +5,17 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
+from django.db.models import Count
 from django.template.defaultfilters import filesizeformat
 
-from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster, ProxmoxStorageConsumer
+from core.models import (
+    ClusterStorage,
+    ClusterStorageMount,
+    ClusterStorageVolumeObservation,
+    CurrentGuestInventory,
+    ProxmoxCluster,
+    ProxmoxStorageConsumer,
+)
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.datastore_nav import datastore_url, nav_datastore_key
 from core.services.storage_backends import backend_profile
@@ -222,6 +230,48 @@ def _mount_candidates() -> list[dict[str, str]]:
 _GUESTS_SHOWN_IN_CONFIRM = 6
 
 
+def _guest_references_by_storage(bindings) -> dict[tuple[int, str], list[tuple[bool, str, str]]]:
+    """Which guests reference each datastore, resolved in one pass per cluster.
+
+    A volid is ``storage:content/file``, so the segment before the first colon
+    names the datastore exactly. Splitting once per reference and grouping by
+    that name answers every binding at the same time, where testing each guest
+    against one binding's ``storage_id:`` prefix re-read the cluster's whole
+    guest table once per binding — several full scans inside a passive page
+    render, growing with the number of registered associations.
+    """
+    cluster_ids = {binding.cluster_storage.cluster_id for binding in bindings}
+    references: dict[tuple[int, str], list[tuple[bool, str, str]]] = {}
+    if not cluster_ids:
+        return references
+    guests = CurrentGuestInventory.objects.filter(cluster_id__in=cluster_ids).only(
+        "cluster_id", "object_type", "vmid", "status", "disk_references"
+    )
+    for guest in guests:
+        entry = (guest.status == "running", f"{guest.object_type}:{guest.vmid}", guest.status or "unknown")
+        for storage_id in {str(ref).split(":", 1)[0] for ref in guest.disk_references or [] if ":" in str(ref)}:
+            references.setdefault((guest.cluster_id, storage_id), []).append(entry)
+    # Running guests first: they are the ones the operator must see, and they
+    # must never be the entries a display cap silently drops.
+    for entries in references.values():
+        entries.sort(key=lambda item: (not item[0], item[1]))
+    return references
+
+
+def _volume_counts_by_storage(bindings) -> dict[int, int]:
+    """Recorded volume observations per datastore, as one grouped aggregate."""
+    definition_ids = {binding.cluster_storage_id for binding in bindings}
+    if not definition_ids:
+        return {}
+    counts = (
+        ClusterStorageVolumeObservation.objects.filter(cluster_storage_id__in=definition_ids)
+        .values("cluster_storage_id")
+        .order_by()
+        .annotate(total=Count("id"))
+    )
+    return {row["cluster_storage_id"]: row["total"] for row in counts}
+
+
 def _binding_rows() -> list[dict[str, object]]:
     """Registered associations, each with what it is currently carrying.
 
@@ -232,24 +282,18 @@ def _binding_rows() -> list[dict[str, object]]:
     render must not fan out to Proxmox to answer this.
     """
     rows = []
-    bindings = ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount").order_by(
-        "cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"
+    bindings = list(
+        ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount").order_by(
+            "cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"
+        )
     )
+    guests_by_storage = _guest_references_by_storage(bindings)
+    volume_counts = _volume_counts_by_storage(bindings)
     for binding in bindings:
         definition = binding.cluster_storage
-        prefix = f"{definition.storage_id}:"
-        guests = [
-            (guest.status == "running", f"{guest.object_type}:{guest.vmid}", guest.status or "unknown")
-            for guest in CurrentGuestInventory.objects.filter(cluster=definition.cluster).only(
-                "object_type", "vmid", "status", "disk_references"
-            )
-            if any(str(ref).startswith(prefix) for ref in guest.disk_references or [])
-        ]
-        # Running guests first: they are the ones the operator must see, and they
-        # must never be the entries a display cap silently drops.
-        guests.sort(key=lambda item: (not item[0], item[1]))
+        guests = guests_by_storage.get((definition.cluster_id, definition.storage_id), [])
         running = sum(1 for is_running, _label, _status in guests if is_running)
-        volumes = definition.volume_observations.count()
+        volumes = volume_counts.get(definition.pk, 0)
         usage = []
         if definition.content:
             usage.append("content types " + ", ".join(definition.content))

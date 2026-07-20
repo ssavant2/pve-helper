@@ -1513,3 +1513,124 @@ class DatastorePageKeepsEveryPanelTests(TestCase):
 
         self.assertContains(response, "App Configuration")
         self.assertContains(response, "No host mount is registered")
+
+
+class BindingRowCostTests(TestCase):
+    """What the Storage access page costs to render as associations accumulate.
+
+    The rows carry the unbind confirmation, which has to state actual usage, so
+    the page reads both guest references and volume counts for every registered
+    association. Doing that per row meant re-reading the cluster's entire guest
+    table once per association — several full scans inside a passive render.
+    These tests pin the shape: the work is per cluster, not per binding.
+    """
+
+    def _cluster_with_bindings(self, key: str, count: int) -> None:
+        cluster = ProxmoxCluster.objects.create(key=key, display_name=key, enabled=True)
+        generation = uuid.uuid4()
+        StorageCatalogState.objects.create(
+            cluster=cluster,
+            metadata_generation=generation,
+            metadata_complete=True,
+            metadata_refreshed_at=timezone.now(),
+        )
+        for index in range(count):
+            storage_id = f"{key}-store{index}"
+            definition = ClusterStorage.objects.create(
+                cluster=cluster,
+                storage_id=storage_id,
+                storage_type="dir",
+                shared=True,
+                present=True,
+            )
+            mount = StorageMount.objects.create(
+                storage_id=storage_id,
+                display_name=storage_id,
+                relative_path=storage_id,
+                backend_identity=storage_id,
+            )
+            ClusterStorageMount.objects.create(
+                cluster_storage=definition,
+                mount=mount,
+                node=None,
+                scope=ClusterStorageMount.Scope.SHARED,
+            )
+            ClusterStorageVolumeObservation.objects.create(
+                cluster_storage=definition,
+                node="pve1",
+                volid=f"{storage_id}:100/vm-100-disk-0.qcow2",
+                vmid=100,
+                content="images",
+                observed_volume_generation=uuid.uuid4(),
+                based_on_metadata_generation=generation,
+                last_seen_at=timezone.now(),
+            )
+            CurrentGuestInventory.objects.create(
+                cluster=cluster,
+                node="pve1",
+                object_type="vm",
+                vmid=100 + index,
+                status="running",
+                disk_references=[f"{storage_id}:100/vm-100-disk-0.qcow2"],
+                observed_at=timezone.now(),
+            )
+
+    def _query_count(self) -> int:
+        from core.views.storage import _binding_rows
+
+        with CaptureQueriesContext(connection) as captured:
+            _binding_rows()
+        return len(captured.captured_queries)
+
+    def test_the_query_count_does_not_grow_with_the_number_of_bindings(self):
+        self._cluster_with_bindings("small", 1)
+        one_binding = self._query_count()
+
+        self._cluster_with_bindings("large", 6)
+        seven_bindings = self._query_count()
+
+        self.assertEqual(one_binding, seven_bindings)
+
+    def test_a_guest_is_attributed_to_every_datastore_its_volids_name(self):
+        """A volid is ``storage:content/file``, so the datastore is the segment
+        before the first colon — and a guest with disks on two datastores must
+        appear in both confirmations, not only the first one matched."""
+        from core.views.storage import _binding_rows
+
+        self._cluster_with_bindings("multi", 2)
+        CurrentGuestInventory.objects.create(
+            cluster=ProxmoxCluster.objects.get(key="multi"),
+            node="pve1",
+            object_type="vm",
+            vmid=900,
+            status="stopped",
+            disk_references=["multi-store0:900/a.qcow2", "multi-store1:900/b.qcow2"],
+            observed_at=timezone.now(),
+        )
+
+        rows = _binding_rows()
+
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertIn("vm:900", str(row["confirm"]))
+            self.assertEqual(row["guest_count"], 2)
+
+    def test_a_running_guest_is_named_before_a_stopped_one(self):
+        """The display cap drops the tail, so the entries an operator most needs
+        to see must not be the ones it silently removes."""
+        from core.views.storage import _binding_rows
+
+        self._cluster_with_bindings("order", 1)
+        CurrentGuestInventory.objects.create(
+            cluster=ProxmoxCluster.objects.get(key="order"),
+            node="pve1",
+            object_type="vm",
+            vmid=1,
+            status="stopped",
+            disk_references=["order-store0:1/a.qcow2"],
+            observed_at=timezone.now(),
+        )
+
+        confirm = str(_binding_rows()[0]["confirm"])
+
+        self.assertLess(confirm.index("vm:100"), confirm.index("vm:1 "))
