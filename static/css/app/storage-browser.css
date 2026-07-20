@@ -743,13 +743,19 @@
   padding-left: 12px;
 }
 
-/* Configuration's two panels split the width evenly so neither wraps a label
-   that the other has room for. */
+/* Configuration's two panels split the width evenly and match heights. */
 .datastore-configure .split-view {
   grid-template-columns: 1fr 1fr;
-  align-items: start;
+  align-items: stretch;
 }
 
+/* One label/value pair per row. The markup wraps each pair in its own div, so
+   without `display: contents` the wrappers become the grid items and a panel
+   renders two pairs — four visible columns — squeezing every value. */
 .datastore-configure .details-list {
   grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.datastore-configure .details-list > div {
+  display: contents;
 }

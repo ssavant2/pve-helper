@@ -65,9 +65,9 @@
 
     {% if sibling_rows %}
       <p class="muted storage-footnote">
-        Proxmox gives every node's local storage the same name. <strong>{{ storage }}</strong> also exists on
-        {% for row in sibling_rows %}<a href="{{ row.url }}">{{ row.node }}</a>{% if not forloop.last %}, {% endif %}{% endfor %} —
-        {{ sibling_rows|length|add:1 }} separate disks that share a name.
+        Same name on other nodes:
+        {% for row in sibling_rows %}<a href="{{ row.url }}">{{ row.node }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}
+        &mdash; separate disks.
       </p>
     {% endif %}
   </section>

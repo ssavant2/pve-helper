@@ -1291,7 +1291,7 @@ class DatastoreTabsAreUniformTests(TestCase):
 
         response = self.client.get("/clusters/tabs/nodes/pve1/datastores/local/nodes/")
 
-        self.assertContains(response, "3 separate disks that share a name")
+        self.assertContains(response, "Same name on other nodes")
         self.assertContains(response, "/clusters/tabs/nodes/pve2/datastores/local/nodes/")
         self.assertContains(response, "/clusters/tabs/nodes/pve3/datastores/local/nodes/")
 
