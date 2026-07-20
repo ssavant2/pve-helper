@@ -80,13 +80,20 @@ STORAGE_CONTENT_TYPES = [
 STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
 
 
-def _storage_clusters(storage: StorageMount):
+def _clusters_for_mounts(mount_ids):
     return list(
         ProxmoxCluster.objects.filter(enabled=True)
-        .filter(Q(storage_consumers__storage=storage) | Q(storage_definitions__mount_bindings__mount=storage))
+        .filter(
+            Q(storage_consumers__storage_id__in=mount_ids)
+            | Q(storage_definitions__mount_bindings__mount_id__in=mount_ids)
+        )
         .distinct()
         .order_by("display_name", "key")
     )
+
+
+def _storage_clusters(storage: StorageMount):
+    return _clusters_for_mounts([storage.pk])
 
 
 def _cluster_storage_for_mount(storage: StorageMount, cluster: ProxmoxCluster):
@@ -100,11 +107,18 @@ def _cluster_storage_for_mount(storage: StorageMount, cluster: ProxmoxCluster):
     return matches[0] if len(matches) == 1 else None
 
 
-def _lineage_by_cluster() -> dict[str, dict[int, int]]:
-    return {
-        cluster.key: common.stored_guest_lineage(cluster)
-        for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key")
-    }
+def _lineage_by_cluster(clusters=None) -> dict[str, dict[int, int]]:
+    """Linked-clone lineage per cluster, narrowed to `clusters` when the caller
+    knows which ones can own the volumes it is about to reason over.
+
+    Lineage is keyed on VMID, and a VMID identifies a guest only within its own
+    cluster. Merging every cluster's lineage into one map is therefore not a
+    superset of the truth — it is a different, wrong map, in which two unrelated
+    templates that happen to share a VMID answer for each other.
+    """
+    if clusters is None:
+        clusters = ProxmoxCluster.objects.filter(enabled=True).order_by("key")
+    return {cluster.key: common.stored_guest_lineage(cluster) for cluster in clusters}
 
 
 def _requested_storage_cluster(request, storage: StorageMount):
@@ -1273,8 +1287,16 @@ def _storage_browser_context(request, storage):
     # Link each referenced disk image to the current VM/CT that owns it.
     from core.services.classification import extract_vmid_from_image_path
 
+    # Resolve guest links inside the clusters that actually consume this mount.
+    # A VMID is unique per cluster, never globally, so searching every cluster
+    # turns two unrelated `vm:500`s into an ambiguity and drops the link entirely.
+    # A mount nobody has bound yet has no cluster to narrow to; there the old wide
+    # search is the only thing left, and the ambiguity rule below still applies.
+    link_clusters = _storage_clusters(storage) or list(
+        ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
+    )
     guests_by_vmid: dict[int, list[CurrentGuestInventory]] = {}
-    for obj in CurrentGuestInventory.objects.select_related("cluster").all():
+    for obj in CurrentGuestInventory.objects.select_related("cluster").filter(cluster__in=link_clusters):
         guests_by_vmid.setdefault(obj.vmid, []).append(obj)
 
     def _unique_guest(vmid: int) -> CurrentGuestInventory | None:
@@ -1287,8 +1309,26 @@ def _storage_browser_context(request, storage):
     import re
     from collections import Counter
 
-    lineage_by_cluster = _lineage_by_cluster()
-    clone_counts = Counter(parent for lineage in lineage_by_cluster.values() for parent in lineage.values())
+    lineage_by_cluster = _lineage_by_cluster(link_clusters)
+    clone_counts_by_cluster = {key: Counter(lineage.values()) for key, lineage in lineage_by_cluster.items()}
+
+    def _clone_count(vmid: int) -> int | None:
+        """How many linked clones ride this template's base volume, or None where
+        that cannot be told apart from another cluster's answer.
+
+        Summing the clusters would report one cluster's clones against another's
+        template, which is worse than admitting we do not know: the count is what
+        an operator reads before deciding the volume is safe to remove.
+        """
+        guest = _unique_guest(vmid)
+        if guest is not None:
+            return clone_counts_by_cluster.get(guest.cluster.key, Counter()).get(vmid, 0)
+        if len(link_clusters) == 1:
+            # The template itself is gone from inventory, but only one cluster can
+            # own this volume, so its lineage is still the whole answer.
+            return clone_counts_by_cluster.get(link_clusters[0].key, Counter()).get(vmid, 0)
+        return None
+
     base_volume_re = re.compile(r"base-(\d+)-disk-")
 
     def _template_link(vmid: int) -> dict:
@@ -1319,7 +1359,7 @@ def _storage_browser_context(request, storage):
             tmpl_vmid = int(base_match.group(1))
             entry.template_base = {
                 **_template_link(tmpl_vmid),
-                "clone_count": clone_counts.get(tmpl_vmid, 0),
+                "clone_count": _clone_count(tmpl_vmid),
             }
         if entry.classification == FileInventory.Classification.REFERENCED:
             owner_vmid = extract_vmid_from_image_path(entry.path)
@@ -2950,12 +2990,20 @@ def _require_linked_clone_base_unblocked(entries: list[FileInventory]) -> None:
     base_entries = [entry for entry in entries if entry.content_category == "base_image"]
     if not base_entries:
         return
-    clone_counts = Counter(parent for lineage in _lineage_by_cluster().values() for parent in lineage.values())
-    if not clone_counts:
+    # Only a cluster that consumes this mount can hold a clone riding a volume on
+    # it, so narrowing to those clusters cannot let a real dependency through.
+    # Within them we take the largest count rather than the sum: the volume belongs
+    # to one cluster, we may not know which, and over-blocking is the safe way to be
+    # wrong — but summing would invent clones that do not exist and say so in the
+    # refusal message.
+    mount_ids = {entry.storage_id for entry in base_entries}
+    lineage_by_cluster = _lineage_by_cluster(_clusters_for_mounts(mount_ids) or None)
+    counts_by_cluster = [Counter(lineage.values()) for lineage in lineage_by_cluster.values()]
+    if not any(counts_by_cluster):
         return
     for entry in base_entries:
         vmid = extract_vmid_from_image_path(entry.path)
-        count = clone_counts.get(vmid or -1, 0)
+        count = max((counts.get(vmid or -1, 0) for counts in counts_by_cluster), default=0)
         if count:
             raise StorageActionError(
                 f"This is the base volume of template {vmid}, which {count} linked "

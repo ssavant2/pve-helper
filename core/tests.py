@@ -176,7 +176,6 @@ class HermeticProxmoxMixin:
         return client
 
 
-
 def browser_url(mount, path: str = "") -> str:
     """The Files tab of the datastore a host mount belongs to.
 
@@ -617,10 +616,17 @@ class LinkedCloneBaseProtectionTests(TestCase):
 
         from core.models import FileInventory
 
+        # An unbound mount: no cluster binding narrows the lineage lookup, so these
+        # tests exercise the wide fallback. The cluster-scoped path has its own
+        # tests in `FileBrowserClusterScopedGuestLinkTests`.
+        mount, _ = StorageMount.objects.get_or_create(
+            storage_id="base-vol-fs", defaults={"display_name": "Base Vol FS", "path": "/storages/base-vol-fs"}
+        )
         return SimpleNamespace(
             path=path,
             content_category=category,
             entry_type=FileInventory.EntryType.DIRECTORY if directory else FileInventory.EntryType.FILE,
+            storage_id=mount.pk,
         )
 
     def test_storage_gate_blocks_base_volume_with_clones(self):
@@ -677,6 +683,189 @@ class LinkedCloneBaseProtectionTests(TestCase):
         self.assertIn("linked clone", err.lower())
         self.assertIsNone(response)
         self.assertEqual(details["linked_children"], [102, 103])
+
+
+class FileBrowserClusterScopedGuestLinkTests(TestCase):
+    """A VMID names a guest only inside its own cluster.
+
+    The file browser used to resolve disk owners and template lineage across every
+    cluster at once, so two clusters that both happened to hold `vm:500` made each
+    other's links disappear and each other's clone counts wrong. A mount is bound
+    to the cluster that consumes it, so the answer is knowable; these tests hold it
+    to that.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.user = get_user_model().objects.create_user(username="viewer", password="unused")
+        self.client.force_login(self.user)
+        self.cluster_a = ProxmoxCluster.objects.create(key="clus-a", display_name="Cluster A", enabled=True)
+        self.cluster_b = ProxmoxCluster.objects.create(key="clus-b", display_name="Cluster B", enabled=True)
+        self.mount = StorageMount.objects.create(
+            storage_id="shared-fs", display_name="Shared FS", path="/storages/shared-fs"
+        )
+
+    def _bind(self, cluster):
+        definition = ClusterStorage.objects.create(
+            cluster=cluster,
+            storage_id=self.mount.storage_id,
+            storage_type="dir",
+            shared=True,
+            present=True,
+        )
+        ClusterStorageMount.objects.create(
+            cluster_storage=definition,
+            mount=self.mount,
+            node=None,
+            scope=ClusterStorageMount.Scope.SHARED,
+        )
+
+    def _guest(self, cluster, name, *, vmid=500):
+        CurrentGuestInventory.objects.create(
+            cluster=cluster,
+            object_type="vm",
+            vmid=vmid,
+            node="pve1",
+            name=name,
+            status="stopped",
+            observed_at=timezone.now(),
+        )
+
+    def _scan_with(self, path, category, classification):
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.mount,
+            path="images",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.mount,
+            path="images/500",
+            entry_type=FileInventory.EntryType.DIRECTORY,
+            content_category="unknown",
+            classification=FileInventory.Classification.UNKNOWN,
+        )
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.mount,
+            path=path,
+            entry_type=FileInventory.EntryType.FILE,
+            content_category=category,
+            classification=classification,
+            size_bytes=1024,
+        )
+        return scan
+
+    def _browse(self):
+        from core.views.storage import _storage_browser_url
+
+        return self.client.get(_storage_browser_url(self.mount, "images/500"))
+
+    def _file_entry(self, response):
+        """The decorated row for the disk image, read from the context.
+
+        Asserting on the rendered page would be looser than it looks: a guest name
+        also appears in the workspace chrome, so `assertContains` passes whether or
+        not the row actually links anywhere.
+        """
+        self.assertEqual(response.status_code, 200)
+        entries = [entry for entry in response.context["entries"] if entry.path.endswith(".qcow2")]
+        self.assertEqual(len(entries), 1)
+        return entries[0]
+
+    def test_disk_links_to_the_owner_in_the_mount_s_own_cluster(self):
+        self._bind(self.cluster_a)
+        self._guest(self.cluster_a, "Owner in A")
+        self._guest(self.cluster_b, "Unrelated in B")
+        self._scan_with("images/500/vm-500-disk-0.qcow2", "vm_disk", FileInventory.Classification.REFERENCED)
+
+        entry = self._file_entry(self._browse())
+
+        self.assertIsNotNone(entry.referenced_guest)
+        self.assertEqual(entry.referenced_guest["name"], "Owner in A")
+        self.assertIn(self.cluster_a.key, entry.referenced_guest["url"])
+        self.assertNotIn(self.cluster_b.key, entry.referenced_guest["url"])
+
+    def test_clone_count_comes_from_the_owning_cluster_only(self):
+        self._bind(self.cluster_a)
+        self._guest(self.cluster_a, "Template in A")
+        self._guest(self.cluster_b, "Template in B")
+        self._scan_with("images/500/base-500-disk-0.qcow2", "base_image", FileInventory.Classification.REFERENCED)
+
+        def lineage(cluster):
+            # One clone in A, three unrelated clones in B. Merged, the badge would
+            # claim four; scoped, it claims the one that is really there.
+            return {501: 500} if cluster.key == self.cluster_a.key else {601: 500, 602: 500, 603: 500}
+
+        with patch("core.views.common.stored_guest_lineage", side_effect=lineage):
+            response = self._browse()
+
+        entry = self._file_entry(response)
+        self.assertEqual(entry.template_base["name"], "Template in A")
+        self.assertEqual(entry.template_base["clone_count"], 1)
+        self.assertContains(response, "1 linked clone")
+
+    def test_a_genuinely_ambiguous_clone_count_says_so_instead_of_guessing(self):
+        # The mount really is shared by both clusters and both hold a `vm:500`.
+        # Nothing can tell them apart here, and a number would be a claim.
+        self._bind(self.cluster_a)
+        self._bind(self.cluster_b)
+        self._guest(self.cluster_a, "Template in A")
+        self._guest(self.cluster_b, "Template in B")
+        self._scan_with("images/500/base-500-disk-0.qcow2", "base_image", FileInventory.Classification.REFERENCED)
+
+        with patch("core.views.common.stored_guest_lineage", return_value={501: 500}):
+            response = self._browse()
+
+        self.assertIsNone(self._file_entry(response).template_base["clone_count"])
+        self.assertContains(response, "linked clones unknown")
+
+    def test_the_base_volume_block_ignores_clones_in_a_cluster_without_this_mount(self):
+        from types import SimpleNamespace
+
+        from core.views.storage import _require_linked_clone_base_unblocked
+
+        self._bind(self.cluster_a)
+        entry = SimpleNamespace(
+            path="images/500/base-500-disk-0.qcow2",
+            content_category="base_image",
+            entry_type=FileInventory.EntryType.FILE,
+            storage_id=self.mount.pk,
+        )
+
+        def lineage(cluster):
+            # Only cluster B has clones of a `500`, and B cannot reach this mount,
+            # so those clones cannot be riding this volume.
+            return {} if cluster.key == self.cluster_a.key else {601: 500}
+
+        with patch("core.views.common.stored_guest_lineage", side_effect=lineage):
+            _require_linked_clone_base_unblocked([entry])  # no raise
+
+    def test_the_base_volume_block_still_fires_for_a_cluster_that_has_the_mount(self):
+        from types import SimpleNamespace
+
+        from core.services.storage_actions import StorageActionError
+        from core.views.storage import _require_linked_clone_base_unblocked
+
+        self._bind(self.cluster_a)
+        entry = SimpleNamespace(
+            path="images/500/base-500-disk-0.qcow2",
+            content_category="base_image",
+            entry_type=FileInventory.EntryType.FILE,
+            storage_id=self.mount.pk,
+        )
+
+        def lineage(cluster):
+            return {501: 500, 502: 500} if cluster.key == self.cluster_a.key else {}
+
+        with patch("core.views.common.stored_guest_lineage", side_effect=lineage):
+            with self.assertRaises(StorageActionError) as ctx:
+                _require_linked_clone_base_unblocked([entry])
+        self.assertIn("2 linked clones", str(ctx.exception))
 
 
 class LinkedCloneReferenceTests(SimpleTestCase):

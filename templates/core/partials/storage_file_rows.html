@@ -118,7 +118,7 @@
     <td>
       {% if entry.template_base %}
         {% if entry.template_base.url %}<a href="{{ entry.template_base.url }}">{{ entry.template_base.name }}</a>{% else %}{{ entry.template_base.name }}{% endif %}
-        <span class="muted">· base{% if entry.template_base.clone_count %}, {{ entry.template_base.clone_count }} linked clone{{ entry.template_base.clone_count|pluralize }}{% endif %}</span>
+        <span class="muted">· base{% if entry.template_base.clone_count == None %}, linked clones unknown{% elif entry.template_base.clone_count %}, {{ entry.template_base.clone_count }} linked clone{{ entry.template_base.clone_count|pluralize }}{% endif %}</span>
       {% elif entry.referenced_guest %}
         <a href="{{ entry.referenced_guest.url }}">{{ entry.referenced_guest.name }}</a>
         {% if entry.referenced_guest.linked_clone_of %}<span class="muted">· linked clone of {% if entry.referenced_guest.linked_clone_of.url %}<a href="{{ entry.referenced_guest.linked_clone_of.url }}">{{ entry.referenced_guest.linked_clone_of.name }}</a>{% else %}{{ entry.referenced_guest.linked_clone_of.name }}{% endif %}</span>{% endif %}
