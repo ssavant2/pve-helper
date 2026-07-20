@@ -1,0 +1,33 @@
+{% comment %}
+One cluster's published datastores: its cluster-wide shared storages first, then
+one group per node holding that node's local storages. Rendered directly under
+Storage on a single-cluster install and inside a cluster group otherwise.
+{% endcomment %}
+{% if group.shared %}
+  <section class="tree-module tree-group expanded" data-tree-module="shared-{{ group.cluster_key }}" aria-label="{{ group.cluster_name }} shared datastores">
+    <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
+      <span class="tree-caret" data-tree-caret>v</span>
+      <span class="tree-icon"><i data-lucide="database" aria-hidden="true"></i></span>
+      <span class="tree-label">Shared</span>
+    </button>
+    <div class="tree-children">
+      {% for s in group.shared %}
+        {% include "core/partials/nav_datastore_leaf.html" with cluster_key=group.cluster_key s=s leaf_icon="database" %}
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}
+{% for host in group.nodes %}
+  <section class="tree-module tree-group expanded" data-tree-module="local-node-{{ group.cluster_key }}-{{ host.node }}" aria-label="{{ host.node }} local datastores">
+    <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
+      <span class="tree-caret" data-tree-caret>v</span>
+      <span class="tree-icon"><i data-vicon="host" aria-hidden="true"></i></span>
+      <span class="tree-label">{{ host.node }}</span>
+    </button>
+    <div class="tree-children">
+      {% for s in host.storages %}
+        {% include "core/partials/nav_datastore_leaf.html" with cluster_key=group.cluster_key s=s leaf_icon="hard-drive" %}
+      {% endfor %}
+    </div>
+  </section>
+{% endfor %}

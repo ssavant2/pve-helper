@@ -9,6 +9,7 @@ from django.template.defaultfilters import filesizeformat
 
 from core.models import ClusterStorage, ClusterStorageMount, ProxmoxCluster
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
+from core.services.datastore_nav import nav_datastore_key
 from core.services.storage_backends import backend_profile
 from core.services.storage_catalog import (
     StorageOperationScope,
@@ -572,6 +573,9 @@ def _api_storage_context(cluster, node: str, storage: str, active_tab: str):
         "active_api_tab": active_tab,
         "active_api_node": node,
         "active_api_storage": storage,
+        "active_nav_datastore": nav_datastore_key(
+            cluster.key, storage, "" if definition is not None and definition.shared else node
+        ),
         "catalog_view": view,
         "storage_shared": bool(definition and definition.shared),
     }

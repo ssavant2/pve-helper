@@ -1789,19 +1789,19 @@ class ConcurrentBootstrapTests(TransactionTestCase):
         self.assertTrue(RuntimeConfigurationState.objects.get().bootstrap_completed)
 
 
-class LocalDatastoreNavTests(TestCase):
-    """Sidebar local datastores come from the current catalog projection."""
+class DatastoreNavTests(TestCase):
+    """The sidebar's datastores come from the catalog, split the way the catalog is."""
 
-    def test_groups_local_storages_by_node_and_excludes_shared(self):
-        from core.services.local_datastores import local_datastore_nav
-
+    def _cluster(self, key="local-storage"):
         cache.clear()
-        cluster = ProxmoxCluster.objects.create(key="local-storage", display_name="Local storage", enabled=True)
+        return ProxmoxCluster.objects.create(key=key, display_name=key.title(), enabled=True)
+
+    def test_node_local_storages_group_by_node(self):
+        from core.services.datastore_nav import datastore_nav
+
+        cluster = self._cluster()
         local_lvm = ClusterStorage.objects.create(cluster=cluster, storage_id="local-lvm", storage_type="lvmthin")
         local = ClusterStorage.objects.create(cluster=cluster, storage_id="local", storage_type="dir")
-        shared = ClusterStorage.objects.create(
-            cluster=cluster, storage_id="TrueNAS-VM", storage_type="nfs", shared=True
-        )
         ClusterStorageNodeState.objects.create(
             cluster_storage=local_lvm, node="pve1", total_bytes=100, used_bytes=40, available_bytes=60, active=True
         )
@@ -1809,16 +1809,74 @@ class LocalDatastoreNavTests(TestCase):
             cluster_storage=local, node="pve1", total_bytes=200, used_bytes=50, available_bytes=150, active=True
         )
         ClusterStorageNodeState.objects.create(cluster_storage=local, node="pve2", total_bytes=0, active=True)
-        ClusterStorageNodeState.objects.create(cluster_storage=shared, node="pve1", active=True)
 
-        tree = local_datastore_nav(use_cache=False, cluster=cluster)
-        nodes = {entry["node"]: entry["storages"] for entry in tree}
+        groups = datastore_nav(use_cache=False, cluster=cluster)
+        nodes = {entry["node"]: entry["storages"] for entry in groups["nodes"]}
         self.assertEqual(sorted(nodes), ["pve1", "pve2"])
         pve1 = {s["storage_id"]: s for s in nodes["pve1"]}
         self.assertEqual(sorted(pve1), ["local", "local-lvm"])
-        self.assertNotIn("TrueNAS-VM", pve1)
         self.assertEqual(pve1["local-lvm"]["used_pct"], 40)  # 40/100
         self.assertIsNone(nodes["pve2"][0]["used_pct"])  # total 0 -> no percentage
+
+    def test_a_shared_storage_is_listed_once_without_a_registered_mount(self):
+        """The old tree sourced its shared group from StorageMount, so a shared PVE
+        storage nobody had registered a host mount for appeared nowhere at all."""
+        from core.services.datastore_nav import datastore_nav
+
+        cluster = self._cluster()
+        shared = ClusterStorage.objects.create(
+            cluster=cluster, storage_id="TrueNAS-VM", storage_type="nfs", shared=True
+        )
+        ClusterStorageNodeState.objects.create(cluster_storage=shared, node="pve1", active=False)
+        ClusterStorageNodeState.objects.create(cluster_storage=shared, node="pve2", active=True)
+        self.assertFalse(StorageMount.objects.exists())
+
+        groups = datastore_nav(use_cache=False, cluster=cluster)
+        self.assertEqual([s["storage_id"] for s in groups["shared"]], ["TrueNAS-VM"])
+        self.assertEqual(groups["nodes"], [])
+        # One cluster-wide object, linked through the first *active* instance —
+        # the same rule the catalog table on the Overview page uses.
+        self.assertEqual(groups["shared"][0]["link_node"], "pve2")
+
+    def test_the_highlight_key_separates_two_clusters_sharing_a_node_name(self):
+        """Proxmox defaults make `pve1`/`local` collide across clusters; the old
+        template compared node and storage id only, and highlighted both leaves."""
+        from core.services.datastore_nav import datastore_nav, nav_datastore_key
+
+        keys = []
+        for cluster_key in ("alpha", "beta"):
+            cluster = self._cluster(cluster_key)
+            local = ClusterStorage.objects.create(cluster=cluster, storage_id="local", storage_type="dir")
+            ClusterStorageNodeState.objects.create(cluster_storage=local, node="pve1", active=True)
+            groups = datastore_nav(use_cache=False, cluster=cluster)
+            keys.append(groups["nodes"][0]["storages"][0]["nav_key"])
+
+        self.assertEqual(len(set(keys)), 2)
+        self.assertEqual(keys[0], nav_datastore_key("alpha", "local", "pve1"))
+        # A shared storage's key carries no node: the detail page is reachable
+        # through any of them, and all of them must highlight the one leaf.
+        self.assertEqual(nav_datastore_key("alpha", "TrueNAS-VM"), "alpha||TrueNAS-VM")
+
+    def test_the_rendered_sidebar_shows_the_catalog_and_names_mounts_as_mounts(self):
+        cluster = self._cluster()
+        shared = ClusterStorage.objects.create(
+            cluster=cluster, storage_id="TrueNAS-VM", storage_type="nfs", shared=True
+        )
+        local = ClusterStorage.objects.create(cluster=cluster, storage_id="local-lvm", storage_type="lvmthin")
+        ClusterStorageNodeState.objects.create(cluster_storage=shared, node="pve1", active=True)
+        ClusterStorageNodeState.objects.create(cluster_storage=local, node="pve1", active=True)
+        StorageMount.objects.create(
+            storage_id="TrueNAS-FS", display_name="TrueNAS-FS", path="/tmp/truenas-fs", enabled=True
+        )
+
+        response = self.client.get(reverse("core:dashboard"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("core:api_storage_summary", args=[cluster.key, "pve1", "TrueNAS-VM"]))
+        self.assertContains(response, ">Host Mounts<")
+        # The old labels claimed an axis the catalog does not have: the group that
+        # said "Shared Datastores" was listing registered mounts, not shared storage.
+        self.assertNotContains(response, "Shared Datastores")
+        self.assertNotContains(response, "Local Datastores")
 
 
 class ApiStorageContentTests(SimpleTestCase):

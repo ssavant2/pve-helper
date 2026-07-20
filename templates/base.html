@@ -125,45 +125,35 @@
                 <span class="tree-label">Overview</span>
               </a>
 
-              {% if app_nav_local_datastores %}
-                <section class="tree-module tree-group expanded" data-tree-module="local-datastores" aria-label="Local datastores">
-                  <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
-                    <span class="tree-caret" data-tree-caret>v</span>
-                    <span class="tree-icon"><i data-lucide="hard-drive" aria-hidden="true"></i></span>
-                    <span class="tree-label">Local Datastores</span>
-                  </button>
-                  <div class="tree-children">
-                    {% if app_multiple_clusters %}
-                      {% regroup app_nav_local_datastores by cluster_key as local_by_cluster %}
-                      {% for cluster_group in local_by_cluster %}
-                        <section class="tree-module tree-group expanded" data-tree-module="local-cluster-{{ cluster_group.grouper }}" aria-label="{{ cluster_group.list.0.cluster_name }} local datastores">
-                          <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
-                            <span class="tree-caret" data-tree-caret>v</span>
-                            <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
-                            <span class="tree-label">{{ cluster_group.list.0.cluster_name }}</span>
-                          </button>
-                          <div class="tree-children">
-                            {% for host in cluster_group.list %}
-                              {% include "core/partials/nav_local_node.html" with host=host %}
-                            {% endfor %}
-                          </div>
-                        </section>
-                      {% endfor %}
-                    {% else %}
-                      {% for host in app_nav_local_datastores %}
-                        {% include "core/partials/nav_local_node.html" with host=host %}
-                      {% endfor %}
-                    {% endif %}
-                  </div>
-                </section>
+              {% comment %}
+                The catalog's own axis: cluster, then shared-vs-node. A registered
+                host mount is a different object and lives in its own group below.
+              {% endcomment %}
+              {% if app_multiple_clusters %}
+                {% for group in app_nav_datastore_clusters %}
+                  <section class="tree-module tree-group expanded" data-tree-module="datastore-cluster-{{ group.cluster_key }}" aria-label="{{ group.cluster_name }} datastores">
+                    <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
+                      <span class="tree-caret" data-tree-caret>v</span>
+                      <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
+                      <span class="tree-label">{{ group.cluster_name }}</span>
+                    </button>
+                    <div class="tree-children">
+                      {% include "core/partials/nav_datastore_groups.html" with group=group %}
+                    </div>
+                  </section>
+                {% endfor %}
+              {% else %}
+                {% for group in app_nav_datastore_clusters %}
+                  {% include "core/partials/nav_datastore_groups.html" with group=group %}
+                {% endfor %}
               {% endif %}
 
               {% if app_nav_storages %}
-                <section class="tree-module tree-group expanded" data-tree-module="shared-datastores" aria-label="Shared datastores">
+                <section class="tree-module tree-group expanded" data-tree-module="host-mounts" aria-label="Registered host mounts">
                   <button class="tree-node tree-subhead" type="button" data-tree-toggle aria-expanded="true">
                     <span class="tree-caret" data-tree-caret>v</span>
-                    <span class="tree-icon"><i data-lucide="database" aria-hidden="true"></i></span>
-                    <span class="tree-label">Shared Datastores</span>
+                    <span class="tree-icon"><i data-lucide="folder-symlink" aria-hidden="true"></i></span>
+                    <span class="tree-label">Host Mounts</span>
                   </button>
                   <div class="tree-children">
                     {% for nav_storage in app_nav_storages %}

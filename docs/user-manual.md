@@ -67,7 +67,7 @@ The sidebar is the primary navigation. Its working areas are:
 | --- | --- |
 | **Clusters → Connections** | Add verified clusters/endpoints and manage per-cluster credentials and enabled state. |
 | **VMs/CTs** | Guest inventory, power, console, configuration, migration, backup/restore, and related operations. |
-| **Storage** | Mounted shared datastores, API-only local/block storage, scans, file operations, and orphan review. |
+| **Storage** | The Proxmox storage catalog per cluster, registered host mounts, scans, file operations, and orphan review. |
 | **Tags** | Create and color tags, inspect membership, assign or remove tags, and rename or delete them across guests. |
 | **Scheduled Tasks** | One-time and recurring guest power schedules, their runs, and history. |
 | **Audit** | Authentication and administration history, filters, search, and export. |
@@ -271,6 +271,14 @@ pve-helper separates its API inventory from optional filesystem access:
 Both layers are visible on **Storage → Overview**, labelled as such: *Storage
 catalog* is Layer 1, *Storage gate* is Layer 2, and mount associations live under
 **PVE-helper Settings → Storage access** (also Layer 2).
+
+The sidebar uses the same division. Under **Storage**, each cluster lists its
+published datastores — **Shared** first, since a shared datastore is one
+cluster-wide object however many nodes see it, then one group per node for that
+node's local storages. These are Layer 1 and lead to the datastore's
+Summary/Volumes/VMs tabs. **Host Mounts** below them is Layer 2: the registered
+mounts, leading to the file browser. A mount is deliberately not filed under a
+cluster — one mount can be bound to storages in several clusters.
 
 #### Two checks guard a destructive file action
 

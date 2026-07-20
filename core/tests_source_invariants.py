@@ -72,12 +72,12 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
 
     def test_cluster_derived_cache_calls_use_the_shared_namespace(self):
         known_cluster_cache_modules = {
-            "core/services/local_datastores.py",
+            "core/services/datastore_nav.py",
             "core/services/proxmox.py",
             "core/services/tag_registry.py",
             "core/views/guests/read_model_support.py",
         }
-        bare_cluster_key = re.compile(r"pve-helper:(?:live-guest|guest-|tag-registry|nav-local)")
+        bare_cluster_key = re.compile(r"pve-helper:(?:live-guest|guest-|tag-registry|nav-datastores)")
         offenders = []
         for path in self._python_sources():
             source = path.read_text()

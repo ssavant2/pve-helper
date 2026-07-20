@@ -2,7 +2,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from .models import ProxmoxCluster, StorageMount
-from .services.local_datastores import local_datastore_nav
+from .services.datastore_nav import datastore_nav
 from .services.recent_tasks import recent_task_page
 
 
@@ -10,16 +10,21 @@ def app_settings(request):
     task_page = recent_task_page()
     has_configured_clusters = ProxmoxCluster.objects.exists()
     enabled_clusters = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
-    local_datastores = []
+    # One entry per cluster that publishes anything, so the sidebar's top level is
+    # the cluster rather than a shared/local split the catalog does not have.
+    datastore_clusters = []
     for cluster in enabled_clusters:
-        for host in local_datastore_nav(cluster=cluster):
-            local_datastores.append(
-                {
-                    **host,
-                    "cluster_key": cluster.key,
-                    "cluster_name": cluster.display_name,
-                }
-            )
+        groups = datastore_nav(cluster=cluster)
+        if not groups["shared"] and not groups["nodes"]:
+            continue
+        datastore_clusters.append(
+            {
+                "cluster_key": cluster.key,
+                "cluster_name": cluster.display_name,
+                "shared": groups["shared"],
+                "nodes": groups["nodes"],
+            }
+        )
     return {
         "app_base_url": settings.APP_BASE_URL,
         "app_version": settings.APP_VERSION,
@@ -28,7 +33,7 @@ def app_settings(request):
         "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
         "storage_upload_max_size_mb": settings.STORAGE_UPLOAD_MAX_SIZE_MB,
         "app_nav_storages": StorageMount.objects.filter(enabled=True).order_by("display_name"),
-        "app_nav_local_datastores": local_datastores,
+        "app_nav_datastore_clusters": datastore_clusters,
         "app_enabled_clusters": enabled_clusters,
         "app_multiple_clusters": len(enabled_clusters) > 1,
         "app_has_clusters": has_configured_clusters,
