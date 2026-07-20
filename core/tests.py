@@ -6368,7 +6368,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertEqual(AuditEvent.objects.filter(action="file.bulk_operation.answered").count(), 1)
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
-    def test_referenced_stopped_file_requires_double_confirmation_then_moves_to_trash(self):
+    def test_referenced_disk_is_refused_even_when_its_guest_is_stopped(self):
+        """Trashing relocates the file, so a live reference is what matters, not power state.
+
+        A stopped guest is not safety: the file leaves its volid either way and the
+        guest breaks on its next boot instead of immediately. The operator's route
+        is to detach the disk in Proxmox first, which the refusal has to say.
+        """
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
 
@@ -6395,16 +6401,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 status=ScanRun.Status.COMPLETED,
                 storage_gate_status={"nfs-vm": {"ok": True, "status": "ok"}},
             )
-            ProxmoxInventory.objects.create(
-                scan_run=scan,
-                node="pve-node-1",
-                object_type=ProxmoxInventory.ObjectType.VM,
-                vmid=100,
-                name="restore-test",
-                cluster=self.cluster,
-                status="stopped",
-                disk_references=["nfs-vm:100/vm-100-disk-0.qcow2"],
-            )
             FileInventory.objects.create(
                 scan_run=scan,
                 storage=storage,
@@ -6414,35 +6410,49 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 content_category="vm_disk",
                 classification=FileInventory.Classification.REFERENCED,
             )
-            expected_browser_url = unbound_files_url("default", "nfs-vm")
-
-            response = self.client.post(
-                reverse("core:storage_trash_file", args=[storage.mount_ref]),
-                {
-                    "path": "images/100/vm-100-disk-0.qcow2",
-                    "confirm_basic": "yes",
-                    "next": expected_browser_url,
-                },
+            # A bound datastore, so the preflight reads the catalog rather than
+            # falling back, and a guest configuration that still points at the disk.
+            files_url = browser_url(storage.mount_ref)
+            ClusterStorageNodeState.objects.create(
+                cluster_storage=ClusterStorage.objects.get(cluster=self.cluster, storage_id="nfs-vm"),
+                node="pve-node-1",
+                present=True,
+                active=True,
+                enabled=True,
+            )
+            CurrentGuestInventory.objects.create(
+                cluster=self.cluster,
+                source_scan=scan,
+                node="pve-node-1",
+                object_type=CurrentGuestInventory.ObjectType.VM,
+                vmid=100,
+                name="restore-test",
+                status="stopped",
+                runtime_observed_at=timezone.now(),
+                disk_references=["nfs-vm:100/vm-100-disk-0.qcow2"],
+                observed_at=timezone.now(),
             )
 
-            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
-            self.assertTrue(disk.exists())
-            self.assertFalse(TrashItem.objects.exists())
-
-            with patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"):
+            with (
+                patch("core.services.storage_catalog.refresh_storage_catalog"),
+                patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
+            ):
                 response = self.client.post(
                     reverse("core:storage_trash_file", args=[storage.mount_ref]),
                     {
                         "path": "images/100/vm-100-disk-0.qcow2",
                         "confirm_basic": "yes",
                         "confirm_risk": "yes",
-                        "next": expected_browser_url,
+                        "next": files_url,
                     },
+                    follow=True,
                 )
 
-            self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
-            self.assertFalse(disk.exists())
-            self.assertTrue(TrashItem.objects.exists())
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "A guest configuration still references this disk")
+            self.assertContains(response, "Detach it from the guest in Proxmox first")
+            self.assertTrue(disk.exists())
+            self.assertFalse(TrashItem.objects.exists())
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_running_referenced_file_cannot_be_moved_to_trash(self):

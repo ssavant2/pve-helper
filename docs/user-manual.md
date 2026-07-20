@@ -306,6 +306,20 @@ They are not redundant, and neither implies the other:
 A destructive action must pass both. If one refuses, the refusal names which
 one and why; an Unknown or Blocked verdict is never a deletion candidate.
 
+#### Referenced disks: detach first
+
+Trash, rename, move and transfer make the file leave its volid, so pve-helper
+refuses them for a disk image any guest configuration still references — and a
+stopped guest does not change that. The guest would simply break on its next
+boot instead of immediately. To replace a disk (a restore, for instance), detach
+it from the guest in Proxmox, attach the replacement, and then act on the loose
+file.
+
+**Inflate is the exception, deliberately.** It rewrites the image in place under
+the same volid, for the guest that owns it, so a reference is expected. Its gate
+is the one that fits: the guest must be stopped, verified live at the moment of
+the action rather than from the last scan.
+
 Mounted storage is only as writable as its effective Docker bind mount. A green
 app-level write setting does not override a read-only NFS mount. Conversely,
 `STORAGE_WRITE_ENABLED=false` is a global operational brake that hides/rejects

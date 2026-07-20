@@ -650,7 +650,9 @@ def validate_inflate_storage_file(
         raise StorageActionError("Only regular files can be inflated.")
     if entry.content_category != "vm_disk":
         raise StorageActionError("Only VM qcow2 disk images can be inflated.")
-    _require_file_not_blocked(entry, block_running_guests=False, scope=scope)
+    # Inflate rewrites the disk in place under the same volid, so the guest that
+    # owns it must be stopped rather than gone.
+    _require_file_not_blocked(entry, block_running_guests=False, relocates_file=False, scope=scope)
 
     qemu_img = shutil.which("qemu-img")
     if not qemu_img:
@@ -901,18 +903,30 @@ def _require_file_not_blocked(
     entry: FileInventory,
     *,
     block_running_guests: bool = True,
+    relocates_file: bool = True,
     scope: StorageOperationScope | None = None,
 ) -> None:
+    """Guard a file action with the check that matches what the action does.
+
+    Two different questions live here, and they are not interchangeable:
+
+    * An action that makes the file leave its path — trash, rename, move,
+      transfer — breaks any guest still pointing at it. The gate is that a fresh
+      catalog read finds nothing referencing it. A stopped guest does not help:
+      it breaks on next boot instead of immediately.
+    * An action that rewrites the file in place under the same volid — inflate —
+      is *for* the guest that owns it, so demanding no references would forbid
+      the only case it exists for. The gate there is that the guest is stopped.
+
+    `relocates_file` picks between them.
+    """
     risk = file_action_risk(entry, block_running_guests=block_running_guests)
     if risk.blocked:
         raise StorageActionError(risk.warning_message)
-    if entry.content_category in {"vm_disk", "base_image", "ct_private"}:
+    if relocates_file and entry.content_category in {"vm_disk", "base_image", "ct_private"}:
         scope = scope or StorageOperationScope()
         bindings = entry.storage.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster")
         if not bindings.exists():
-            if settings.PVE_TEST_NETWORK_DISABLED:
-                require_live_guest_stopped(entry)
-                return
             raise StorageActionError(
                 "The storage is not associated with the current API catalog; guest-file safety is unknown."
             )
@@ -930,8 +944,20 @@ def _require_file_not_blocked(
                 raise StorageOperationAborted(
                     "The storage catalog was republished while this operation was running; retry the remaining files."
                 ) from exc
+            if result.state is UsageState.REFERENCED or result.state is UsageState.REFERENCED_ELSEWHERE:
+                raise StorageActionError(
+                    f"A guest configuration still references this disk: {result.reason} "
+                    "Detach it from the guest in Proxmox first; the file becomes actionable "
+                    "once nothing points at it."
+                )
             if result.state is not UsageState.UNREFERENCED:
                 raise StorageActionError(f"Guest-file action blocked by fresh storage preflight: {result.reason}")
+        # The fresh preflight is the authority here, and it just confirmed that
+        # nothing references the file. Whether some guest happens to be running is
+        # then no longer a question about *this* file, and asking it again from
+        # scan-derived evidence would only let stale data refuse an action the
+        # live catalog permits.
+        return
     require_live_guest_stopped(entry)
 
 
