@@ -926,8 +926,9 @@ const initStorageFileManagers = (root = document) => {
  *
  * The operation is over, but the operator still owes it an answer: retry the
  * files that failed, or accept this state. Until one of those is chosen the
- * question keeps pulsing and stays pinned in Recent Tasks — closing the dialog
- * any other way counts as accepting it, exactly like the force-stop offer.
+ * question keeps pulsing and stays pinned in Recent Tasks. Closing the dialog
+ * with × or Esc is not a third answer — it defers, and the question is still
+ * there to reopen.
  */
 const openBulkFilePartialDialog = async (payload, taskId) => {
   const failed = Array.isArray(payload.failed) ? payload.failed : [];
@@ -945,7 +946,7 @@ const openBulkFilePartialDialog = async (payload, taskId) => {
       ${skipped.length ? `<p>${skipped.length} file(s) were not attempted because the storage catalog changed while the operation was running.</p>` : ""}
       <p>Retry the ${retryPaths.length} remaining file(s), or accept this outcome.</p>
     `;
-  const retryRequested = await openConfirmDialog({
+  const answer = await openConfirmDialog({
     title: "Partly completed",
     body,
     confirmLabel: `Retry ${retryPaths.length} file(s)`,
@@ -954,10 +955,17 @@ const openBulkFilePartialDialog = async (payload, taskId) => {
     // would promise the opposite of what the button does.
     cancelLabel: "Accept this outcome",
     danger: false,
+    distinguishDismiss: true,
   });
-  const retrying = Boolean(retryRequested && retry.url && retryPaths.length);
+  if (answer === "dismiss") {
+    return;
+  }
+  const retrying = answer === "confirm" && Boolean(retry.url) && retryPaths.length > 0;
   await dismissTaskQuestion(taskId, retrying ? "retried" : "accepted");
   if (!retrying) {
+    // Accepting is a durable fact that the page underneath may be displaying —
+    // Audit above all. The retry path reloads below for the same reason.
+    loadSoftNavigation(new URL(window.location.href), { push: false });
     return;
   }
   const taskbar = document.querySelector("[data-recent-tasks]");

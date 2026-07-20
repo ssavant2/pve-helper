@@ -52,6 +52,30 @@ test("taskbar collapse toggle flips aria-expanded", async ({ page }) => {
   await expect.poll(() => toggle.getAttribute("aria-expanded")).not.toBe(before);
 });
 
+// An open question is a decision the operator still owes. Closing its dialog is
+// not one of the answers, so the × must leave the question exactly where it was —
+// the failure mode is losing it to a stray click and never being asked again.
+test("closing a question dialog defers it; answering removes it", async ({ page }) => {
+  const badge = page.locator('[data-task-question="bulk_file_partial"]');
+  await expect(badge).toBeVisible();
+  const dialog = page.locator("[data-vm-action-dialog]");
+
+  await badge.click();
+  await expect(dialog.locator("[data-confirm-yes]")).toBeVisible();
+  await dialog.locator("[data-confirm-dismiss]").click();
+  await expect(dialog.locator("[data-confirm-yes]")).toBeHidden();
+  // Still owed, still reachable.
+  await page.evaluate(() =>
+    (window as Window & { pveHelperRefreshRecentTasks: () => void }).pveHelperRefreshRecentTasks(),
+  );
+  await expect(badge).toBeVisible();
+
+  await badge.click();
+  await expect(dialog.locator("[data-confirm-no]")).toHaveText("Accept this outcome");
+  await dialog.locator("[data-confirm-no]").click();
+  await expect(badge).toBeHidden();
+});
+
 test("recent task columns can be reordered and keep their order after refresh", async ({ page }) => {
   const table = page.locator('[data-column-table="recent-tasks"]');
   const columnOrder = () =>

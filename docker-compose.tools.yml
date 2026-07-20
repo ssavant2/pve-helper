@@ -79,7 +79,8 @@ services:
       ns=ClusterStorage.objects.create(cluster=c, storage_id='e2e-nfs', storage_type='nfs', shared=True, present=True, config={'server':'nas.e2e.local','export':'/mnt/tank/vm'});
       ls=ClusterStorage.objects.create(cluster=c, storage_id='e2e-dir', storage_type='dir', shared=False, present=True, config={'path':'/var/lib/vz'});
       ClusterStorageNodeState.objects.create(cluster_storage=ls, node='pve1', present=True, active=True, enabled=True);
-      AuditEvent.objects.create(username='e2e', action='tag.bulk_operation', object_type='tag', object_id='old-tag', outcome='failed', details={'cluster_key':'e2e','operation':'delete','source_tag':'old-tag','targets':[{'cluster_key':'e2e','node':'pve1','object_type':'vm','vmid':100}],'failed':[{'vmid':100,'reason':'locked'}],'retryable':True})\" &&
+      AuditEvent.objects.create(username='e2e', action='tag.bulk_operation', object_type='tag', object_id='old-tag', outcome='failed', details={'cluster_key':'e2e','operation':'delete','source_tag':'old-tag','targets':[{'cluster_key':'e2e','node':'pve1','object_type':'vm','vmid':100}],'failed':[{'vmid':100,'reason':'locked'}],'retryable':True});
+      AuditEvent.objects.create(username='e2e', action='file.bulk_operation', object_type='storage', object_id='e2e-store', outcome='warning', module='storage', cluster=c, cluster_key_snapshot='e2e', storage_id='e2e-store', details={'verb':'moved to trash','operation':'trash','storage_id':'e2e-store','storage_name':'E2E Store','summary':'1 of 2 files moved to trash','total':2,'question':True,'succeeded':['dump/ok.vma.zst'],'failed':[{'path':'images/100/vm-100-disk-0.qcow2','error':'Permission denied.'}],'skipped':[],'retry':{'url':'/storage/e2e-store/trash-file/','paths':['images/100/vm-100-disk-0.qcow2']}})\" &&
       python manage.py runserver 0.0.0.0:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/vms/overview/')"]

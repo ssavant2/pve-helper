@@ -469,8 +469,9 @@ const guestRowIdentity = (row) => {
   };
 };
 
-// `cancelLabel` is overridden where declining is a recorded decision rather than
-// a way out — see `openForceStopDialog`.
+// `cancelLabel` and `onDecline` exist for dialogs where declining is a recorded
+// decision rather than a way out — see `openForceStopDialog`. `onDecline` fires
+// only for the button, never for the × or Esc, so closing can stay a non-answer.
 const openVmFormDialog = ({
   title,
   summary,
@@ -479,6 +480,7 @@ const openVmFormDialog = ({
   submitClass = "primary-action",
   cancelLabel = "Cancel",
   onSubmit,
+  onDecline = null,
 }) => {
   const dialog = ensureVmActionDialog();
   dialog.innerHTML = `
@@ -500,7 +502,10 @@ const openVmFormDialog = ({
   const error = dialog.querySelector("[data-vm-dialog-error]");
   const close = () => dialog.close();
   dialog.querySelector("[data-vm-dialog-close]")?.addEventListener("click", close);
-  dialog.querySelector("[data-vm-dialog-cancel]")?.addEventListener("click", close);
+  dialog.querySelector("[data-vm-dialog-cancel]")?.addEventListener("click", () => {
+    onDecline?.();
+    close();
+  });
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!form) {
@@ -623,15 +628,20 @@ const dismissTaskQuestion = async (taskId, answer = "") => {
   }
 };
 
+/**
+ * The follow-up to a graceful shutdown that timed out.
+ *
+ * Two answers end the question: force-stop the guest, or decide to leave it
+ * running. Both are decisions, so the declining button says which one it is
+ * rather than "Cancel" — the offer does not come back once answered. The × and
+ * Esc answer nothing and leave the question pinned in Recent Tasks.
+ */
 const openForceStopDialog = (target, label, taskId) => {
-  const dialog = openVmFormDialog({
+  openVmFormDialog({
     title: "Shutdown timed out",
     summary: label || target,
     submitLabel: "Force stop",
     submitClass: "primary-action danger-action",
-    // Closing this dialog answers the question either way (see below), so the
-    // declining button has to say that it leaves the guest running rather than
-    // imply the offer comes back.
     cancelLabel: "Leave it running",
     bodyHtml: `
         <p>The graceful shutdown of <strong>${escapeHtml(label || target)}</strong> timed out — the guest did not respond to the ACPI power signal (no <code>acpid</code> or QEMU guest agent running), so it is <strong>still running</strong>.</p>
@@ -639,13 +649,17 @@ const openForceStopDialog = (target, label, taskId) => {
       `,
     onSubmit: () => {
       forceStopGuest(target, label);
+      if (taskId) {
+        dismissTaskQuestion(taskId);
+      }
       return "";
     },
+    onDecline: () => {
+      if (taskId) {
+        dismissTaskQuestion(taskId);
+      }
+    },
   });
-  // Whether the user force-stops or cancels/dismisses, the question is answered.
-  if (taskId) {
-    dialog.addEventListener("close", () => dismissTaskQuestion(taskId), { once: true });
-  }
 };
 
 const openSnapshotDialog = (overview, rows) => {

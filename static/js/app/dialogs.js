@@ -20,6 +20,14 @@ const ensureVmActionDialog = () => {
  * @param cancelLabel Override when declining is itself a recorded decision
  * rather than a way out. "Cancel" promises that nothing happens; if the button
  * durably answers a question, say what it answers.
+ * @param distinguishDismiss Resolve `"confirm"` / `"decline"` / `"dismiss"`
+ * instead of a boolean, so the caller can tell an answer from a close.
+ *
+ * An ordinary confirmation needs no such distinction: declining and closing both
+ * mean the action does not happen. It matters only where declining is itself a
+ * durable decision, because then the × and Esc — which universally mean "I am not
+ * deciding right now" — must not be allowed to decide. Callers that leave this
+ * off keep the boolean contract, where any exit but Confirm is falsy.
  */
 const openConfirmDialog = ({
   title = "Please confirm",
@@ -28,6 +36,7 @@ const openConfirmDialog = ({
   cancelLabel = "Cancel",
   danger = false,
   swapActions = false,
+  distinguishDismiss = false,
 }) =>
   new Promise((resolve) => {
     const dialog = ensureVmActionDialog();
@@ -50,16 +59,17 @@ const openConfirmDialog = ({
         </div>
       </div>
     `;
-    const finish = (result) => {
+    const finish = (outcome) => {
       if (decided) return;
       decided = true;
-      resolve(result);
+      resolve(distinguishDismiss ? outcome : outcome === "confirm");
       dialog.close();
     };
-    dialog.querySelector("[data-confirm-yes]")?.addEventListener("click", () => finish(true));
-    dialog.querySelector("[data-confirm-no]")?.addEventListener("click", () => finish(false));
-    dialog.querySelector("[data-confirm-dismiss]")?.addEventListener("click", () => finish(false));
-    dialog.addEventListener("close", () => finish(false), { once: true });
+    dialog.querySelector("[data-confirm-yes]")?.addEventListener("click", () => finish("confirm"));
+    dialog.querySelector("[data-confirm-no]")?.addEventListener("click", () => finish("decline"));
+    dialog.querySelector("[data-confirm-dismiss]")?.addEventListener("click", () => finish("dismiss"));
+    // Esc and a backdrop click land here too, and mean the same as the ×.
+    dialog.addEventListener("close", () => finish("dismiss"), { once: true });
     dialog.showModal?.();
   });
 

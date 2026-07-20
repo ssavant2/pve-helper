@@ -159,9 +159,14 @@ single failure. Instead:
   keeps pulsing and pinned to the top of Recent Tasks until you answer it. It is
   deliberately exempt from the normal one-hour Recent Tasks retention: an
   unanswered question is not history yet.
-- Answering it opens a dialog offering to **retry** the files that failed, or to
-  **accept** the outcome. Either choice resolves the question; closing the dialog
-  counts as accepting.
+- Answering it opens a dialog offering to **Retry N file(s)** or to **Accept this
+  outcome**. Both are decisions and both close the question for good, so the
+  buttons say which decision they are rather than “Cancel”.
+- Closing that dialog with **×** or **Esc** is not a third answer. It defers: the
+  question stays pinned and you can reopen it from the same row. This holds for
+  every question in Recent Tasks, including the force-stop follow-up, whose two
+  answers are **Force stop** and **Leave it running** — nothing you can click by
+  accident throws an unanswered question away.
 
 If Recent Tasks is collapsed, an **Attention needed (N)** indicator appears in
 its header and expands the list when clicked, so an open question cannot sit
