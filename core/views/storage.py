@@ -1152,6 +1152,11 @@ def api_storage_nodes(request, cluster_key: str, storage: str, node: str = ""):
     # different disks. Naming them here is the only place the UI can say so, since
     # Proxmox gives the operator no way to tell them apart by name.
     siblings = [row for row in rows if not row["is_current"]] if node else []
+    if node:
+        # This datastore lives on exactly one node. Listing the others in the table
+        # would read as if it were shared between them; they belong in the footnote
+        # below, which says plainly that they are separate disks sharing a name.
+        rows = [row for row in rows if row["is_current"]]
     context.update({"node_rows": rows, "gate_note": gate_note, "sibling_rows": siblings})
     return render(request, "core/storage_api/nodes.html", context)
 

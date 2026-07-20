@@ -1271,6 +1271,19 @@ class DatastoreTabsAreUniformTests(TestCase):
             self.assertContains(response, f">{node}<")
         self.assertContains(response, "pve-helper&#x27;s shared-mount gate")
 
+    def test_the_nodes_tab_of_a_node_local_datastore_lists_only_its_own_node(self):
+        """Listing the other nodes in the table would read as if the datastore were
+        shared between them. They are separate disks that happen to share a name,
+        which the footnote says outright."""
+        self._definition("local", "dir", shared=False, nodes=("pve1", "pve2", "pve3"))
+
+        response = self.client.get("/clusters/tabs/nodes/pve1/datastores/local/nodes/")
+
+        rows = response.content.decode().split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+        self.assertIn("pve1", rows)
+        self.assertNotIn("pve2", rows)
+        self.assertNotIn("pve3", rows)
+
     def test_the_nodes_tab_names_the_same_named_disks_on_the_other_nodes(self):
         """`local` is a different disk on every node and Proxmox names them all
         alike, so this tab is the only place the UI can say they are not one."""

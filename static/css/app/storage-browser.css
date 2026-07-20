@@ -708,26 +708,48 @@
   font-size: 12px;
 }
 
-/* Classification and Storage Gate are read side by side, so they share the width
-   evenly and stay the same height rather than one ending in a short stub. */
-.datastore-summary .split-view {
-  grid-template-columns: 1fr 1fr;
-  align-items: stretch;
-}
-
-.datastore-summary .split-view > .panel {
+/* Classification sits above Storage Gate rather than beside it: the gate is the
+   one that grows — its consumer table has a row per node — so side by side would
+   force one panel to end in a stub. Stacked, neither constrains the other. */
+.datastore-summary-panels {
   display: flex;
   flex-direction: column;
+  gap: 12px;
 }
 
-/* The Nodes table's header reads as part of the object, like the node links
-   under it, instead of as plain body text. */
-.datastore-node-table thead th {
-  color: var(--accent);
-  border-bottom: 1px solid var(--accent);
+/* Both help blocks read as reference: two columns halve their height on a wide
+   page without making either line wrap. */
+.datastore-summary .legend-list {
+  grid-template-columns: repeat(2, max-content minmax(0, 1fr));
+  gap: 5px 12px;
+}
+
+.datastore-summary .storage-gate-panel .help-panel {
+  columns: 2;
+  column-gap: 24px;
+}
+
+.datastore-summary .storage-gate-panel .help-panel-title {
+  column-span: all;
+}
+
+.datastore-summary .storage-gate-panel .help-panel p {
+  margin-bottom: 8px;
+  break-inside: avoid;
 }
 
 /* The filter aligns with the meta line above it rather than the panel edge. */
 .datastore-file-toolbar-compact {
   padding-left: 12px;
+}
+
+/* Configuration's two panels split the width evenly so neither wraps a label
+   that the other has room for. */
+.datastore-configure .split-view {
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+}
+
+.datastore-configure .details-list {
+  grid-template-columns: max-content minmax(0, 1fr);
 }
