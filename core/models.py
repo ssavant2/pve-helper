@@ -1136,12 +1136,12 @@ class ScheduledAction(TimestampedModel):
     enabled = models.BooleanField(default=True)
     action_type = models.CharField(max_length=40, choices=ActionType.choices)
     action_timeout_seconds = models.PositiveIntegerField(default=1800)
-    # Additive during the mixed-version rollout. New writers always set it;
-    # legacy rows are resolved only through the version-0 sole-cluster adapter.
+    # Mandatory since `0027`: the nav tree groups schedules under their cluster,
+    # and a null has no honest place in that tree. The rollout's legacy rows were
+    # backfilled there, which is also where the sole-cluster adapter stopped being
+    # the only thing resolving them.
     cluster = models.ForeignKey(
         ProxmoxCluster,
-        null=True,
-        blank=True,
         on_delete=models.PROTECT,
         related_name="scheduled_actions",
         # Covered by `core_sched_cluster_target_idx`.
@@ -1197,10 +1197,14 @@ class ScheduledAction(TimestampedModel):
             models.Index(fields=["created_by"], name="core_sched_created_by_idx"),
         ]
         constraints = [
+            # Per cluster, not fleet-wide: the nav tree presents schedules as
+            # belonging to a cluster, so refusing "Nightly backup" in the second
+            # cluster because the first one has it reads as a bug. Names are the
+            # operator's own labels and clusters are independent installations.
             models.UniqueConstraint(
-                fields=["name"],
+                fields=["cluster", "name"],
                 condition=models.Q(deleted_at__isnull=True),
-                name="uniq_active_scheduled_action_name",
+                name="uniq_active_scheduled_action_name_per_cluster",
             )
         ]
 

@@ -297,7 +297,9 @@ def _audit_cluster_q(cluster_key: str) -> Q:
 def _scheduled_cluster_q(cluster_key: str) -> Q:
     if not cluster_key:
         return Q()
-    return Q(scheduled_action__cluster__isnull=True) | Q(scheduled_action__cluster__key=cluster_key)
+    # No cluster-neutral branch, unlike `_audit_cluster_q`: a schedule's cluster is
+    # mandatory since `0027`, so every run belongs to exactly one scope.
+    return Q(scheduled_action__cluster__key=cluster_key)
 
 
 def _questions_pending(cluster_key: str) -> int:

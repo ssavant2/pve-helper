@@ -725,13 +725,24 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     # Truncate to the model limit before the uniqueness check so two names that
     # only collide after truncation surface as a form error, not an IntegrityError.
     name = post.get("name", "").strip()[:160]
-    if not name:
-        errors.append("Name is required.")
-    elif ScheduledAction.objects.filter(name=name, deleted_at__isnull=True).exclude(pk=action.pk).exists():
-        errors.append("A scheduled task with this name already exists.")
+    # The target is parsed first because it carries the cluster, and uniqueness is
+    # per cluster — the same name in two clusters is allowed and expected.
     target_ref = _parse_scheduled_target_ref(post.get("target", ""))
     if target_ref is None:
         errors.append("Target is required.")
+    if not name:
+        errors.append("Name is required.")
+    elif (
+        target_ref is not None
+        and ScheduledAction.objects.filter(
+            cluster__key=target_ref.cluster_key,
+            name=name,
+            deleted_at__isnull=True,
+        )
+        .exclude(pk=action.pk)
+        .exists()
+    ):
+        errors.append("A scheduled task with this name already exists in this cluster.")
 
     action_type = post.get("action_type", "")
     if action_type not in ScheduledAction.ActionType.values:

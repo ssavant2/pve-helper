@@ -12,10 +12,8 @@ from core.models import (
     ProxmoxCluster,
     RuntimeConfigurationState,
     ScanRun,
-    ScheduledAction,
 )
 from core.services.cluster_activation import (
-    ClusterActivationError,
     activate_multicluster_identity,
     enable_cluster,
 )
@@ -179,21 +177,10 @@ class MulticlusterActivationTests(TestCase):
         self.cluster_a = ProxmoxCluster.objects.create(key="a", display_name="Cluster A", enabled=True)
         self.cluster_b = ProxmoxCluster.objects.create(key="b", display_name="Cluster B", enabled=False)
 
-    def test_activation_refuses_enabled_unqualified_scheduled_action(self):
-        ScheduledAction.objects.create(
-            name="legacy start",
-            enabled=True,
-            action_type=ScheduledAction.ActionType.START,
-            cluster=None,
-            target_type="vm",
-            target_vmid=500,
-        )
-
-        with self.assertRaises(ClusterActivationError):
-            activate_multicluster_identity()
-
-        state = RuntimeConfigurationState.objects.get()
-        self.assertEqual(state.identity_contract_version, 0)
+    # An equivalent test for `ScheduledAction` was deleted with `0027`, which made the
+    # column NOT NULL: the audit branch it exercised is now unreachable, and the test
+    # could no longer even create its own fixture. `ScheduledActionModelTests.
+    # test_a_schedule_cannot_be_saved_without_a_cluster` covers the schema doing it.
 
     def test_activation_allows_enabling_second_cluster(self):
         state = activate_multicluster_identity()

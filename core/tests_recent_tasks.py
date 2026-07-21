@@ -251,11 +251,15 @@ class RecentTaskIndexParityTests(TestCase):
             target_vmid=500,
             cluster=self.cluster_a,
         )
-        neutral = ScheduledAction.objects.create(
+        # In the other cluster, not cluster-neutral: a schedule's cluster is mandatory
+        # since `0027`, so this run must disappear under the alpha scope rather than
+        # following it around the way a neutral audit event does.
+        other_cluster = ScheduledAction.objects.create(
             name="Legacy start",
             action_type=ScheduledAction.ActionType.START,
             target_type=ScheduledAction.TargetType.VM,
             target_vmid=501,
+            cluster=self.cluster_b,
         )
         # Queued: sorts on `created_at`, the last fallback.
         run = ScheduledActionRun.objects.create(
@@ -268,7 +272,7 @@ class RecentTaskIndexParityTests(TestCase):
         # Completed: sorts on `started_at`, not on the much later `finished_at`
         # and not on the much earlier `created_at` it sat queued from.
         done = ScheduledActionRun.objects.create(
-            scheduled_action=neutral,
+            scheduled_action=other_cluster,
             planned_for=self._ago(30),
             occurrence_key="done-1",
             status=ScheduledActionRun.Status.COMPLETED,

@@ -2558,8 +2558,55 @@ class ProxmoxClientTests(SimpleTestCase):
 
 
 class ScheduledActionModelTests(TestCase):
+    def setUp(self):
+        super().setUp()
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
+
+    def test_the_same_schedule_name_is_allowed_in_two_clusters(self):
+        """Name uniqueness is per cluster, and the second cluster must not be refused.
+
+        The constraint was fleet-wide until `0027`, which meant "Nightly backup" could
+        exist in exactly one cluster and every other cluster got a collision error for
+        a name nothing in its own scope was using. Navigation now presents schedules as
+        belonging to a cluster, so that refusal reads as a defect rather than a rule.
+        """
+        other = ProxmoxCluster.objects.create(key="second", display_name="Second cluster", enabled=True)
+        fields = {
+            "name": "Nightly backup",
+            "action_type": ScheduledAction.ActionType.SHUTDOWN,
+            "target_type": ScheduledAction.TargetType.VM,
+            "target_vmid": 500,
+        }
+
+        ScheduledAction.objects.create(cluster=self.cluster, **fields)
+        ScheduledAction.objects.create(cluster=other, **fields)
+
+        self.assertEqual(ScheduledAction.objects.filter(name="Nightly backup").count(), 2)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ScheduledAction.objects.create(cluster=self.cluster, **fields)
+
+    def test_a_schedule_cannot_be_saved_without_a_cluster(self):
+        """`0027` closed the version-0 rollout: an unqualified schedule is now impossible.
+
+        It mattered because the nav tree groups schedules under their cluster the way
+        tags and datastores are. A null cluster has no node to render under, so such a
+        row would exist, run on schedule, and be invisible to the operator — the worst
+        of the three outcomes. The database refuses it rather than the form.
+        """
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ScheduledAction.objects.create(
+                    name="Unqualified",
+                    action_type=ScheduledAction.ActionType.START,
+                    target_type=ScheduledAction.TargetType.VM,
+                    target_vmid=500,
+                )
+
     def test_run_occurrence_key_is_unique_per_action(self):
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -2585,12 +2632,14 @@ class ScheduledActionModelTests(TestCase):
 
     def test_same_occurrence_key_can_be_used_for_different_actions(self):
         first = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Start VM 500",
             action_type=ScheduledAction.ActionType.START,
             target_type=ScheduledAction.TargetType.VM,
             target_vmid=500,
         )
         second = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Start VM 501",
             action_type=ScheduledAction.ActionType.START,
             target_type=ScheduledAction.TargetType.VM,
@@ -2613,8 +2662,13 @@ class ScheduledActionModelTests(TestCase):
 
 
 class ScheduledRecurrenceTests(TestCase):
+    def setUp(self):
+        super().setUp()
+        self.cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
+
     def _recurring_action(self, *, kind, recurrence, timezone_name="UTC"):
         return ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Recurring action",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -9648,6 +9702,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -9749,6 +9804,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
         ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
@@ -9772,7 +9828,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
 
         self.assertEqual(response.status_code, 400)
-        self.assertContains(response, "A scheduled task with this name already exists.", status_code=400)
+        self.assertContains(
+            response, "A scheduled task with this name already exists in this cluster.", status_code=400
+        )
         self.assertEqual(ScheduledAction.objects.filter(name="Night shutdown").count(), 1)
 
     def test_scheduled_task_create_form_uses_live_targets_without_scan(self):
@@ -9833,12 +9891,14 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
         ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Night shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,
             target_vmid=500,
         )
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Morning start",
             action_type=ScheduledAction.ActionType.START,
             target_type=ScheduledAction.TargetType.VM,
@@ -9862,7 +9922,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
 
         self.assertEqual(response.status_code, 400)
-        self.assertContains(response, "A scheduled task with this name already exists.", status_code=400)
+        self.assertContains(
+            response, "A scheduled task with this name already exists in this cluster.", status_code=400
+        )
         action.refresh_from_db()
         self.assertEqual(action.name, "Morning start")
 
@@ -9878,6 +9940,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             name="Lab VM",
         )
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Old name",
             action_type=ScheduledAction.ActionType.START,
             target_type=ScheduledAction.TargetType.VM,
@@ -9914,6 +9977,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="Daily reboot",
             enabled=False,
             action_type=ScheduledAction.ActionType.REBOOT,
@@ -9957,6 +10021,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)
         action = ScheduledAction.objects.create(
+            cluster=self.cluster,
             name="In-flight shutdown",
             action_type=ScheduledAction.ActionType.SHUTDOWN,
             target_type=ScheduledAction.TargetType.VM,

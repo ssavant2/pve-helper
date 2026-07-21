@@ -24,7 +24,6 @@ from core.models import (
     ProxmoxEndpoint,
     ProxmoxStorageConsumer,
     RuntimeConfigurationState,
-    ScheduledAction,
     cluster_key_validator,
 )
 from core.services.runtime_bootstrap import ensure_bootstrap
@@ -38,13 +37,13 @@ _ACTIVATION_LOCK_ID = 0x5056454D554C01
 
 
 def _activation_data_errors() -> list[str]:
+    # `ScheduledAction` is absent on purpose: `0027` made its cluster mandatory in
+    # the schema, so an unqualified row cannot exist to be audited here.
     errors = []
     if ProxmoxEndpoint.objects.filter(cluster__isnull=True).exists():
         errors.append("one or more Proxmox endpoints have no cluster")
     if ProxmoxStorageConsumer.objects.filter(cluster__isnull=True).exists():
         errors.append("one or more storage consumers have no cluster")
-    if ScheduledAction.objects.filter(enabled=True, cluster__isnull=True).exists():
-        errors.append("one or more enabled scheduled actions have no cluster")
     if ConsoleSession.objects.filter(
         cluster__isnull=True,
         expires_at__gt=timezone.now(),
