@@ -214,8 +214,16 @@ test("changing an audit retention setting updates in place without reloading", a
   // the schedule is enabled; enable it first or the value has nowhere to go.
   const enabled = page.locator('[data-auto-submit-form] input[name="enabled"]');
   if (!(await enabled.isChecked())) {
+    // Enabling goes through the same auto-submit path being tested, and soft
+    // navigation rebuilds the whole content block — so every element below,
+    // retention field included, is thrown away and recreated. Wait for that swap
+    // to land instead of assuming it beat us here: the interaction used to race
+    // it, sometimes typing into a field that was already detached and sometimes
+    // typing "30" into a "90" the re-render had just restored, giving "3090".
+    const stale = await page.locator('[data-auto-submit-form] input[name="retention_days"]').elementHandle();
     await enabled.check();
     await expect.poll(() => enabled.isChecked()).toBe(true);
+    await expect.poll(() => stale?.evaluate((node) => node.isConnected)).toBe(false);
   }
 
   await page.evaluate(() => {
@@ -228,7 +236,10 @@ test("changing an audit retention setting updates in place without reloading", a
   // Type it: fill() sets the value without the change event the form listens
   // for, so it would assert nothing about the submit path.
   await retention.click();
-  await retention.press("Control+a");
+  // Select through the DOM rather than with Control+a: select() cannot be
+  // reinterpreted as a caret move the way a chord can, and pressSequentially
+  // below still types the value for real.
+  await retention.selectText();
   await retention.pressSequentially(next);
   await retention.press("Tab");
 
