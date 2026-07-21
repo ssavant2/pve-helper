@@ -38,6 +38,12 @@ class OidcIdentity(TimestampedModel):
         return f"{self.issuer}:{self.subject}"
 
 
+# Columns `AuditEvent` derives from `details` rather than from its own writers,
+# with the width each is truncated to. Named once so `save()` and
+# `populate_filter_fields_from_details()` cannot drift apart.
+DETAIL_DERIVED_AUDIT_FIELDS = {"storage_id": 120, "path": 1024, "target_preallocation": 40}
+
+
 class AuditEvent(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
     user = models.ForeignKey(
@@ -84,13 +90,22 @@ class AuditEvent(models.Model):
 
     def save(self, *args, **kwargs):
         self.populate_filter_fields_from_details()
+        # The derived columns are what the audit filters and
+        # `core_audit_store_path_pre_idx` read, so they have to follow `details`
+        # however the row is written. The task modules finish an event with
+        # `update_fields=["outcome", "details"]`; without this the recomputation
+        # above is discarded on exactly those saves. Same shape as
+        # `ProxmoxEndpoint.save()` below.
+        if kwargs.get("update_fields") is not None:
+            update_fields = set(kwargs["update_fields"])
+            if "details" in update_fields:
+                kwargs["update_fields"] = sorted(update_fields | set(DETAIL_DERIVED_AUDIT_FIELDS))
         super().save(*args, **kwargs)
 
     def populate_filter_fields_from_details(self) -> None:
         details = self.details if isinstance(self.details, dict) else {}
-        self.storage_id = _details_text(details, "storage_id", 120)
-        self.path = _details_text(details, "path", 1024)
-        self.target_preallocation = _details_text(details, "target_preallocation", 40)
+        for field, max_length in DETAIL_DERIVED_AUDIT_FIELDS.items():
+            setattr(self, field, _details_text(details, field, max_length))
 
     def __str__(self) -> str:
         return f"{self.timestamp:%Y-%m-%d %H:%M:%S} {self.action} {self.outcome}"
@@ -1258,16 +1273,13 @@ class TrashItem(TimestampedModel):
     def __str__(self) -> str:
         return self.original_path
 
-    def save(self, *args, **kwargs):
-        if self.mount_id and not self.storage_id:
-            self.storage_id = self.mount.storage_id
-        if not self.storage_id and isinstance(self.metadata, dict):
-            self.storage_id = _details_text(self.metadata, "storage_id", 120)
-        if not self.mount_id and self.storage_id:
-            matches = list(StorageMount.objects.filter(storage_id=self.storage_id)[:2])
-            if len(matches) == 1:
-                self.mount = matches[0]
-        super().save(*args, **kwargs)
+    # `mount` and `storage_id` are creation inputs, not derived state: whoever
+    # trashes a file knows which storage it came from. `save()` used to backfill
+    # them from `metadata` or from a storage_id lookup, which no live writer had
+    # needed since both creation paths in `services/storage_actions.py` started
+    # passing them — and the lookup gave up silently when a storage_id matched two
+    # mounts, so it read as a guarantee it could not make.
+    # `TrashItemCreationContractTests` holds the creation paths to it instead.
 
 
 class StorageSpaceSnapshot(TimestampedModel):

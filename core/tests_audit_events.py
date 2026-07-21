@@ -5,6 +5,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
+from core.models import DETAIL_DERIVED_AUDIT_FIELDS, AuditEvent
 from core.services.audit_events import audit_module_key, record_audit_event
 
 
@@ -121,3 +122,56 @@ class AuditEventServiceTests(TestCase):
         self.assertEqual(audit_module_key("cluster.updated", "cluster"), "clusters")
         self.assertEqual(audit_module_key("file.inflated", "file"), "storage")
         self.assertEqual(audit_module_key("tag.deleted", "tag"), "system")
+
+
+class DerivedAuditColumnTests(TestCase):
+    """`storage_id`/`path`/`target_preallocation` are projections of `details`.
+
+    They are what the audit filters and `core_audit_store_path_pre_idx` read, so
+    they have to follow `details` however the row is written — and roughly twenty
+    call sites in `tasks.py`, `ovf_import_tasks.py`, `template_clone_tasks.py`
+    and the guest views finish an event with
+    `save(update_fields=["outcome", "details"])`. Django writes only the listed
+    columns, so before this the recomputation in `save()` was discarded on
+    exactly the saves that change the source of the projection.
+    """
+
+    def _event(self, **details) -> AuditEvent:
+        return AuditEvent.objects.create(action="file.moved", object_type="file", details=details)
+
+    def test_finishing_an_event_persists_the_recomputed_columns(self):
+        event = self._event(storage_id="nfs-vm", path="images/100/disk.qcow2")
+
+        event.details = {**event.details, "path": "images/101/disk.qcow2", "finished_at": "2026-07-21T12:00:00Z"}
+        event.outcome = "failed"
+        event.save(update_fields=["outcome", "details"])
+
+        stored = AuditEvent.objects.get(pk=event.pk)
+        self.assertEqual(stored.path, "images/101/disk.qcow2", "The derived column did not follow `details`.")
+        self.assertEqual(stored.storage_id, "nfs-vm")
+        self.assertEqual(stored.outcome, "failed")
+
+    def test_a_key_removed_from_details_clears_its_column(self):
+        """Otherwise a row keeps answering a filter for a fact it no longer states."""
+        event = self._event(storage_id="nfs-vm", target_preallocation="metadata")
+
+        event.details = {"storage_id": "nfs-vm"}
+        event.save(update_fields=["details"])
+
+        self.assertEqual(AuditEvent.objects.get(pk=event.pk).target_preallocation, "")
+
+    def test_an_update_that_does_not_touch_details_writes_only_what_it_names(self):
+        """The fix widens `update_fields`; it must not widen it unconditionally."""
+        event = self._event(storage_id="nfs-vm")
+        AuditEvent.objects.filter(pk=event.pk).update(path="written-by-another-writer")
+
+        event.outcome = "cancelled"
+        event.save(update_fields=["outcome"])
+
+        stored = AuditEvent.objects.get(pk=event.pk)
+        self.assertEqual(stored.outcome, "cancelled")
+        self.assertEqual(stored.path, "written-by-another-writer", "A save that did not name `details` overwrote it.")
+
+    def test_every_derived_field_is_a_real_column(self):
+        for field in DETAIL_DERIVED_AUDIT_FIELDS:
+            AuditEvent._meta.get_field(field)

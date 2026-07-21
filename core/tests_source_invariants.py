@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -605,3 +606,39 @@ class BackendSourceInvariantTests(SimpleTestCase):
             "core.services.tag_registry.mutate_registered_tags(): "
             f"{', '.join(violations)}",
         )
+
+
+class TrashItemCreationContractTests(SimpleTestCase):
+    """A trash row names its storage at creation, because its creator knows it.
+
+    `TrashItem.save()` used to backfill `mount`/`storage_id` from `metadata` or
+    from a `storage_id` lookup. No live writer had needed it since both creation
+    paths in `services/storage_actions.py` started passing both fields, and the
+    lookup gave up silently when one storage_id matched two mounts — so it read
+    as a guarantee it could not make. Removing it moves the requirement here,
+    where a third creation path that forgets fails loudly instead of producing a
+    row that no datastore's trash view can attribute.
+    """
+
+    REQUIRED_KEYWORDS = {"mount", "storage_id"}
+
+    def test_every_production_trash_item_names_its_mount_and_storage_id(self):
+        root = Path(settings.BASE_DIR)
+        found = 0
+        violations = []
+        for path in sorted((root / "core").rglob("*.py")):
+            relative_path = path.relative_to(root)
+            if "migrations" in relative_path.parts or path.name.startswith("tests"):
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr != "create" or ast.unparse(node.func) != "TrashItem.objects.create":
+                    continue
+                found += 1
+                missing = sorted(self.REQUIRED_KEYWORDS - {keyword.arg for keyword in node.keywords})
+                if missing:
+                    violations.append(f"{relative_path}:{node.lineno} is missing {', '.join(missing)}")
+
+        self.assertGreaterEqual(found, 2, "The TrashItem creation scan stopped finding the storage_actions paths.")
+        self.assertEqual(violations, [], "Trash rows created without naming their storage.")

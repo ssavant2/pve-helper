@@ -1403,6 +1403,7 @@ class TrashDirectoryConventionTests(TestCase):
                 original_path="/storages/legacy-fs/template/iso/old.iso",
                 trash_path=str(trashed),
                 mount=mount,
+                storage_id=mount.storage_id,
             )
 
             self._run_migration(root)
@@ -6622,6 +6623,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             trash_item = TrashItem.objects.create(
                 original_path="dump/old.vma.zst",
                 trash_path=".trash/pve-helper/20260629T100000000000Z/dump/old.vma.zst",
+                mount=storage,
+                storage_id=storage.storage_id,
                 moved_by=user,
                 moved_at=timezone.now(),
                 metadata={"storage_id": storage.storage_id},
@@ -6660,6 +6663,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             trash_item = TrashItem.objects.create(
                 original_path="dump/old.vma.zst",
                 trash_path=".trash/pve-helper/20260629T100000000000Z/dump/old.vma.zst",
+                mount=storage,
+                storage_id=storage.storage_id,
                 moved_by=user,
                 moved_at=timezone.now(),
                 metadata={"storage_id": storage.storage_id},
@@ -6698,6 +6703,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             trash_item = TrashItem.objects.create(
                 original_path="dump/old.vma.zst",
                 trash_path="../outside.txt",
+                mount=storage,
+                storage_id=storage.storage_id,
                 moved_by=user,
                 moved_at=timezone.now(),
                 metadata={"storage_id": storage.storage_id},
@@ -6734,6 +6741,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             TrashItem.objects.create(
                 original_path="dump/old.vma.zst",
                 trash_path="../outside.txt",
+                mount=storage,
+                storage_id=storage.storage_id,
                 moved_at=timezone.now() - timedelta(days=10),
                 metadata={"storage_id": storage.storage_id},
             )
@@ -7058,6 +7067,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             # The two that worked really happened, and are recorded as such.
             self.assertEqual(TrashItem.objects.count(), 2)
+            # Each row can be attributed to the storage it came from without a
+            # lookup: `move_file_to_trash` knows it, so it says it.
+            for item in TrashItem.objects.all():
+                self.assertEqual(item.mount_id, storage.id)
+                self.assertEqual(item.storage_id, storage.storage_id)
             self.assertEqual(AuditEvent.objects.filter(action="file.trashed", outcome="success").count(), 2)
             # The one that failed gets its own row, not only a line inside the
             # aggregate: a per-file question needs a per-file record to answer it.
