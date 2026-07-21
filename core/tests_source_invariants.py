@@ -248,6 +248,37 @@ class FrontendSourceInvariantTests(SimpleTestCase):
             f"use `{{% comment %}}` instead: {', '.join(violations)}",
         )
 
+    def test_every_css_partial_is_linked_by_the_base_template(self):
+        """Every CSS partial is loaded globally, and the list has to stay honest.
+
+        Page-scoping a stylesheet is not available here: soft navigation swaps the
+        content, tree and status blocks with `innerHTML` and never touches `<head>`,
+        so a `<link>` emitted by a per-page block would survive the full page load
+        that put it there and vanish on the first navigation away and back. The page
+        would then render unstyled with nothing raising — the same failure as a
+        page-local `<script>`, minus the noise. So `base.html` owns all of them, and
+        the only thing that can go wrong is drift: a new partial nobody linked (dead
+        file, styles that never apply) or a link to a partial that was deleted (a 404
+        on every page). Both directions are checked, because either one alone leaves
+        the list quietly wrong.
+        """
+        root = Path(settings.BASE_DIR)
+        partial_dir = root / "static" / "css" / "app"
+        on_disk = {path.name for path in partial_dir.glob("*.css")}
+        linked = set(re.findall(r"css/app/([\w.-]+\.css)", (root / "templates" / "base.html").read_text()))
+
+        self.assertEqual(
+            sorted(on_disk - linked),
+            [],
+            "A CSS partial exists but no `<link>` in base.html loads it, so its styles never apply; "
+            "add it to the list in cascade order or delete the file.",
+        )
+        self.assertEqual(
+            sorted(linked - on_disk),
+            [],
+            "base.html links a CSS partial that does not exist, which is a 404 on every page.",
+        )
+
 
 class DialogModuleInvariantTests(SimpleTestCase):
     """A modal element belongs to one modal.

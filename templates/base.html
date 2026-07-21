@@ -12,6 +12,18 @@
     {% endcomment %}
     <title>{{ page_title|default:"pve-helper" }}</title>
     <script src="{% static 'js/preferences-bootstrap.js' %}"></script>
+    {% comment %}
+      Every partial is loaded here, on every page, on purpose — this is not a list
+      nobody got around to trimming. Soft navigation replaces the content, tree and
+      status blocks with `innerHTML` and never touches `<head>` (navigation.js copies
+      the fetched title and nothing else), so a page-scoped `<link>` in a per-page
+      block would load on a full page load and be gone after the first navigation
+      away and back. That is the CSS twin of the page-local script-tag problem, and
+      worse: the script case fails loudly, this one just renders unstyled.
+      The order is the cascade — foundation first, `app.css` last.
+      `test_every_css_partial_is_linked_by_the_base_template` keeps this list and
+      `static/css/app/` in step in both directions.
+    {% endcomment %}
     <link rel="stylesheet" href="{% static 'css/app/foundation.css' %}">
     <link rel="stylesheet" href="{% static 'css/app/layout.css' %}">
     <link rel="stylesheet" href="{% static 'css/app/topbar.css' %}">
