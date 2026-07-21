@@ -132,6 +132,17 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "pve_helper.wsgi.application"
 
+# CONN_MAX_AGE and CONN_HEALTH_CHECKS are one decision, not two: reusing a
+# connection for 60s means holding one across events that can kill it — a
+# Postgres restart, idle_in_transaction_session_timeout, a blip in the compose
+# network. Without the health check the corpse is discovered by the next request
+# to use it, which dies with OperationalError; with `web`, `worker` and
+# `worker-bulk` each holding a pool that surfaces as a scatter of 500s after any
+# DB maintenance, from containers that report healthy throughout.
+#
+# The check is an empty round-trip on the reused connection at the start of a
+# request, against Postgres in the same network. Do not remove it as overhead
+# while CONN_MAX_AGE is non-zero — that trade is the bug, not the saving.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -141,6 +152,7 @@ DATABASES = {
         "HOST": env("DB_HOST", "localhost"),
         "PORT": env("DB_PORT", "5432"),
         "CONN_MAX_AGE": 60,
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 
