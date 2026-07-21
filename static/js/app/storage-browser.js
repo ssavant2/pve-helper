@@ -1,4 +1,4 @@
-import { openConfirmDialog, openInputDialog } from "./dialogs.js";
+import { openConfirmDialog, openInputDialog, openNoticeDialog } from "./dialogs.js";
 import { clearLocalError, showLocalError } from "./feedback.js";
 import { dismissTaskQuestion } from "./guest-actions.js";
 import { loadSoftNavigation } from "./navigation.js";
@@ -59,6 +59,10 @@ const runFileActionForm = async (form) => {
       updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running" });
     }
   }, 500);
+  // A refusal belongs where the operator is looking: at the end of the dialog
+  // chain that asked them to confirm, not on the page behind it. Recent Tasks
+  // and Audit still carry the durable record; this is the part that has to be
+  // impossible to walk past.
   const fail = (message) => {
     settled = true;
     updatePendingRecentTask({
@@ -69,7 +73,10 @@ const runFileActionForm = async (form) => {
       finished_at: taskDateLabel(new Date()),
       finished_at_ms: Date.now(),
     });
-    showLocalError(form, message);
+    openNoticeDialog({
+      title: `${FILE_ACTION_META[form.dataset.actionKind || ""]?.name || "File action"} failed`,
+      body: `<p>${escapeHtml(message)}</p>`,
+    });
   };
   try {
     const response = await fetch(form.action, {
@@ -95,13 +102,26 @@ const runFileActionForm = async (form) => {
         finished_at: taskDateLabel(new Date()),
         finished_at_ms: Date.now(),
       });
-      showLocalError(form, (payload.errors || []).join("; "));
+      openNoticeDialog({
+        title: "Partly completed",
+        body: `<p>${escapeHtml(summary.summary || "Some files were changed and some were not.")}</p>
+          <p>${escapeHtml((payload.errors || []).join("; "))}</p>`,
+      });
       window.pveHelperRefreshRecentTasks?.();
       loadSoftNavigation(new URL(window.location.href), { push: false });
       return;
     }
+    // The server did the work before it answered, so the row is finished, not
+    // running. Saying "Running" here was a guess that outlived the operation and
+    // disagreed with the audit record it was describing.
     settled = true;
-    updatePendingRecentTask({ id: pending.id, status: "Running", status_class: "running" });
+    updatePendingRecentTask({
+      id: pending.id,
+      status: "Completed",
+      status_class: "completed",
+      finished_at: taskDateLabel(new Date()),
+      finished_at_ms: Date.now(),
+    });
     window.pveHelperRefreshRecentTasks?.();
     loadSoftNavigation(new URL(window.location.href), { push: false });
   } catch (_error) {
@@ -112,13 +132,23 @@ const runFileActionForm = async (form) => {
 const completeConfirmedFileAction = async (form, { requiresRiskConfirmation, riskMessage }) => {
   const basicInput = form.querySelector('input[name="confirm_basic"]');
   const riskInput = form.querySelector('input[name="confirm_risk"]');
+  // This question is what the server treats as authority to act over a live
+  // guest reference or an unreachable node, so it has to name the subject and
+  // the consequence rather than ask "are you sure" about nothing in particular.
+  // Confirming here is on the operator's own evidence; the app is stating that
+  // it cannot vouch for the outcome, not asking them to agree that it can.
+  const actionLabel = FILE_ACTION_META[form.dataset.actionKind || ""]?.name || "This file action";
+  const subject = form.dataset.currentPath || form.dataset.fileName || "this file";
   if (
     requiresRiskConfirmation &&
     riskMessage &&
     !(await openConfirmDialog({
-      title: "Are you sure?",
-      body: `<p>${escapeHtml(riskMessage)}</p><p>Are you completely sure?</p>`,
-      confirmLabel: "Proceed",
+      title: "Proceed on your own evidence?",
+      body:
+        `<p><strong>${escapeHtml(actionLabel)}</strong> on <strong>${escapeHtml(subject)}</strong>.</p>` +
+        `<p>${escapeHtml(riskMessage)}</p>` +
+        "<p>Proceeding may break a guest, and pve-helper cannot tell you whether it will.</p>",
+      confirmLabel: "Proceed anyway",
       danger: true,
     }))
   ) {

@@ -49,7 +49,20 @@ def _probe_failure(*, subject: str, command: str, stderr: str, path: str) -> str
     return f"{subject} {cause}" if cause else f"{subject} The qemu-img output is in the application log."
 
 
-def probe_qemu_image_info(*, path: str, entry_type: str, content_category: str) -> dict[str, Any]:
+def probe_qemu_image_info(
+    *,
+    path: str,
+    entry_type: str,
+    content_category: str,
+    pass_fds: tuple[int, ...] = (),
+) -> dict[str, Any]:
+    """Probe an image with qemu-img.
+
+    ``pass_fds`` exists so callers can hand over a confined directory descriptor
+    and address the image as ``/proc/self/fd/<n>/<name>``: the child then reaches
+    the directory this process already pinned, instead of re-walking a path that
+    another storage client may have changed in the meantime.
+    """
     if not settings.STORAGE_IMAGE_INFO_ENABLED:
         return {}
     if entry_type != "file" or content_category not in IMAGE_INFO_CATEGORIES:
@@ -66,6 +79,7 @@ def probe_qemu_image_info(*, path: str, entry_type: str, content_category: str) 
             capture_output=True,
             text=True,
             timeout=settings.STORAGE_IMAGE_INFO_TIMEOUT_SECONDS,
+            pass_fds=pass_fds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"error": exc.__class__.__name__}
@@ -97,11 +111,11 @@ def probe_qemu_image_info(*, path: str, entry_type: str, content_category: str) 
     if payload.get("dirty-flag") is not None:
         info["dirty"] = bool(payload.get("dirty-flag"))
     if info.get("format") == "qcow2":
-        info.update(_probe_qcow2_allocation(qemu_img=qemu_img, path=path))
+        info.update(_probe_qcow2_allocation(qemu_img=qemu_img, path=path, pass_fds=pass_fds))
     return {key: value for key, value in info.items() if value not in {"", None}}
 
 
-def _probe_qcow2_allocation(*, qemu_img: str, path: str) -> dict[str, Any]:
+def _probe_qcow2_allocation(*, qemu_img: str, path: str, pass_fds: tuple[int, ...] = ()) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [qemu_img, "check", "--output=json", path],
@@ -109,6 +123,7 @@ def _probe_qcow2_allocation(*, qemu_img: str, path: str) -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=settings.STORAGE_IMAGE_INFO_TIMEOUT_SECONDS,
+            pass_fds=pass_fds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"qcow2_allocation_error": exc.__class__.__name__}

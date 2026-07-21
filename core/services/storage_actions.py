@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import logging
 import os
 import shutil
@@ -19,9 +18,23 @@ from django.utils import timezone
 from core.models import AuditEvent, FileInventory, ProxmoxCluster, StorageMount, TrashItem
 from core.services.cluster_resolver import ClusterResolutionError, cluster_wide_read
 from core.services.confined_filesystem import (
+    ConfinedCrossDeviceError,
     ConfinedFilesystemError,
     ConfinedPathExistsError,
+    confined_directory,
+    confined_directory_free_bytes,
+    confined_entry_stat,
+    copy_regular_file_noreplace,
+    create_confined_directories,
+    create_directory_noreplace,
+    create_regular_file_exclusive,
+    list_confined_directory,
+    remove_confined_empty_directory,
+    remove_confined_file,
+    remove_confined_tree,
+    rename_entry_noreplace,
     rename_regular_file_noreplace,
+    set_confined_owner_and_mode,
 )
 from core.services.file_actions import ReferencedObject, file_action_risk, guest_objects_for_entry
 from core.services.image_info import probe_qemu_image_info, qemu_img_failure_cause
@@ -60,7 +73,8 @@ class InflatePreflight:
     """
 
     qemu_img: str
-    path: Path
+    root: Path
+    relative_path: str
     virtual_size_bytes: int
     disk_size_bytes: int
     target_preallocation: str
@@ -230,22 +244,32 @@ def upload_to_storage(
         raise StorageActionError(f"Upload exceeds {settings.STORAGE_UPLOAD_MAX_SIZE_MB} MB.")
 
     root = _storage_root(storage)
-    target_dir = _storage_directory(directory_path, root=root)
-    target_path = _storage_child_path(_join_relative(directory_path, filename), root=root)
-    if target_path.exists():
+    directory_relative = _normalize_relative_path(directory_path)
+    _require_confined_directory(directory_relative, root=root)
+    target_relative = _join_relative(directory_path, filename)
+    # Reported early so a large upload is not spent before the collision is
+    # found; the publishing rename below is what actually refuses to overwrite.
+    if confined_entry_stat(root, target_relative) is not None:
         raise StorageActionError("Target file already exists.")
 
-    temp_path = target_dir / f".pve-helper-upload-{uuid.uuid4().hex}.part"
+    temp_relative = _join_relative(directory_relative, f".pve-helper-upload-{uuid.uuid4().hex}.part")
     written = 0
     try:
-        with temp_path.open("xb") as handle:
+        handle = create_regular_file_exclusive(root, temp_relative)
+    except ConfinedFilesystemError as exc:
+        raise StorageActionError("Storage write failed.") from exc
+    try:
+        with handle:
             written = _write_upload(handle, uploaded_file, max_bytes)
-        temp_path.rename(target_path)
+        rename_entry_noreplace(root, temp_relative, target_relative, expected="file", create_target_parents=False)
+    except ConfinedPathExistsError as exc:
+        remove_confined_file(root, temp_relative, missing_ok=True)
+        raise StorageActionError("Target file already exists.") from exc
     except StorageActionError:
-        temp_path.unlink(missing_ok=True)
+        remove_confined_file(root, temp_relative, missing_ok=True)
         raise
-    except OSError as exc:
-        temp_path.unlink(missing_ok=True)
+    except (ConfinedFilesystemError, OSError) as exc:
+        remove_confined_file(root, temp_relative, missing_ok=True)
         raise StorageActionError("Storage write failed.") from exc
 
     return {
@@ -268,7 +292,8 @@ def upload_folder_to_storage(
         raise StorageActionError("Folder upload metadata is incomplete.")
 
     root = _storage_root(storage)
-    target_root = _storage_directory(directory_path, root=root)
+    directory_relative = _normalize_relative_path(directory_path)
+    _require_confined_directory(directory_relative, root=root)
     max_bytes = _upload_max_bytes()
     plan = _folder_upload_plan(
         directory_path=directory_path,
@@ -278,41 +303,30 @@ def upload_folder_to_storage(
         max_bytes=max_bytes,
     )
 
-    created_dirs: set[Path] = set()
-    written_paths: list[Path] = []
-    temp_path: Path | None = None
+    created_dirs: set[str] = set()
+    written_paths: list[str] = []
+    temp_relative: str | None = None
     try:
         for item in plan:
-            parent = item["target_path"].parent
-            if not parent.is_relative_to(target_root) and parent != target_root:
-                raise StorageActionError("Invalid folder upload path.")
-            if not parent.exists():
-                current = parent
-                missing_dirs: list[Path] = []
-                while current != target_root and current.is_relative_to(target_root) and not current.exists():
-                    missing_dirs.append(current)
-                    current = current.parent
-                parent.mkdir(parents=True)
-                created_dirs.update(missing_dirs)
-            temp_path = parent / f".pve-helper-upload-{uuid.uuid4().hex}.part"
-            with temp_path.open("xb") as handle:
+            target_relative = str(item["relative_path"])
+            parent_relative = _parent_relative(target_relative)
+            if parent_relative != directory_relative:
+                created_dirs.update(_missing_directory_chain(parent_relative, stop_at=directory_relative, root=root))
+                create_confined_directories(root, parent_relative)
+            temp_relative = _join_relative(parent_relative, f".pve-helper-upload-{uuid.uuid4().hex}.part")
+            with create_regular_file_exclusive(root, temp_relative) as handle:
                 _write_upload(handle, item["file"], max_bytes)
-            temp_path.rename(item["target_path"])
-            written_paths.append(item["target_path"])
-            temp_path = None
+            rename_entry_noreplace(root, temp_relative, target_relative, expected="file", create_target_parents=False)
+            written_paths.append(target_relative)
+            temp_relative = None
     except StorageActionError:
-        if temp_path:
-            temp_path.unlink(missing_ok=True)
-        for path in written_paths:
-            path.unlink(missing_ok=True)
-        _remove_empty_directories(created_dirs, stop_at=target_root)
+        _undo_folder_upload(root, temp_relative, written_paths, created_dirs)
         raise
-    except OSError as exc:
-        if temp_path:
-            temp_path.unlink(missing_ok=True)
-        for path in written_paths:
-            path.unlink(missing_ok=True)
-        _remove_empty_directories(created_dirs, stop_at=target_root)
+    except ConfinedPathExistsError as exc:
+        _undo_folder_upload(root, temp_relative, written_paths, created_dirs)
+        raise StorageActionError("Target file already exists.") from exc
+    except (ConfinedFilesystemError, OSError) as exc:
+        _undo_folder_upload(root, temp_relative, written_paths, created_dirs)
         raise StorageActionError("Folder upload failed.") from exc
 
     directory_paths = sorted({_parent_relative(str(item["relative_path"])) for item in plan})
@@ -335,16 +349,14 @@ def create_storage_directory(
     require_storage_write_access(storage)
     safe_name = _safe_upload_filename(folder_name)
     root = _storage_root(storage)
-    target_parent = _storage_directory(directory_path, root=root)
-    target_path = _storage_child_path(_join_relative(directory_path, safe_name), root=root)
-    if target_path.exists():
-        raise StorageActionError("Target folder already exists.")
-    if target_path.parent != target_parent:
-        raise StorageActionError("Invalid folder path.")
+    directory_relative = _normalize_relative_path(directory_path)
+    _require_confined_directory(directory_relative, root=root)
 
     try:
-        target_path.mkdir()
-    except OSError as exc:
+        create_directory_noreplace(root, _join_relative(directory_path, safe_name))
+    except ConfinedPathExistsError as exc:
+        raise StorageActionError("Target folder already exists.") from exc
+    except ConfinedFilesystemError as exc:
         raise StorageActionError("Folder creation failed.") from exc
 
     return {
@@ -404,12 +416,13 @@ def adopt_discovered_trash_items(*, storage: StorageMount, scan) -> int:
 def cleanup_empty_app_trash_directories(*, storage: StorageMount) -> int:
     require_storage_write_access(storage)
     root = _storage_root(storage)
-    trash_root = _storage_child_path(_trash_root_relative(storage, root), root=root)
-    if not trash_root.exists() or not trash_root.is_dir():
+    trash_root_relative = _trash_root_relative(storage, root)
+    trash_root_stat = confined_entry_stat(root, trash_root_relative)
+    if trash_root_stat is None or not stat.S_ISDIR(trash_root_stat.st_mode):
         return 0
 
     protected_paths = {
-        _storage_child_path(item.trash_path, root=root)
+        _normalize_relative_path(item.trash_path)
         for item in TrashItem.objects.filter(
             mount=storage,
             restore_status=TrashItem.RestoreStatus.TRASHED,
@@ -418,16 +431,16 @@ def cleanup_empty_app_trash_directories(*, storage: StorageMount) -> int:
     }
     removed = 0
     directories = sorted(
-        (path for path in trash_root.rglob("*") if path.is_dir()),
-        key=lambda path: len(path.relative_to(trash_root).parts),
+        _confined_directory_tree(trash_root_relative, root=root),
+        key=lambda value: len(PurePosixPath(value).parts),
         reverse=True,
     )
     for directory in directories:
         if directory in protected_paths:
             continue
         try:
-            directory.rmdir()
-        except OSError:
+            remove_confined_empty_directory(root, directory, missing_ok=False)
+        except ConfinedFilesystemError:
             continue
         removed += 1
     return removed
@@ -439,34 +452,40 @@ def move_file_to_trash(
     entry: FileInventory,
     user,
     scope: StorageOperationScope | None = None,
+    acknowledged_risk: bool = False,
 ) -> TrashItem:
     require_storage_write_access(storage)
     if entry.entry_type not in {FileInventory.EntryType.FILE, FileInventory.EntryType.DIRECTORY}:
         raise StorageActionError("Only files and directories can be moved to trash.")
-    _require_file_not_blocked(entry, scope=scope)
+    _require_file_not_blocked(entry, scope=scope, acknowledged_risk=acknowledged_risk)
 
     root = _storage_root(storage)
-    original_path = _storage_existing_entry(entry.path, root=root)
+    original_relative = _normalize_relative_path(entry.path)
+    _require_confined_entry(original_relative, root=root)
     if (
         entry.entry_type == FileInventory.EntryType.DIRECTORY
         and _is_guest_directory(entry.path)
-        and any(original_path.iterdir())
+        and list_confined_directory(root, original_relative)
     ):
         raise StorageActionError("Guest image/private directories must be empty before they can be moved to trash.")
     trash_relative = _trash_relative_path(storage, root, entry.path)
-    trash_path = _storage_child_path(trash_relative, root=root)
-    try:
-        trash_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise StorageActionError("Trash directory is not writable.") from exc
-    if trash_path.exists():
-        raise StorageActionError("Trash target already exists.")
 
     try:
-        original_path.rename(trash_path)
-    except OSError as exc:
-        if exc.errno == errno.EXDEV:
-            raise StorageActionError("Trash target must be on the same filesystem/export.") from exc
+        create_confined_directories(root, _parent_relative(trash_relative))
+    except ConfinedFilesystemError as exc:
+        raise StorageActionError("Trash directory is not writable.") from exc
+
+    # A trash name that is already taken must lose here rather than replace what
+    # holds it: the TrashItem row below would otherwise point at a path whose
+    # contents belong to an earlier deletion, and restoring it would put the
+    # wrong file back under a real name.
+    try:
+        rename_entry_noreplace(root, original_relative, trash_relative, create_target_parents=False)
+    except ConfinedPathExistsError as exc:
+        raise StorageActionError("Trash target already exists.") from exc
+    except ConfinedCrossDeviceError as exc:
+        raise StorageActionError("Trash target must be on the same filesystem/export.") from exc
+    except ConfinedFilesystemError as exc:
         raise StorageActionError("Move to trash failed.") from exc
 
     return TrashItem.objects.create(
@@ -495,11 +514,12 @@ def rename_storage_file(
     entry: FileInventory,
     new_name: str,
     scope: StorageOperationScope | None = None,
+    acknowledged_risk: bool = False,
 ) -> dict[str, object]:
     require_storage_write_access(storage)
     if entry.entry_type != FileInventory.EntryType.FILE:
         raise StorageActionError("Only files can be renamed.")
-    _require_file_not_blocked(entry, scope=scope)
+    _require_file_not_blocked(entry, scope=scope, acknowledged_risk=acknowledged_risk)
 
     safe_name = _safe_upload_filename(new_name)
     root = _storage_root(storage)
@@ -524,11 +544,12 @@ def move_storage_file(
     entry: FileInventory,
     new_path: str,
     scope: StorageOperationScope | None = None,
+    acknowledged_risk: bool = False,
 ) -> dict[str, object]:
     require_storage_write_access(storage)
     if entry.entry_type != FileInventory.EntryType.FILE:
         raise StorageActionError("Only files can be moved.")
-    _require_file_not_blocked(entry, scope=scope)
+    _require_file_not_blocked(entry, scope=scope, acknowledged_risk=acknowledged_risk)
 
     old_path = _normalize_relative_path(entry.path)
     target_relative = _normalize_move_target(old_path, new_path)
@@ -536,21 +557,19 @@ def move_storage_file(
         raise StorageActionError("Target path is unchanged.")
 
     root = _storage_root(storage)
-    original_path = _storage_existing_file(old_path, root=root)
-    target_path = _storage_child_path(target_relative, root=root)
-    if target_path.exists() and target_path.is_dir():
-        target_relative = _join_relative(target_relative, original_path.name)
-        target_path = _storage_child_path(target_relative, root=root)
-    if target_path.exists():
-        raise StorageActionError("Target file already exists.")
-    if not target_path.parent.is_dir():
-        raise StorageActionError("Target directory does not exist.")
+    _require_confined_file(old_path, root=root)
+    target_stat = confined_entry_stat(root, target_relative)
+    if target_stat is not None and stat.S_ISDIR(target_stat.st_mode):
+        target_relative = _join_relative(target_relative, PurePosixPath(old_path).name)
+    _require_confined_directory(_parent_relative(target_relative), root=root)
 
     try:
-        original_path.rename(target_path)
-    except OSError as exc:
-        if exc.errno == errno.EXDEV:
-            raise StorageActionError("Move target must be on the same filesystem/export.") from exc
+        rename_entry_noreplace(root, old_path, target_relative, expected="file", create_target_parents=False)
+    except ConfinedPathExistsError as exc:
+        raise StorageActionError("Target file already exists.") from exc
+    except ConfinedCrossDeviceError as exc:
+        raise StorageActionError("Move target must be on the same filesystem/export.") from exc
+    except ConfinedFilesystemError as exc:
         raise StorageActionError("Move failed.") from exc
 
     return {
@@ -570,6 +589,7 @@ def transfer_storage_file(
     dest_name: str = "",
     keep_source: bool,
     scope: StorageOperationScope | None = None,
+    acknowledged_risk: bool = False,
 ) -> dict[str, object]:
     """Copy (``keep_source``) or move a file to any storage/folder.
 
@@ -582,44 +602,66 @@ def transfer_storage_file(
         raise StorageActionError("Only files can be copied or moved.")
     if not keep_source:
         require_storage_write_access(source_storage)
-        _require_file_not_blocked(entry, scope=scope)
+        _require_file_not_blocked(entry, scope=scope, acknowledged_risk=acknowledged_risk)
 
     source_root = _storage_root(source_storage)
-    source_path = _storage_existing_file(_normalize_relative_path(entry.path), root=source_root)
+    source_relative = _normalize_relative_path(entry.path)
+    _require_confined_file(source_relative, root=source_root)
 
     dest_root = _storage_root(dest_storage)
-    name = (dest_name or "").strip() or source_path.name
+    name = (dest_name or "").strip() or PurePosixPath(source_relative).name
     if "/" in name or "\\" in name or name in {".", ".."}:
         raise StorageActionError("Invalid destination file name.")
     dest_directory = _normalize_relative_path(dest_directory)
     dest_relative = _join_relative(dest_directory, name) if dest_directory else name
-    dest_path = _storage_child_path(dest_relative, root=dest_root)
-    try:
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise StorageActionError("Could not create the destination folder.") from exc
-    if dest_path == source_path:
+    if dest_root == source_root and dest_relative == source_relative:
         raise StorageActionError("Source and destination are the same file.")
-    if dest_path.exists():
-        raise StorageActionError("A file with that name already exists in the destination.")
+    if dest_directory:
+        try:
+            create_confined_directories(dest_root, dest_directory)
+        except ConfinedFilesystemError as exc:
+            raise StorageActionError("Could not create the destination folder.") from exc
+
+    def copy_to_destination(failure_message: str) -> None:
+        try:
+            copy_regular_file_noreplace(
+                source_root,
+                source_relative,
+                dest_relative,
+                target_root=dest_root,
+                create_target_parents=False,
+            )
+        except ConfinedPathExistsError as exc:
+            raise StorageActionError("A file with that name already exists in the destination.") from exc
+        except ConfinedFilesystemError as exc:
+            raise StorageActionError(failure_message) from exc
 
     if keep_source:
-        try:
-            shutil.copy2(source_path, dest_path)
-        except OSError as exc:
-            raise StorageActionError("Copy failed.") from exc
+        copy_to_destination("Copy failed.")
     else:
         try:
-            source_path.rename(dest_path)
-        except OSError as exc:
-            if exc.errno != errno.EXDEV:
-                raise StorageActionError("Move failed.") from exc
+            rename_entry_noreplace(
+                source_root,
+                source_relative,
+                dest_relative,
+                target_root=dest_root,
+                expected="file",
+                create_target_parents=False,
+            )
+        except ConfinedPathExistsError as exc:
+            raise StorageActionError("A file with that name already exists in the destination.") from exc
+        except ConfinedCrossDeviceError:
+            # Two exports cannot be joined by a rename, so the move becomes copy
+            # then delete. The copy still refuses an occupied name, and the
+            # source is only unlinked once the copy is complete.
+            copy_to_destination("Move failed.")
             try:
-                shutil.copy2(source_path, dest_path)
-                source_path.unlink()
-            except OSError as inner:
-                dest_path.unlink(missing_ok=True)
-                raise StorageActionError("Move failed.") from inner
+                remove_confined_file(source_root, source_relative)
+            except ConfinedFilesystemError as exc:
+                remove_confined_file(dest_root, dest_relative, missing_ok=True)
+                raise StorageActionError("Move failed.") from exc
+        except ConfinedFilesystemError as exc:
+            raise StorageActionError("Move failed.") from exc
 
     # Ownership/mode are left as copied; the PVE node reads as root regardless,
     # so (unlike uploads) no root-only chown normalisation is needed here.
@@ -641,6 +683,7 @@ def validate_inflate_storage_file(
     target_preallocation: str = INFLATE_PREALLOCATION_FULL,
     validate_owner_locally: bool = True,
     scope: StorageOperationScope | None = None,
+    acknowledged_risk: bool = False,
 ) -> InflatePreflight:
     if target_preallocation not in INFLATE_PREALLOCATION_MODES:
         raise StorageActionError("Unknown inflate target.")
@@ -652,20 +695,27 @@ def validate_inflate_storage_file(
         raise StorageActionError("Only VM qcow2 disk images can be inflated.")
     # Inflate rewrites the disk in place under the same volid, so the guest that
     # owns it must be stopped rather than gone.
-    _require_file_not_blocked(entry, block_running_guests=False, relocates_file=False, scope=scope)
+    _require_file_not_blocked(
+        entry,
+        block_running_guests=False,
+        relocates_file=False,
+        scope=scope,
+        acknowledged_risk=acknowledged_risk,
+    )
 
     qemu_img = shutil.which("qemu-img")
     if not qemu_img:
         raise StorageActionError("qemu-img is not installed in the pve-helper container.")
 
     root = _storage_root(storage)
-    image_path = _storage_existing_file(entry.path, root=root)
+    image_relative = _normalize_relative_path(entry.path)
+    image_stat = _require_confined_file(image_relative, root=root)
     if validate_owner_locally:
-        _require_inflate_owner_preservable(image_path)
-    image_info = probe_qemu_image_info(
-        path=image_path.as_posix(),
-        entry_type=entry.entry_type,
-        content_category=entry.content_category,
+        _require_inflate_owner_preservable(image_stat)
+    image_info = _probe_confined_image(
+        root=root,
+        relative_path=image_relative,
+        entry=entry,
     )
     if image_info.get("error"):
         raise StorageActionError(f"qemu-img info failed: {image_info['error']}")
@@ -694,7 +744,10 @@ def validate_inflate_storage_file(
             "Run a fresh scan after expanding or replacing the image before retrying."
         )
 
-    free_bytes = shutil.disk_usage(image_path.parent).free
+    try:
+        free_bytes = confined_directory_free_bytes(root, _parent_relative(image_relative))
+    except ConfinedFilesystemError as exc:
+        raise StorageActionError("Storage path is not available.") from exc
     expected_target_size = virtual_size if target_preallocation == INFLATE_PREALLOCATION_FULL else disk_size
     required_bytes = expected_target_size + MIN_INFLATE_HEADROOM_BYTES
     if free_bytes < required_bytes:
@@ -705,7 +758,8 @@ def validate_inflate_storage_file(
 
     return InflatePreflight(
         qemu_img=qemu_img,
-        path=image_path,
+        root=root,
+        relative_path=image_relative,
         virtual_size_bytes=virtual_size,
         disk_size_bytes=disk_size,
         target_preallocation=target_preallocation,
@@ -736,55 +790,67 @@ def inflate_storage_file(
     storage: StorageMount,
     entry: FileInventory,
     target_preallocation: str = INFLATE_PREALLOCATION_FULL,
+    acknowledged_risk: bool = False,
 ) -> dict[str, object]:
     preflight = validate_inflate_storage_file(
         storage=storage,
         entry=entry,
         target_preallocation=target_preallocation,
         validate_owner_locally=True,
+        acknowledged_risk=acknowledged_risk,
     )
     qemu_img = preflight.qemu_img
-    image_path = preflight.path
+    root = preflight.root
+    image_relative = preflight.relative_path
+    image_name = PurePosixPath(image_relative).name
+    directory_relative = _parent_relative(image_relative)
 
     token = uuid.uuid4().hex
-    temp_path = image_path.with_name(f".pve-helper-inflate-{token}-{image_path.name}")
-    backup_path = image_path.with_name(f"{image_path.name}.pve-helper-backup-{token}")
-    if temp_path.exists() or backup_path.exists():
-        raise StorageActionError("Temporary inflate path already exists.")
+    temp_name = f".pve-helper-inflate-{token}-{image_name}"
+    backup_name = f"{image_name}.pve-helper-backup-{token}"
+    temp_relative = _join_relative(directory_relative, temp_name)
+    backup_relative = _join_relative(directory_relative, backup_name)
 
     try:
-        result = subprocess.run(
-            [
-                qemu_img,
-                "convert",
-                "-O",
-                "qcow2",
-                "-o",
-                f"preallocation={preflight.target_preallocation}",
-                image_path.as_posix(),
-                temp_path.as_posix(),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=settings.STORAGE_INFLATE_TIMEOUT_SECONDS,
-        )
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            logger.warning(
-                "qemu-img convert failed: storage=%s entry=%s returncode=%s stderr=%s",
-                storage.storage_id,
-                entry.pk,
-                result.returncode,
-                stderr,
+        # qemu-img needs a path, not a descriptor, so the image directory is
+        # pinned open for the whole operation and addressed through /proc/self/fd.
+        # Everything below - the convert, both probes, the swap - then works on
+        # the directory this process confined, not on a name re-walked each time.
+        with confined_directory(root, directory_relative) as image_dir:
+            result = subprocess.run(
+                [
+                    qemu_img,
+                    "convert",
+                    "-O",
+                    "qcow2",
+                    "-o",
+                    f"preallocation={preflight.target_preallocation}",
+                    image_dir.child_path(image_name),
+                    image_dir.child_path(temp_name),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=settings.STORAGE_INFLATE_TIMEOUT_SECONDS,
+                pass_fds=image_dir.pass_fds,
             )
-            raise StorageActionError(_inflate_failure_message(stderr))
+            if result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                logger.warning(
+                    "qemu-img convert failed: storage=%s entry=%s returncode=%s stderr=%s",
+                    storage.storage_id,
+                    entry.pk,
+                    result.returncode,
+                    stderr,
+                )
+                raise StorageActionError(_inflate_failure_message(stderr))
 
-        converted_info = probe_qemu_image_info(
-            path=temp_path.as_posix(),
-            entry_type=entry.entry_type,
-            content_category=entry.content_category,
-        )
+            converted_info = probe_qemu_image_info(
+                path=image_dir.child_path(temp_name),
+                entry_type=entry.entry_type,
+                content_category=entry.content_category,
+                pass_fds=image_dir.pass_fds,
+            )
         if converted_info.get("format") != "qcow2":
             raise StorageActionError("Converted image is not qcow2.")
         if converted_info.get("virtual_size_bytes") != preflight.virtual_size_bytes:
@@ -795,31 +861,24 @@ def inflate_storage_file(
                 "qemu-img convert did not produce an image with fully mapped qcow2 clusters; "
                 "original file was left unchanged."
             )
-        _apply_reference_file_metadata(source_path=image_path, target_path=temp_path)
-
-        image_path.rename(backup_path)
-        try:
-            temp_path.rename(image_path)
-        except OSError:
-            backup_path.rename(image_path)
-            raise
-        backup_path.unlink()
+        _apply_reference_file_metadata(root=root, source_relative=image_relative, target_relative=temp_relative)
+        _swap_inflated_image(
+            root=root,
+            image_relative=image_relative,
+            temp_relative=temp_relative,
+            backup_relative=backup_relative,
+        )
     except subprocess.TimeoutExpired as exc:
+        remove_confined_file(root, temp_relative, missing_ok=True)
         raise StorageActionError("qemu-img convert timed out.") from exc
     except StorageActionError:
-        temp_path.unlink(missing_ok=True)
+        remove_confined_file(root, temp_relative, missing_ok=True)
         raise
-    except OSError as exc:
-        temp_path.unlink(missing_ok=True)
-        if backup_path.exists() and not image_path.exists():
-            backup_path.rename(image_path)
+    except (ConfinedFilesystemError, OSError) as exc:
+        remove_confined_file(root, temp_relative, missing_ok=True)
         raise StorageActionError("Inflate failed.") from exc
 
-    final_info = probe_qemu_image_info(
-        path=image_path.as_posix(),
-        entry_type=entry.entry_type,
-        content_category=entry.content_category,
-    )
+    final_info = _probe_confined_image(root=root, relative_path=image_relative, entry=entry)
     return {
         "path": _normalize_relative_path(entry.path),
         "directory_path": _parent_relative(entry.path),
@@ -839,20 +898,27 @@ def restore_trash_item(*, item: TrashItem) -> dict[str, object]:
     storage = _storage_for_trash_item(item)
     require_storage_write_access(storage)
     root = _storage_root(storage)
-    trash_path = _storage_existing_entry(item.trash_path, root=root)
-    restore_path = _storage_child_path(item.original_path, root=root)
-    if restore_path.exists():
-        raise StorageActionError("Original path already exists.")
+    trash_relative = _normalize_relative_path(item.trash_path)
+    restore_relative = _normalize_relative_path(item.original_path)
+    _require_confined_entry(trash_relative, root=root)
 
+    restore_parent = _parent_relative(restore_relative)
+    if restore_parent:
+        try:
+            create_confined_directories(root, restore_parent)
+        except ConfinedFilesystemError as exc:
+            raise StorageActionError("Restore directory is not writable.") from exc
+
+    # Restore is the one path where an overwrite would destroy something a guest
+    # is actively using: the original name may have been recreated by Proxmox
+    # since the file was trashed. The kernel refuses; nothing here retries.
     try:
-        restore_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise StorageActionError("Restore directory is not writable.") from exc
-    try:
-        trash_path.rename(restore_path)
-    except OSError as exc:
-        if exc.errno == errno.EXDEV:
-            raise StorageActionError("Restore target must be on the same filesystem/export.") from exc
+        rename_entry_noreplace(root, trash_relative, restore_relative, create_target_parents=False)
+    except ConfinedPathExistsError as exc:
+        raise StorageActionError("Original path already exists.") from exc
+    except ConfinedCrossDeviceError as exc:
+        raise StorageActionError("Restore target must be on the same filesystem/export.") from exc
+    except ConfinedFilesystemError as exc:
         raise StorageActionError("Restore failed.") from exc
 
     metadata = dict(item.metadata or {})
@@ -875,16 +941,14 @@ def purge_trash_item(*, item: TrashItem) -> dict[str, object]:
     storage = _storage_for_trash_item(item)
     require_storage_write_access(storage)
     root = _storage_root(storage)
-    trash_path = _storage_child_path(item.trash_path, root=root)
-
-    if trash_path.exists():
-        try:
-            if trash_path.is_dir():
-                shutil.rmtree(trash_path)
-            else:
-                trash_path.unlink()
-        except OSError as exc:
-            raise StorageActionError(f"Failed to delete: {exc}") from exc
+    # Deletion is the write that cannot be taken back, so it is the one that must
+    # not be aimed by a resolved path: `shutil.rmtree` follows symlinks while
+    # walking, and a component swapped after the containment check would send it
+    # outside the export entirely. Every level here is entered by descriptor.
+    try:
+        remove_confined_tree(root, _normalize_relative_path(item.trash_path))
+    except ConfinedFilesystemError as exc:
+        raise StorageActionError("Failed to delete the trashed file.") from exc
 
     item.restore_status = TrashItem.RestoreStatus.PURGED
     item.save(update_fields=["restore_status", "updated_at"])
@@ -909,14 +973,13 @@ def normalize_uploaded_proxmox_image_paths(
             skipped.append(path)
             continue
 
-        file_path = _storage_child_path(path, root=root)
-        if not file_path.is_file():
+        file_stat = confined_entry_stat(root, path)
+        if file_stat is None or not stat.S_ISREG(file_stat.st_mode):
             skipped.append(path)
             continue
 
-        vm_dir = _storage_child_path(PurePosixPath(path).parent.as_posix(), root=root)
-        _apply_proxmox_upload_metadata(vm_dir, is_directory=True)
-        _apply_proxmox_upload_metadata(file_path, is_directory=False)
+        _apply_proxmox_upload_metadata(root, _parent_relative(path), is_directory=True)
+        _apply_proxmox_upload_metadata(root, path, is_directory=False)
         normalized.append(path)
 
     return {
@@ -931,6 +994,7 @@ def _require_file_not_blocked(
     block_running_guests: bool = True,
     relocates_file: bool = True,
     scope: StorageOperationScope | None = None,
+    acknowledged_risk: bool = False,
 ) -> None:
     """Guard a file action with the check that matches what the action does.
 
@@ -944,6 +1008,20 @@ def _require_file_not_blocked(
       is *for* the guest that owns it, so demanding no references would forbid
       the only case it exists for. The gate there is that the guest is stopped.
 
+    A third question runs underneath both: what does refusing actually ask of the
+    operator. "Detach it from the guest in Proxmox first" is only an instruction
+    where Proxmox can still be reached and the guest still exists. A node can die
+    for good and be replaced by a differently named one, and its guests' configs
+    die with it — so a gate that waits for that detach is not being careful, it is
+    stranding the file permanently. The same holds for a node that simply did not
+    report: unknown must not harden into forbidden.
+
+    `acknowledged_risk` carries the operator's explicit answer to a question that
+    named these facts. Both the reference and the unknown yield to it. What does
+    not yield is a *reachable* node reporting a guest running on the file: that is
+    live breakage rather than an inconvenient unknown, and there the operator has
+    somewhere to go — stop the guest.
+
     `relocates_file` picks between them.
     """
     risk = file_action_risk(entry, block_running_guests=block_running_guests)
@@ -953,9 +1031,16 @@ def _require_file_not_blocked(
         scope = scope or StorageOperationScope()
         bindings = entry.storage.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster")
         if not bindings.exists():
-            raise StorageActionError(
-                "The storage is not associated with the current API catalog; guest-file safety is unknown."
+            if not acknowledged_risk:
+                raise StorageActionError(
+                    "The storage is not associated with the current API catalog; guest-file safety is unknown."
+                )
+            logger.warning(
+                "Guest-file action proceeding without catalog association: storage=%s path=%s",
+                entry.storage.storage_id,
+                entry.path,
             )
+            return
         relative = str(entry.path).lstrip("/").removeprefix("images/")
         for binding in bindings:
             definition = binding.cluster_storage
@@ -971,13 +1056,33 @@ def _require_file_not_blocked(
                     "The storage catalog was republished while this operation was running; retry the remaining files."
                 ) from exc
             if result.state is UsageState.REFERENCED or result.state is UsageState.REFERENCED_ELSEWHERE:
-                raise StorageActionError(
-                    f"A guest configuration still references this disk: {result.reason} "
-                    "Detach it from the guest in Proxmox first; the file becomes actionable "
-                    "once nothing points at it."
+                if not acknowledged_risk:
+                    raise StorageActionError(
+                        f"A guest configuration still references this disk: {result.reason} "
+                        "Detach it in Proxmox, or confirm that you are breaking that reference "
+                        "on purpose."
+                    )
+                logger.warning(
+                    "Guest-file action proceeding over a live guest reference: storage=%s path=%s reason=%s",
+                    entry.storage.storage_id,
+                    entry.path,
+                    result.reason,
                 )
+                continue
             if result.state is not UsageState.UNREFERENCED:
-                raise StorageActionError(f"Guest-file action blocked by fresh storage preflight: {result.reason}")
+                # Everything that is neither "referenced" nor "unreferenced" is
+                # the catalog saying it could not tell. Refusing that outright is
+                # what locked an operator out of a crashed node's disks.
+                if not acknowledged_risk:
+                    raise StorageActionError(f"Guest-file action blocked by fresh storage preflight: {result.reason}")
+                logger.warning(
+                    "Guest-file action proceeding on unverified storage evidence: "
+                    "storage=%s path=%s state=%s reason=%s",
+                    entry.storage.storage_id,
+                    entry.path,
+                    result.state,
+                    result.reason,
+                )
         # The fresh preflight is the authority here, and it just confirmed that
         # nothing references the file. Whether some guest happens to be running is
         # then no longer a question about *this* file, and asking it again from
@@ -987,13 +1092,12 @@ def _require_file_not_blocked(
     require_live_guest_stopped(entry)
 
 
-def _require_inflate_owner_preservable(path: Path) -> None:
+def _require_inflate_owner_preservable(stat_result: os.stat_result) -> None:
     current_uid = os.geteuid()
     current_gid = os.getegid()
     if current_uid == 0:
         return
 
-    stat_result = path.stat()
     if stat_result.st_uid == current_uid and stat_result.st_gid == current_gid:
         return
 
@@ -1005,23 +1109,120 @@ def _require_inflate_owner_preservable(path: Path) -> None:
     )
 
 
-def _apply_reference_file_metadata(*, source_path: Path, target_path: Path) -> None:
-    source_stat = source_path.stat()
+def _apply_reference_file_metadata(*, root: Path, source_relative: str, target_relative: str) -> None:
+    source_stat = confined_entry_stat(root, source_relative)
+    if source_stat is None:
+        raise StorageActionError(
+            "Cannot preserve original disk ownership and mode on the inflated image; original file was left unchanged."
+        )
     try:
-        os.chmod(target_path, stat.S_IMODE(source_stat.st_mode))
-        os.chown(target_path, source_stat.st_uid, source_stat.st_gid)
-    except OSError as exc:
+        set_confined_owner_and_mode(
+            root,
+            target_relative,
+            uid=source_stat.st_uid,
+            gid=source_stat.st_gid,
+            mode=stat.S_IMODE(source_stat.st_mode),
+            expected="file",
+        )
+    except ConfinedFilesystemError as exc:
         raise StorageActionError(
             "Cannot preserve original disk ownership and mode on the inflated image; original file was left unchanged."
         ) from exc
 
 
-def _apply_proxmox_upload_metadata(path: Path, *, is_directory: bool) -> None:
-    mode = 0o775 if is_directory else 0o664
+def _swap_inflated_image(*, root: Path, image_relative: str, temp_relative: str, backup_relative: str) -> None:
+    """Put the converted image in place, keeping the original until it is safe.
+
+    The original is moved aside rather than replaced, so a failure between the
+    two renames still has a complete file to put back. If the name has been taken
+    in the meantime the restore is refused rather than forced: the backup then
+    survives under its own name, which is recoverable, while an overwrite of
+    whatever now holds the name would not be.
+    """
+    rename_entry_noreplace(root, image_relative, backup_relative, expected="file", create_target_parents=False)
     try:
-        os.chown(path, 0, 0)
-        os.chmod(path, mode)
-    except OSError as exc:
+        rename_entry_noreplace(root, temp_relative, image_relative, expected="file", create_target_parents=False)
+    except ConfinedFilesystemError:
+        try:
+            rename_entry_noreplace(root, backup_relative, image_relative, expected="file", create_target_parents=False)
+        except ConfinedFilesystemError:
+            logger.error(
+                "Inflate could not restore the original image; it remains at %s",
+                backup_relative,
+            )
+        raise
+    remove_confined_file(root, backup_relative, missing_ok=True)
+
+
+def _probe_confined_image(*, root: Path, relative_path: str, entry: FileInventory) -> dict[str, object]:
+    with confined_directory(root, _parent_relative(relative_path)) as image_dir:
+        return probe_qemu_image_info(
+            path=image_dir.child_path(PurePosixPath(relative_path).name),
+            entry_type=entry.entry_type,
+            content_category=entry.content_category,
+            pass_fds=image_dir.pass_fds,
+        )
+
+
+def _confined_directory_tree(base_relative: str, *, root: Path) -> list[str]:
+    """Every directory beneath a confined base, walked by descriptor."""
+    found: list[str] = []
+    pending = [base_relative]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = list_confined_directory(root, current)
+        except ConfinedFilesystemError:
+            continue
+        for name, entry_stat in entries:
+            if not stat.S_ISDIR(entry_stat.st_mode):
+                continue
+            child = _join_relative(current, name)
+            found.append(child)
+            pending.append(child)
+    return found
+
+
+def _missing_directory_chain(relative_path: str, *, stop_at: str, root: Path) -> set[str]:
+    """The directories a folder upload would have to create, for its own rollback."""
+    missing: set[str] = set()
+    current = relative_path
+    while current and current != stop_at:
+        if confined_entry_stat(root, current) is not None:
+            break
+        missing.add(current)
+        current = _parent_relative(current)
+    return missing
+
+
+def _undo_folder_upload(
+    root: Path,
+    temp_relative: str | None,
+    written_paths: list[str],
+    created_dirs: set[str],
+) -> None:
+    if temp_relative:
+        remove_confined_file(root, temp_relative, missing_ok=True)
+    for path in written_paths:
+        remove_confined_file(root, path, missing_ok=True)
+    for directory in sorted(created_dirs, key=lambda value: len(PurePosixPath(value).parts), reverse=True):
+        remove_confined_empty_directory(root, directory)
+
+
+def _apply_proxmox_upload_metadata(root: Path, relative_path: str, *, is_directory: bool) -> None:
+    # This hands a file to root. `os.chown(path, ...)` would re-walk the name and
+    # follow a final symlink, so a swapped component turns a root-owned chmod into
+    # a gift to whatever the link points at. The descriptor cannot be redirected.
+    try:
+        set_confined_owner_and_mode(
+            root,
+            relative_path,
+            uid=0,
+            gid=0,
+            mode=0o775 if is_directory else 0o664,
+            expected="directory" if is_directory else "file",
+        )
+    except ConfinedFilesystemError as exc:
         raise StorageActionError(
             "Cannot normalize uploaded Proxmox image ownership and mode. "
             "The uploaded file remains in place, but Proxmox may need manual owner/mode repair."
@@ -1038,35 +1239,34 @@ def _storage_root(storage: StorageMount) -> Path:
     return root
 
 
-def _storage_directory(relative_path: str, *, root: Path) -> Path:
-    directory = root if not relative_path else _storage_child_path(relative_path, root=root)
-    if not directory.is_dir():
+def _require_confined_directory(relative_path: str, *, root: Path) -> None:
+    """Refuse early when a target directory is missing.
+
+    Advisory, like every stat: it produces the useful message instead of a
+    generic write failure. It is never what makes the following write safe —
+    that is the confined helper's job, in the kernel.
+    """
+    if not relative_path:
+        return
+    entry = confined_entry_stat(root, relative_path)
+    if entry is None or not stat.S_ISDIR(entry.st_mode):
         raise StorageActionError("Target directory does not exist.")
-    return directory
 
 
-def _storage_existing_file(relative_path: str, *, root: Path) -> Path:
-    path = _storage_child_path(relative_path, root=root)
-    if not path.is_file():
+def _require_confined_file(relative_path: str, *, root: Path) -> os.stat_result:
+    entry = confined_entry_stat(root, relative_path)
+    if entry is None or not stat.S_ISREG(entry.st_mode):
         raise StorageActionError("File does not exist.")
-    return path
+    return entry
 
 
-def _storage_existing_entry(relative_path: str, *, root: Path) -> Path:
-    path = _storage_child_path(relative_path, root=root)
-    if not path.exists():
+def _require_confined_entry(relative_path: str, *, root: Path) -> os.stat_result:
+    entry = confined_entry_stat(root, relative_path)
+    if entry is None:
         raise StorageActionError("File or directory does not exist.")
-    if not path.is_file() and not path.is_dir():
+    if not stat.S_ISREG(entry.st_mode) and not stat.S_ISDIR(entry.st_mode):
         raise StorageActionError("Only files and directories can be changed.")
-    return path
-
-
-def _storage_child_path(relative_path: str, *, root: Path) -> Path:
-    normalized = _normalize_relative_path(relative_path)
-    candidate = root.joinpath(*PurePosixPath(normalized).parts).resolve(strict=False)
-    if not candidate.is_relative_to(root):
-        raise StorageActionError("Invalid storage path.")
-    return candidate
+    return entry
 
 
 def _normalize_relative_path(path: str) -> str:
@@ -1128,28 +1328,18 @@ def _folder_upload_plan(
         if max_bytes and total_bytes > max_bytes:
             raise StorageActionError(f"Folder upload exceeds {settings.STORAGE_UPLOAD_MAX_SIZE_MB} MB.")
 
-        target_path = _storage_child_path(target_relative, root=root)
-        if target_path.exists():
+        # Advisory, so a large folder fails before anything is written. The
+        # publishing rename per file is what refuses to overwrite.
+        if confined_entry_stat(root, target_relative) is not None:
             raise StorageActionError("Target file already exists.")
         plan.append(
             {
                 "file": uploaded_file,
                 "relative_path": target_relative,
-                "target_path": target_path,
                 "size_bytes": file_size,
             }
         )
     return plan
-
-
-def _remove_empty_directories(paths: set[Path], *, stop_at: Path) -> None:
-    for path in sorted(paths, key=lambda item: len(item.parts), reverse=True):
-        if path == stop_at or not path.is_relative_to(stop_at):
-            continue
-        try:
-            path.rmdir()
-        except OSError:
-            pass
 
 
 def _join_relative(directory_path: str, filename: str) -> str:

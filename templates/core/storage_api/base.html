@@ -1,8 +1,9 @@
 {% extends "base.html" %}
-{% load static %}
 
 {% block content %}
-  <div class="storage-object-view">
+  {# Recent Tasks watches this marker: when a catalog refresh started after this
+     render finishes, the page re-renders itself instead of showing stale data. #}
+  <div class="storage-object-view" data-storage-catalog-view data-rendered-at-ms="{{ catalog_view_rendered_at_ms }}">
     <section class="vs-object-header">
       <div class="vs-title-row">
         <div class="vs-title">
@@ -66,5 +67,4 @@
 
     {% block api_storage_content %}{% endblock %}
   </div>
-  <script src="{% static 'js/app/storage-catalog.js' %}" defer></script>
 {% endblock %}

@@ -322,6 +322,33 @@ const initRecentTasks = () => {
     return true;
   };
 
+  // A datastore page renders the published catalog. When a refresh of that
+  // catalog finishes, everything on the page is one generation old — so re-render
+  // it. This is the other half of the Refresh button: queueing is the request,
+  // this is the answer arriving.
+  const maybeRefreshStorageCatalogView = (tasks) => {
+    const catalogView = document.querySelector("[data-storage-catalog-view]");
+    if (!catalogView) {
+      return false;
+    }
+    const catalogRenderedAtMs = Number(catalogView.dataset.renderedAtMs || 0);
+    const refreshTask = tasks.find((task) => {
+      if (task.action !== "storage.catalog.refresh") {
+        return false;
+      }
+      if (!["completed", "warning", "failed"].includes(task.status_class)) {
+        return false;
+      }
+      return Number(task.finished_at_ms || 0) > catalogRenderedAtMs && !taskWasReloaded(task);
+    });
+    if (!refreshTask) {
+      return false;
+    }
+    rememberTaskReload(refreshTask);
+    loadSoftNavigation(new URL(window.location.href), { push: false });
+    return true;
+  };
+
   // On a guest detail/tab page, refresh the whole page as soon as a migration
   // for that guest completes — its node, hardware/datastore storage refs and
   // related-object links all change, and the poll shouldn't lag behind.
@@ -683,11 +710,18 @@ const initRecentTasks = () => {
           if (pendingTask.pending_kind === "guest") {
             return !loadedTasks.some((task) => pendingTaskMatchesLoadedTask(pendingTask, task));
           }
+          // Every file action, not only the two upload ones. The old list meant
+          // a rename, move, copy, trash, restore, purge or inflate left its
+          // optimistic row behind forever, stuck at whatever status the client
+          // last guessed — which is how Recent Tasks came to say "Running" for
+          // work Audit had already recorded as finished. Paths are not compared:
+          // a rename or move deliberately reports a different path than the one
+          // the pending row was created with.
           return !loadedTasks.some(
             (task) =>
-              (task.action === "file.uploaded" || task.action === "file.folder_uploaded") &&
+              task.kind === "file" &&
               task.storage_id === pendingTask.target &&
-              Number(task.finished_at_ms || 0) >= Number(pendingTask.created_at_ms || 0) - 5000
+              Number(task.started_at_ms || 0) >= Number(pendingTask.created_at_ms || 0) - 5000
           );
         });
       }
@@ -707,6 +741,7 @@ const initRecentTasks = () => {
       if (
         maybeRefreshCurrentStorageBrowser(loadedTasks) ||
         maybeRefreshTagInventory(loadedTasks) ||
+        maybeRefreshStorageCatalogView(loadedTasks) ||
         maybeRefreshCurrentGuestInventory(loadedTasks) ||
         maybeRefreshCurrentGuestDetail(loadedTasks)
       ) {

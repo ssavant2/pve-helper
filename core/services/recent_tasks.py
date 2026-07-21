@@ -10,6 +10,7 @@ from django.utils.dateparse import parse_datetime
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
+from core.services.storage_catalog_refresh import STORAGE_CATALOG_REFRESH_ACTION
 
 GUEST_TASK_NAMES = {
     "guest.power.start": "Power on",
@@ -75,6 +76,7 @@ FILE_TASK_ACTIONS = [
     "file.renamed",
     "file.trashed",
     "file.restored",
+    "file.purged",
     "file.inflate_queued",
     "file.inflated",
     "file.inflate_failed",
@@ -140,6 +142,7 @@ def recent_task_page(
 
     tasks = [_scan_task(scan, initiators.get(str(scan.id), "system")) for scan in scans]
     tasks.extend(_file_task(event) for event in _visible_file_tasks())
+    tasks.extend(_catalog_refresh_task(event) for event in _visible_catalog_refresh_tasks())
     tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
     tasks.extend(_guest_task(event) for event in _visible_guest_tasks())
     if cluster_key:
@@ -522,7 +525,14 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
     question = None
     if event.action == BULK_FILE_ACTION:
         return _bulk_file_task(event, details, storage_id)
-    if event.action == INFLATE_QUEUED_ACTION:
+    if event.outcome == "failed":
+        # Checked before the queued branch: a refused inflate never became queued
+        # work, and showing it as "Queued" would leave a row waiting for a task
+        # that does not exist.
+        status = "Failed"
+        status_class = "failed"
+        finished_at = event.timestamp
+    elif event.action == INFLATE_QUEUED_ACTION:
         status = "Queued"
         status_class = "queued"
         finished_at = None
@@ -557,6 +567,63 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
         "cancelable": False,
         "question": question,
     }
+
+
+def _visible_catalog_refresh_tasks():
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    return list(
+        AuditEvent.objects.filter(action=STORAGE_CATALOG_REFRESH_ACTION)
+        .filter(Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running")))
+        .select_related("user", "cluster")
+        .order_by("-timestamp")
+    )
+
+
+def _catalog_refresh_task(event: AuditEvent) -> dict[str, object]:
+    """The datastore Refresh button's row.
+
+    It exists because the button previously reported nothing at all: the operator
+    pressed it, saw "Refresh queued", and had no way to learn whether Proxmox had
+    answered. The row is also what the page watches to know when to re-render.
+    """
+    details = event.details if isinstance(event.details, dict) else {}
+    status, status_class = {
+        "queued": ("Queued", "queued"),
+        "running": ("Running", "running"),
+        "success": ("Completed", "completed"),
+        "warning": ("Completed with warnings", "warning"),
+    }.get(event.outcome, ("Failed", "failed"))
+    terminal = status_class in {"completed", "warning", "failed"}
+    incomplete_nodes = details.get("incomplete_nodes") if isinstance(details.get("incomplete_nodes"), list) else []
+    summary = str(details.get("error") or "")
+    if not summary and incomplete_nodes:
+        summary = f"No storage answer from {', '.join(str(node) for node in incomplete_nodes)}"
+    if not summary:
+        summary = str(details.get("stage") or "-")
+    return {
+        "id": f"catalog:{event.id}",
+        "kind": "storage_catalog",
+        "action": STORAGE_CATALOG_REFRESH_ACTION,
+        "name": "Refresh storage catalog",
+        "target": str(details.get("storage_id") or "") or "All datastores",
+        "cluster_key": event.cluster.key if event.cluster_id else event.cluster_key_snapshot or "",
+        "cluster": event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-",
+        "status": status,
+        "status_class": status_class,
+        "details": summary,
+        "initiator": event.username or (event.user.get_username() if event.user else "system"),
+        "queued_for": "-",
+        "started_at": _parsed_detail_time(details, "started_at") or event.timestamp,
+        "finished_at": _parsed_detail_time(details, "finished_at") if terminal else None,
+        "server": str(details.get("cluster_key") or ""),
+        "sort_at": event.timestamp,
+        "cancelable": False,
+    }
+
+
+def _parsed_detail_time(details: dict, key: str):
+    value = details.get(key)
+    return parse_datetime(str(value)) if value else None
 
 
 def _bulk_file_task(event: AuditEvent, details: dict, storage_id: str) -> dict[str, object]:
@@ -637,6 +704,7 @@ def _file_task_name(action: str) -> str:
         "file.renamed": "Rename file",
         "file.trashed": "Move file to trash",
         "file.restored": "Restore file",
+        "file.purged": "Delete permanently",
         "file.inflate_queued": "Inflate disk",
         "file.inflated": "Inflate disk",
         "file.inflate_failed": "Inflate disk",

@@ -219,3 +219,39 @@ test("Clone... opens the clone form dialog", async ({ page }) => {
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText(/New VMID/i)).toBeVisible();
 });
+
+test("a confirmation chained onto another one actually opens", async ({ page }) => {
+  // Regression. Every modal used to share one <dialog> element, and close()
+  // fires `close` from a queued task rather than synchronously — so the second
+  // dialog was already on screen when the first one's close event arrived, took
+  // it for a dismissal and resolved false. The risk question after Rename and
+  // the second question before a permanent delete therefore never appeared, and
+  // the action was abandoned with no dialog, no request and no error.
+  //
+  // Driving the primitive directly is deliberate: the flows that chain dialogs
+  // need risky storage data this stack does not have, which is exactly why the
+  // suite missed the bug.
+  await page.evaluate(async () => {
+    const { openConfirmDialog } = await import("/static/js/app/dialogs.js");
+    // biome-ignore lint/suspicious/noExplicitAny: test-only handle for the pending chain
+    (window as any).chainedConfirmations = (async () => {
+      if (!(await openConfirmDialog({ title: "First question", confirmLabel: "Go on" }))) {
+        return "first-declined";
+      }
+      return (await openConfirmDialog({ title: "Second question", confirmLabel: "Really" }))
+        ? "both-confirmed"
+        : "second-declined";
+    })();
+  });
+
+  const dialog = () => page.locator("[data-vm-action-dialog]").last();
+  await expect(dialog().getByRole("heading", { name: "First question" })).toBeVisible();
+  await dialog().locator("[data-confirm-yes]").click();
+  await expect(dialog().getByRole("heading", { name: "Second question" })).toBeVisible();
+  await dialog().locator("[data-confirm-yes]").click();
+
+  // biome-ignore lint/suspicious/noExplicitAny: test-only handle for the pending chain
+  expect(await page.evaluate(() => (window as any).chainedConfirmations)).toBe("both-confirmed");
+  // A closed modal leaves the document, so the stale close event has nowhere to land.
+  await expect(page.locator("[data-vm-action-dialog]")).toHaveCount(0);
+});

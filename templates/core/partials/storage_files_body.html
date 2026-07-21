@@ -66,6 +66,15 @@ pve-helper reads the tree through.
     </aside>
 
     <section class="datastore-file-pane">
+      {% comment %}
+      A declared slot for local action feedback, above the toolbar that raises it.
+      Without one, showLocalError() falls back to prepending a paragraph to its
+      scope — and this scope is the two-column grid, so the message became grid
+      item one: it took the folder pane's cell, pushed the tree into the right
+      column and the file table into the second row, and stretched to the height
+      of whatever landed beside it. The message was legible; the page was not.
+      {% endcomment %}
+      <p class="form-error action-feedback" data-local-action-error role="alert" hidden></p>
       <div class="datastore-file-toolbar">
         <div class="vs-file-actions">
           {% if storage_write_enabled %}

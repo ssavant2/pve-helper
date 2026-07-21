@@ -95,6 +95,19 @@ class AuditEventAdmin(admin.ModelAdmin):
     search_fields = ("cluster_key_snapshot", "username", "action", "object_id", "storage_id", "path")
     readonly_fields = ("timestamp", "storage_id", "path", "target_preallocation")
 
+    # Audit is append-only evidence. The application writes it through
+    # record_audit_event() and never edits or deletes a row afterwards; retention
+    # is the only thing that removes one. Admin must not be the exception, in any
+    # deployment - hence unconditional rather than gated on DJANGO_ADMIN_ENABLED.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(ProxmoxEndpoint)
 class ProxmoxEndpointAdmin(admin.ModelAdmin):

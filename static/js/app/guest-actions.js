@@ -1,4 +1,4 @@
-import { ensureVmActionDialog, openConfirmDialog, openInputDialog } from "./dialogs.js";
+import { createActionDialog, openConfirmDialog, openInputDialog } from "./dialogs.js";
 import { clearLocalError, showLocalError } from "./feedback.js";
 import { loadSoftNavigation } from "./navigation.js";
 import { selectedVmOverviewRows } from "./scheduling.js";
@@ -482,7 +482,7 @@ const openVmFormDialog = ({
   onSubmit,
   onDecline = null,
 }) => {
-  const dialog = ensureVmActionDialog();
+  const dialog = createActionDialog();
   dialog.innerHTML = `
       <form class="vm-action-dialog-form" method="dialog">
         <div class="vm-action-dialog-heading">
@@ -762,11 +762,11 @@ const openBackupDialog = (overview, rows) => {
 };
 
 export {
+  createActionDialog,
   createPendingGuestFormTask,
   createPendingVmTask,
   defaultSnapshotName,
   dismissTaskQuestion,
-  ensureVmActionDialog,
   forceStopGuest,
   guestRowIdentity,
   initBackupRestoreForms,

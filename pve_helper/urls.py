@@ -13,12 +13,13 @@ from mozilla_django_oidc.views import (
 if settings.APP_REQUIRE_LOGIN:
     # Route /admin/ through the same OIDC flow as the rest of the site.
     # instead of Django admin's standalone username/password form. Must run before
-    # admin.site.urls is built below.
+    # admin.site.urls is built below. Only reachable when DEBUG also enables the
+    # admin mount; the guard stays so a debug deployment cannot expose the
+    # standalone password form alongside enforced OIDC.
     admin.site.login = login_required(admin.site.login)
 
 urlpatterns = [
     path("", include("core.urls")),
-    path("admin/", admin.site.urls),
     path(
         "auth/oidc/login/",
         OIDCAuthenticationRequestView.as_view(),
@@ -31,3 +32,6 @@ urlpatterns = [
     ),
     path("auth/logout/", OIDCLogoutView.as_view(), name="logout"),
 ]
+
+if settings.DJANGO_ADMIN_ENABLED:
+    urlpatterns.append(path("admin/", admin.site.urls))

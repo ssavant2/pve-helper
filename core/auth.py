@@ -27,11 +27,25 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
             return False
 
         required_group = settings.OIDC_REQUIRED_GROUP
+        if not required_group:
+            # Fail closed. An empty group is rejected at startup (pve_helper.E011),
+            # so reaching here means the check was lost rather than waived. Waiving
+            # it is spelled OIDC_ANY_AUTHENTICATED_USER, and login grants superuser.
+            logger.error("OIDC login denied; OIDC_REQUIRED_GROUP is not configured")
+            return False
+
+        if required_group == settings.OIDC_ANY_AUTHENTICATED_USER:
+            logger.warning(
+                "OIDC group check is disabled; the identity provider is the only gate for %s",
+                self._username_from_claims(claims),
+            )
+            return True
+
         groups = claims.get("groups") or []
         if isinstance(groups, str):
             groups = [groups]
 
-        if required_group and required_group not in groups:
+        if required_group not in groups:
             logger.warning("OIDC login denied; missing required group %s", required_group)
             return False
 
@@ -72,8 +86,11 @@ class PveHelperOIDCBackend(OIDCAuthenticationBackend):
         user.email = claims.get("email", user.email)
         user.first_name = claims.get("given_name", user.first_name)
         user.last_name = claims.get("family_name", user.last_name)
-        user.is_staff = True
-        user.is_superuser = True
+        # Nothing in the application reads these; they exist only to unlock Django
+        # admin, so they are granted only where it is mounted. The app's own
+        # authorization is the OIDC group, not a Django flag.
+        user.is_staff = settings.DJANGO_ADMIN_ENABLED
+        user.is_superuser = settings.DJANGO_ADMIN_ENABLED
         user.save()
         return user
 

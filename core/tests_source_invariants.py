@@ -185,6 +185,326 @@ class FrontendSourceInvariantTests(SimpleTestCase):
             f"{', '.join(violations)}",
         )
 
+    def test_only_the_base_template_loads_scripts(self):
+        """A `<script>` in a content block is dead code after the first soft
+        navigation.
+
+        `replacePageFromDocument` swaps the content block with `innerHTML`, and
+        `innerHTML` never executes a script — so a page-local script runs exactly
+        once, on a full load, and is silently absent afterwards. The datastore
+        Refresh button was wired that way: after any file action its form had no
+        handler, the shell's submit handler POSTed it as a navigation, got JSON
+        back, and fell through to a full page reload. Feature code belongs in a
+        module initialised from `bootstrap.js`, which reruns on every navigation.
+        """
+        root = Path(settings.BASE_DIR)
+        script_tag = re.compile(r"<script\b", re.IGNORECASE)
+        violations = []
+        for path in sorted((root / "templates").rglob("*.html")):
+            relative_path = path.relative_to(root)
+            if relative_path == Path("templates/base.html"):
+                continue
+            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                if script_tag.search(line):
+                    violations.append(f"{relative_path}:{line_number}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "Only templates/base.html may load JavaScript; a page-local <script> does not "
+            f"survive soft navigation. Initialise a module from bootstrap.js instead: {', '.join(violations)}",
+        )
+
+
+class DialogModuleInvariantTests(SimpleTestCase):
+    """A modal element belongs to one modal.
+
+    Reusing a single ``<dialog>`` for every confirmation is the obvious economy
+    and it breaks chained confirmations without a trace. ``dialog.close()`` fires
+    ``close`` from a queued task rather than synchronously, so the dialog opened
+    in the awaited continuation of the previous one is already showing when the
+    previous dialog's close event arrives; on a shared element that event reaches
+    the *new* dialog's handler, which reads it as a dismissal. The risk question
+    after Rename and the second question before a permanent delete both resolved
+    themselves that way — no dialog, no request, no error, a button that did
+    nothing.
+
+    That is not a bug a reader recognises in a diff, which is why it is asserted
+    here rather than only explained in a comment.
+    """
+
+    DIALOG_MODULE = Path("static/js/app/dialogs.js")
+
+    def _dialog_source(self) -> str:
+        return (Path(settings.BASE_DIR) / self.DIALOG_MODULE).read_text()
+
+    def test_each_modal_gets_its_own_element(self):
+        source = self._dialog_source()
+        self.assertIn(
+            'document.createElement("dialog")',
+            source,
+            "Modals must build their own element.",
+        )
+        self.assertNotIn(
+            'document.querySelector("[data-vm-action-dialog]")',
+            source,
+            "Looking up an existing modal element means sharing one between dialogs, "
+            "which silently turns a chained confirmation into a dismissal.",
+        )
+
+    def test_a_closed_modal_leaves_the_document(self):
+        self.assertIn(
+            'dialog.addEventListener("close", () => dialog.remove())',
+            self._dialog_source(),
+            "A closed modal must detach, so a queued close event cannot reach a later dialog.",
+        )
+
+    def test_no_module_holds_on_to_a_modal_element_between_dialogs(self):
+        root = Path(settings.BASE_DIR)
+        violations = []
+        for path in sorted((root / "static/js/app").glob("*.js")):
+            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                if "[data-vm-action-dialog]" in line and "dataset.vmActionDialog" not in line:
+                    violations.append(f"{path.relative_to(root)}:{line_number}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "The modal element is per-dialog and transient; reaching for it by selector "
+            f"assumes a shared one: {', '.join(violations)}",
+        )
+
+
+class DjangoAdminSurfaceInvariantTests(SimpleTestCase):
+    """Django admin bypasses every validated service the app writes through. It is a
+    dev/E2E convenience, and audit must be append-only wherever it is mounted."""
+
+    def test_audit_events_cannot_be_written_or_deleted_through_admin(self):
+        from django.contrib import admin as django_admin
+
+        from core.models import AuditEvent
+
+        model_admin = django_admin.site._registry[AuditEvent]
+
+        self.assertFalse(model_admin.has_add_permission(None))
+        self.assertFalse(model_admin.has_change_permission(None))
+        self.assertFalse(model_admin.has_delete_permission(None))
+
+    def test_admin_is_routed_only_where_it_is_deliberately_enabled(self):
+        source = (Path(settings.BASE_DIR) / "pve_helper/urls.py").read_text()
+        code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+        mounts = [line for line in code.splitlines() if "admin.site.urls" in line]
+
+        self.assertEqual(len(mounts), 1, f"Expected exactly one admin mount, found: {mounts}")
+        self.assertLess(
+            code.index("if settings.DJANGO_ADMIN_ENABLED:"),
+            code.index("admin.site.urls"),
+            "Django admin must stay behind DJANGO_ADMIN_ENABLED. Mounting it where login "
+            "is enforced restores a browser-reachable write path over endpoints, mounts, "
+            "schedules and audit that bypasses the app's validated services.",
+        )
+
+
+class ConfinedFilesystemAdoptionInvariantTests(SimpleTestCase):
+    """`core.services.confined_filesystem` is only worth having if it is the only
+    way these modules touch mounted storage.
+
+    The module was written, adopted at one call site, and then stopped being
+    adopted while `AGENTS.md` went on stating the invariant as prose. That is the
+    failure this class exists to prevent: not an unsafe call someone argued for,
+    but an unsafe call nobody noticed, because the rule lived in a document rather
+    than in the suite.
+    """
+
+    # Modules that write to, or delete from, operator-visible mounted storage.
+    STORAGE_WRITE_MODULES = (
+        "core/services/storage_actions.py",
+        "core/services/vm_register.py",
+        "core/services/ovf_import.py",
+        "core/views/storage.py",
+    )
+
+    # Each of these resolves a name a second time, at the moment it acts on it.
+    # Between the containment check and the call, Proxmox or another storage
+    # client can change what the name refers to.
+    RESOLVE_THEN_ACT_CALLS = re.compile(
+        r"shutil\.(?:rmtree|copy2|copyfile|copytree|move)\("
+        r"|os\.(?:chown|chmod|link|symlink|rename|replace|unlink|remove|mkdir|makedirs|rmdir)\("
+        # `replace` is deliberately absent from the bound-method alternation:
+        # `str.replace` is unrelated and far more common. `os.replace` above
+        # already covers the filesystem call this is about.
+        r"|\.(?:rename|unlink|rmdir|mkdir|touch|write_bytes|write_text)\("
+    )
+
+    # `Path.resolve()` is legitimate for establishing the trusted root itself,
+    # which is configuration rather than request input, and for turning a
+    # configured absolute path back into a relative one. It is never legitimate
+    # for producing something to write to.
+    TRUSTED_ROOT_RESOLVERS = {
+        "core/services/storage_actions.py": {"_storage_root", "_trash_root_relative"},
+        "core/services/vm_register.py": set(),
+        "core/services/ovf_import.py": set(),
+        "core/views/storage.py": set(),
+    }
+
+    def _code_lines(self, relative_path: str) -> list[tuple[int, str]]:
+        source = (Path(settings.BASE_DIR) / relative_path).read_text()
+        return [
+            (number, line)
+            for number, line in enumerate(source.splitlines(), start=1)
+            if not line.lstrip().startswith("#")
+        ]
+
+    def test_storage_writes_do_not_resolve_a_path_and_then_act_on_it(self):
+        offenders: list[str] = []
+        for relative_path in self.STORAGE_WRITE_MODULES:
+            for number, line in self._code_lines(relative_path):
+                if self.RESOLVE_THEN_ACT_CALLS.search(line):
+                    offenders.append(f"{relative_path}:{number}: {line.strip()}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Mounted-storage mutation must go through core.services.confined_filesystem, "
+            "which walks every untrusted component by directory descriptor with O_NOFOLLOW "
+            "and mutates with no-replace semantics. A path-based call re-resolves the name "
+            "at the moment it acts, so a component swapped in between aims the write "
+            "somewhere else. Offenders:\n" + "\n".join(offenders),
+        )
+
+    def test_path_resolution_in_storage_writes_is_confined_to_root_discovery(self):
+        offenders: list[str] = []
+        for relative_path in self.STORAGE_WRITE_MODULES:
+            allowed = self.TRUSTED_ROOT_RESOLVERS[relative_path]
+            current_function = ""
+            for number, line in self._code_lines(relative_path):
+                match = re.match(r"\s*def\s+(\w+)", line)
+                if match:
+                    current_function = match.group(1)
+                if ".resolve(" in line and current_function not in allowed:
+                    offenders.append(f"{relative_path}:{number} in {current_function}(): {line.strip()}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Path.resolve() may establish the trusted root, which comes from configuration, "
+            "but must not produce a path that is then written to. Offenders:\n" + "\n".join(offenders),
+        )
+
+    def test_the_path_component_validator_stays_one_import_away(self):
+        """The module split exists for a reason no reader can see from the code.
+
+        `confined_path_component` guards five syscalls that CodeQL reports as
+        py/path-injection. The exception is a barrier in the model pack, and a
+        barrier there resolves an API-graph node — which matches a call reaching
+        a helper through an *import*, never a validator called inside its own
+        module. Tidying the function back into confined_filesystem.py silently
+        reintroduces five findings locally and in GitHub code scanning, and
+        nothing in the diff would say so.
+        """
+        root = Path(settings.BASE_DIR)
+        names_module = root / "core/services/confined_names.py"
+        confined = (root / "core/services/confined_filesystem.py").read_text()
+        model = (root / ".github/codeql/extensions/pve-helper-storage-python/models/storage.model.yml").read_text()
+
+        self.assertTrue(
+            names_module.is_file(),
+            "core/services/confined_names.py must exist; it is the import boundary the "
+            "CodeQL barrier resolves against.",
+        )
+        self.assertIn(
+            "from core.services.confined_names import",
+            confined,
+            "confined_filesystem must import the validator rather than define it.",
+        )
+        self.assertNotIn(
+            "def confined_path_component",
+            confined,
+            "confined_path_component must not be defined in confined_filesystem: a call to "
+            "a validator inside its own module is not an API-graph node, so the CodeQL "
+            "barrier stops applying and the five syscalls report py/path-injection again.",
+        )
+        self.assertIn(
+            "Member[confined_names].Member[confined_path_component].ReturnValue",
+            model,
+            "The CodeQL model must name the validator, or the barrier does not exist.",
+        )
+
+    def test_the_parallel_path_safety_helper_is_not_reintroduced(self):
+        root = Path(settings.BASE_DIR)
+        offenders = [
+            str(path.relative_to(root))
+            for path in sorted((root / "core").rglob("*.py"))
+            if path.name != "tests_source_invariants.py" and "_storage_child_path" in path.read_text()
+        ]
+
+        self.assertEqual(
+            offenders,
+            [],
+            "_storage_child_path was a second, weaker copy of the confined boundary living "
+            "inside a service - exactly what AGENTS.md forbids. Reuse confined_filesystem "
+            "instead of reintroducing it. Found in: " + ", ".join(offenders),
+        )
+
+
+class ScanEntryClassifierInvariantTests(SimpleTestCase):
+    """One classification implementation, because two of them already drifted.
+
+    The full scan overruled `classify_entry` with the API storage catalog for disk
+    images; the partial directory refresh did not. A catalog-referenced disk
+    therefore came back `classification-blocked` after every rename, move, trash or
+    restore until the next full scan undid it. Both paths now go through
+    `ScanEntryClassifier`, and nothing else may assemble its own verdict.
+    """
+
+    OWNER = Path("core/services/entry_classification.py")
+    # Where a scan writes FileInventory rows. These must not classify by hand.
+    SCAN_PATHS = (Path("core/tasks.py"), Path("core/services/partial_scan.py"))
+
+    def test_only_the_shared_classifier_composes_a_verdict(self):
+        root = Path(settings.BASE_DIR)
+        offenders = []
+        for path in sorted((root / "core").rglob("*.py")):
+            relative_path = path.relative_to(root)
+            if (
+                relative_path == self.OWNER
+                or "migrations" in relative_path.parts
+                or path.name.startswith("tests")
+                # The two modules that define the pieces; the rule is about who
+                # calls them.
+                or relative_path in {Path("core/services/storage_catalog.py"), Path("core/services/classification.py")}
+            ):
+                continue
+            source = path.read_text()
+            for name in ("classify_entry", "MountedVolumeClassifier", "classify_mounted_volume"):
+                if name in source:
+                    offenders.append(f"{relative_path}:{name}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "A scanned entry is classified by core.services.entry_classification."
+            "ScanEntryClassifier and nowhere else; calling the legacy or catalog "
+            f"classifier directly is how the two scan paths drifted apart: {', '.join(offenders)}",
+        )
+
+    def test_every_scan_path_uses_it(self):
+        root = Path(settings.BASE_DIR)
+        for relative_path in self.SCAN_PATHS:
+            source = (root / relative_path).read_text()
+            self.assertIn(
+                "ScanEntryClassifier",
+                source,
+                f"{relative_path} writes FileInventory rows and must classify through the shared classifier.",
+            )
+
+    def test_the_catalog_still_overrules_the_legacy_verdict_for_disk_images(self):
+        """The point of the shared step. If this list is emptied, both scan paths
+        silently fall back to volid matching against one scan's inventory rows."""
+        from core.services.entry_classification import CATALOG_AUTHORITATIVE_CATEGORIES
+
+        self.assertEqual(set(CATALOG_AUTHORITATIVE_CATEGORIES), {"vm_disk", "base_image"})
+
 
 class BackendSourceInvariantTests(SimpleTestCase):
     def test_production_audit_writes_use_the_shared_service(self):

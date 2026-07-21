@@ -125,11 +125,11 @@ cgroup counters of the running container.
    docker compose run --rm web python manage.py migrate
    ```
 
-5. Create an admin user for local inspection:
-
-   ```bash
-   docker compose run --rm web python manage.py createsuperuser
-   ```
+5. Skip this step in production. Django admin is not routed when
+   `APP_REQUIRE_LOGIN=true`, so a superuser has nothing to log in to and
+   `createsuperuser` creates an account the OIDC flow will not use. Inspect the
+   database with `docker compose exec web python manage.py dbshell` (or `shell`),
+   which requires access to the Docker host rather than only a browser session.
 
 6. Start the app:
 

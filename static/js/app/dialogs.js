@@ -1,13 +1,31 @@
 import { escapeHtml } from "./shell.js";
 
-const ensureVmActionDialog = () => {
-  let dialog = document.querySelector("[data-vm-action-dialog]");
-  if (!dialog) {
-    dialog = document.createElement("dialog");
-    dialog.className = "vm-action-dialog";
-    dialog.dataset.vmActionDialog = "true";
-    document.body.appendChild(dialog);
-  }
+/**
+ * Build a modal element for one single use and drop it when it closes.
+ *
+ * **Never go back to sharing one element between dialogs.** It reads as an
+ * obvious economy and it breaks every chained confirmation in the application,
+ * silently. `dialog.close()` does not fire `close` synchronously — the HTML
+ * specification queues it as an element task — so a dialog opened in the
+ * awaited continuation of the previous one is already on screen by the time the
+ * *previous* dialog's close event is delivered. On a shared element that event
+ * reaches the new dialog's handler, which has no way to tell it apart from the
+ * operator pressing Escape, and resolves as a dismissal.
+ *
+ * What that cost: the risk question after Rename never appeared, the second
+ * question before a permanent delete never appeared, and in both cases the
+ * action was abandoned with no dialog, no request and no error — the button
+ * simply did nothing. A per-call element makes the stale event land on a
+ * detached node nobody listens to, which is the only fix that does not depend
+ * on reasoning about task ordering staying correct forever.
+ * `DialogModuleInvariantTests` fails if the shared element comes back.
+ */
+const createActionDialog = () => {
+  const dialog = document.createElement("dialog");
+  dialog.className = "vm-action-dialog";
+  dialog.dataset.vmActionDialog = "true";
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.appendChild(dialog);
   return dialog;
 };
 
@@ -39,7 +57,7 @@ const openConfirmDialog = ({
   distinguishDismiss = false,
 }) =>
   new Promise((resolve) => {
-    const dialog = ensureVmActionDialog();
+    const dialog = createActionDialog();
     let decided = false;
     dialog.innerHTML = `
       <div class="vm-action-dialog-form">
@@ -77,7 +95,7 @@ const openConfirmDialog = ({
 // falling back to a browser popup after the dialog has closed.
 const openInputDialog = ({ title = "Enter a value", label = "", value = "", confirmLabel = "OK", validate = null }) =>
   new Promise((resolve) => {
-    const dialog = ensureVmActionDialog();
+    const dialog = createActionDialog();
     let decided = false;
     dialog.innerHTML = `
       <form class="vm-action-dialog-form" method="dialog">
@@ -125,4 +143,41 @@ const openInputDialog = ({ title = "Enter a value", label = "", value = "", conf
     field?.focus();
   });
 
-export { ensureVmActionDialog, openConfirmDialog, openInputDialog };
+/**
+ * Report an outcome where the operator's flow was, rather than behind it.
+ *
+ * A refusal that arrives as a banner on the page underneath is a refusal the
+ * operator has to go looking for: they answered a question in a modal, the modal
+ * closed, and nothing visibly happened. `body` is trusted HTML on the same terms
+ * as openConfirmDialog.
+ */
+const openNoticeDialog = ({ title = "Action failed", body = "", closeLabel = "Close" }) =>
+  new Promise((resolve) => {
+    const dialog = createActionDialog();
+    let done = false;
+    dialog.innerHTML = `
+      <div class="vm-action-dialog-form">
+        <div class="vm-action-dialog-heading">
+          <h2>${escapeHtml(title)}</h2>
+          <button type="button" data-notice-dismiss aria-label="Close">×</button>
+        </div>
+        <div class="vm-action-dialog-body">${body}</div>
+        <div class="form-actions">
+          <button class="primary-action" type="button" data-notice-close>${escapeHtml(closeLabel)}</button>
+        </div>
+      </div>
+    `;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+      dialog.close();
+    };
+    dialog.querySelector("[data-notice-close]")?.addEventListener("click", finish);
+    dialog.querySelector("[data-notice-dismiss]")?.addEventListener("click", finish);
+    dialog.addEventListener("close", finish, { once: true });
+    dialog.showModal?.();
+    dialog.querySelector("[data-notice-close]")?.focus();
+  });
+
+export { createActionDialog, openConfirmDialog, openInputDialog, openNoticeDialog };

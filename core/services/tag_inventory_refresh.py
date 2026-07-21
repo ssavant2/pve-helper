@@ -86,26 +86,32 @@ def queue_tag_inventory_refresh(*, cluster, request=None, user=None, username: s
                 "queued_at": timezone.now().isoformat(),
             },
         )
-        try:
-            task_id = async_task(
-                "core.services.tag_inventory_refresh.execute_tag_inventory_refresh",
-                event.id,
-                q_options={"cluster": BULK_QUEUE_NAME},
-            )
-        except Exception as exc:
-            details = {
-                **event.details,
-                "stage": "enqueue failed",
-                "error": "The tag inventory refresh could not be queued.",
-                "queue_error_type": exc.__class__.__name__,
-                "finished_at": timezone.now().isoformat(),
-            }
-            event.outcome = "failed"
-            event.details = details
-            event.save(update_fields=["outcome", "details"])
-            raise TagInventoryRefreshQueueError(details["error"]) from exc
-        event.details = {**event.details, "worker_task_id": task_id}
-        event.save(update_fields=["details"])
+    # Outside the atomic block on purpose. Writing the failure state *and* raising
+    # inside the same transaction rolls the record back with the exception, so a
+    # broker outage left no trace that the operator had ever asked for a refresh —
+    # the opposite of what a durable operation record is for. A row left claiming
+    # "queued" because the process died right here is visible and reapable; a lost
+    # one is not.
+    try:
+        task_id = async_task(
+            "core.services.tag_inventory_refresh.execute_tag_inventory_refresh",
+            event.id,
+            q_options={"cluster": BULK_QUEUE_NAME},
+        )
+    except Exception as exc:
+        details = {
+            **event.details,
+            "stage": "enqueue failed",
+            "error": "The tag inventory refresh could not be queued.",
+            "queue_error_type": exc.__class__.__name__,
+            "finished_at": timezone.now().isoformat(),
+        }
+        event.outcome = "failed"
+        event.details = details
+        event.save(update_fields=["outcome", "details"])
+        raise TagInventoryRefreshQueueError(details["error"]) from exc
+    event.details = {**event.details, "worker_task_id": task_id}
+    event.save(update_fields=["details"])
     return event, task_id
 
 

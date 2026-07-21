@@ -36,6 +36,7 @@ from core.services.tag_actions import (
 from core.services.tag_catalog import load_tag_catalog
 from core.services.tag_inventory_refresh import (
     TagInventoryRefreshAlreadyActive,
+    TagInventoryRefreshQueueError,
     execute_tag_inventory_refresh,
     queue_tag_inventory_refresh,
 )
@@ -561,6 +562,24 @@ class TagViewTests(TestCase):
         self.assertEqual(event.details["worker_task_id"], "refresh-task-1")
         self.assertEqual(response.json()["task_id"], f"guest:{event.id}")
         enqueue.assert_called_once()
+
+    @patch("core.services.tag_inventory_refresh.async_task", side_effect=RuntimeError("broker down"))
+    def test_a_queue_outage_leaves_a_failed_row_rather_than_no_row(self, _enqueue):
+        """The durable record has to outlive the failure it records.
+
+        Recording the enqueue failure inside the same transaction that created the
+        audit event rolled the event back with the exception, so a broker outage
+        left nothing at all behind: the operator pressed Refresh, saw an error, and
+        neither Recent Tasks nor Audit ever knew it happened.
+        """
+        with self.assertRaises(TagInventoryRefreshQueueError):
+            queue_tag_inventory_refresh(cluster=self.cluster, user=self.user)
+
+        event = AuditEvent.objects.get(action="tag.inventory.refresh")
+        self.assertEqual(event.outcome, "failed")
+        self.assertEqual(event.details["stage"], "enqueue failed")
+        # The provider/Python detail stays in the logs, not in the durable payload.
+        self.assertNotIn("broker down", str(event.details))
 
     def test_refresh_rejects_second_active_operation(self):
         AuditEvent.objects.create(

@@ -5,12 +5,15 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
 from django.utils import timezone
 
 from core.models import (
+    AuditEvent,
     ClusterStorage,
     ClusterStorageMount,
     ClusterStorageNodeState,
@@ -25,6 +28,7 @@ from core.models import (
     StorageSpaceSnapshot,
 )
 from core.services.proxmox import _fetch_live_guest_lineage_uncached
+from core.services.recent_tasks import recent_task_page
 from core.services.refs import (
     ClusterStorageRef,
     MountRef,
@@ -45,6 +49,13 @@ from core.services.storage_catalog import (
     storage_view,
     storage_volumes,
     usage_preflight,
+)
+from core.services.storage_catalog_refresh import (
+    STORAGE_CATALOG_REFRESH_ACTION,
+    StorageCatalogRefreshAlreadyActive,
+    StorageCatalogRefreshQueueError,
+    execute_storage_catalog_refresh,
+    queue_storage_catalog_refresh,
 )
 from core.services.storage_mounts import (
     StorageMountError,
@@ -122,6 +133,9 @@ class StorageReadModelSourceInvariantTests(SimpleTestCase):
             root / "models.py",
             root / "tasks.py",
             root / "services" / "storage_catalog.py",
+            # Reads it to label the refresh task "completed" or "completed with
+            # incomplete coverage". Nothing is authorized by that label.
+            root / "services" / "storage_catalog_refresh.py",
         }
         offenders = []
         for path in root.rglob("*.py"):
@@ -884,6 +898,55 @@ class StorageCatalogTests(TestCase):
 
         self.assertIsNone(classifier.classify("images/100/vm-100-disk-0.qcow2"))
 
+    def test_a_partial_directory_refresh_keeps_the_catalog_verdict(self):
+        """Restoring, renaming or moving a disk must not make it look blocked.
+
+        The full scan overruled the legacy volid match with the API storage
+        catalog; the partial directory refresh did not. So a disk the catalog
+        knows is referenced came back `classification-blocked` after every file
+        action — the operator saw a red row and no way to clear it short of a full
+        scan. Both paths now classify through `ScanEntryClassifier`.
+        """
+        from core.services.partial_scan import refresh_storage_directory
+
+        self._metadata()
+        self._volumes()
+        shared = ClusterStorage.objects.get(cluster=self.cluster, storage_id="shared")
+        CurrentGuestInventory.objects.create(
+            cluster=self.cluster,
+            node="pve1",
+            object_type="vm",
+            vmid=100,
+            disk_references=["shared:100/vm-100-disk-0.qcow2"],
+            observed_at=timezone.now(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "shared"
+            (root / "images" / "100").mkdir(parents=True)
+            (root / "images" / "100" / "vm-100-disk-0.qcow2").write_bytes(b"disk")
+            mount = StorageMount.objects.create(
+                storage_id="shared-hint",
+                display_name="Shared backend",
+                path=root.as_posix(),
+                relative_path="shared",
+                backend_identity="nfs:server:/export",
+            )
+            bind_storage_mount(cluster_storage=shared, mount=mount)
+            # The gate is deliberately unsatisfied: no ProxmoxInventory rows exist
+            # for this scan, which is exactly the state a file action leaves behind
+            # and the state that used to produce the blocked row.
+            scan = ScanRun.objects.create(
+                status=ScanRun.Status.COMPLETED,
+                storage_gate_status={"shared-hint": {"ok": False, "missing_consumers": ["pve3"]}},
+            )
+            with override_settings(PVE_HELPER_STORAGE_CONTAINER_ROOT=tmp):
+                refresh_storage_directory(storage=mount, scan=scan, directory_path="images/100")
+
+        row = FileInventory.objects.get(scan_run=scan, path="images/100/vm-100-disk-0.qcow2")
+        self.assertEqual(row.classification, FileInventory.Classification.REFERENCED)
+        self.assertTrue(row.evidence["catalog_authoritative"])
+
     def test_usage_preflight_refuses_unverified_mount_identity(self):
         self._metadata()
         self._volumes()
@@ -900,6 +963,96 @@ class StorageCatalogTests(TestCase):
 
         self.assertEqual(result.state, UsageState.UNKNOWN)
         self.assertIn("no verified backend identity", result.reason)
+
+
+class StorageCatalogRefreshTaskTests(TestCase):
+    """The datastore Refresh button is a durable operation, not a fire-and-forget.
+
+    It used to `async_task(...)` and answer `202`, so nothing recorded that the
+    refresh was asked for, nothing reported whether it worked, and a lost worker
+    was indistinguishable from a slow one. The audit row below is what Recent
+    Tasks renders and what the datastore page watches to know when to re-render.
+    """
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="cluster-a", display_name="Cluster A", enabled=True)
+
+    @patch("core.services.storage_catalog_refresh.async_task", return_value="queued-task-1")
+    def test_the_refresh_is_recorded_before_it_is_enqueued(self, async_task_mock):
+        event, task_id = queue_storage_catalog_refresh(cluster=self.cluster, storage="shared")
+
+        self.assertEqual(task_id, "queued-task-1")
+        self.assertEqual(event.outcome, "queued")
+        self.assertEqual(event.details["storage_id"], "shared")
+        self.assertEqual(event.details["worker_task_id"], "queued-task-1")
+        # The row must already exist when the queue is asked; otherwise a crash
+        # between the two leaves work running that nothing knows about.
+        self.assertTrue(AuditEvent.objects.filter(pk=event.pk, action=STORAGE_CATALOG_REFRESH_ACTION).exists())
+        self.assertEqual(async_task_mock.call_count, 1)
+
+    @patch("core.services.storage_catalog_refresh.async_task", side_effect=RuntimeError("broker down"))
+    def test_an_enqueue_failure_is_a_terminal_row_not_a_lost_job(self, _async_task_mock):
+        with self.assertRaises(StorageCatalogRefreshQueueError):
+            queue_storage_catalog_refresh(cluster=self.cluster)
+
+        event = AuditEvent.objects.get(action=STORAGE_CATALOG_REFRESH_ACTION)
+        self.assertEqual(event.outcome, "failed")
+        self.assertEqual(event.details["stage"], "enqueue failed")
+        self.assertNotIn("broker down", str(event.details))
+
+    @patch("core.services.storage_catalog_refresh.async_task", return_value="queued-task-1")
+    def test_a_second_press_does_not_queue_a_second_cluster_wide_refresh(self, _async_task_mock):
+        queue_storage_catalog_refresh(cluster=self.cluster)
+
+        with self.assertRaises(StorageCatalogRefreshAlreadyActive):
+            queue_storage_catalog_refresh(cluster=self.cluster)
+
+        self.assertEqual(AuditEvent.objects.filter(action=STORAGE_CATALOG_REFRESH_ACTION).count(), 1)
+
+    @patch("core.services.storage_catalog_refresh.refresh_storage_volumes")
+    @patch("core.services.storage_catalog_refresh.refresh_storage_metadata")
+    @patch("core.services.storage_catalog_refresh.async_task", return_value="queued-task-1")
+    def test_incomplete_coverage_completes_with_a_warning_naming_the_silent_nodes(
+        self, _async_task_mock, metadata_mock, volumes_mock
+    ):
+        metadata_mock.return_value = StorageCatalogState(cluster=self.cluster, metadata_complete=True)
+        volumes_mock.return_value = StorageCatalogState(
+            cluster=self.cluster,
+            metadata_complete=True,
+            volume_complete=False,
+            volume_errors={"pve3": "unreachable"},
+        )
+        event, _task_id = queue_storage_catalog_refresh(cluster=self.cluster)
+
+        execute_storage_catalog_refresh(event.id)
+
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "warning")
+        self.assertEqual(event.details["incomplete_nodes"], ["pve3"])
+        task = next(
+            task for task in recent_task_page(limit=20).tasks if task["action"] == STORAGE_CATALOG_REFRESH_ACTION
+        )
+        self.assertEqual(task["status_class"], "warning")
+        self.assertIn("pve3", task["details"])
+        self.assertIsNotNone(task["finished_at"])
+
+    @patch("core.services.storage_catalog_refresh.async_task", return_value="queued-task-1")
+    def test_the_button_answers_with_a_task_id_rather_than_a_page(self, _async_task_mock):
+        ClusterStorage.objects.create(cluster=self.cluster, storage_id="shared", present=True, shared=True)
+        user = get_user_model().objects.create_user(username="operator", password="secret-operator-pw")
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse("core:storage_catalog_refresh", args=[self.cluster.key, "shared"]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        event = AuditEvent.objects.get(action=STORAGE_CATALOG_REFRESH_ACTION)
+        self.assertEqual(payload["task_id"], f"catalog:{event.id}")
+        self.assertEqual(event.username, "operator")
 
 
 class BackendIdentityAssistanceTests(TestCase):

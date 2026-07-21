@@ -765,3 +765,9 @@
   align-items: center;
   gap: 12px;
 }
+
+/* The file pane's own feedback slot sits flush above the toolbar; the shared
+   .action-feedback inset is meant for panels that have chrome around it. */
+.datastore-file-pane > .action-feedback {
+  margin: 0 0 10px;
+}

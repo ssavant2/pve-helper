@@ -19,13 +19,12 @@ VM, polls the resulting UPID, then cleans up the stage.
 from __future__ import annotations
 
 import json
-import os
 import re
 import secrets
 import subprocess
 import time
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 from urllib.parse import quote
 
@@ -33,10 +32,13 @@ from core.models import StorageMount
 from core.services.confined_filesystem import (
     ConfinedFilesystemError,
     ConfinedPathExistsError,
+    confined_relative_path,
+    hardlink_open_file_noreplace,
     hardlink_open_file_to_new_directory,
     normalized_relative_path,
     open_regular_file,
     remove_confined_directory,
+    remove_confined_file,
 )
 from core.services.ovf_import import OvfImportError, OvfPackage, package_disk_volids, parse_ovf_package
 from core.services.proxmox import ProxmoxAPIError
@@ -326,60 +328,65 @@ def import_volid_as_vm(
 # --------------------------------------------------------------------------- #
 def _stage_ovf_package_sources(
     storage: StorageMount, source_path: str, package: OvfPackage
-) -> tuple[list[str], list[Path]]:
+) -> tuple[list[str], list[str]]:
     """Return Proxmox import volids, hard-linking non-import sources temporarily.
 
     A source already under ``import/`` is directly usable by Proxmox.  Browser
     files elsewhere on the same mounted directory storage are linked into
     ``import/`` for the duration of the worker task so users need not shuffle a
     large OVA merely to begin an import.
+
+    Each source is opened through the confined boundary first and linked from
+    that descriptor, so the file Proxmox imports is the file that was verified,
+    not whatever the name points at by the time the link is made. Staged names
+    carry a random token and are never reused, so an occupied name is a genuine
+    failure rather than something to work around.
     """
     direct = package_disk_volids(package)
     if package.source_path.startswith("import/"):
         return direct, []
 
-    root = storage_mount_root(storage).resolve()
-    source = (root / package.source_path).resolve()
-    if root not in source.parents or not source.is_file():
-        raise VmRegisterError("Package is not available on the source storage.")
-    import_dir = root / "import"
-    try:
-        import_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise VmRegisterError(f"Could not access the storage import directory: {exc}") from exc
-
+    root = str(storage_mount_root(storage))
     token = secrets.token_hex(8)
-    staged: list[Path] = []
+    staged: list[str] = []
     try:
+        source_relative = normalized_relative_path(package.source_path)
         if package.kind == "ova":
-            staged_archive = import_dir / f"pve-helper-{token}.ova"
-            os.link(source, staged_archive)
-            staged.append(staged_archive)
-            archive_rel = f"import/{staged_archive.name}"
-            return [f"{storage.storage_id}:{archive_rel}/{disk.href}" for disk in package.disks], staged
+            staged_relative = f"import/pve-helper-{token}.ova"
+            with open_regular_file(root, source_relative) as source:
+                hardlink_open_file_noreplace(root, source, staged_relative)
+            staged.append(staged_relative)
+            archive_name = PurePosixPath(staged_relative).name
+            return [f"{storage.storage_id}:import/{archive_name}/{disk.href}" for disk in package.disks], staged
 
         volids: list[str] = []
-        source_root = source.parent.resolve()
+        descriptor_directory = PurePosixPath(source_relative).parent.as_posix()
         for index, disk in enumerate(package.disks):
-            source_disk = (source_root / disk.href).resolve()
-            if source_root not in source_disk.parents or not source_disk.is_file():
-                raise VmRegisterError(f"OVF disk {disk.href} is not available beside the descriptor.")
-            suffix = source_disk.suffix.lower() or ".vmdk"
-            staged_disk = import_dir / f"pve-helper-{token}-{index}{suffix}"
-            os.link(source_disk, staged_disk)
-            staged.append(staged_disk)
-            volids.append(f"{storage.storage_id}:import/{staged_disk.name}")
+            disk_relative = confined_relative_path(descriptor_directory, disk.href)
+            suffix = PurePosixPath(disk_relative).suffix.lower() or ".vmdk"
+            staged_relative = f"import/pve-helper-{token}-{index}{suffix}"
+            try:
+                with open_regular_file(root, disk_relative) as source_disk:
+                    hardlink_open_file_noreplace(root, source_disk, staged_relative)
+            except ConfinedFilesystemError as exc:
+                raise VmRegisterError(f"OVF disk {disk.href} is not available beside the descriptor.") from exc
+            staged.append(staged_relative)
+            volids.append(f"{storage.storage_id}:{staged_relative}")
         return volids, staged
-    except OSError as exc:
-        _remove_staged_files(staged)
-        raise VmRegisterError(f"Could not stage OVA/OVF package: {exc}") from exc
+    except VmRegisterError:
+        _remove_staged_files(storage, staged)
+        raise
+    except (ConfinedFilesystemError, OSError) as exc:
+        _remove_staged_files(storage, staged)
+        raise VmRegisterError("Could not stage the OVA/OVF package on the source storage.") from exc
 
 
-def _remove_staged_files(paths: list[Path]) -> None:
-    for path in paths:
+def _remove_staged_files(storage: StorageMount, relative_paths: list[str]) -> None:
+    root = str(storage_mount_root(storage))
+    for relative_path in relative_paths:
         try:
-            path.unlink(missing_ok=True)
-        except OSError:
+            remove_confined_file(root, relative_path, missing_ok=True)
+        except (ConfinedFilesystemError, OSError):
             pass
 
 
@@ -473,4 +480,4 @@ def import_ovf_package_as_vm(
     except ProxmoxAPIError as exc:
         return upids, str(exc)
     finally:
-        _remove_staged_files(staged_paths)
+        _remove_staged_files(source_storage, staged_paths)

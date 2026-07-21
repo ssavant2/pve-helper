@@ -71,7 +71,7 @@ from core.services.cluster_activation import (
     set_initial_cluster_key,
 )
 from core.services.cluster_state_identity import cluster_cache_key
-from core.services.file_actions import _storage_gate_blocked
+from core.services.file_actions import ReferencedObject, _unverified_consumers, file_action_risk
 from core.services.filesystem import MountInfo, StorageSpaceInfo, mount_access_mode, storage_space_info
 from core.services.guest_inventory_refresh_schedule import GUEST_INVENTORY_REFRESH_SCHEDULE_NAME
 from core.services.proxmox import (
@@ -1999,7 +1999,7 @@ class StorageGateClusterIdentityTests(TestCase):
         self.assertEqual(consumer_b.last_gate_status, "unavailable")
         self.assertIsNone(consumer_b.last_successful_inventory_scan)
 
-    def test_file_operations_stay_blocked_when_another_cluster_is_uncovered(self):
+    def test_another_cluster_being_uncovered_is_reported_as_an_unverified_node(self):
         self._consumer(self.cluster_a)
         self._consumer(self.cluster_b)
 
@@ -2013,7 +2013,133 @@ class StorageGateClusterIdentityTests(TestCase):
             classification=FileInventory.Classification.REFERENCED,
         )
 
-        self.assertTrue(_storage_gate_blocked(entry))
+        # Naming the node is the point: an operator deciding whether to act on an
+        # unverifiable file needs to know *which* consumer is missing, and the
+        # answer is no longer a refusal, so the name is what they act on.
+        self.assertEqual(_unverified_consumers(entry), ("pve1",))
+
+    def test_unreachable_coverage_asks_instead_of_locking_the_operator_out(self):
+        """ "Unknown" must not become "forbidden".
+
+        A node being unreachable is precisely when an operator needs to move or
+        delete the disk of a guest that is not coming back. Refusing there makes
+        the tool useless in the only situation it was reached for, so incomplete
+        coverage asks a second question and names the node it could not reach.
+        """
+        self._consumer(self.cluster_a)
+        self._consumer(self.cluster_b)
+
+        gate = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status=gate)
+        entry = FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.storage,
+            path="images/100/vm-100-disk-0.qcow2",
+            size_bytes=1,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+        )
+
+        risk = file_action_risk(entry)
+
+        self.assertFalse(risk.blocked)
+        self.assertTrue(risk.requires_extra_confirmation)
+        self.assertEqual(risk.unverified_nodes, ("pve1",))
+        self.assertTrue(risk.acknowledgeable)
+        self.assertIn("pve1", risk.warning_message)
+
+    def test_the_question_names_every_fact_that_applies_not_just_the_first(self):
+        """The confirmation is what authorises the override, so it must be complete.
+
+        A disk can be pointed at by a guest configuration *and* sit on storage a
+        dead node never reported. Returning at whichever check ran first asked
+        about one of them and then acted on both — an answer to a question the
+        operator was never shown.
+        """
+        self._consumer(self.cluster_a)
+        self._consumer(self.cluster_b)
+        gate = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status=gate)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            cluster=self.cluster_a,
+            node="pve2",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=100,
+            name="ubuntu-test",
+            status="stopped",
+            disk_references=[f"{self.storage.storage_id}:100/vm-100-disk-0.qcow2"],
+        )
+        entry = FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.storage,
+            path="images/100/vm-100-disk-0.qcow2",
+            derived_volid=f"{self.storage.storage_id}:100/vm-100-disk-0.qcow2",
+            size_bytes=1,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+        )
+
+        message = file_action_risk(entry).warning_message
+
+        self.assertIn("guest configuration still points at this file", message)
+        self.assertIn("pve1", message)
+        self.assertIn("ubuntu-test", message)
+
+    def test_a_stale_running_status_from_an_unreachable_node_does_not_block(self):
+        """A crashed node's guests are exactly the ones that are *not* running.
+
+        "running" here is the last value anyone recorded, not a fact about now.
+        Blocking on it would let a stale record lock the operator out of the
+        recovery, so it becomes a confirmation that says the status is unconfirmed.
+        """
+        self._consumer(self.cluster_a)
+        self._consumer(self.cluster_b)
+        gate = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status=gate)
+        entry = FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.storage,
+            path="images/100/vm-100-disk-0.qcow2",
+            size_bytes=1,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+        )
+        stale = ReferencedObject(
+            cluster_key="b", object_type="vm", vmid=100, name="ghost", node="pve1", status="running"
+        )
+
+        with patch("core.services.file_actions._referenced_objects", return_value=[stale]):
+            risk = file_action_risk(entry)
+
+        self.assertFalse(risk.blocked)
+        self.assertTrue(risk.requires_extra_confirmation)
+        self.assertIn("could not be confirmed", risk.warning_message)
+
+    def test_a_running_guest_on_a_reachable_node_still_blocks(self):
+        """Evidence from a node that answered is not overridable.
+
+        The point of the change above is that *unknown* stops being a refusal —
+        not that a guest genuinely running somewhere reachable becomes fair game.
+        """
+        self._consumer(self.cluster_a)
+        gate = _storage_gate_status([self.storage], {self.cluster_a.pk: {"pve1"}}, self.now)
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, storage_gate_status=gate)
+        entry = FileInventory.objects.create(
+            scan_run=scan,
+            storage=self.storage,
+            path="images/100/vm-100-disk-0.qcow2",
+            size_bytes=1,
+            content_category="vm_disk",
+            classification=FileInventory.Classification.REFERENCED,
+        )
+        live = ReferencedObject(cluster_key="a", object_type="vm", vmid=100, name="real", node="pve1", status="running")
+
+        with patch("core.services.file_actions._referenced_objects", return_value=[live]):
+            risk = file_action_risk(entry)
+
+        self.assertTrue(risk.blocked)
+        self.assertEqual(risk.unverified_nodes, ())
 
     def test_single_cluster_coverage_still_opens_its_own_gate(self):
         consumer_a = self._consumer(self.cluster_a)
@@ -2822,6 +2948,42 @@ class OidcBackendTests(TestCase):
     def setUp(self):
         self.backend = PveHelperOIDCBackend()
 
+    def _group_claims(self, groups):
+        return {
+            "sub": "subject-1",
+            "preferred_username": "alice",
+            "email": "alice@example.test",
+            "groups": groups,
+        }
+
+    @override_settings(OIDC_REQUIRED_GROUP="gg-pve-helper-admins")
+    def test_group_claim_must_contain_the_required_group(self):
+        self.assertTrue(self.backend.verify_claims(self._group_claims(["gg-pve-helper-admins"])))
+        self.assertFalse(self.backend.verify_claims(self._group_claims(["gg-other"])))
+        self.assertFalse(self.backend.verify_claims(self._group_claims([])))
+
+    @override_settings(OIDC_REQUIRED_GROUP=settings.OIDC_ANY_AUTHENTICATED_USER)
+    def test_sentinel_waives_the_group_check_for_provider_gated_deployments(self):
+        """Providers that emit no usable group claim opt out explicitly, never by omission."""
+        self.assertTrue(self.backend.verify_claims(self._group_claims([])))
+        self.assertTrue(self.backend.verify_claims({"sub": "s", "email": "a@example.test"}))
+
+    @override_settings(OIDC_REQUIRED_GROUP="")
+    def test_empty_required_group_denies_login_instead_of_admitting_everyone(self):
+        """Startup rejects this (E011); if it is reached anyway the check was lost, not waived."""
+        self.assertFalse(self.backend.verify_claims(self._group_claims(["gg-pve-helper-admins"])))
+
+    @override_settings(DJANGO_ADMIN_ENABLED=False)
+    def test_login_grants_no_django_admin_rights_where_admin_is_not_routed(self):
+        """is_staff/is_superuser unlock Django admin and nothing else; the app's own
+        authorization is the OIDC group. Granting them where admin is unrouted would
+        be dead privilege waiting for someone to mount it."""
+        user = self.backend.create_user(self._group_claims(["gg-pve-helper-admins"]))
+
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+
+    @override_settings(DJANGO_ADMIN_ENABLED=True)
     def test_links_and_finds_user_by_subject_after_username_change(self):
         claims = {
             "sub": "subject-1",
@@ -3340,6 +3502,35 @@ class StartupCheckTests(SimpleTestCase):
                 {error.id for error in production_startup_errors()},
                 {"pve_helper.E008"},
             )
+
+    def test_production_startup_checks_reject_an_empty_required_group(self):
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="not-the-dev-secret",
+            ALLOWED_HOSTS=["pve-helper.internal"],
+            APP_BASE_URL="http://pve-helper.internal:21080",
+            APP_REQUIRE_LOGIN=True,
+            OIDC_RP_CLIENT_ID="client",
+            OIDC_RP_CLIENT_SECRET="secret",
+            OIDC_REQUIRED_GROUP="",
+        ):
+            self.assertEqual(
+                {error.id for error in production_startup_errors()},
+                {"pve_helper.E011"},
+            )
+
+    def test_production_startup_checks_accept_the_any_authenticated_user_sentinel(self):
+        with override_settings(
+            DEBUG=False,
+            SECRET_KEY="not-the-dev-secret",
+            ALLOWED_HOSTS=["pve-helper.internal"],
+            APP_BASE_URL="http://pve-helper.internal:21080",
+            APP_REQUIRE_LOGIN=True,
+            OIDC_RP_CLIENT_ID="client",
+            OIDC_RP_CLIENT_SECRET="secret",
+            OIDC_REQUIRED_GROUP=settings.OIDC_ANY_AUTHENTICATED_USER,
+        ):
+            self.assertEqual(production_startup_errors(), [])
 
     def test_production_startup_checks_reject_unsupported_external_scheme(self):
         with override_settings(
@@ -4461,8 +4652,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             with (
                 patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
                 patch("core.services.storage_catalog.refresh_storage_catalog"),
-                patch("core.services.storage_actions.os.chown") as chown_mock,
-                patch("core.services.storage_actions.os.chmod") as chmod_mock,
+                patch("core.services.confined_filesystem.os.fchown") as chown_mock,
+                patch("core.services.confined_filesystem.os.fchmod") as chmod_mock,
             ):
                 result = inflate_storage_file(storage=storage, entry=entry)
 
@@ -4573,8 +4764,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
 
             with (
-                patch("core.services.storage_actions.os.chown") as chown_mock,
-                patch("core.services.storage_actions.os.chmod") as chmod_mock,
+                patch("core.services.confined_filesystem.os.fchown") as chown_mock,
+                patch("core.services.confined_filesystem.os.fchmod") as chmod_mock,
             ):
                 result = normalize_uploaded_proxmox_image_paths(
                     storage=storage,
@@ -4603,8 +4794,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             )
 
             with (
-                patch("core.services.storage_actions.os.chown"),
-                patch("core.services.storage_actions.os.chmod"),
+                patch("core.services.confined_filesystem.os.fchown"),
+                patch("core.services.confined_filesystem.os.fchmod"),
             ):
                 normalize_uploaded_proxmox_image_paths_task(
                     storage.id,
@@ -4772,6 +4963,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 FileInventory.objects.get(path="images/501/vm-501-disk-0.qcow2").id,
                 "viewer",
                 "metadata",
+                # The operator answered the escalated question, and the worker
+                # re-runs the same gate hours later — it has to know the answer
+                # was given, or a queued inflate would refuse itself on arrival.
+                True,
                 q_options={"cluster": "bulk"},
             )
             event = AuditEvent.objects.get(action="file.inflate_queued")
@@ -5098,7 +5293,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             # them again gives the executable the path's provenance.
             self.assertIsInstance(result, InflatePreflight)
             self.assertEqual(result.qemu_img, shutil.which("qemu-img"))
-            self.assertEqual(result.path.name, "vm-501-disk-0.qcow2")
+            self.assertEqual(result.relative_path, "images/501/vm-501-disk-0.qcow2")
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_inflate_blocks_repeated_full_even_when_inventory_mtime_is_newer(self):
@@ -6032,7 +6227,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse((Path(tmp) / "test.txt").exists())
-            self.assertFalse(AuditEvent.objects.filter(action="file.uploaded").exists())
+            self.assertFalse(AuditEvent.objects.filter(action="file.uploaded", outcome="success").exists())
+        self.assertTrue(AuditEvent.objects.filter(action="file.uploaded", outcome="failed").exists())
 
     @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_UPLOAD_MAX_SIZE_MB=1)
     def test_storage_upload_writes_file_and_refuses_overwrite(self):
@@ -6085,7 +6281,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertEqual((root / "upload.txt").read_bytes(), b"hello")
-            self.assertEqual(AuditEvent.objects.filter(action="file.uploaded").count(), 1)
+            self.assertEqual(AuditEvent.objects.filter(action="file.uploaded", outcome="success").count(), 1)
+        # The refused second upload is evidence too: an operator who is told
+        # "target file already exists" must be able to find that answer later.
+        self.assertEqual(AuditEvent.objects.filter(action="file.uploaded", outcome="failed").count(), 1)
 
     @override_settings(STORAGE_WRITE_ENABLED=True, STORAGE_UPLOAD_MAX_SIZE_MB=0)
     def test_storage_folder_upload_creates_tree_and_refreshes_directories(self):
@@ -6194,7 +6393,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             self.assertFalse((root / "folder" / "a.txt").exists())
             self.assertFalse((root.parent / "outside.txt").exists())
-            self.assertFalse(AuditEvent.objects.filter(action="file.folder_uploaded").exists())
+            self.assertFalse(AuditEvent.objects.filter(action="file.folder_uploaded", outcome="success").exists())
+        self.assertTrue(AuditEvent.objects.filter(action="file.folder_uploaded", outcome="failed").exists())
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_storage_create_folder_writes_directory(self):
@@ -6806,7 +7006,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertFalse(first.exists())
             self.assertFalse(second.exists())
             self.assertEqual(TrashItem.objects.count(), 2)
-            self.assertEqual(AuditEvent.objects.filter(action="file.trashed").count(), 2)
+            self.assertEqual(AuditEvent.objects.filter(action="file.trashed", outcome="success").count(), 2)
+            self.assertFalse(AuditEvent.objects.filter(action="file.trashed", outcome="failed").exists())
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_partial_bulk_trash_keeps_successes_audited_and_asks_the_operator(self):
@@ -6856,7 +7057,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertRedirects(response, expected_browser_url, fetch_redirect_response=False)
             # The two that worked really happened, and are recorded as such.
             self.assertEqual(TrashItem.objects.count(), 2)
-            self.assertEqual(AuditEvent.objects.filter(action="file.trashed").count(), 2)
+            self.assertEqual(AuditEvent.objects.filter(action="file.trashed", outcome="success").count(), 2)
+            # The one that failed gets its own row, not only a line inside the
+            # aggregate: a per-file question needs a per-file record to answer it.
+            failure = AuditEvent.objects.get(action="file.trashed", outcome="failed")
+            self.assertEqual(failure.path, paths[1])
 
             bulk = AuditEvent.objects.get(action="file.bulk_operation")
             self.assertEqual(bulk.outcome, "warning")
@@ -6908,7 +7113,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertEqual(AuditEvent.objects.filter(action="file.bulk_operation.answered").count(), 1)
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
-    def test_referenced_disk_is_refused_even_when_its_guest_is_stopped(self):
+    def test_referenced_disk_needs_an_acknowledgement_but_is_never_forbidden(self):
+        """A live reference is a reason to ask, not a reason to refuse forever.
+
+        Refusing until the guest is detached in Proxmox assumes Proxmox can still
+        be reached and the guest still exists. A node can die for good and be
+        replaced by a differently named one; its guests' configs die with it, and
+        the disk would then be unreachable through this app permanently. So the
+        reference escalates the confirmation and the operator can answer past it —
+        but the answer has to be given, and it is recorded.
+        """
         """Trashing relocates the file, so a live reference is what matters, not power state.
 
         A stopped guest is not safety: the file leaves its volid either way and the
@@ -6973,12 +7187,35 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 observed_at=timezone.now(),
             )
 
+            trash_url = reverse("core:storage_trash_file", args=[storage.mount_ref])
             with (
                 patch("core.services.storage_catalog.refresh_storage_catalog"),
                 patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
             ):
-                response = self.client.post(
-                    reverse("core:storage_trash_file", args=[storage.mount_ref]),
+                unanswered = self.client.post(
+                    trash_url,
+                    {
+                        "path": "images/100/vm-100-disk-0.qcow2",
+                        "confirm_basic": "yes",
+                        "next": files_url,
+                    },
+                    follow=True,
+                )
+
+            # The reference is escalated, not waived: skipping the question keeps
+            # the file exactly where it is, and the refusal is auditable.
+            self.assertEqual(unanswered.status_code, 200)
+            self.assertTrue(disk.exists())
+            self.assertFalse(TrashItem.objects.exists())
+            self.assertFalse(AuditEvent.objects.filter(action="file.trashed", outcome="success").exists())
+            self.assertTrue(AuditEvent.objects.filter(action="file.trashed", outcome="failed").exists())
+
+            with (
+                patch("core.services.storage_catalog.refresh_storage_catalog"),
+                patch("core.services.proxmox.ProxmoxClient.guest_status", return_value="stopped"),
+            ):
+                answered = self.client.post(
+                    trash_url,
                     {
                         "path": "images/100/vm-100-disk-0.qcow2",
                         "confirm_basic": "yes",
@@ -6988,11 +7225,10 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     follow=True,
                 )
 
-            self.assertEqual(response.status_code, 200)
-            self.assertContains(response, "A guest configuration still references this disk")
-            self.assertContains(response, "Detach it from the guest in Proxmox first")
-            self.assertTrue(disk.exists())
-            self.assertFalse(TrashItem.objects.exists())
+            self.assertEqual(answered.status_code, 200)
+            self.assertFalse(disk.exists())
+            self.assertTrue(TrashItem.objects.exists())
+            self.assertTrue(AuditEvent.objects.filter(action="file.trashed", outcome="success").exists())
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_running_referenced_file_cannot_be_moved_to_trash(self):
@@ -7047,7 +7283,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self.assertEqual(response.status_code, 302)
             self.assertTrue(disk.exists())
             self.assertFalse(TrashItem.objects.exists())
-            self.assertFalse(AuditEvent.objects.filter(action="file.trashed").exists())
+            self.assertFalse(AuditEvent.objects.filter(action="file.trashed", outcome="success").exists())
+            # The refusal is recorded with the reason the operator was given, so
+            # "why is this file still here" has an answer that outlives the toast.
+            refusal = AuditEvent.objects.get(action="file.trashed", outcome="failed")
+            self.assertTrue(refusal.details["error"])
+            self.assertEqual(refusal.path, "images/100/vm-100-disk-0.qcow2")
 
     @override_settings(STORAGE_WRITE_ENABLED=True)
     def test_file_can_be_renamed_with_confirmation_and_directory_refresh(self):

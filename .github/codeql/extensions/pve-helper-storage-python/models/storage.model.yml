@@ -17,6 +17,17 @@ extensions:
       - ["core", "Member[services].Member[storage_paths].Member[storage_trash_root].ReturnValue", "path-injection"]
       - ["core", "Member[services].Member[confined_filesystem].Member[normalized_relative_path].ReturnValue", "path-injection"]
       - ["core", "Member[services].Member[confined_filesystem].Member[confined_relative_path].ReturnValue", "path-injection"]
+      #
+      # A barrier here resolves an API-graph node, so it only takes effect on
+      # calls that reach the helper *through an import*. A validator called
+      # inside the module that defines it is not such a node and silences
+      # nothing. That is the entire reason confined_path_component lives in its
+      # own module rather than beside the syscalls it guards: without the import
+      # boundary the five os.mkdir/os.open/os.rename/os.rmdir/os.unlink calls in
+      # confined_filesystem._reserve_then_rename report py/path-injection, here
+      # and in GitHub code scanning. Verified both ways.
+      - ["core", "Member[services].Member[confined_names].Member[confined_path_component].ReturnValue", "path-injection"]
+      - ["core.services.confined_names", "Member[confined_path_component].ReturnValue", "path-injection"]
       - ["core.services.storage_paths", "Member[normalized_relative_path].ReturnValue", "path-injection"]
       - ["core.services.storage_paths", "Member[storage_mount_root].ReturnValue", "path-injection"]
       - ["core.services.storage_paths", "Member[storage_trash_root].ReturnValue", "path-injection"]

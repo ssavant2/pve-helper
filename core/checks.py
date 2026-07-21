@@ -135,6 +135,20 @@ def production_startup_errors():
                     id="pve_helper.E007",
                 )
             )
+        if not getattr(settings, "OIDC_REQUIRED_GROUP", ""):
+            sentinel = getattr(settings, "OIDC_ANY_AUTHENTICATED_USER", "any-authenticated-user")
+            errors.append(
+                Error(
+                    "OIDC_REQUIRED_GROUP is empty while APP_REQUIRE_LOGIN=true and DEBUG=false.",
+                    hint=(
+                        "Set it to the value that must appear in the provider's groups claim, or to "
+                        f"'{sentinel}' if the provider's own application assignment is the only gate. "
+                        "An empty value admits every account the provider authenticates, and login "
+                        "grants full administrative access."
+                    ),
+                    id="pve_helper.E011",
+                )
+            )
 
     if getattr(settings, "STORAGE_WRITE_ENABLED", False) and not getattr(settings, "FILE_UPLOAD_TEMP_DIR", None):
         errors.append(

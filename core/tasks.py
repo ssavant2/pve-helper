@@ -28,7 +28,6 @@ from .models import (
     TrashItem,
 )
 from .services.audit_events import record_audit_event
-from .services.classification import classify_entry
 from .services.cluster_resolver import client_for_endpoint, cluster_clients
 from .services.cluster_state_identity import cluster_advisory_lock_id
 from .services.console_session_cleanup import prune_console_sessions
@@ -44,6 +43,7 @@ from .services.durable_guest_operations import (
     DurableGuestOperationError,
     client_for_audit_event,
 )
+from .services.entry_classification import ScanEntryClassifier
 from .services.filesystem import storage_space_info
 from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
@@ -68,7 +68,6 @@ from .services.storage_actions import (
     purge_trash_item,
 )
 from .services.storage_catalog import (
-    MountedVolumeClassifier,
     refresh_storage_catalog,
     refresh_storage_metadata,
     refresh_storage_volumes,
@@ -1286,6 +1285,7 @@ def inflate_storage_file_task(
     entry_id: int,
     username: str = "",
     target_preallocation: str = "full",
+    acknowledged_risk: bool = False,
 ) -> None:
     storage = StorageMount.objects.get(pk=storage_id)
     entry = FileInventory.objects.select_related("scan_run", "storage").get(pk=entry_id)
@@ -1294,6 +1294,7 @@ def inflate_storage_file_task(
             storage=storage,
             entry=entry,
             target_preallocation=target_preallocation,
+            acknowledged_risk=acknowledged_risk,
         )
         refresh_scan = _latest_storage_result_scan(storage)
         if refresh_scan is None and entry.scan_run.status == ScanRun.Status.COMPLETED:
@@ -1608,36 +1609,15 @@ def _run_scan(scan: ScanRun) -> None:
         )
         # Built once per storage: every disk on this mount is classified against
         # the same bindings, storage views and guest references.
-        volume_classifier = MountedVolumeClassifier(storage)
+        classifier = ScanEntryClassifier(
+            storage=storage,
+            referenced_volids=referenced_volids,
+            template_vmids=template_vmids,
+            gate_ok=gate_ok,
+            missing_consumers=missing_consumers,
+        )
         for entry in scanner.iter_entries():
-            classification = classify_entry(
-                relative_path=entry.relative_path,
-                entry_type=entry.entry_type,
-                content_category=entry.content_category,
-                derived_volid=entry.derived_volid,
-                referenced_volids=referenced_volids,
-                template_vmids=template_vmids,
-                gate_ok=gate_ok,
-                missing_consumers=missing_consumers,
-            )
-            legacy_classification = classification
-            if entry.content_category in {"vm_disk", "base_image"}:
-                catalog_classification = volume_classifier.classify(entry.relative_path)
-                if catalog_classification is not None:
-                    classification = catalog_classification
-                    classification.evidence["comparison"] = {
-                        "legacy": legacy_classification.classification,
-                        "catalog": catalog_classification.classification,
-                        "matched": legacy_classification.classification == catalog_classification.classification,
-                    }
-                    if legacy_classification.classification != catalog_classification.classification:
-                        logger.info(
-                            "Storage classification comparison differs: mount=%s path=%s legacy=%s catalog=%s",
-                            storage.mount_ref,
-                            entry.relative_path,
-                            legacy_classification.classification,
-                            catalog_classification.classification,
-                        )
+            classification = classifier.classify(entry)
             image_info = probe_qemu_image_info(
                 path=entry.full_path,
                 entry_type=entry.entry_type,

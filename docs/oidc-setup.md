@@ -8,7 +8,8 @@ The provider must:
 
 - support the OIDC authorization-code flow and RS256-signed tokens;
 - emit a stable, non-empty `sub` claim;
-- expose the operator's groups in a `groups` claim;
+- expose the operator's groups in a `groups` claim, unless the provider's own
+  application assignment is the gate (see below);
 - provide authorization, token, userinfo and JWKS endpoints;
 - allow the exact callback URI
   `https://pve-helper.example.com/auth/oidc/callback` (substitute your hostname).
@@ -16,6 +17,36 @@ The provider must:
 pve-helper creates or updates the local user identified by `(issuer, sub)` and
 requires membership in `OIDC_REQUIRED_GROUP`. The username and email are display
 attributes, not durable identity keys.
+
+## The two gates
+
+Access passes through two independent gates, and only the second is pve-helper's:
+
+1. **The provider decides who may complete the login flow at all** — an
+   application binding, assignment or policy in Authentik, Entra, Okta or
+   Authelia. pve-helper cannot see this gate and cannot verify that it exists.
+2. **pve-helper matches `OIDC_REQUIRED_GROUP` against the `groups` claim.**
+
+What providers put in that claim differs. Authentik, Authelia and Keycloak emit
+group names — including the names of groups synchronised from an on-premises
+directory, so an AD group name is the usual value there. Entra emits group object
+GUIDs, so the configured value is a GUID rather than a name. Some deployments emit
+no usable group claim at all because gate 1 is the whole authorization decision.
+
+That last case is configured explicitly:
+
+```env
+OIDC_REQUIRED_GROUP=any-authenticated-user
+```
+
+Every account the provider authenticates is then admitted, and each such login is
+logged as running without the group check.
+
+**Leaving `OIDC_REQUIRED_GROUP` empty is refused at startup** (`pve_helper.E011`)
+when `APP_REQUIRE_LOGIN=true`. An empty value cannot be told apart from a
+configuration line that was dropped during an upgrade, and it would silently
+disable gate 2 — while login grants full administrative access. Opting out must be
+something someone wrote down, not something that happened.
 
 ## Configuration
 

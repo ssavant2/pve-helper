@@ -37,6 +37,7 @@ import {
 } from "./shell.js";
 import { initStorageAccessForm } from "./storage-access.js";
 import { initConfirmedFileActions, initStorageFileManagers } from "./storage-browser.js";
+import { initStorageCatalogRefresh } from "./storage-catalog.js";
 import {
   initColumnPickers,
   initCopyButtons,
@@ -76,6 +77,7 @@ const initPage = (root = document) => {
   initScanActions(root);
   initStorageFileManagers(root);
   initConfirmedFileActions(root);
+  initStorageCatalogRefresh(root);
   initStorageAccessForm(root);
   initConfirmForms(root);
   initScheduledTaskForms(root);

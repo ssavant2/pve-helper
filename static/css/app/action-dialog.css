@@ -105,6 +105,12 @@
 }
 
 .action-feedback {
+  /* Feedback is inserted into whatever container raised it, and some of those
+     are grids. A message that silently takes a grid cell rearranges the page
+     around itself and stretches to its neighbour's height. Both declarations
+     are inert outside a grid, so they cost nothing where they are not needed. */
+  grid-column: 1 / -1;
+  align-self: start;
   margin: 10px 16px;
   padding: 9px 11px;
   border: 1px solid rgb(239 68 68 / 0.5);

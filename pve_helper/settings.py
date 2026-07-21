@@ -211,11 +211,29 @@ AUTHENTICATION_BACKENDS = ["core.auth.PveHelperOIDCBackend"]
 if not APP_REQUIRE_LOGIN:
     AUTHENTICATION_BACKENDS.append("django.contrib.auth.backends.ModelBackend")
 
+# Django admin is a development and E2E convenience, not an operator surface: the
+# app's own UI covers everything an operator does, and `manage.py shell`/`dbshell`
+# cover everything it does not. Where login is enforced it would instead be a
+# second, browser-reachable write path over models the app mutates only through
+# validated services - repointing a verified endpoint, rebinding a mount, flipping
+# a schedule without an audit row - and over AuditEvent itself, which PLAN.md names
+# as part of the safety boundary. A boundary its own session can rewrite is not one.
+# Host shell access can still reach the database; a stolen cookie or an XSS cannot.
+DJANGO_ADMIN_ENABLED = DEBUG or not APP_REQUIRE_LOGIN
+
 OIDC_ISSUER_URL = env("OIDC_ISSUER_URL", "https://auth.example.com/application/o/pve-helper/").rstrip("/")
 OIDC_RP_CLIENT_ID = env("OIDC_CLIENT_ID", "")
 OIDC_RP_CLIENT_SECRET = env("OIDC_CLIENT_SECRET", "")
 OIDC_RP_SCOPES = env("OIDC_SCOPES", "openid profile email groups")
-OIDC_REQUIRED_GROUP = env("OIDC_REQUIRED_GROUP", "pve-helper-admins")
+# Access requires this value in the provider's `groups` claim. Providers differ in
+# what they put there: Authentik/Authelia/Keycloak emit group names, Entra emits
+# group object GUIDs, and some deployments emit nothing because the provider's own
+# application assignment is the gate. Deployments in that last position set the
+# sentinel below; an empty value is refused at startup (pve_helper.E011) because it
+# cannot be told apart from a dropped configuration line, and it would silently
+# admit every account the provider authenticates.
+OIDC_ANY_AUTHENTICATED_USER = "any-authenticated-user"
+OIDC_REQUIRED_GROUP = env("OIDC_REQUIRED_GROUP", "pve-helper-admins").strip()
 OIDC_CREATE_USER = True
 # mozilla-django-oidc does NOT perform OIDC discovery (.well-known); the OP endpoints
 # must be set explicitly. Defaults below follow Authentik's URL scheme for the bundled

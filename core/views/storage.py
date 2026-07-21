@@ -25,6 +25,11 @@ from core.services.storage_catalog import (
     storage_view,
     storage_volumes,
 )
+from core.services.storage_catalog_refresh import (
+    StorageCatalogRefreshAlreadyActive,
+    StorageCatalogRefreshQueueError,
+    queue_storage_catalog_refresh,
+)
 from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
@@ -690,6 +695,7 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
         "active_api_storage": storage,
         "active_nav_datastore": nav_datastore_key(cluster.key, storage, "" if shared else node),
         "catalog_view": view,
+        "catalog_view_rendered_at_ms": int(tz.now().timestamp() * 1000),
         "storage_shared": shared,
     }
 
@@ -700,8 +706,20 @@ def storage_catalog_refresh_view(request, cluster_key: str, storage: str):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key, enabled=True)
     if not ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True).exists():
         raise Http404("Storage is not present in the latest catalog.")
-    async_task("core.tasks.refresh_storage_catalog_for_cluster", cluster.key)
-    return JsonResponse({"ok": True, "status": "queued"}, status=202)
+    try:
+        event, _task_id = queue_storage_catalog_refresh(cluster=cluster, storage=storage, request=request)
+    except StorageCatalogRefreshAlreadyActive:
+        # Not an error the operator caused: the refresh they want is already on
+        # its way, and Recent Tasks is where it reports.
+        return JsonResponse(
+            {"ok": True, "status": "already-running", "message": "A catalog refresh is already running."},
+            status=200,
+        )
+    except StorageCatalogRefreshQueueError:
+        # Stable domain message; the exception's own text stays in the audit row
+        # and the logs rather than crossing the response boundary.
+        return JsonResponse({"ok": False, "error": "The catalog refresh could not be queued."}, status=503)
+    return JsonResponse({"ok": True, "status": "queued", "task_id": f"catalog:{event.id}"}, status=202)
 
 
 def _datastore_redirect(request, route_name: str, cluster, storage: str, node: str):
@@ -1571,6 +1589,13 @@ def create_storage_folder(request, storage_id: str):
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        _audit_file_action_failure(
+            request,
+            action="file.folder_created",
+            storage=storage,
+            path=_join_browser_path(current_path, request.POST.get("folder_name", "")),
+            exc=exc,
+        )
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
@@ -1611,6 +1636,14 @@ def upload_storage_file(request, storage_id: str):
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        _audit_file_action_failure(
+            request,
+            action="file.uploaded",
+            storage=storage,
+            path=_join_browser_path(current_path, uploaded_file.name),
+            exc=exc,
+            details={"error": public_storage_upload_error(exc)},
+        )
         return _upload_error_response(request, redirect_to, public_storage_upload_error(exc))
 
     _audit_file_action(
@@ -1655,6 +1688,14 @@ def upload_storage_folder(request, storage_id: str):
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        _audit_file_action_failure(
+            request,
+            action="file.folder_uploaded",
+            storage=storage,
+            path=current_path or "/",
+            exc=exc,
+            details={"error": public_storage_upload_error(exc)},
+        )
         return _upload_error_response(request, redirect_to, public_storage_upload_error(exc))
 
     _audit_file_action(
@@ -2213,23 +2254,34 @@ def trash_storage_file(request, storage_id: str):
         entry_types=[FileInventory.EntryType.FILE, FileInventory.EntryType.DIRECTORY],
     )
 
+    risks = [file_action_risk(entry) for entry in entries]
     try:
         _require_file_action_confirmations_for_entries(request, entries)
     except PermissionDenied:
         raise
     except StorageActionError as exc:
         # A whole-selection precondition; nothing was attempted.
+        for entry in entries:
+            _audit_file_action_failure(request, action="file.trashed", storage=storage, path=entry.path, exc=exc)
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
+    acknowledged_risk = _risk_acknowledged_for_risks(request, risks)
     scope = StorageOperationScope()
     outcome = BulkFileOutcome()
     refresh_directories = set()
     pruned_paths = set()
     for index, entry in enumerate(entries):
         try:
-            trash_item = move_file_to_trash(storage=storage, entry=entry, user=request.user, scope=scope)
+            trash_item = move_file_to_trash(
+                storage=storage,
+                entry=entry,
+                user=request.user,
+                scope=scope,
+                acknowledged_risk=acknowledged_risk,
+            )
         except StorageActionError as exc:
+            _audit_file_action_failure(request, action="file.trashed", storage=storage, path=entry.path, exc=exc)
             outcome.record_failure(entry, exc, remaining=entries[index + 1 :])
             if outcome.aborted:
                 break
@@ -2283,14 +2335,18 @@ def move_storage_file_view(request, storage_id: str):
             messages.error(request, "Unknown destination storage.")
             return redirect(redirect_to)
 
+    risks = [file_action_risk(entry) for entry in entries]
     try:
         _require_file_action_confirmations_for_entries(request, entries)
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        for entry in entries:
+            _audit_file_action_failure(request, action="file.moved", storage=storage, path=entry.path, exc=exc)
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
+    acknowledged_risk = _risk_acknowledged_for_risks(request, risks)
     scope = StorageOperationScope()
     outcome = BulkFileOutcome()
     dest_directory = request.POST.get("dest_directory", "")
@@ -2305,12 +2361,18 @@ def move_storage_file_view(request, storage_id: str):
                     dest_directory=dest_directory,
                     keep_source=False,
                     scope=scope,
+                    acknowledged_risk=acknowledged_risk,
                 )
             else:
                 result = move_storage_file(
-                    storage=storage, entry=entry, new_path=request.POST.get("new_path", ""), scope=scope
+                    storage=storage,
+                    entry=entry,
+                    new_path=request.POST.get("new_path", ""),
+                    scope=scope,
+                    acknowledged_risk=acknowledged_risk,
                 )
         except StorageActionError as exc:
+            _audit_file_action_failure(request, action="file.moved", storage=storage, path=entry.path, exc=exc)
             outcome.record_failure(entry, exc, remaining=entries[index + 1 :])
             if outcome.aborted:
                 break
@@ -2397,6 +2459,7 @@ def copy_storage_file_view(request, storage_id: str):
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        _audit_file_action_failure(request, action="file.copied", storage=storage, path=entry.path, exc=exc)
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
@@ -2470,10 +2533,12 @@ def rename_storage_file_view(request, storage_id: str):
             storage=storage,
             entry=entry,
             new_name=request.POST.get("new_name", ""),
+            acknowledged_risk=_risk_acknowledged(request, risk),
         )
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        _audit_file_action_failure(request, action="file.renamed", storage=storage, path=entry.path, exc=exc)
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
@@ -2483,6 +2548,7 @@ def rename_storage_file_view(request, storage_id: str):
         storage=storage,
         path=str(result["new_path"]),
         details={"old_path": result["old_path"]},
+        unverified_nodes=risk.unverified_nodes,
     )
     _refresh_latest_storage_directory(storage, str(result["directory_path"]))
     return redirect(redirect_to)
@@ -2513,6 +2579,7 @@ def inflate_storage_file_view(request, storage_id: str):
     )
     risk = file_action_risk(entry, block_running_guests=False)
 
+    acknowledged_risk = _risk_acknowledged(request, risk)
     try:
         _require_file_action_confirmations(request, risk)
         validate_inflate_storage_file(
@@ -2520,10 +2587,19 @@ def inflate_storage_file_view(request, storage_id: str):
             entry=entry,
             target_preallocation=target_preallocation,
             validate_owner_locally=not settings.STORAGE_INFLATE_WORKER_PRESERVES_OWNER,
+            acknowledged_risk=acknowledged_risk,
         )
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        _audit_file_action_failure(
+            request,
+            action="file.inflate_queued",
+            storage=storage,
+            path=entry.path,
+            exc=exc,
+            details={"target_preallocation": target_preallocation},
+        )
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
@@ -2533,6 +2609,7 @@ def inflate_storage_file_view(request, storage_id: str):
         entry.id,
         request.user.get_username() if request.user.is_authenticated else "",
         target_preallocation,
+        acknowledged_risk,
     )
     _audit_file_action(
         request,
@@ -2540,6 +2617,7 @@ def inflate_storage_file_view(request, storage_id: str):
         storage=storage,
         path=entry.path,
         details={"task_id": task_id, "target_preallocation": target_preallocation},
+        unverified_nodes=risk.unverified_nodes,
     )
     return redirect(redirect_to)
 
@@ -2557,6 +2635,13 @@ def restore_storage_file(request, trash_item_id: int):
     except PermissionDenied:
         raise
     except StorageActionError as exc:
+        _audit_file_action_failure(
+            request,
+            action="file.restored",
+            storage=item.mount,
+            path=item.original_path,
+            exc=exc,
+        )
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
@@ -2588,6 +2673,14 @@ def purge_trash_item(request, trash_item_id: int):
     try:
         result = purge_trash_item_action(item=item)
     except StorageActionError as exc:
+        _audit_file_action_failure(
+            request,
+            action="file.purged",
+            storage=item.mount,
+            path=item.original_path,
+            exc=exc,
+            details={"trash_item": item.id, "trash_path": item.trash_path},
+        )
         messages.error(request, str(exc))
         return redirect(redirect_to)
 
@@ -2979,12 +3072,24 @@ def _report_bulk_file_outcome(
     }
 
 
-def _audit_file_action(request, *, action: str, storage: StorageMount, path: str, details: dict[str, object]) -> None:
+def _audit_file_action(
+    request,
+    *,
+    action: str,
+    storage: StorageMount,
+    path: str,
+    details: dict[str, object],
+    outcome: str = "success",
+    unverified_nodes: tuple[str, ...] = (),
+) -> None:
+    if unverified_nodes:
+        details = {**details, "unverified_nodes": list(unverified_nodes)}
     record_audit_event(
         request,
         action=action,
         object_type="file",
         object_id=f"{storage.mount_ref}:{path}",
+        outcome=outcome,
         details={
             "storage_id": storage.storage_id,
             "mount_ref": storage.mount_ref,
@@ -2992,6 +3097,36 @@ def _audit_file_action(request, *, action: str, storage: StorageMount, path: str
             "path": path,
             **details,
         },
+    )
+
+
+def _audit_file_action_failure(
+    request,
+    *,
+    action: str,
+    storage: StorageMount,
+    path: str,
+    exc: Exception,
+    details: dict[str, object] | None = None,
+) -> None:
+    """Record a file action that was refused or failed.
+
+    A refusal is evidence too, and often the more interesting kind: it is what
+    an operator saw when they were told they could not do something, and what a
+    later "why is this file still here" question needs answered. Leaving it out
+    made Recent Tasks and Audit agree only about the successes, which is the one
+    case nobody investigates.
+
+    The stored reason is the stable public message the operator was shown, never
+    a raw exception string - the same boundary every other surface holds.
+    """
+    _audit_file_action(
+        request,
+        action=action,
+        storage=storage,
+        path=path,
+        details={**(details or {}), "error": str(exc)},
+        outcome="failed",
     )
 
 
@@ -3010,6 +3145,23 @@ def _queue_upload_normalization(storage: StorageMount, paths: list[str], user) -
 def _is_proxmox_image_upload_path(path: str) -> bool:
     parts = PurePosixPath(path).parts
     return len(parts) >= 3 and parts[0] == "images" and parts[1].isdigit()
+
+
+def _risk_acknowledged(request, risk: FileActionRisk) -> bool:
+    """Did the operator answer the question that named what they are overriding?
+
+    `confirm_risk` is that answer, and it only counts where the risk is marked
+    acknowledgeable — the cases whose refusal would demand a repair the operator
+    may have no way to make. It is deliberately not "the operator confirmed
+    something": a mild warning about a guest-shaped filename asks for a second
+    click too, and that click must not carry authority over a live guest
+    reference it never mentioned.
+    """
+    return risk.acknowledgeable and request.POST.get("confirm_risk") == "yes"
+
+
+def _risk_acknowledged_for_risks(request, risks: list[FileActionRisk]) -> bool:
+    return any(risk.acknowledgeable for risk in risks) and request.POST.get("confirm_risk") == "yes"
 
 
 def _require_file_action_confirmations(request, risk: FileActionRisk) -> None:
@@ -3286,6 +3438,19 @@ def _normalize_browser_path(raw_path: str) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise Http404("Invalid storage path.")
     return PurePosixPath(*parts).as_posix()
+
+
+def _join_browser_path(directory_path: str, name: str) -> str:
+    """The path an action was aiming at, for the record of a failed attempt.
+
+    Deliberately does not validate: this names what the operator tried, and a
+    rejected name is exactly what an audit reader needs to see. It never reaches
+    the filesystem — the confined helpers re-derive every path they act on.
+    """
+    name = (name or "").strip().strip("/")
+    if not name:
+        return directory_path or "/"
+    return f"{directory_path}/{name}" if directory_path else name
 
 
 def _parent_path(path: str) -> str:

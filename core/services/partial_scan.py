@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from core.models import FileInventory, ProxmoxInventory, ScanRun, StorageMount
 
-from .classification import classify_entry
+from .entry_classification import ScanEntryClassifier
 from .image_info import probe_qemu_image_info
 from .storage import StorageScanner
 from .storage_paths import storage_mount_root
@@ -33,18 +33,17 @@ def refresh_storage_directory(
     gate_ok = bool(gate.get("ok"))
     missing_consumers = list(gate.get("missing_consumers") or [])
 
+    classifier = ScanEntryClassifier(
+        storage=storage,
+        referenced_volids=referenced_volids,
+        template_vmids=template_vmids,
+        gate_ok=gate_ok,
+        missing_consumers=missing_consumers,
+    )
+
     rows = []
     for entry in entries:
-        classification = classify_entry(
-            relative_path=entry.relative_path,
-            entry_type=entry.entry_type,
-            content_category=entry.content_category,
-            derived_volid=entry.derived_volid,
-            referenced_volids=referenced_volids,
-            template_vmids=template_vmids,
-            gate_ok=gate_ok,
-            missing_consumers=missing_consumers,
-        )
+        classification = classifier.classify(entry)
         image_info = probe_qemu_image_info(
             path=entry.full_path,
             entry_type=entry.entry_type,

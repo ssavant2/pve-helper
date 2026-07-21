@@ -40,6 +40,18 @@ class FileActionRisk:
     referenced_objects: list[ReferencedObject]
     requires_extra_confirmation: bool = False
     blocked: bool = False
+    unverified_nodes: tuple[str, ...] = ()
+    #: The operator may answer their way past this. Set only where refusing would
+    #: mean demanding that something outside their reach be repaired first — an
+    #: unreachable node, a guest config on a host that may never come back. A node
+    #: can die for good and be replaced by a differently named one, so "detach it
+    #: in Proxmox first" is not always an instruction that can be carried out, and
+    #: a gate that assumes it can is a gate that strands the file forever.
+    #:
+    #: Never set it where a reachable node reports a guest running on the file.
+    #: That is not an inconvenient unknown, it is live breakage, and the operator
+    #: has somewhere to go: stop the guest.
+    acknowledgeable: bool = False
 
     @property
     def referenced_labels(self) -> str:
@@ -47,9 +59,14 @@ class FileActionRisk:
 
     @property
     def warning_message(self) -> str:
-        if self.referenced_objects:
-            return f"{self.reason}: {self.referenced_labels}"
-        return self.reason
+        if not self.referenced_objects:
+            return self.reason
+        # Composed reasons are whole sentences; the older single-clause ones are
+        # not, and appending a list to either with the same punctuation produced
+        # "…is corrected.: VM 500 (ubuntu-test)".
+        if self.reason.endswith("."):
+            return f"{self.reason} Referenced by {self.referenced_labels}."
+        return f"{self.reason}: {self.referenced_labels}"
 
 
 def file_action_risk(entry: FileInventory, *, block_running_guests: bool = True) -> FileActionRisk:
@@ -70,43 +87,62 @@ def file_action_risk(entry: FileInventory, *, block_running_guests: bool = True)
             blocked=True,
         )
 
+    unverified = _unverified_consumers(entry)
+
     referenced_objects = _referenced_objects(entry)
     running_objects = [item for item in referenced_objects if item.status == "running"]
     if block_running_guests and running_objects:
-        return FileActionRisk(
-            level="blocked",
-            reason="This file belongs to a running Proxmox guest. Stop the guest manually in Proxmox before changing this file",
-            referenced_objects=running_objects,
-            requires_extra_confirmation=True,
-            blocked=True,
+        risk = _running_guest_risk(
+            running_objects,
+            unverified,
+            confirmed_reason=(
+                "This file belongs to a running Proxmox guest. "
+                "Stop the guest manually in Proxmox before changing this file"
+            ),
+            unconfirmed_reason="This file belongs to a guest that was last seen running",
         )
+        if risk is not None:
+            return risk
 
     vmid_objects = _vmid_objects(entry)
     running_vmid_objects = [item for item in vmid_objects if item.status == "running"]
     if block_running_guests and running_vmid_objects:
-        return FileActionRisk(
-            level="blocked",
-            reason="This file is in the image directory of a running Proxmox guest. Stop the guest manually in Proxmox before changing this file",
-            referenced_objects=running_vmid_objects,
-            requires_extra_confirmation=True,
-            blocked=True,
+        risk = _running_guest_risk(
+            running_vmid_objects,
+            unverified,
+            confirmed_reason=(
+                "This file is in the image directory of a running Proxmox guest. "
+                "Stop the guest manually in Proxmox before changing this file"
+            ),
+            unconfirmed_reason="This file is in the image directory of a guest that was last seen running",
         )
+        if risk is not None:
+            return risk
 
-    if _storage_gate_blocked(entry) and _is_proxmox_guest_file(entry):
-        return FileActionRisk(
-            level="blocked",
-            reason="Storage consumer inventory is incomplete, so guest-file safety cannot be verified.",
-            referenced_objects=[],
-            requires_extra_confirmation=True,
-            blocked=True,
-        )
-
+    # Both of these are answerable rather than refusable, and both can be true at
+    # once — a disk a guest config points at, on a storage a dead node never
+    # reported. Returning at the first match asked the operator about one of them
+    # and then acted on both, which is not a confirmation of anything. State every
+    # fact that applies, in one question.
+    danger_reasons = []
     if referenced_objects:
+        danger_reasons.append(
+            "A guest configuration still points at this file, and changing it breaks that "
+            "reference until the guest config is corrected."
+        )
+    if unverified and _is_proxmox_guest_file(entry):
+        danger_reasons.append(
+            f"Node {_node_list(unverified)} did not report storage inventory, so a guest there may "
+            "be using this file without anything here knowing."
+        )
+    if danger_reasons:
         return FileActionRisk(
             level="danger",
-            reason="This file is referenced by Proxmox inventory",
+            reason=" ".join(danger_reasons),
             referenced_objects=referenced_objects,
             requires_extra_confirmation=True,
+            unverified_nodes=unverified,
+            acknowledgeable=True,
         )
 
     if entry.content_category == "base_image":
@@ -232,9 +268,64 @@ def _legacy_referenced_object(obj: ProxmoxInventory) -> ReferencedObject:
     )
 
 
-def _storage_gate_blocked(entry: FileInventory) -> bool:
+def _unverified_consumers(entry: FileInventory) -> tuple[str, ...]:
+    """Nodes that were expected to report on this storage and did not.
+
+    Their absence is the reason nothing about this file can be *proved*. It is
+    deliberately returned as names rather than a boolean: an operator deciding
+    whether to act on an unverifiable file needs to know it is the crashed node
+    that is missing, not merely that something is.
+    """
     gate = (entry.scan_run.storage_gate_status or {}).get(entry.storage.storage_id, {})
-    return bool(gate) and not bool(gate.get("ok"))
+    if not gate or gate.get("ok"):
+        return ()
+    missing = gate.get("missing_consumers") or []
+    return tuple(str(node) for node in missing if node)
+
+
+def _node_list(nodes: tuple[str, ...]) -> str:
+    return ", ".join(nodes) if nodes else "one or more expected nodes"
+
+
+def _running_guest_risk(
+    running_objects: list[ReferencedObject],
+    unverified: tuple[str, ...],
+    *,
+    confirmed_reason: str,
+    unconfirmed_reason: str,
+) -> FileActionRisk | None:
+    """Blocking requires evidence, not a last-known value from an unreachable node.
+
+    "running" comes from the current-inventory projection. When the node hosting
+    the guest is one of the nodes that could not be reached, that value is the
+    last thing anyone saw rather than a fact about now — and a crashed node is
+    exactly the case where its guests are *not* running. Blocking on it would
+    make a stale record lock the operator out of the recovery. So the block
+    stands only where a reachable node still reports the guest as running.
+    """
+    unconfirmed = [item for item in running_objects if item.node and item.node in unverified]
+    confirmed = [item for item in running_objects if item not in unconfirmed]
+    if confirmed:
+        return FileActionRisk(
+            level="blocked",
+            reason=confirmed_reason,
+            referenced_objects=confirmed,
+            requires_extra_confirmation=True,
+            blocked=True,
+        )
+    if unconfirmed:
+        return FileActionRisk(
+            level="danger",
+            reason=(
+                f"{unconfirmed_reason}, but {_node_list(unverified)} could not be reached, "
+                "so that status could not be confirmed"
+            ),
+            referenced_objects=unconfirmed,
+            requires_extra_confirmation=True,
+            unverified_nodes=unverified,
+            acknowledgeable=True,
+        )
+    return None
 
 
 def _is_proxmox_guest_file(entry: FileInventory) -> bool:
@@ -260,13 +351,17 @@ def _directory_action_risk(entry: FileInventory, *, block_running_guests: bool) 
                 blocked=True,
             )
         if block_running_guests and running_objects:
-            return FileActionRisk(
-                level="blocked",
-                reason="This directory belongs to a running Proxmox guest. Stop the guest manually in Proxmox before changing it",
-                referenced_objects=running_objects,
-                requires_extra_confirmation=True,
-                blocked=True,
+            risk = _running_guest_risk(
+                running_objects,
+                _unverified_consumers(entry),
+                confirmed_reason=(
+                    "This directory belongs to a running Proxmox guest. "
+                    "Stop the guest manually in Proxmox before changing it"
+                ),
+                unconfirmed_reason="This directory belongs to a guest that was last seen running",
             )
+            if risk is not None:
+                return risk
         return FileActionRisk(
             level="warning",
             reason="This empty Proxmox guest directory will be moved to the Recycle Bin.",
