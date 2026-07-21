@@ -12,6 +12,7 @@ from core.models import (
     ProxmoxCluster,
     RuntimeConfigurationState,
     ScanRun,
+    ScheduledAction,
 )
 from core.services.cluster_activation import (
     activate_multicluster_identity,
@@ -106,6 +107,40 @@ class LegacyClusterUrlTests(TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertContains(response, "/clusters/a/tags/", status_code=409)
         self.assertContains(response, "/clusters/b/tags/", status_code=409)
+
+    def test_unscoped_scheduled_tasks_require_an_explicit_cluster(self):
+        response = self.client.get(reverse("core:legacy_scheduled_tasks"))
+
+        self.assertEqual(response.status_code, 409)
+        self.assertContains(response, "/clusters/a/scheduled-tasks/", status_code=409)
+        self.assertContains(response, "/clusters/b/scheduled-tasks/", status_code=409)
+
+    def test_a_scheduled_task_list_shows_only_its_own_cluster(self):
+        """The whole point of the move: VMID 500 exists in both clusters.
+
+        Before the tree grouped schedules by cluster this page listed both rows, each
+        labelled `VM 500`, and the only way to tell them apart was to open them. That
+        collision is what cluster identity was introduced for.
+        """
+        for cluster in (self.cluster_a, self.cluster_b):
+            ScheduledAction.objects.create(
+                cluster=cluster,
+                name=f"Nightly shutdown ({cluster.key})",
+                action_type=ScheduledAction.ActionType.SHUTDOWN,
+                target_type="vm",
+                target_vmid=500,
+            )
+
+        response = self.client.get(reverse("core:scheduled_tasks", args=[self.cluster_a.key]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Nightly shutdown (a)")
+        self.assertNotContains(response, "Nightly shutdown (b)")
+
+    def test_a_scheduled_task_list_rejects_an_unknown_cluster(self):
+        response = self.client.get(reverse("core:scheduled_tasks", args=["missing"]))
+
+        self.assertEqual(response.status_code, 404)
 
     def test_legacy_node_url_is_ambiguous_across_same_named_nodes(self):
         self._guest(self.cluster_b, vmid=501, node="pve1", name="b-501")

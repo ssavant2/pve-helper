@@ -6,7 +6,7 @@
       <h1>{% if form_mode == "edit" %}Edit Scheduled Task{% else %}New Scheduled Task{% endif %}</h1>
       <p>Timezone: {{ schedule_timezone }}</p>
     </div>
-    <a class="secondary-action" href="{% url 'core:scheduled_tasks' %}">
+    <a class="secondary-action" href="{% url 'core:scheduled_tasks' cluster_key %}">
       <i data-lucide="arrow-left" aria-hidden="true"></i>
       Back
     </a>
@@ -199,7 +199,7 @@
 
     <div class="scheduled-form-actions">
       <button class="primary-action" type="submit">Save</button>
-      <a class="secondary-action" href="{% url 'core:scheduled_tasks' %}">Cancel</a>
+      <a class="secondary-action" href="{% url 'core:scheduled_tasks' cluster_key %}">Cancel</a>
     </div>
   </form>
 {% endblock %}

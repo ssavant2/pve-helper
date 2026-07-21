@@ -206,11 +206,35 @@
             </a>
           {% endif %}
 
-          <a class="tree-node module-node {% if active_nav == 'scheduled_tasks' %}active{% endif %}" href="{% url 'core:scheduled_tasks' %}">
-            <span class="tree-caret"></span>
-            <span class="tree-icon"><i data-lucide="calendar-clock" aria-hidden="true"></i></span>
-            <span class="tree-label">Scheduled Tasks</span>
-          </a>
+          {% comment %}
+            Cluster as a tree level, like tags and datastores above, because a
+            schedule's target is a VMID and VMIDs collide across clusters — the row
+            does not identify itself without its cluster. Guests and Audit deliberately
+            take the other half of the rule and stay fleet-wide with a filter.
+          {% endcomment %}
+          {% if app_multiple_clusters %}
+            <section class="tree-module {% if active_nav == 'scheduled_tasks' %}expanded{% endif %}" data-tree-module="scheduled-tasks" aria-label="Scheduled Tasks module">
+              <button class="tree-node module-node {% if active_nav == 'scheduled_tasks' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="{% if active_nav == 'scheduled_tasks' %}true{% else %}false{% endif %}">
+                <span class="tree-caret" data-tree-caret>v</span>
+                <span class="tree-icon"><i data-lucide="calendar-clock" aria-hidden="true"></i></span>
+                <span class="tree-label">Scheduled Tasks</span>
+              </button>
+              <div class="tree-children">
+                {% for cluster in app_enabled_clusters %}
+                  <a class="tree-node tree-leaf {% if active_nav == 'scheduled_tasks' and cluster.key == cluster_key %}active{% endif %}" href="{% url 'core:scheduled_tasks' cluster.key %}">
+                    <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
+                    <span class="tree-label">{{ cluster.display_name }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </section>
+          {% else %}
+            <a class="tree-node module-node {% if active_nav == 'scheduled_tasks' %}active{% endif %}" href="{% if cluster_key %}{% url 'core:scheduled_tasks' cluster_key %}{% else %}{% url 'core:legacy_scheduled_tasks' %}{% endif %}">
+              <span class="tree-caret"></span>
+              <span class="tree-icon"><i data-lucide="calendar-clock" aria-hidden="true"></i></span>
+              <span class="tree-label">Scheduled Tasks</span>
+            </a>
+          {% endif %}
 
           <a class="tree-node module-node {% if active_nav == 'audit' %}active{% endif %}" href="{% url 'core:audit_log' %}">
             <span class="tree-caret"></span>

@@ -15,9 +15,9 @@
     </div>
     <div class="page-header-actions">
       {% if target_filter %}
-        <a class="secondary-action" href="{% url 'core:scheduled_tasks' %}">Clear Filter</a>
+        <a class="secondary-action" href="{% url 'core:scheduled_tasks' cluster_key %}">Clear Filter</a>
       {% endif %}
-      <a class="vs-toolbar-button" href="{% url 'core:scheduled_task_create' %}{% if scheduled_task_create_query %}?{{ scheduled_task_create_query }}{% endif %}"><i data-lucide="plus" aria-hidden="true"></i> New Scheduled Task</a>
+      <a class="vs-toolbar-button" href="{% url 'core:scheduled_task_create' cluster_key %}{% if scheduled_task_create_query %}?{{ scheduled_task_create_query }}{% endif %}"><i data-lucide="plus" aria-hidden="true"></i> New Scheduled Task</a>
     </div>
   </section>
 

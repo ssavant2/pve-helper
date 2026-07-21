@@ -741,8 +741,14 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
         "active_guest_target_id": active_target,
         "active_guest_ref": detail_ref.serialize() if detail_ref is not None else "",
         "available_user_tags": available_user_tags,
-        "schedule_action_url": f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}",
-        "scheduled_actions_url": f"{reverse('core:scheduled_tasks')}?{urlencode({'target': target})}",
+        "schedule_action_url": (
+            f"{reverse('core:scheduled_task_create', kwargs={'cluster_key': detail.cluster_key})}"
+            f"?{urlencode({'target': target})}"
+        ),
+        "scheduled_actions_url": (
+            f"{reverse('core:scheduled_tasks', kwargs={'cluster_key': detail.cluster_key})}"
+            f"?{urlencode({'target': target})}"
+        ),
     }
 
 

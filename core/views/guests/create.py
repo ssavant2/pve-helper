@@ -89,7 +89,8 @@ def guest_configure(request, cluster_key: str, object_type: str, vmid: int):
     context["config_sections"] = _guest_config_sections(detail.config, agent_summary=agent_summary)
     context["scheduled_actions"] = actions
     context["scheduled_task_create_url"] = (
-        f"{reverse('core:scheduled_task_create')}?{urlencode({'target': detail.guest_ref.without_node().serialize()})}"
+        f"{reverse('core:scheduled_task_create', kwargs={'cluster_key': detail.guest_ref.cluster_key})}"
+        f"?{urlencode({'target': detail.guest_ref.without_node().serialize()})}"
     )
     return render(request, "core/guest_configure.html", context)
 

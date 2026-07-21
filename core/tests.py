@@ -9613,7 +9613,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             "core.views.common.fetch_live_guest_inventory",
             side_effect=AssertionError("overview should not fetch live targets"),
         ):
-            response = self.client.get(reverse("core:scheduled_tasks"))
+            response = self.client.get(reverse("core:scheduled_tasks", args=[self.cluster.key]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Scheduled Tasks")
@@ -9633,7 +9633,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             side_effect=AssertionError("overview should not fetch live targets"),
         ):
             response = self.client.get(
-                reverse("core:scheduled_tasks"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()}
+                reverse("core:scheduled_tasks", args=[self.cluster.key]),
+                {"target": GuestRef(self.cluster.key, "vm", 500).serialize()},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -9683,7 +9684,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
 
         response = self.client.get(
-            reverse("core:scheduled_task_runs"), {"target": GuestRef(self.cluster.key, "vm", 500).serialize()}
+            reverse("core:scheduled_task_runs", args=[self.cluster.key]),
+            {"target": GuestRef(self.cluster.key, "vm", 500).serialize()},
         )
 
         self.assertEqual(response.status_code, 200)
@@ -9722,7 +9724,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 finished_at=timezone.now(),
             )
 
-        response = self.client.get(reverse("core:scheduled_task_runs"))
+        response = self.client.get(reverse("core:scheduled_task_runs", args=[self.cluster.key]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["runs"]), 10)
@@ -9740,7 +9742,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
-            response = self.client.get(reverse("core:scheduled_task_create"))
+            response = self.client.get(reverse("core:scheduled_task_create", args=[self.cluster.key]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
@@ -9758,7 +9760,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Months")
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
-            response = self.client.get(reverse("core:scheduled_task_create"), {"target": target_ref})
+            response = self.client.get(
+                reverse("core:scheduled_task_create", args=[self.cluster.key]), {"target": target_ref}
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lab VM")
@@ -9766,7 +9770,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
-                reverse("core:scheduled_task_create"),
+                reverse("core:scheduled_task_create", args=[self.cluster.key]),
                 {
                     "name": "Night shutdown",
                     "enabled": "on",
@@ -9787,7 +9791,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:scheduled_tasks", args=[self.cluster.key]), fetch_redirect_response=False
+        )
         action = ScheduledAction.objects.get(name="Night shutdown")
         self.assertTrue(action.enabled)
         self.assertEqual(action.created_by, user)
@@ -9813,7 +9819,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
-                reverse("core:scheduled_task_create"),
+                reverse("core:scheduled_task_create", args=[self.cluster.key]),
                 {
                     "name": "Night shutdown",
                     "enabled": "on",
@@ -9842,7 +9848,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             self._live_guest(object_type="ct", vmid=101, name="Lab CT", node="pve2"),
         ]
         with patch("core.views.common.fetch_live_guest_inventory", return_value=live_guests):
-            response = self.client.get(reverse("core:scheduled_task_create"))
+            response = self.client.get(reverse("core:scheduled_task_create", args=[self.cluster.key]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'value="gr1:default:vm:500"')
@@ -9866,7 +9872,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.post(
-                reverse("core:scheduled_task_create"),
+                reverse("core:scheduled_task_create", args=[self.cluster.key]),
                 {
                     "name": "One-time reboot",
                     "enabled": "on",
@@ -9881,7 +9887,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:scheduled_tasks", args=[self.cluster.key]), fetch_redirect_response=False
+        )
         action = ScheduledAction.objects.get(name="One-time reboot")
         local_run_at = timezone.localtime(action.run_at)
         self.assertEqual(local_run_at.strftime("%Y-%m-%d %H:%M"), "2026-07-03 22:05")
@@ -9966,7 +9974,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                 },
             )
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:scheduled_tasks", args=[self.cluster.key]), fetch_redirect_response=False
+        )
         action.refresh_from_db()
         self.assertEqual(action.name, "Morning start")
         self.assertEqual(action.schedule_type, ScheduledAction.ScheduleType.RECURRING)
@@ -9990,7 +10000,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         response = self.client.post(reverse("core:scheduled_task_toggle", args=[action.id]), {"enabled": "1"})
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:scheduled_tasks", args=[self.cluster.key]), fetch_redirect_response=False
+        )
         action.refresh_from_db()
         self.assertTrue(action.enabled)
         self.assertIsNotNone(action.next_run_at)
@@ -10006,7 +10018,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         response = self.client.post(reverse("core:scheduled_task_delete", args=[action.id]))
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:scheduled_tasks", args=[self.cluster.key]), fetch_redirect_response=False
+        )
         action.refresh_from_db()
         self.assertIsNotNone(action.deleted_at)
         self.assertFalse(action.enabled)
@@ -10014,7 +10028,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertTrue(ScheduledActionRun.objects.filter(pk=run.pk).exists())
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.deleted").exists())
 
-        response = self.client.get(reverse("core:scheduled_tasks"))
+        response = self.client.get(reverse("core:scheduled_tasks", args=[self.cluster.key]))
         self.assertEqual(response.context["scheduled_actions"], [])
 
     def test_scheduled_task_delete_refuses_an_in_flight_run(self):
@@ -10055,7 +10069,9 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         with patch("core.services.scheduled_actions.async_task", return_value="manual-task-id"):
             response = self.client.post(reverse("core:scheduled_task_run_now", args=[action.id]))
 
-        self.assertRedirects(response, reverse("core:scheduled_tasks"), fetch_redirect_response=False)
+        self.assertRedirects(
+            response, reverse("core:scheduled_tasks", args=[self.cluster.key]), fetch_redirect_response=False
+        )
         run = ScheduledActionRun.objects.get(scheduled_action=action)
         self.assertEqual(run.status, ScheduledActionRun.Status.QUEUED)
         self.assertEqual(run.triggered_by, user)

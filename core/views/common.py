@@ -871,12 +871,16 @@ def _decorate_guests_with_scheduled_actions(guests: list) -> None:
         guest.scheduled_actions = actions_by_target.get((cluster_id, guest.object_type, guest.vmid), [])
         guest.scheduled_action_count = len(guest.scheduled_actions)
         guest.scheduled_action_search_text = " ".join(action.name for action in guest.scheduled_actions)
-        guest.schedule_action_url = (
-            f"{reverse('core:scheduled_task_create')}?{urlencode({'target': target})}"
-            if target
-            else reverse("core:scheduled_task_create")
-        )
-        guest.scheduled_actions_url = f"{reverse('core:scheduled_tasks')}?{urlencode({'target': target})}"
+        # Both destinations are cluster-scoped, and the guest already knows which
+        # cluster it is in — so no row here ever needs the legacy chooser.
+        scope = {"cluster_key": ref.cluster_key} if ref is not None else None
+        if scope is None:
+            guest.schedule_action_url = reverse("core:legacy_scheduled_task_create")
+            guest.scheduled_actions_url = reverse("core:legacy_scheduled_tasks")
+            continue
+        query = urlencode({"target": target})
+        guest.schedule_action_url = f"{reverse('core:scheduled_task_create', kwargs=scope)}?{query}"
+        guest.scheduled_actions_url = f"{reverse('core:scheduled_tasks', kwargs=scope)}?{query}"
 
 
 def _latest_proxmox_inventory_scan() -> ScanRun | None:

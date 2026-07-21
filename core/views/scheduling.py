@@ -59,25 +59,44 @@ from .common import (
 )
 
 
+def _scheduled_cluster_or_404(cluster_key: str) -> ProxmoxCluster:
+    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    return cluster
+
+
+def _scheduled_tasks_url(cluster_key: str) -> str:
+    return reverse("core:scheduled_tasks", kwargs={"cluster_key": cluster_key})
+
+
 @app_login_required
-def scheduled_tasks(request):
+def scheduled_tasks(request, cluster_key: str):
+    cluster = _scheduled_cluster_or_404(cluster_key)
     target_filter = request.GET.get("target", "")
     target_ref = _parse_scheduled_target_ref(target_filter)
+    # A target from another cluster is not a narrower view of this page, it is a
+    # different page. Dropping it keeps the URL's cluster authoritative rather than
+    # letting a stale query string silently widen the scope.
+    if target_ref is not None and target_ref.cluster_key != cluster.key:
+        target_ref = None
     target_type = target_ref.object_type if target_ref else None
     target_vmid = target_ref.vmid if target_ref else None
     target_filter_value = target_ref.without_node().serialize() if target_ref else ""
 
-    actions_query = ScheduledAction.objects.select_related("created_by", "cluster").filter(deleted_at__isnull=True)
+    actions_query = ScheduledAction.objects.select_related("created_by", "cluster").filter(
+        deleted_at__isnull=True,
+        cluster=cluster,
+    )
     if target_filter_value:
         actions_query = actions_query.filter(
-            cluster__key=target_ref.cluster_key,
             target_type=target_type,
             target_vmid=target_vmid,
         )
 
     actions = list(actions_query.order_by("-enabled", "next_run_at", "name"))
     latest_runs = _latest_scheduled_runs(
-        cluster_key=target_ref.cluster_key if target_ref else "",
+        cluster_key=cluster.key,
         target_type=target_type,
         target_vmid=target_vmid,
     )
@@ -89,12 +108,14 @@ def scheduled_tasks(request):
         action.display_status_class = _scheduled_action_status_class(action.last_status)
         action.display_creator = action.created_by.get_username() if action.created_by else "system"
 
-    scheduled_runs_url = reverse("core:scheduled_task_runs")
+    scheduled_runs_url = reverse("core:scheduled_task_runs", kwargs={"cluster_key": cluster.key})
     if target_filter_value:
         scheduled_runs_url = f"{scheduled_runs_url}?{urlencode({'target': target_filter_value})}"
 
     context = {
         **navigation_context("scheduled_tasks"),
+        "cluster_key": cluster.key,
+        "selected_cluster": cluster,
         "scheduled_actions": actions,
         "latest_runs": latest_runs,
         "schedule_timezone": settings.TIME_ZONE,
@@ -108,15 +129,17 @@ def scheduled_tasks(request):
 
 
 @app_login_required
-def scheduled_task_runs(request):
-    target_filter = request.GET.get("target", "")
-    target_ref = _parse_scheduled_target_ref(target_filter)
+def scheduled_task_runs(request, cluster_key: str):
+    cluster = _scheduled_cluster_or_404(cluster_key)
+    target_ref = _parse_scheduled_target_ref(request.GET.get("target", ""))
+    if target_ref is not None and target_ref.cluster_key != cluster.key:
+        target_ref = None
     return JsonResponse(
         {
             "runs": [
                 _serialize_scheduled_run(run)
                 for run in _latest_scheduled_runs(
-                    cluster_key=target_ref.cluster_key if target_ref else "",
+                    cluster_key=cluster.key,
                     target_type=target_ref.object_type if target_ref else None,
                     target_vmid=target_ref.vmid if target_ref else None,
                     limit=10,
@@ -127,17 +150,17 @@ def scheduled_task_runs(request):
 
 
 @app_login_required
-def scheduled_task_create(request):
-    action = ScheduledAction()
+def scheduled_task_create(request, cluster_key: str):
+    cluster = _scheduled_cluster_or_404(cluster_key)
+    action = ScheduledAction(cluster=cluster)
     if request.method == "POST":
         errors = _apply_scheduled_action_form(action, request.POST, request.user)
         if not errors:
             _audit_scheduled_action_definition(request, "scheduled_action.created", action)
-            return redirect("core:scheduled_tasks")
+            return redirect(_scheduled_tasks_url(action.cluster.key))
     else:
         target_ref = _parse_scheduled_target_ref(request.GET.get("target", ""))
-        if target_ref:
-            action.cluster = ProxmoxCluster.objects.get(key=target_ref.cluster_key)
+        if target_ref and target_ref.cluster_key == cluster.key:
             action.target_type = target_ref.object_type
             action.target_vmid = target_ref.vmid
             _apply_target_snapshot(action)
@@ -159,7 +182,7 @@ def scheduled_task_edit(request, action_id: int):
         errors = _apply_scheduled_action_form(action, request.POST, request.user)
         if not errors:
             _audit_scheduled_action_definition(request, "scheduled_action.updated", action)
-            return redirect("core:scheduled_tasks")
+            return redirect(_scheduled_tasks_url(action.cluster.key))
     else:
         errors = []
 
@@ -182,7 +205,7 @@ def scheduled_task_toggle(request, action_id: int):
             _refresh_scheduled_action_next_run(action)
         except ValueError as exc:
             messages.error(request, str(exc))
-            return redirect("core:scheduled_tasks")
+            return redirect(_scheduled_tasks_url(action.cluster.key))
     action.enabled = enabled
     action.save(update_fields=["enabled", "next_run_at", "updated_at"])
     _audit_scheduled_action_definition(
@@ -190,7 +213,7 @@ def scheduled_task_toggle(request, action_id: int):
         "scheduled_action.enabled" if enabled else "scheduled_action.disabled",
         action,
     )
-    return redirect("core:scheduled_tasks")
+    return redirect(_scheduled_tasks_url(action.cluster.key))
 
 
 @require_POST
@@ -204,14 +227,14 @@ def scheduled_task_delete(request, action_id: int):
         )
         if action.runs.filter(status__in=IN_FLIGHT_RUN_STATUSES).exists():
             messages.error(request, "This scheduled task has a run in progress and cannot be deleted yet.")
-            return redirect("core:scheduled_tasks")
+            return redirect(_scheduled_tasks_url(action.cluster.key))
         action.enabled = False
         action.next_run_at = None
         action.deleted_at = tz.now()
         action.save(update_fields=["enabled", "next_run_at", "deleted_at", "updated_at"])
     _audit_scheduled_action_definition(request, "scheduled_action.deleted", action)
     messages.success(request, "Scheduled task removed. Completed run history is retained.")
-    return redirect("core:scheduled_tasks")
+    return redirect(_scheduled_tasks_url(action.cluster.key))
 
 
 @require_POST
@@ -222,7 +245,7 @@ def scheduled_task_run_now(request, action_id: int):
         queue_manual_scheduled_action_run(action, triggered_by=request.user)
     except ScheduledActionQueueError as exc:
         messages.error(request, str(exc))
-    return redirect("core:scheduled_tasks")
+    return redirect(_scheduled_tasks_url(action.cluster.key))
 
 
 @app_login_required
@@ -593,6 +616,8 @@ def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict
             page_title=("New scheduled task" if mode == "create" else "Edit scheduled task"),
         ),
         "scheduled_action": action,
+        "cluster_key": action.cluster.key,
+        "selected_cluster": action.cluster,
         "form_values": form_values,
         "form_errors": errors,
         "form_mode": mode,
@@ -631,7 +656,9 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
         }
 
     recurrence = action.recurrence if isinstance(action.recurrence, dict) else {}
-    ref = action.guest_ref() if action.pk or action.cluster_id else None
+    # Same as in `_scheduled_action_target_choices`: the target, not the cluster, is
+    # what decides whether there is a reference to build.
+    ref = action.guest_ref() if action.target_type else None
     target = ref.without_node().serialize() if ref else ""
     run_at = None
     if action.schedule_type == ScheduledAction.ScheduleType.ONCE:
@@ -666,9 +693,12 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
 def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> list[dict]:
     choices = []
     seen = set()
-    for obj in CurrentGuestInventory.objects.select_related("cluster").order_by(
-        "cluster__key", "object_type", "vmid", "node"
-    ):
+    guests = CurrentGuestInventory.objects.select_related("cluster")
+    if action is not None and action.cluster_id:
+        # Offering guests from other clusters would offer a target the form then
+        # rejects, since a schedule lives in the cluster its page is scoped to.
+        guests = guests.filter(cluster_id=action.cluster_id)
+    for obj in guests.order_by("cluster__key", "object_type", "vmid", "node"):
         ref = obj.guest_ref()
         if ref is None:
             continue
@@ -684,7 +714,9 @@ def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> l
             }
         )
 
-    action_ref = action.guest_ref() if action and action.cluster_id else None
+    # `cluster_id` no longer implies a target: the create form arrives with the
+    # cluster already set from the URL and nothing chosen yet.
+    action_ref = action.guest_ref() if action and action.cluster_id and action.target_type else None
     if action_ref:
         value = action_ref.without_node().serialize()
         if action_ref.identity_tuple not in seen:
@@ -730,6 +762,12 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     target_ref = _parse_scheduled_target_ref(post.get("target", ""))
     if target_ref is None:
         errors.append("Target is required.")
+    elif action.cluster_id is not None and target_ref.cluster_key != action.cluster.key:
+        # Both the form and the list it returns to are scoped to one cluster, so a
+        # target elsewhere would save a schedule that is invisible from where it was
+        # created. Create one in that cluster instead.
+        errors.append("The target must be in this cluster.")
+        target_ref = None
     if not name:
         errors.append("Name is required.")
     elif (
@@ -1121,9 +1159,10 @@ def _latest_scheduled_runs(
     limit: int = 10,
 ) -> list[ScheduledActionRun]:
     runs_query = ScheduledActionRun.objects.select_related("scheduled_action", "scheduled_action__cluster")
+    if cluster_key:
+        runs_query = runs_query.filter(scheduled_action__cluster__key=cluster_key)
     if target_type and target_vmid is not None:
         runs_query = runs_query.filter(
-            scheduled_action__cluster__key=cluster_key,
             scheduled_action__target_type=target_type,
             scheduled_action__target_vmid=target_vmid,
         )

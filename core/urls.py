@@ -468,9 +468,23 @@ urlpatterns = [
     path("tags/recolor/", legacy_cluster_redirect("core:tag_recolor"), name="legacy_tag_recolor"),
     path("tags/operation/", legacy_cluster_redirect("core:tag_operation"), name="legacy_tag_operation"),
     path("tags/refresh/", legacy_cluster_redirect("core:tags_refresh"), name="legacy_tags_refresh"),
-    path("scheduled-tasks/", views.scheduled_tasks, name="scheduled_tasks"),
-    path("scheduled-tasks/runs/", views.scheduled_task_runs, name="scheduled_task_runs"),
-    path("scheduled-tasks/new/", views.scheduled_task_create, name="scheduled_task_create"),
+    # Collections carry the cluster; the `<int:action_id>` routes deliberately do not.
+    # The row already names its cluster, so a segment there would be a second copy of
+    # the same fact that a hand-edited URL could put in conflict with the first.
+    path("clusters/<str:cluster_key>/scheduled-tasks/", views.scheduled_tasks, name="scheduled_tasks"),
+    path("clusters/<str:cluster_key>/scheduled-tasks/runs/", views.scheduled_task_runs, name="scheduled_task_runs"),
+    path("clusters/<str:cluster_key>/scheduled-tasks/new/", views.scheduled_task_create, name="scheduled_task_create"),
+    path("scheduled-tasks/", legacy_cluster_redirect("core:scheduled_tasks"), name="legacy_scheduled_tasks"),
+    path(
+        "scheduled-tasks/runs/",
+        legacy_cluster_redirect("core:scheduled_task_runs"),
+        name="legacy_scheduled_task_runs",
+    ),
+    path(
+        "scheduled-tasks/new/",
+        legacy_cluster_redirect("core:scheduled_task_create"),
+        name="legacy_scheduled_task_create",
+    ),
     path("scheduled-tasks/<int:action_id>/edit/", views.scheduled_task_edit, name="scheduled_task_edit"),
     path("scheduled-tasks/<int:action_id>/toggle/", views.scheduled_task_toggle, name="scheduled_task_toggle"),
     path("scheduled-tasks/<int:action_id>/delete/", views.scheduled_task_delete, name="scheduled_task_delete"),

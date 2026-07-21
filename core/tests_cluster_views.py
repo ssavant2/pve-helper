@@ -119,13 +119,18 @@ class ClusterConnectionViewTests(TestCase):
             "core:dashboard",
             "core:vms_overview",
             "core:vms",
-            "core:scheduled_tasks",
             "core:audit_log",
         ):
             with self.subTest(route=route_name):
                 response = self.client.get(reverse(route_name))
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, reverse("core:cluster_add"))
+
+        # Scheduled Tasks is cluster-scoped and therefore not an aggregate view: with
+        # no cluster there is nothing for it to show, so the legacy path sends the
+        # operator to where a cluster is added instead of rendering an empty list.
+        response = self.client.get(reverse("core:legacy_scheduled_tasks"))
+        self.assertRedirects(response, reverse("core:cluster_add"), fetch_redirect_response=False)
 
         search = self.client.get(reverse("core:global_search"))
         self.assertEqual(search.status_code, 200)

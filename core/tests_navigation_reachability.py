@@ -56,7 +56,9 @@ REQUIRED_PAGES = frozenset(
         "core:vms_overview",
         "core:clusters_overview",
         "core:orphan_finder",
-        "core:scheduled_tasks",
+        # core:scheduled_tasks is absent for the same reason core:tags_overview is:
+        # it became cluster-scoped, so it takes an argument and the crawl — which is
+        # deliberately zero-argument only — no longer sees it at all.
         "core:audit_log",
         # core:pve_helper_settings is deliberately a redirect to the first settings
         # tab, so it is not a page and is classified out by the crawl.
