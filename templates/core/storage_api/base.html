@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 
 {% block content %}
-  {# Recent Tasks watches this marker: when a catalog refresh started after this
-     render finishes, the page re-renders itself instead of showing stale data. #}
+  {% comment %}
+    Recent Tasks watches this marker: when a catalog refresh started after this
+    render finishes, the page re-renders itself instead of showing stale data.
+  {% endcomment %}
   <div class="storage-object-view" data-storage-catalog-view data-rendered-at-ms="{{ catalog_view_rendered_at_ms }}">
     <section class="vs-object-header">
       <div class="vs-title-row">

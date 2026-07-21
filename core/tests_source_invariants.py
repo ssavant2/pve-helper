@@ -216,6 +216,38 @@ class FrontendSourceInvariantTests(SimpleTestCase):
             f"survive soft navigation. Initialise a module from bootstrap.js instead: {', '.join(violations)}",
         )
 
+    def test_template_comments_do_not_span_lines(self):
+        """`{# … #}` is a single-line comment, and a multi-line one is not a comment
+        at all.
+
+        Django's tokeniser compiles `({%.*?%}|{{.*?}}|{#.*?#})` without `DOTALL`,
+        so `.` stops at a newline and a `{#` that closes on a later line never
+        matches. The whole thing stays plain text and is served to the browser
+        verbatim. Two of them shipped that way — a note about where the browser
+        title is composed appeared inside `<head>` on every page in the
+        application, and a note about the catalog-refresh marker appeared above
+        the datastore view. Nothing failed, which is why they survived: a comment
+        that leaks looks exactly like a comment that works, unless someone reads
+        the delivered HTML. Use `{% comment %}` for anything longer than a line.
+        """
+        root = Path(settings.BASE_DIR)
+        violations = []
+        for path in sorted((root / "templates").rglob("*.html")):
+            text = path.read_text()
+            for match in re.finditer(r"\{#", text):
+                end = text.find("#}", match.end())
+                if end == -1:
+                    continue
+                if "\n" in text[match.start() : end]:
+                    violations.append(f"{path.relative_to(root)}:{text[: match.start()].count('\n') + 1}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "A `{# #}` comment that closes on a later line is rendered into the page as text; "
+            f"use `{{% comment %}}` instead: {', '.join(violations)}",
+        )
+
 
 class DialogModuleInvariantTests(SimpleTestCase):
     """A modal element belongs to one modal.

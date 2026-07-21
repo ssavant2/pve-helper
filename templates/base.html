@@ -4,10 +4,12 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    {# Composed by `browser_title` in core/views/common.py, never here: the title
-       has to be a string the view can build from the object it already loaded.
-       The default is a fallback for a page rendered without a navigation context,
-       not a design — `PageTitleTests` fails if a real page falls back to it. #}
+    {% comment %}
+      Composed by `browser_title` in core/views/common.py, never here: the title
+      has to be a string the view can build from the object it already loaded.
+      The default is a fallback for a page rendered without a navigation context,
+      not a design — `PageTitleTests` fails if a real page falls back to it.
+    {% endcomment %}
     <title>{{ page_title|default:"pve-helper" }}</title>
     <script src="{% static 'js/preferences-bootstrap.js' %}"></script>
     <link rel="stylesheet" href="{% static 'css/app/foundation.css' %}">
