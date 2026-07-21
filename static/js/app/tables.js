@@ -486,18 +486,10 @@ const initResizableColumns = (root) => {
     const updateTableWidth = () => {
       const headerCells = visibleHeaderCells();
       const total = headerCells.reduce((sum, cell) => sum + baseCellWidth(cell), 0);
-      const scroll = table.closest(".data-table-scroll, .task-table-wrap") || table.parentElement;
-      const available = scroll?.clientWidth || table.parentElement?.clientWidth || 0;
-      const width = Math.max(Math.ceil(available), 1);
-      const stretchCell = headerCells.filter((cell) => cell.dataset.column).at(-1);
-      const stretchColumn = stretchCell?.dataset.column || "";
-      const slack = stretchColumn ? width - total : 0;
+      const width = Math.max(Math.ceil(total), 1);
       headerCells.forEach((cell) => {
         const column = cell.dataset.column || "";
-        const renderedWidth = Math.max(
-          column && column === stretchColumn ? minColumnWidth(column) : baseCellWidth(cell),
-          baseCellWidth(cell) + (column && column === stretchColumn ? slack : 0)
-        );
+        const renderedWidth = baseCellWidth(cell);
         const targets = column ? columnCells(column) : [cell];
         targets.forEach((target) => {
           target.style.width = `${renderedWidth}px`;

@@ -43,7 +43,7 @@
   flex: 1 1 auto;
   min-height: 220px;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 .vm-overview-table {
@@ -69,7 +69,6 @@
   white-space: nowrap;
   font-size: 13px;
   line-height: 17px;
-  color: #f0f7fb;
 }
 
 .vm-overview-table th {
@@ -77,6 +76,11 @@
   height: 30px;
   padding: 5px 20px 5px 8px;
   border-right: 1px solid rgba(174, 194, 204, 0.38);
+  color: var(--table-header-text);
+}
+
+.vm-overview-table td {
+  color: var(--text);
 }
 
 /* Match the Inventory list density instead of the roomy default table rows.
@@ -390,4 +394,3 @@
 .column-picker-panel label input {
   margin: 0;
 }
-

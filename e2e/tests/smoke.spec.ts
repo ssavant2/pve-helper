@@ -245,6 +245,101 @@ test("theme toggle button is wired (app.js event handlers attached)", async ({ p
     .not.toBe(before);
 });
 
+test("VM overview table text remains readable in both themes", async ({ page }) => {
+  await page.goto("/vms/overview/", { waitUntil: "load" });
+
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((selectedTheme) => {
+      document.documentElement.dataset.theme = selectedTheme;
+    }, theme);
+
+    for (const selector of ["#vm-overview-table th[data-column='state']", "#vm-overview-table td[data-column='state']"]) {
+      const contrast = await page.locator(selector).first().evaluate((element) => {
+        const colorChannels = (value: string) => value.match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number) ?? [];
+        const relativeLuminance = (channels: number[]) =>
+          channels
+            .map((channel) => {
+              const normalized = channel / 255;
+              return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+            })
+            .reduce((total, channel, index) => total + channel * [0.2126, 0.7152, 0.0722][index], 0);
+        const backgroundColor = (node: Element | null): string => {
+          if (!node) return "rgb(255, 255, 255)";
+          const color = getComputedStyle(node).backgroundColor;
+          return color === "rgba(0, 0, 0, 0)" ? backgroundColor(node.parentElement) : color;
+        };
+        const foreground = relativeLuminance(colorChannels(getComputedStyle(element).color));
+        const background = relativeLuminance(colorChannels(backgroundColor(element)));
+        return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+      });
+      expect(contrast, `${theme} theme: ${selector}`).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
+
+test("VM overview does not stretch the final visible column", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "pve-helper-columns-vm-overview",
+      JSON.stringify({
+        state: true,
+        cluster: false,
+        provisioned: true,
+        used: false,
+        cpu: false,
+        "host-mem": false,
+        "active-mem": false,
+        "guest-os": false,
+        agent: false,
+        node: false,
+        "has-snapshot": false,
+        vmid: true,
+        type: true,
+        "memory-size": false,
+        cpus: false,
+        nics: false,
+        disks: false,
+        uptime: false,
+        ip: false,
+        mac: false,
+        storage: false,
+        tags: true,
+      })
+    );
+    localStorage.removeItem("pve-helper-column-widths-vm-overview");
+  });
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto("/vms/overview/", { waitUntil: "load" });
+
+  const scroll = page.locator(".vm-overview-scroll");
+  await expect(scroll).toHaveCSS("overflow-x", "auto");
+  await expect
+    .poll(() => scroll.evaluate((element) => element.scrollWidth <= element.clientWidth))
+    .toBe(true);
+  await expect(page.locator("#vm-overview-table th[data-column='tags']")).toHaveCSS("width", "170px");
+});
+
+test("VM overview makes wide visible columns horizontally reachable", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.removeItem("pve-helper-columns-vm-overview");
+    localStorage.removeItem("pve-helper-column-widths-vm-overview");
+  });
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.goto("/vms/overview/", { waitUntil: "load" });
+
+  const scroll = page.locator(".vm-overview-scroll");
+
+  await expect
+    .poll(() => scroll.evaluate((element) => element.scrollWidth > element.clientWidth))
+    .toBe(true);
+  await scroll.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect
+    .poll(() => scroll.evaluate((element) => element.scrollLeft + element.clientWidth >= element.scrollWidth - 1))
+    .toBe(true);
+});
+
 test("CSS layers load in the intended cascade order", async ({ page }) => {
   await page.goto("/vms/overview/", { waitUntil: "load" });
   const hrefs = await page.locator('link[rel="stylesheet"]').evaluateAll((links) => links.map((link) => link.href));
