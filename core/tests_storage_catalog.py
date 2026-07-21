@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
@@ -1787,3 +1787,80 @@ class BindingRowCostTests(TestCase):
         confirm = str(_binding_rows()[0]["confirm"])
 
         self.assertLess(confirm.index("vm:100"), confirm.index("vm:1 "))
+
+
+class StorageSpaceSnapshotScopeTests(TestCase):
+    """A snapshot is readable only through the branch it was written for.
+
+    `StorageSpaceSnapshot` has two identities and the model comment has always
+    said exactly one is set. Nothing enforced it, and the interesting part is
+    which half drifted. The XOR between the two identities held on its own: the
+    writers are disciplined, and four months of rows contain no case of both or
+    neither. What drifted was the *rest* of the API-side identity — `0015` added
+    `cluster` without backfilling, leaving eight rows that no chart could reach,
+    because `_api_storage_space_chart_data` filters on the cluster too.
+
+    So these tests assert the reader's filter, not just the XOR. A constraint
+    that only forbade setting both identities would have accepted every row that
+    was actually wrong.
+    """
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="space", display_name="Space", enabled=True)
+        self.mount = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="nfs-vm",
+            relative_path="nfs-vm",
+            backend_identity="nfs-vm",
+        )
+
+    def _snapshot(self, **fields):
+        return StorageSpaceSnapshot.objects.create(
+            recorded_at=timezone.now(),
+            total_bytes=1000,
+            available_bytes=600,
+            used_bytes=400,
+            **fields,
+        )
+
+    def test_both_legitimate_shapes_are_accepted(self):
+        self._snapshot(storage=self.mount)
+        self._snapshot(cluster=self.cluster, node="pve1", api_storage_id="local-lvm")
+
+        self.assertEqual(StorageSpaceSnapshot.objects.count(), 2)
+
+    def test_an_api_snapshot_without_a_cluster_is_rejected(self):
+        """The one that actually happened, and the one a bare XOR misses.
+
+        Such a row satisfies "exactly one identity is set" and is still dead:
+        `_api_storage_space_chart_data` pins the query to a cluster, so nothing
+        in the application can ever display it.
+        """
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._snapshot(node="pve1", api_storage_id="local-lvm")
+
+    def test_an_api_snapshot_without_a_node_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._snapshot(cluster=self.cluster, api_storage_id="local-lvm")
+
+    def test_an_api_snapshot_without_a_storage_id_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._snapshot(cluster=self.cluster, node="pve1")
+
+    def test_a_snapshot_carrying_both_identities_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._snapshot(storage=self.mount, cluster=self.cluster, node="pve1", api_storage_id="local-lvm")
+
+    def test_a_mounted_snapshot_carrying_api_scope_is_rejected(self):
+        """Half a second identity is still ambiguous.
+
+        `__str__` and both chart readers branch on `storage` alone, so a row that
+        also carries a node would render as the mount while sitting in the API
+        index under a different name.
+        """
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._snapshot(storage=self.mount, node="pve1")
+
+    def test_a_snapshot_with_no_identity_at_all_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._snapshot()

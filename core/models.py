@@ -1339,7 +1339,9 @@ class TrashItem(TimestampedModel):
 
 class StorageSpaceSnapshot(TimestampedModel):
     # Either a mounted StorageMount (shared/file storages) OR a local API-only
-    # storage identified by (node, storage_id). Exactly one of these is set.
+    # storage identified by (node, storage_id). Exactly one of these is set, and
+    # `storage_space_snapshot_scope` is what makes that a fact rather than a
+    # comment — see the constraint for why the API branch also requires a cluster.
     # Covered by `core_storag_storage_10c3c9_idx`.
     storage = models.ForeignKey(
         StorageMount,
@@ -1374,6 +1376,34 @@ class StorageSpaceSnapshot(TimestampedModel):
 
     class Meta:
         ordering = ["-recorded_at"]
+        constraints = [
+            # A snapshot is only readable through the branch it was written for.
+            # `_storage_space_chart_data` selects on `storage`;
+            # `_api_storage_space_chart_data` selects on
+            # `storage__isnull=True, cluster=..., api_storage_id=...`. So a row
+            # that sets neither identity, or sets both, or is API-side without a
+            # cluster, is not a mildly malformed sample — it is a sample no chart
+            # can ever reach. Eight such rows existed when this landed, written
+            # before `0015` added `cluster`, and nothing had noticed.
+            #
+            # Both halves are constrained, not just the identity XOR, for the same
+            # reason `ClusterStorageMount` and `ClusterStorageVolumeCoverage`
+            # constrain scope against node: the reader's filter is the real
+            # contract, and it reads more than one column. `node` and
+            # `api_storage_id` are `blank=True` rather than nullable, so the empty
+            # string is the absent value here.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(storage__isnull=False, cluster__isnull=True, node="", api_storage_id="")
+                    | (
+                        models.Q(storage__isnull=True, cluster__isnull=False)
+                        & ~models.Q(node="")
+                        & ~models.Q(api_storage_id="")
+                    )
+                ),
+                name="storage_space_snapshot_scope",
+            ),
+        ]
         indexes = [
             models.Index(fields=["storage", "recorded_at"]),
             models.Index(
