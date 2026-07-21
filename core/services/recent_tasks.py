@@ -4,7 +4,20 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import PurePosixPath
 
-from django.db.models import Q
+from django.db.models import (
+    BooleanField,
+    CharField,
+    DateTimeField,
+    Exists,
+    ExpressionWrapper,
+    F,
+    OuterRef,
+    Q,
+    TextField,
+    Value,
+)
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Cast, Coalesce, NullIf
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -122,54 +135,232 @@ def recent_task_page(
     *,
     cluster_key: str = "",
 ) -> RecentTaskPage:
+    """One page of the merged task timeline, ordered and sliced by the database.
+
+    The five sources have nothing in common but a timestamp, so this used to
+    materialise every row in the retention window from all of them, build a
+    display dict for each, sort the merged list and slice five entries off the
+    front. The cost of showing five rows was proportional to everything that had
+    happened in the last hour, and it was paid by every page load, every dialog
+    fragment and every 10 s taskbar poll from every open tab.
+
+    Instead each source contributes a narrow *index* row — kind, primary key, sort
+    key, pinned — the union of those is ordered and sliced in SQL, and only the
+    rows that survive are hydrated into display dicts. The database still reads
+    the window to sort it (nothing here is denormalised, and adding a materialised
+    timeline for a 60-minute window would be a much larger promise than the
+    problem needs), but transfer, model instantiation and the per-row detail
+    parsing in `_guest_task` and friends drop from O(window) to O(limit).
+
+    Two things are load-bearing and easy to get wrong:
+
+    * **The sort key is not the column each source is ordered by.** A scan sorts on
+      `started_at or created_at`, a scheduled run on `started_at or finished_at or
+      created_at`, and a catalog refresh on a timestamp that lives inside
+      `details`. Taking the top N of each source by its own natural column and
+      merging those would silently drop rows. Each source therefore annotates the
+      sort key itself, as the same expression the display dict uses.
+    * **`total` and `questions_pending` come from the same predicates as the page.**
+      They are user-visible ("1–5 of 37"), so they cannot be an approximation of
+      what the page shows.
+
+    `RecentTaskIndexParityTests` pins both against a naive compose-everything
+    reference implementation, which is the only honest way to keep the SQL and the
+    Python display code from drifting apart.
+    """
     page = max(0, page)
     limit = max(1, limit)
     offset = page * limit
-    scans = list(_visible_scan_tasks().order_by("-created_at"))
-    scan_ids = [str(scan.id) for scan in scans]
-    audit_events = (
+    index = _task_index(cluster_key)
+    total = index.count()
+    rows = list(index.order_by("-task_pinned", "-task_sort", "-id")[offset : offset + limit])
+    return RecentTaskPage(
+        tasks=_hydrate_index_rows(rows),
+        page=page,
+        limit=limit,
+        total=total,
+        questions_pending=_questions_pending(cluster_key),
+    )
+
+
+def _task_index(cluster_key: str):
+    """The union of every source's index row, ready to order and slice.
+
+    `all=True` because the kinds cannot collide, so there is nothing to
+    de-duplicate and a `UNION ALL` avoids a pointless sort. Each branch clears its
+    model's default ordering: a compound statement cannot carry `ORDER BY` inside
+    its branches.
+    """
+    return _scan_index(cluster_key).union(
+        _file_index(cluster_key),
+        _catalog_index(cluster_key),
+        _scheduled_index(cluster_key),
+        _guest_index(cluster_key),
+        all=True,
+    )
+
+
+def _index_values(queryset, kind: str, sort, pinned=None):
+    """Narrow every source down to the four columns the union is made of.
+
+    `pinned` is coalesced to false rather than left as the raw boolean expression:
+    a `Q` over a missing JSON key evaluates to NULL, and Postgres sorts NULL
+    *first* under `DESC` — which would pin exactly the rows that have no question.
+    """
+    pinned_expression = (
+        Value(False, output_field=BooleanField())
+        if pinned is None
+        else Coalesce(ExpressionWrapper(pinned, output_field=BooleanField()), Value(False))
+    )
+    return (
+        queryset.order_by()
+        .annotate(
+            task_kind=Value(kind, output_field=CharField()),
+            task_sort=sort,
+            task_pinned=pinned_expression,
+        )
+        .values("task_kind", "id", "task_sort", "task_pinned")
+    )
+
+
+def _scan_index(cluster_key: str):
+    # Scans are cluster-neutral: the storage scan applies to every enabled
+    # cluster, so it stays visible in a scoped task view.
+    return _index_values(_visible_scan_tasks(), "scan", Coalesce("started_at", "created_at"))
+
+
+def _file_index(cluster_key: str):
+    return _index_values(
+        _visible_file_tasks().filter(_audit_cluster_q(cluster_key)),
+        "file",
+        F("timestamp"),
+        _file_question_q(),
+    )
+
+
+def _catalog_index(cluster_key: str):
+    return _index_values(
+        _visible_catalog_refresh_tasks().filter(_audit_cluster_q(cluster_key)),
+        "catalog",
+        _catalog_started_at(),
+    )
+
+
+def _scheduled_index(cluster_key: str):
+    return _index_values(
+        _visible_scheduled_action_tasks().filter(_scheduled_cluster_q(cluster_key)),
+        "scheduled_action",
+        Coalesce("started_at", "finished_at", "created_at"),
+    )
+
+
+def _guest_index(cluster_key: str):
+    return _index_values(
+        _visible_guest_tasks().filter(_audit_cluster_q(cluster_key)),
+        "guest",
+        F("timestamp"),
+        _guest_question_q(),
+    )
+
+
+def _catalog_started_at():
+    """`_catalog_refresh_task`'s sort key, which lives in `details`.
+
+    The worker writes `details["started_at"]` when it picks the job up, so it is
+    genuinely later than `timestamp` (the moment the button was pressed) by however
+    long the row sat in the bulk queue. Only `storage_catalog_refresh` writes that
+    key and it always writes an ISO timestamp, so the cast is safe; a hand-edited
+    row with something else in there would raise rather than sort oddly, which is
+    the better failure of the two.
+    """
+    return Coalesce(
+        Cast(KeyTextTransform("started_at", "details"), DateTimeField()),
+        F("timestamp"),
+        output_field=DateTimeField(),
+    )
+
+
+def _audit_cluster_q(cluster_key: str) -> Q:
+    """`_guest_task`/`_file_task`'s cluster attribution, as a filter.
+
+    Those builders read `event.cluster.key` when the FK is set and fall back to the
+    snapshot string otherwise; an empty result means cluster-neutral and stays
+    visible under any scope.
+    """
+    if not cluster_key:
+        return Q()
+    return Q(cluster__isnull=False, cluster__key=cluster_key) | Q(
+        cluster__isnull=True, cluster_key_snapshot__in=("", cluster_key)
+    )
+
+
+def _scheduled_cluster_q(cluster_key: str) -> Q:
+    if not cluster_key:
+        return Q()
+    return Q(scheduled_action__cluster__isnull=True) | Q(scheduled_action__cluster__key=cluster_key)
+
+
+def _questions_pending(cluster_key: str) -> int:
+    """Unanswered questions across every page, not only the visible one.
+
+    Counted from the same predicates the `task_pinned` annotation uses, so the
+    badge and the pinning cannot disagree.
+    """
+    files = _visible_file_tasks().filter(_audit_cluster_q(cluster_key)).filter(_file_question_q()).count()
+    guests = _visible_guest_tasks().filter(_audit_cluster_q(cluster_key)).filter(_guest_question_q()).count()
+    return files + guests
+
+
+INDEX_KINDS = ("scan", "file", "catalog", "scheduled_action", "guest")
+
+
+def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
+    """Build display dicts for one page's worth of rows, in the union's order."""
+    ids_by_kind: dict[str, list[int]] = {kind: [] for kind in INDEX_KINDS}
+    for row in rows:
+        ids_by_kind[row["task_kind"]].append(row["id"])
+
+    built: dict[tuple[str, int], dict[str, object]] = {}
+    if ids_by_kind["scan"]:
+        scans = list(ScanRun.objects.filter(id__in=ids_by_kind["scan"]).select_related("target_storage"))
+        initiators = _scan_initiators(scans)
+        for scan in scans:
+            built["scan", scan.id] = _scan_task(scan, initiators.get(str(scan.id), "system"))
+    for kind, builder in (("file", _file_task), ("catalog", _catalog_refresh_task), ("guest", _guest_task)):
+        if not ids_by_kind[kind]:
+            continue
+        events = AuditEvent.objects.filter(id__in=ids_by_kind[kind]).select_related("user", "cluster")
+        for event in events:
+            built[kind, event.id] = builder(event)
+    if ids_by_kind["scheduled_action"]:
+        runs = ScheduledActionRun.objects.filter(id__in=ids_by_kind["scheduled_action"]).select_related(
+            "scheduled_action",
+            "scheduled_action__cluster",
+            "scheduled_action__created_by",
+            "triggered_by",
+        )
+        for run in runs:
+            built["scheduled_action", run.id] = _scheduled_action_task(run)
+    # A row can disappear between the index query and the hydration query (a
+    # retention sweep, a cancelled scan). Skipping it beats raising: the page is a
+    # status display, not a transaction.
+    return [built[row["task_kind"], row["id"]] for row in rows if (row["task_kind"], row["id"]) in built]
+
+
+def _scan_initiators(scans: list[ScanRun]) -> dict[str, str]:
+    events = (
         AuditEvent.objects.filter(
             action="scan.queued",
             object_type="scan_run",
-            object_id__in=scan_ids,
+            object_id__in=[str(scan.id) for scan in scans],
         )
         .select_related("user")
         .order_by("-timestamp")
     )
-    initiators = {}
-    for event in audit_events:
+    initiators: dict[str, str] = {}
+    for event in events:
         initiators.setdefault(event.object_id, event.username or (event.user.get_username() if event.user else ""))
-
-    tasks = [_scan_task(scan, initiators.get(str(scan.id), "system")) for scan in scans]
-    tasks.extend(_file_task(event) for event in _visible_file_tasks())
-    tasks.extend(_catalog_refresh_task(event) for event in _visible_catalog_refresh_tasks())
-    tasks.extend(_scheduled_action_task(run) for run in _visible_scheduled_action_tasks())
-    tasks.extend(_guest_task(event) for event in _visible_guest_tasks())
-    if cluster_key:
-        # Cluster-neutral operations (currently the global storage scan) apply
-        # to every enabled cluster and remain relevant in a scoped task view.
-        tasks = [task for task in tasks if task.get("cluster_key") in {"", cluster_key}]
-    tasks.sort(key=_task_timeline_sort_at, reverse=True)
-    # Pin unanswered "needs a decision" tasks (e.g. a force-stop offer) to the top
-    # of page 0 so a short visible window can't push them off before they are
-    # answered. (We assume only a handful are ever pending at once.)
-    questions_pending = sum(1 for task in tasks if task.get("question"))
-    if page == 0:
-        pinned = [task for task in tasks if task.get("question")]
-        if pinned:
-            tasks = pinned + [task for task in tasks if not task.get("question")]
-    total = len(tasks)
-    return RecentTaskPage(
-        tasks=tasks[offset : offset + limit],
-        page=page,
-        limit=limit,
-        total=total,
-        questions_pending=questions_pending,
-    )
-
-
-def _task_timeline_sort_at(task: dict[str, object]):
-    return task.get("started_at") or task.get("sort_at")
+    return initiators
 
 
 def _visible_scan_tasks():
@@ -184,20 +375,16 @@ def _visible_scan_tasks():
 
 def _visible_file_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
-    events = list(
+    return (
         AuditEvent.objects.filter(action__in=FILE_TASK_ACTIONS)
+        # Annotated on the outer query because the superseding subquery joins back
+        # to these three, not to the raw columns.
+        .annotate(**_inflate_key_annotations())
         .filter(
             Q(timestamp__gte=cutoff) | (Q(action=BULK_FILE_ACTION, details__question=True) & _unanswered_question_q())
         )
-        .select_related("user", "cluster")
-        .order_by("-timestamp")
+        .exclude(_superseded_inflate_exists(), action=INFLATE_QUEUED_ACTION)
     )
-    terminal_events = [event for event in events if event.action in INFLATE_TERMINAL_ACTIONS]
-    return [
-        event
-        for event in events
-        if event.action != INFLATE_QUEUED_ACTION or not _has_later_inflate_terminal(event, terminal_events)
-    ]
 
 
 def _visible_scheduled_action_tasks():
@@ -211,28 +398,62 @@ def _visible_scheduled_action_tasks():
         ScheduledActionRun.Status.STALE,
         ScheduledActionRun.Status.CANCELLED,
     ]
-    return (
-        ScheduledActionRun.objects.select_related("scheduled_action", "scheduled_action__cluster")
-        .exclude(Q(status__in=terminal_statuses) & Q(finished_at__lte=cutoff))
-        .order_by("-created_at")
+    return ScheduledActionRun.objects.exclude(Q(status__in=terminal_statuses) & Q(finished_at__lte=cutoff))
+
+
+def _inflate_key_annotations() -> dict:
+    """The identity an inflate is tracked by, as three text columns.
+
+    `AuditEvent.save()` derives `storage_id`/`path`/`target_preallocation` from
+    `details`, so the columns are normally authoritative and the JSON fallbacks
+    only matter for rows written before that or truncated by it. Absent is the
+    empty string on both sides, so a missing column and a missing key compare
+    equal — which is what the Python version did by accident and this does on
+    purpose.
+    """
+    return {
+        "inflate_storage": Coalesce(
+            NullIf("storage_id", Value("")),
+            KeyTextTransform("storage_id", "details"),
+            Value(""),
+            output_field=TextField(),
+        ),
+        "inflate_path": Coalesce(
+            NullIf("path", Value("")),
+            KeyTextTransform("path", "details"),
+            NullIf("object_id", Value("")),
+            Value(""),
+            output_field=TextField(),
+        ),
+        "inflate_prealloc": Coalesce(
+            NullIf("target_preallocation", Value("")),
+            KeyTextTransform("target_preallocation", "details"),
+            Value(""),
+            output_field=TextField(),
+        ),
+    }
+
+
+def _superseded_inflate_exists() -> Exists:
+    """A queued inflate that a later terminal event has already answered.
+
+    Showing both would leave a permanent "Queued" row beside the "Completed" one
+    for the same disk. The subquery is not restricted to the retention window: a
+    terminal event older than the cutoff can only supersede a queued event that is
+    older still, and such a row is not visible in the first place.
+    """
+    annotations = _inflate_key_annotations()
+    terminal = (
+        AuditEvent.objects.filter(action__in=INFLATE_TERMINAL_ACTIONS)
+        .annotate(**annotations)
+        .filter(
+            timestamp__gte=OuterRef("timestamp"),
+            inflate_storage=OuterRef("inflate_storage"),
+            inflate_path=OuterRef("inflate_path"),
+            inflate_prealloc=OuterRef("inflate_prealloc"),
+        )
     )
-
-
-def _has_later_inflate_terminal(queued_event: AuditEvent, terminal_events: list[AuditEvent]) -> bool:
-    queued_key = _inflate_event_key(queued_event)
-    return any(
-        _inflate_event_key(event) == queued_key and event.timestamp >= queued_event.timestamp
-        for event in terminal_events
-    )
-
-
-def _inflate_event_key(event: AuditEvent) -> tuple[object, object, object]:
-    details = event.details if isinstance(event.details, dict) else {}
-    return (
-        event.storage_id or details.get("storage_id"),
-        event.path or details.get("path") or event.object_id,
-        event.target_preallocation or details.get("target_preallocation"),
-    )
+    return Exists(terminal)
 
 
 def serialize_task_page(task_page: RecentTaskPage) -> dict[str, object]:
@@ -335,13 +556,35 @@ def _open_force_stop_question_q() -> Q:
     )
 
 
+def _guest_question_q() -> Q:
+    """`_guest_task`'s `offer_force_stop`, as a filter.
+
+    Everything the builder checks before it offers the force-stop follow-up has to
+    be here too, or the pinned row and the pending-question badge stop agreeing
+    with the row the operator actually sees. `_open_force_stop_question_q` covers
+    the action, the outcome and the reaper's resolution; the rest is the operator's
+    own dismissal and the target the offer would act on — an offer that cannot name
+    a guest is not a question.
+    """
+    return (
+        _open_force_stop_question_q()
+        & ~_dismissed_flag_q("force_stop_dismissed")
+        & Q(details__has_key="target_type")
+        & ~Q(details__target_type="")
+        & Q(details__has_key="vmid")
+        & ~Q(details__vmid=None)
+    )
+
+
+def _file_question_q() -> Q:
+    """`_bulk_file_task`'s open question, as a filter."""
+    return Q(action=BULK_FILE_ACTION, details__question=True) & ~_dismissed_flag_q("question_dismissed")
+
+
 def _visible_guest_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
-    return list(
-        AuditEvent.objects.filter(Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS))
-        .filter(Q(timestamp__gte=cutoff) | (_open_force_stop_question_q() & _unanswered_question_q()))
-        .select_related("user", "cluster")
-        .order_by("-timestamp")
+    return AuditEvent.objects.filter(Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS)).filter(
+        Q(timestamp__gte=cutoff) | (_open_force_stop_question_q() & _unanswered_question_q())
     )
 
 
@@ -571,11 +814,8 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
 
 def _visible_catalog_refresh_tasks():
     cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
-    return list(
-        AuditEvent.objects.filter(action=STORAGE_CATALOG_REFRESH_ACTION)
-        .filter(Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running")))
-        .select_related("user", "cluster")
-        .order_by("-timestamp")
+    return AuditEvent.objects.filter(action=STORAGE_CATALOG_REFRESH_ACTION).filter(
+        Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running"))
     )
 
 
