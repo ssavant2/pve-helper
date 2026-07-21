@@ -86,7 +86,15 @@ MIDDLEWARE = [
 SECURE_CSP = {
     "default-src": [CSP.SELF],
     "base-uri": [CSP.SELF],
-    "connect-src": [CSP.SELF, "ws:", "wss:"],
+    # No bare `ws:`/`wss:` here. Both consoles build their socket URL from
+    # `window.location.origin` and nginx proxies `/console/ws/` to the console
+    # service on that same origin, so nothing this app opens is cross-origin —
+    # and a bare scheme matches every host, which would leave the one directive
+    # that stops a successful XSS from streaming data off-box disabled for
+    # WebSockets specifically. CSP3 makes `'self'` match `wss:` from an https
+    # page and `ws:`/`wss:` from an http one, despite the origin tuples
+    # differing; that mismatch is the reason the schemes looked necessary.
+    "connect-src": [CSP.SELF],
     "font-src": [CSP.SELF, "data:"],
     "form-action": [CSP.SELF],
     "frame-ancestors": [CSP.NONE],

@@ -4,8 +4,26 @@ from __future__ import annotations
 
 from core.models import ProxmoxCluster
 
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    GUEST_POWER_ACTIONS,
+    POWER_ACTION_REQUESTS,
+    VM_ONLY_POWER_ACTIONS,
+    Http404,
+    JsonResponse,
+    ProxmoxInventory,
+    app_login_required,
+    clear_live_guest_caches,
+    navigation_context,
+    proxmox_permission_hint,
+    quote,
+    redirect,
+    render,
+    require_POST,
+    settings,
+)
 from ._core import (
+    SNAPSHOT_NAME_HELP,
+    SNAPSHOT_NAME_RE,
     _backup_error,
     _delete_all_guest_snapshots,
     _guest_nic_bridges,

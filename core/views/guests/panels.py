@@ -2,7 +2,13 @@
 
 from core.models import ClusterStorageMount
 
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    ProxmoxInventory,
+    app_login_required,
+    guest_disks,
+    guest_networks,
+    render,
+)
 from .presenters import _config_ip_addresses, _with_network_ip_addresses
 from .read_model_support import _guest_agent_summary, _guest_api_get, _guest_tab_context, _require_guest
 

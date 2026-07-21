@@ -3,7 +3,13 @@
 from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
 
 from .. import common
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    ProxmoxAPIError,
+    app_login_required,
+    quote,
+    render,
+    require_POST,
+)
 from .operation_lifecycle import _write_result
 from .presenters import _fmt_bytes, _rrd_chart
 from .read_model_support import _guest_api_get, _guest_tab_context, _require_guest

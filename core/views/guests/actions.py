@@ -6,7 +6,28 @@ from core.services.public_errors import public_exception_message
 from core.services.tags import TagValidationError, validate_tag
 
 from .. import common
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    GUEST_POWER_ACTIONS,
+    POWER_ACTION_REQUESTS,
+    VM_BULK_ACTIONS,
+    Http404,
+    JsonResponse,
+    ProxmoxAPIError,
+    ProxmoxInventory,
+    SimpleNamespace,
+    app_login_required,
+    clear_live_guest_caches,
+    extract_disk_references,
+    is_template,
+    messages,
+    parse_guest_tags,
+    quote,
+    redirect,
+    require_POST,
+    settings,
+    url_has_allowed_host_and_scheme,
+    urlencode,
+)
 from ._core import (
     _MIGRATE_ACTIVE_STATES,
     MIGRATE_KINDS,

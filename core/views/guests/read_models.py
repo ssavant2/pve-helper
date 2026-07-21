@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    GUEST_OBJECT_TYPES,
+    CurrentGuestInventory,
+    Http404,
+    JsonResponse,
+    ProxmoxInventory,
+    SimpleNamespace,
+    app_login_required,
+    guest_disks,
+    guest_networks,
+    render,
+)
 from .read_model_support import (
     _display_lock,
     _guest_agent_summary,

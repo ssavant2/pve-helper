@@ -7,11 +7,13 @@ extend-exclude = ["core/migrations"]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-# These modules deliberately consume the compatibility facade exported by
-# core.views.common. Removing the wildcard boundary is a separate architecture
-# refactor; keep the exception confined to that boundary rather than weakening
-# lint for the rest of the application.
-"core/views/*.py" = ["F403", "F405"]
+# Every view module now imports from core.views.common by name, so F405 guards
+# the whole package again — it is the one rule that catches a name left behind
+# by a module split, and while it was switched off for `core/views/*.py` five
+# such names shipped, one of which 500'd every console page load. The re-export
+# facades still need their wildcards and carry an inline `# noqa: F401,F403`;
+# only common.py, which is nothing but a re-export surface, needs a file-wide
+# exemption.
 "core/views/common.py" = ["F401", "F403", "F405"]
 "pve_helper/test_settings.py" = ["F403", "F405"]
 

@@ -5,7 +5,14 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    CONFIG_HIDE,
+    CONFIG_SECTIONS,
+    CT_FEATURE_OPTIONS,
+    DISK_BUS_RE,
+    NET_KEY_RE,
+    guest_networks,
+)
 
 
 def parse_net_value(value: str) -> dict:

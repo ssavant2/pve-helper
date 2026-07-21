@@ -1,6 +1,10 @@
 """Guest firewall: tab render + rule add/delete/toggle (extracted from _core)."""
 
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    app_login_required,
+    render,
+    require_POST,
+)
 from .operation_lifecycle import (
     _guest_delete,
     _guest_post,

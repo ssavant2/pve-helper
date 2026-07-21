@@ -10,10 +10,13 @@ This test walks the app the way an operator does: start at `/`, follow links,
 and see where you end up. Any zero-argument URL that renders an HTML page but is
 not in the transitive closure is unreachable and fails here.
 
-Deliberately scoped to zero-argument URLs. Object-scoped routes
-(`/vms/<cluster>/<type>/<vmid>/...`) need fixtures and are covered elsewhere; the
-failure mode this guards against is a *top-level surface* that never got a
-navigation entry.
+Deliberately scoped to zero-argument URLs: the failure mode this guards against
+is a *top-level surface* that never got a navigation entry. Object-scoped routes
+(`/vms/<cluster>/<type>/<vmid>/...`) need fixtures and render in
+`tests_guest_page_rendering`. That sentence used to say they were "covered
+elsewhere" when they were covered nowhere, which is how a console page that
+raised NameError on every load stayed green — do not weaken it back into a
+promise no file keeps.
 
 What counts as a page is decided empirically, not from a hand-kept list: GET the
 URL and see whether it answers `200 text/html`. POST-only actions (405), legacy

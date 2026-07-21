@@ -8,11 +8,37 @@ from core.models import ProxmoxCluster
 from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_state_identity import cluster_cache_key
 from core.services.public_errors import public_exception_message
-from core.services.refs import GuestRef
+from core.services.refs import GuestRef, RefParseError
 from core.services.tag_catalog import load_tag_catalog
 
 from .. import common
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    GUEST_AGENT_API_TIMEOUT_SECONDS,
+    GUEST_OBJECT_TYPES,
+    LIVE_GUEST_INVENTORY_CACHE_SECONDS,
+    LIVE_GUEST_STATUS_CACHE_SECONDS,
+    NET_KEY_RE,
+    OSTYPE_LABELS,
+    CurrentGuestInventory,
+    Http404,
+    ProxmoxAPIError,
+    ProxmoxInventory,
+    SimpleNamespace,
+    _decorate_guests_with_scheduled_actions,
+    _int_or_zero,
+    extract_disk_references,
+    guest_identity,
+    is_template,
+    navigation_context,
+    parse_guest_tags,
+    quote,
+    re,
+    reverse,
+    settings,
+    timedelta,
+    tz,
+    urlencode,
+)
 from .presenters import (
     _config_ip_addresses,
     _fmt_bytes,

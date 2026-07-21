@@ -1,9 +1,22 @@
 """Guest console (extracted from _core)."""
 
+from django.templatetags.static import static
+
 from core.services.console_sessions import create_guest_console_session
 from core.services.public_errors import public_exception_message
 
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    GUEST_OBJECT_TYPES,
+    Http404,
+    JsonResponse,
+    ProxmoxAPIError,
+    ProxmoxInventory,
+    app_login_required,
+    render,
+    require_POST,
+    reverse,
+    settings,
+)
 from .operation_lifecycle import _audit_guest
 from .read_model_support import _guest_tab_context, _resolve_guest_detail
 

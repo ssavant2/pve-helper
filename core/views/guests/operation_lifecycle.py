@@ -12,7 +12,20 @@ from core.services.public_errors import public_exception_message
 from core.services.refs import GuestRef, RefParseError
 
 from .. import common
-from ..common import *  # noqa: F401,F403
+from ..common import (
+    SNAPSHOT_TASK_WAIT_SECONDS,
+    AuditEvent,
+    JsonResponse,
+    ProxmoxInventory,
+    ProxmoxTaskTimeout,
+    messages,
+    proxmox_permission_hint,
+    quote,
+    record_audit_event,
+    redirect,
+    settings,
+    tz,
+)
 
 # Sentinel returned by the multi-disk migration path when its worker owns the
 # running Audit event. Keeping it here makes ownership explicit for every view
