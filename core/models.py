@@ -289,6 +289,8 @@ class ProxmoxEndpoint(TimestampedModel):
         ProxmoxCluster,
         on_delete=models.PROTECT,
         related_name="endpoints",
+        # Covered by `unique_endpoint_name_per_cluster`; see `FileInventory.storage`.
+        db_index=False,
     )
     # Canonical form of `url`, kept in sync on save. It exists so the database can
     # enforce that one transport is never claimed by two clusters: an endpoint
@@ -355,6 +357,8 @@ class ConsoleSession(TimestampedModel):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="console_sessions",
+        # Covered by `core_con_cluster_target_idx`.
+        db_index=False,
     )
     target_type = models.CharField(max_length=20, choices=TargetType.choices)
     target_vmid = models.PositiveIntegerField()
@@ -373,7 +377,10 @@ class ConsoleSession(TimestampedModel):
     consumed_at = models.DateTimeField(null=True, blank=True)
     connected_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(max_length=30, choices=Status.choices, default=Status.PENDING, db_index=True)
+    # Not `db_index=True`: `core_console_status_exp_idx` starts with this column.
+    # The implicit index also brought a `varchar_pattern_ops` twin for prefix
+    # matching, which nothing wants — `status` is an enum, compared with `=`.
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.PENDING)
     proxmox_endpoint = models.URLField(blank=True)
     proxmox_node = models.CharField(max_length=120, blank=True)
     proxmox_upid = models.CharField(max_length=255, blank=True)
@@ -491,6 +498,8 @@ class ClusterStorage(TimestampedModel):
         ProxmoxCluster,
         on_delete=models.PROTECT,
         related_name="storage_definitions",
+        # Covered by `core_cstorage_state_idx` and two more.
+        db_index=False,
     )
     storage_id = models.CharField(max_length=120)
     storage_type = models.CharField(max_length=40)
@@ -528,6 +537,9 @@ class ClusterStorageNodeState(TimestampedModel):
         ClusterStorage,
         on_delete=models.CASCADE,
         related_name="node_states",
+        # Covered by `core_csnode_state_idx`. This was the busiest of the
+        # redundant indexes by scan count; the composite serves the same lookups.
+        db_index=False,
     )
     node = models.CharField(max_length=120)
     active = models.BooleanField(default=False)
@@ -577,6 +589,8 @@ class ClusterStorageMount(TimestampedModel):
         ClusterStorage,
         on_delete=models.CASCADE,
         related_name="mount_bindings",
+        # Covered by `unique_cluster_storage_mount_scope`.
+        db_index=False,
     )
     mount = models.ForeignKey(
         StorageMount,
@@ -616,6 +630,8 @@ class ClusterStorageVolumeCoverage(TimestampedModel):
         ClusterStorage,
         on_delete=models.CASCADE,
         related_name="volume_coverages",
+        # Covered by `core_csvolcov_state_idx`.
+        db_index=False,
     )
     scope = models.CharField(max_length=12, choices=Scope.choices)
     node = models.CharField(max_length=120, null=True, blank=True)
@@ -662,6 +678,8 @@ class ClusterStorageVolumeObservation(TimestampedModel):
         ClusterStorage,
         on_delete=models.CASCADE,
         related_name="volume_observations",
+        # Covered by `core_csvol_generation_idx`.
+        db_index=False,
     )
     node = models.CharField(max_length=120)
     volid = models.CharField(max_length=512)
@@ -758,11 +776,17 @@ class FileInventory(TimestampedModel):
         PROXMOX_CONTENT = "proxmox_content", "Proxmox content"
         IMPORT_SOURCE = "import_source", "Import source"
 
-    scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="files")
-    # `db_index=False` because the composite below starts with the same column:
-    # Django's implicit FK index would be a strict prefix of it, paid for on
-    # every row of the largest table in the app (per scan × per file) and read
-    # by nothing the composite cannot serve, including the cascade check.
+    # `db_index=False` on both FKs below, and on fifteen more across this module,
+    # because a wider index on the same model already starts with the same column.
+    # Django adds an index to every ForeignKey by default; when that column also
+    # leads a composite or a unique constraint, the implicit one is a strict
+    # prefix — a second btree maintained on every write to answer what the wider
+    # one already answers, including the cascade check. Postgres will happily use
+    # the narrower index when both exist (it is smaller), so scan counts look busy
+    # right up until you remove it and the lookups move to the composite at the
+    # same complexity. `InventoryIndexInvariantTests` enforces the rule model-wide.
+    # This table is where it matters most: one row per file per scan.
+    scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="files", db_index=False)
     storage = models.ForeignKey(StorageMount, on_delete=models.CASCADE, related_name="files", db_index=False)
     path = models.CharField(max_length=1024)
     derived_volid = models.CharField(max_length=512, blank=True)
@@ -813,7 +837,8 @@ class ProxmoxInventory(TimestampedModel):
         STORAGE = "storage", "Storage"
         NODE = "node", "Node"
 
-    scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="proxmox_objects")
+    # Covered by `core_proxmo_scan_ru_7d6c24_idx`; see `FileInventory.scan_run`.
+    scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="proxmox_objects", db_index=False)
     # Which cluster this scan evidence came from. New rows are always qualified.
     # Nullable only to retain genuinely ambiguous pre-contract history; such rows
     # are display evidence and fail closed if considered by a file action.
@@ -823,6 +848,8 @@ class ProxmoxInventory(TimestampedModel):
         blank=True,
         on_delete=models.PROTECT,
         related_name="proxmox_objects",
+        # Covered by `core_pinv_cluster_type_vmid`.
+        db_index=False,
     )
     node = models.CharField(max_length=120, db_index=True)
     object_type = models.CharField(max_length=30, choices=ObjectType.choices)
@@ -869,6 +896,8 @@ class CurrentGuestInventory(TimestampedModel):
         ProxmoxCluster,
         on_delete=models.PROTECT,
         related_name="current_guests",
+        # Covered by `core_curg_cluster_node_idx`.
+        db_index=False,
     )
     source_endpoint = models.ForeignKey(
         ProxmoxEndpoint,
@@ -876,6 +905,8 @@ class CurrentGuestInventory(TimestampedModel):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="current_guests",
+        # Covered by `core_curg_endpoint_type_idx`.
+        db_index=False,
     )
     source_scan = models.ForeignKey(
         ScanRun,
@@ -993,6 +1024,8 @@ class ProxmoxStorageConsumer(TimestampedModel):
         StorageMount,
         on_delete=models.CASCADE,
         related_name="consumer_statuses",
+        # Covered by `unique_storage_cluster_expected_consumer`.
+        db_index=False,
     )
     cluster = models.ForeignKey(
         ProxmoxCluster,
@@ -1038,6 +1071,8 @@ class ScanClusterObservation(TimestampedModel):
         ScanRun,
         on_delete=models.CASCADE,
         related_name="cluster_observations",
+        # Covered by `unique_scan_cluster_observation`.
+        db_index=False,
     )
     cluster = models.ForeignKey(
         ProxmoxCluster,
@@ -1109,6 +1144,8 @@ class ScheduledAction(TimestampedModel):
         blank=True,
         on_delete=models.PROTECT,
         related_name="scheduled_actions",
+        # Covered by `core_sched_cluster_target_idx`.
+        db_index=False,
     )
     target_type = models.CharField(max_length=20, choices=TargetType.choices)
     target_vmid = models.PositiveIntegerField()
@@ -1210,6 +1247,8 @@ class ScheduledActionRun(TimestampedModel):
         ScheduledAction,
         on_delete=models.PROTECT,
         related_name="runs",
+        # Covered by `core_schedrun_as_idx`.
+        db_index=False,
     )
     planned_for = models.DateTimeField()
     occurrence_key = models.CharField(max_length=160)
@@ -1301,8 +1340,14 @@ class TrashItem(TimestampedModel):
 class StorageSpaceSnapshot(TimestampedModel):
     # Either a mounted StorageMount (shared/file storages) OR a local API-only
     # storage identified by (node, storage_id). Exactly one of these is set.
+    # Covered by `core_storag_storage_10c3c9_idx`.
     storage = models.ForeignKey(
-        StorageMount, on_delete=models.CASCADE, related_name="space_snapshots", null=True, blank=True
+        StorageMount,
+        on_delete=models.CASCADE,
+        related_name="space_snapshots",
+        null=True,
+        blank=True,
+        db_index=False,
     )
     cluster = models.ForeignKey(
         ProxmoxCluster,
@@ -1310,6 +1355,8 @@ class StorageSpaceSnapshot(TimestampedModel):
         blank=True,
         on_delete=models.PROTECT,
         related_name="storage_space_snapshots",
+        # Covered by `core_space_cl_api_time_idx`.
+        db_index=False,
     )
     node = models.CharField(max_length=120, blank=True)
     api_storage_id = models.CharField(max_length=120, blank=True)

@@ -670,7 +670,13 @@ class MigrationStateInvariantTests(SimpleTestCase):
 
 
 class InventoryIndexInvariantTests(SimpleTestCase):
-    """The indexes `0024` kept, and why — so the measurement outlives the commit.
+    """Which indexes exist, and why — so the reasoning outlives the commit.
+
+    Two kinds of claim live here, and they are settled by opposite evidence. The
+    first three tests record a *measurement*: which indexes the database said it
+    reads. The last one records a *structure*: which indexes cannot be needed
+    whatever the database says. Conflating the two is what nearly removed the
+    busiest index on `FileInventory`.
 
     A Round 9 finding called all four of `FileInventory`'s single-column indexes
     unusable and recommended removing them. Measured against the running
@@ -707,4 +713,64 @@ class InventoryIndexInvariantTests(SimpleTestCase):
         self.assertEqual(
             [tuple(index.fields) for index in ClusterStorageVolumeObservation._meta.indexes],
             [("cluster_storage", "observed_volume_generation")],
+        )
+
+    def test_no_indexed_column_is_a_strict_prefix_of_a_wider_index(self):
+        """The rule the two tests above are single instances of.
+
+        `FileInventory.storage` was found while fixing something else, and the
+        sweep that followed found eighteen more across the module — every one a
+        `ForeignKey` whose column also leads a composite, plus
+        `ConsoleSession.status`. `0025` removed them.
+
+        Stated model-wide rather than as nineteen assertions because the failure
+        mode is additive: `ForeignKey` indexes by default, so a field added to a
+        model whose composite already leads with that column silently costs a
+        second btree on every write. Nothing about writing that line looks wrong.
+
+        Note what this cannot be checked against. A prefix index is the *narrower*
+        of two applicable indexes, so Postgres prefers it and its `idx_scan`
+        climbs — the busiest one in the sweep had 115160 scans and was still
+        pure overhead. Redundancy here is a structural property, not a measured
+        one, which is exactly why it belongs in a source invariant.
+        """
+        from django.apps import apps
+
+        def columns(model, index_fields):
+            return tuple(model._meta.get_field(name.lstrip("-")).column for name in index_fields)
+
+        def coverers(model):
+            """Every index that can serve an arbitrary lookup on its leading columns.
+
+            Partial indexes are excluded: a `condition` restricts the index to
+            rows matching the predicate, so it answers only queries that carry the
+            same restriction and cannot stand in for an unconditional one.
+            """
+            for index in model._meta.indexes:
+                if getattr(index, "condition", None) is None and not getattr(index, "opclasses", None):
+                    yield index.name, columns(model, index.fields)
+            for constraint in model._meta.constraints:
+                fields = getattr(constraint, "fields", None)
+                if fields and getattr(constraint, "condition", None) is None:
+                    yield constraint.name, columns(model, fields)
+
+        redundant = []
+        checked = 0
+        for model in apps.get_app_config("core").get_models():
+            wider = list(coverers(model))
+            for field in model._meta.local_fields:
+                if not (field.db_index and field.column):
+                    continue
+                checked += 1
+                for name, cols in wider:
+                    if len(cols) > 1 and cols[0] == field.column:
+                        redundant.append(f"{model.__name__}.{field.name} is a prefix of {name} {cols}")
+                        break
+
+        self.assertGreater(checked, 0, "The sweep stopped finding indexed columns at all.")
+        self.assertEqual(
+            sorted(redundant),
+            [],
+            "Indexed columns that a wider index on the same model already leads with; "
+            "pass db_index=False and add a migration.",
         )
