@@ -41,6 +41,7 @@ def record_audit_event(
     *,
     user=None,
     username: str = "",
+    source_ip: str | None = None,
     action: str,
     object_type: str = "",
     object_id: str = "",
@@ -79,7 +80,7 @@ def record_audit_event(
         cluster = ProxmoxCluster.objects.filter(key=cluster_key_snapshot).first()
     resolved_user = user
     resolved_username = str(username or "")
-    source_ip = None
+    resolved_source_ip = source_ip
 
     if request is not None:
         request_user = getattr(request, "user", None)
@@ -92,7 +93,7 @@ def record_audit_event(
         else:
             resolved_user = None
             resolved_username = str(system_username or resolved_username)
-        source_ip = client_ip(request)
+        resolved_source_ip = client_ip(request)
     elif resolved_user is not None:
         if getattr(resolved_user, "is_authenticated", False) and not resolved_username:
             resolved_username = resolved_user.get_username()
@@ -102,7 +103,7 @@ def record_audit_event(
     return AuditEvent.objects.create(
         user=resolved_user,
         username=resolved_username,
-        source_ip=source_ip,
+        source_ip=resolved_source_ip,
         action=action,
         object_type=object_type,
         object_id=object_id,

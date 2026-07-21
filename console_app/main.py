@@ -22,7 +22,8 @@ from starlette.websockets import WebSocket  # noqa: E402
 from websockets.asyncio.client import connect as ws_connect  # noqa: E402
 from websockets.exceptions import ConnectionClosed  # noqa: E402
 
-from core.models import AuditEvent, ConsoleSession  # noqa: E402
+from core.models import ConsoleSession  # noqa: E402
+from core.services.audit_events import record_audit_event  # noqa: E402
 from core.services.console_sessions import console_token_hash  # noqa: E402
 
 
@@ -256,7 +257,8 @@ def _audit_session(session_id: int, action: str, outcome: str, *, error: str = "
     }
     if error:
         details["error"] = error
-    AuditEvent.objects.create(
+    guest_ref = session.guest_ref()
+    record_audit_event(
         user=session.created_by,
         username=session.username,
         source_ip=session.source_ip,
@@ -264,8 +266,9 @@ def _audit_session(session_id: int, action: str, outcome: str, *, error: str = "
         object_type="guest",
         object_id=f"{session.target_type}:{session.target_vmid}",
         outcome=outcome,
-        module="vms",
         details=details,
+        cluster=session.cluster,
+        guest_ref=guest_ref,
     )
 
 

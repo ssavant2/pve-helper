@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import (
+    AuditEvent,
     ClusterTransportTrust,
     ConsoleSession,
     ProxmoxCluster,
@@ -130,3 +131,24 @@ class ConsoleGatewayClusterTests(TestCase):
 
         with self.assertRaises(_ConsoleAuthError):
             async_to_sync(_resolve_cluster_credential_header)(legacy)
+
+    def test_console_audit_keeps_same_vmid_separate_per_cluster(self):
+        from console_app.main import _audit_session
+
+        session_a = self._session(self.cluster_a)
+        session_b = self._session(self.cluster_b)
+        ConsoleSession.objects.filter(pk=session_a.pk).update(source_ip="192.0.2.10")
+
+        async_to_sync(_audit_session)(session_a.pk, "guest.console.closed", "success")
+        async_to_sync(_audit_session)(session_b.pk, "guest.console.closed", "success")
+
+        events = list(AuditEvent.objects.filter(action="guest.console.closed").order_by("cluster_key_snapshot"))
+
+        self.assertEqual([event.cluster_key_snapshot for event in events], ["a", "b"])
+        self.assertEqual([event.object_id for event in events], ["gr1:a:vm:500", "gr1:b:vm:500"])
+        self.assertEqual(
+            [event.details["guest_ref"] for event in events],
+            ["gr1:a:vm:500@pve1", "gr1:b:vm:500@pve1"],
+        )
+        self.assertEqual(events[0].details["node_ref"], "nr1:a:pve1")
+        self.assertEqual(events[0].source_ip, "192.0.2.10")

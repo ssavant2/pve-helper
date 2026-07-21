@@ -575,13 +575,18 @@ class BackendSourceInvariantTests(SimpleTestCase):
         root = Path(settings.BASE_DIR)
         allowed_path = Path("core/services/audit_events.py")
         violations = []
-        for path in sorted((root / "core").rglob("*.py")):
-            relative_path = path.relative_to(root)
-            if relative_path == allowed_path or "migrations" in relative_path.parts or path.name.startswith("tests"):
-                continue
-            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
-                if "AuditEvent.objects.create(" in line:
-                    violations.append(f"{relative_path}:{line_number}")
+        for package in ("core", "console_app", "pve_helper"):
+            for path in sorted((root / package).rglob("*.py")):
+                relative_path = path.relative_to(root)
+                if (
+                    relative_path == allowed_path
+                    or "migrations" in relative_path.parts
+                    or path.name.startswith("tests")
+                ):
+                    continue
+                for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                    if "AuditEvent.objects.create(" in line:
+                        violations.append(f"{relative_path}:{line_number}")
 
         self.assertEqual(
             violations,
