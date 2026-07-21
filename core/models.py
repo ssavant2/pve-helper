@@ -688,13 +688,17 @@ class ClusterStorageVolumeObservation(TimestampedModel):
                 name="unique_cluster_storage_volume_observation",
             )
         ]
+        # The comment above applies here too, and once had to be read twice:
+        # single-column indexes on `vmid` and `content` were added three lines
+        # below the reasoning that avoided a fourth index. Neither could be
+        # reached — no query filters `vmid` at all, and the one that filters
+        # `content` binds `cluster_storage`, `observed_volume_generation` and
+        # `node` in the same call, so the composite below wins outright.
         indexes = [
             models.Index(
                 fields=["cluster_storage", "observed_volume_generation"],
                 name="core_csvol_generation_idx",
             ),
-            models.Index(fields=["vmid"], name="core_csvol_vmid_idx"),
-            models.Index(fields=["content"], name="core_csvol_content_idx"),
         ]
 
     def __str__(self) -> str:
@@ -755,7 +759,11 @@ class FileInventory(TimestampedModel):
         IMPORT_SOURCE = "import_source", "Import source"
 
     scan_run = models.ForeignKey(ScanRun, on_delete=models.CASCADE, related_name="files")
-    storage = models.ForeignKey(StorageMount, on_delete=models.CASCADE, related_name="files")
+    # `db_index=False` because the composite below starts with the same column:
+    # Django's implicit FK index would be a strict prefix of it, paid for on
+    # every row of the largest table in the app (per scan × per file) and read
+    # by nothing the composite cannot serve, including the cascade check.
+    storage = models.ForeignKey(StorageMount, on_delete=models.CASCADE, related_name="files", db_index=False)
     path = models.CharField(max_length=1024)
     derived_volid = models.CharField(max_length=512, blank=True)
     content_category = models.CharField(max_length=80, blank=True)
@@ -775,7 +783,15 @@ class FileInventory(TimestampedModel):
         ordering = ["storage__display_name", "path"]
         indexes = [
             models.Index(fields=["storage", "path"]),
-            models.Index(fields=["storage", "derived_volid"]),
+            # `classification` and `content_category` are single-column on
+            # purpose: both hot queries constrain the scan and the storage with
+            # an OR of `Q(scan_run, storage)` pairs — one per storage on screen
+            # — which the unique constraint's prefix serves per branch, leaving
+            # these two to be bitmap-ANDed against the union. A composite led
+            # by `scan_run` would only duplicate that prefix.
+            # There is deliberately no index on `derived_volid`: it is written
+            # and displayed, never filtered. Admin's `search_fields` does an
+            # `ILIKE`, which no btree index here would answer.
             models.Index(fields=["classification"]),
             models.Index(fields=["content_category"]),
         ]

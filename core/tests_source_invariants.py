@@ -642,3 +642,69 @@ class TrashItemCreationContractTests(SimpleTestCase):
 
         self.assertGreaterEqual(found, 2, "The TrashItem creation scan stopped finding the storage_actions paths.")
         self.assertEqual(violations, [], "Trash rows created without naming their storage.")
+
+
+class MigrationStateInvariantTests(SimpleTestCase):
+    """The migrations must say what the models say.
+
+    Nothing checked this before: `0024` was hand-written because the container
+    filesystem is read-only, and without this test a hand-written migration that
+    got a field wrong would only surface as a runtime error against a schema
+    nobody had rebuilt.
+    """
+
+    # Unlike its neighbours this one needs the database: the autodetector reads
+    # `django_migrations` to check the applied history is consistent.
+    databases = {"default"}
+
+    def test_no_model_change_is_missing_a_migration(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        output = StringIO()
+        try:
+            call_command("makemigrations", "--check", "--dry-run", stdout=output, stderr=output)
+        except SystemExit:
+            self.fail(f"Models have changed without a migration:\n{output.getvalue()}")
+
+
+class InventoryIndexInvariantTests(SimpleTestCase):
+    """The indexes `0024` kept, and why — so the measurement outlives the commit.
+
+    A Round 9 finding called all four of `FileInventory`'s single-column indexes
+    unusable and recommended removing them. Measured against the running
+    database, `classification` and `content_category` were the two most-scanned
+    indexes on the table; the finding's claim that `content_category` "is never
+    filtered at all" is contradicted by `_storage_content_usage`, which filters
+    it six times per call. Only the ones with zero scans *and* zero filters in
+    the source were dropped.
+
+    Asserting the exact set rather than "these two exist" so an index added
+    without a measurement behind it also has to come through here.
+    """
+
+    def test_file_inventory_carries_exactly_the_indexes_that_were_measured(self):
+        from core.models import FileInventory
+
+        self.assertEqual(
+            sorted(tuple(index.fields) for index in FileInventory._meta.indexes),
+            [("classification",), ("content_category",), ("storage", "path")],
+        )
+
+    def test_the_file_inventory_storage_column_has_no_index_of_its_own(self):
+        """It would be a strict prefix of `(storage, path)`, paid for per row on
+        the largest table in the app."""
+        from core.models import FileInventory
+
+        self.assertFalse(FileInventory._meta.get_field("storage").db_index)
+
+    def test_the_volume_observation_table_keeps_only_its_composite(self):
+        """Its own Meta comment reorders a unique constraint to avoid a fourth
+        index; two single-column ones had been added three lines below it."""
+        from core.models import ClusterStorageVolumeObservation
+
+        self.assertEqual(
+            [tuple(index.fields) for index in ClusterStorageVolumeObservation._meta.indexes],
+            [("cluster_storage", "observed_volume_generation")],
+        )
