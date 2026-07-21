@@ -186,7 +186,13 @@ def register_vm(request, cluster_key: str):
         nic_rows = [{"model": "e1000", "bridge": default_bridge, "vlan": ""}]
 
     context = {
-        **navigation_context("vms"),
+        **navigation_context(
+            "vms",
+            page_title={
+                "adopt": "Register existing disk",
+                "import": "Import disk image",
+            }.get(mode, "Import OVA/OVF"),
+        ),
         "mode": mode,
         "options": options,
         "form_values": form_values,

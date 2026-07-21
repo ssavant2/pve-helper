@@ -88,7 +88,7 @@ def clusters_overview(request):
 
 @app_login_required
 def cluster_add(request):
-    context = {**navigation_context("clusters"), "step": "identity"}
+    context = {**navigation_context("clusters", page_title="Add cluster"), "step": "identity"}
     if request.method == "GET":
         context["inspect_form"] = ClusterInspectForm()
         return render(request, "core/cluster_add.html", context)
@@ -227,7 +227,11 @@ def _render_cluster_connection(request, cluster: ProxmoxCluster, *, operation_er
         request,
         "core/cluster_connection.html",
         {
-            **navigation_context("clusters", cluster_key=cluster.key),
+            **navigation_context(
+                "clusters",
+                page_title=(cluster.display_name, "Connection"),
+                cluster_key=cluster.key,
+            ),
             "cluster": cluster,
             "endpoints": cluster.endpoints.order_by("name"),
             "credential": credential,
@@ -344,7 +348,11 @@ def cluster_connection_action(request, cluster_key: str):
 def cluster_endpoint_add(request, cluster_key: str):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
     context = {
-        **navigation_context("clusters", cluster_key=cluster.key),
+        **navigation_context(
+            "clusters",
+            page_title=(cluster.display_name, "Add endpoint"),
+            cluster_key=cluster.key,
+        ),
         "cluster": cluster,
         "step": "inspect",
     }

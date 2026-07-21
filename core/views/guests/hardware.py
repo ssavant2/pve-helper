@@ -178,10 +178,11 @@ def guest_hardware_edit(request, cluster_key: str, object_type: str, vmid: int):
         config = detail.config
         options = create_options(object_type, detail.node, cluster=detail.cluster)
         rootfs, mount_points = _ct_mount_rows(config)
+        identity = guest_identity(object_type, vmid, detail.name)
         context = {
-            **navigation_context("vms"),
+            **navigation_context("vms", page_title=(identity.full_label_with_type, "Edit hardware")),
             "guest": detail,
-            "guest_identity": guest_identity(object_type, vmid, detail.name),
+            "guest_identity": identity,
             "cores": config.get("cores", ""),
             "memory": config.get("memory", ""),
             "swap": config.get("swap", ""),
@@ -228,10 +229,11 @@ def guest_hardware_edit(request, cluster_key: str, object_type: str, vmid: int):
         head = str(config.get(cdrom["label"], "")).split(",")[0]
         cdrom_iso = "" if head == "none" else head
 
+    identity = guest_identity(object_type, vmid, detail.name)
     context = {
-        **navigation_context("vms"),
+        **navigation_context("vms", page_title=(identity.full_label_with_type, "Edit hardware")),
         "guest": detail,
-        "guest_identity": guest_identity(object_type, vmid, detail.name),
+        "guest_identity": identity,
         "cores": config.get("cores", ""),
         "sockets": config.get("sockets", "") or "1",
         "cpu_total": _cpu_count(config, object_type),
@@ -966,10 +968,11 @@ def guest_edit(request, cluster_key: str, object_type: str, vmid: int):
     current_tags = parse_tags(form_values["tags"])
     available_tags = _available_user_tags(cluster=detail.cluster) if section == "tags" else []
 
+    identity = guest_identity(object_type, vmid, detail.name)
     context = {
-        **navigation_context("vms"),
+        **navigation_context("vms", page_title=(identity.full_label_with_type, f"Edit {section}")),
         "guest": detail,
-        "guest_identity": guest_identity(object_type, vmid, detail.name),
+        "guest_identity": identity,
         "name_key_label": "Name" if object_type == ProxmoxInventory.ObjectType.VM else "Hostname",
         "section": section,
         "is_vm": object_type == ProxmoxInventory.ObjectType.VM,

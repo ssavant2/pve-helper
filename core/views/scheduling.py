@@ -588,7 +588,10 @@ def _requested_scan_storage(request) -> StorageMount | None:
 def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict, errors: list[str], mode: str) -> dict:
     target_choices = _scheduled_action_target_choices(action)
     return {
-        **navigation_context("scheduled_tasks"),
+        **navigation_context(
+            "scheduled_tasks",
+            page_title=("New scheduled task" if mode == "create" else "Edit scheduled task"),
+        ),
         "scheduled_action": action,
         "form_values": form_values,
         "form_errors": errors,

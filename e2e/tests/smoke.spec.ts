@@ -281,3 +281,21 @@ test("CSS layers load in the intended cascade order", async ({ page }) => {
     expect(response.ok(), `${href} loads`).toBe(true);
   }
 });
+
+// The page title has to survive soft navigation, which replaces the content
+// block by innerHTML and never re-runs the document head. `navigation.js`
+// already copied the fetched document's title across — while every page had the
+// same one, so the line could not be wrong. It can now.
+test("the browser title follows a soft navigation", async ({ page }) => {
+  await page.goto("/");
+  await expect(page).toHaveTitle("Storage Overview · pve-helper");
+  await page.evaluate(() => {
+    (window as Window & { titleSoftNavigationMarker?: string }).titleSoftNavigationMarker = "preserved";
+  });
+  await page.getByRole("link", { name: "Audit", exact: true }).click();
+  await expect(page).toHaveURL(/\/audit\/$/);
+  await expect(page).toHaveTitle("Audit Log · pve-helper");
+  await expect
+    .poll(() => page.evaluate(() => (window as Window & { titleSoftNavigationMarker?: string }).titleSoftNavigationMarker))
+    .toBe("preserved");
+});

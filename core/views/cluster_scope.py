@@ -16,7 +16,7 @@ from core.models import (
     ProxmoxStorageConsumer,
 )
 
-from .common import app_login_required
+from .common import app_login_required, browser_title
 
 SAFE_REDIRECT_METHODS = {"GET", "HEAD"}
 
@@ -51,7 +51,7 @@ def _scope_required_response(request, *, title: str, choices: list[dict]) -> Htt
     return render(
         request,
         "core/cluster_scope_required.html",
-        {"title": title, "cluster_choices": choices},
+        {"title": title, "page_title": browser_title(title), "cluster_choices": choices},
         status=409,
     )
 

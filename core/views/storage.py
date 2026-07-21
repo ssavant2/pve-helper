@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-from django.db.models import Count
+from django.db.models import Count, QuerySet
 from django.template.defaultfilters import filesizeformat
 
 from core.models import (
@@ -743,7 +743,17 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
         # Not "dashboard": the datastore page is its own destination now that the
         # sidebar links straight to it, and claiming the dashboard's key lit the
         # Overview leaf as well as the datastore's own.
-        **navigation_context("datastore"),
+        #
+        # Nine tabs on any number of datastores share this key, so the title says
+        # which datastore and which tab — a node-local one carries the node too,
+        # because the same storage id on two nodes is two different disks.
+        **navigation_context(
+            "datastore",
+            page_title=(
+                f"{storage} on {node}" if node else storage,
+                next((label for key, label, _name in _API_STORAGE_TABS if key == active_tab), ""),
+            ),
+        ),
         "node": node,
         "datastore_scope_label": (
             f"Shared datastore in {cluster.display_name}"
@@ -1823,7 +1833,7 @@ def storage_trash(request, storage_id: str):
         if not is_nfs_silly_rename_path(item.original_path) and not is_nfs_silly_rename_path(item.trash_path)
     ]
     context = {
-        **navigation_context("datastore"),
+        **navigation_context("datastore", page_title=(storage.display_name, "Trash")),
         "storage": storage,
         "files_base_url": _storage_browser_url(storage),
         "items": _trash_rows(storage, items),
@@ -2776,13 +2786,17 @@ def purge_trash_item(request, trash_item_id: int):
 
 @app_login_required
 def orphan_finder(request):
-    latest_scan = _latest_result_scan()
-    files = _current_orphan_files()
-    _decorate_orphan_files_with_action_state(files)
+    page = _classified_files_page(
+        request,
+        FileInventory.Classification.LIKELY_ORPHAN,
+        StorageMount.objects.filter(enabled=True).order_by("display_name"),
+        query={},
+    )
+    _decorate_orphan_files_with_action_state(page["files"])
     context = {
         **navigation_context("orphans"),
-        "latest_scan": latest_scan,
-        "files": files,
+        "latest_scan": _latest_result_scan(),
+        **page,
     }
     return render(request, "core/orphan_finder.html", context)
 
@@ -2807,50 +2821,22 @@ def classified_files(request):
         except StorageMount.DoesNotExist:
             storages = []
 
-    files: list[FileInventory] = []
-    for storage in storages:
-        scan = _latest_storage_result_scan(storage)
-        if not scan:
-            continue
-        files.extend(
-            FileInventory.objects.select_related("storage", "scan_run")
-            .filter(scan_run=scan, storage=storage, classification=classification)
-            .order_by("path")
-        )
-    files = sorted(files, key=lambda item: (item.storage.display_name, item.path))
-
-    page_size = 200
-    total = len(files)
-    try:
-        page = max(0, int(request.GET.get("page", "0")))
-    except ValueError:
-        page = 0
-    max_page = max(0, (total - 1) // page_size) if total else 0
-    page = min(page, max_page)
-    start = page * page_size
-    page_files = files[start : start + page_size]
-    for entry in page_files:
-        entry.category_label = _content_category_label(entry.content_category, entry.path)
-        entry.browser_url = _browser_url_for_file(entry)
-
     query = {"classification": classification}
     if storage_id:
         query["storage"] = storage_id
+    page = _classified_files_page(request, classification, storages, query=query)
+    for entry in page["files"]:
+        entry.category_label = _content_category_label(entry.content_category, entry.path)
+        entry.browser_url = _browser_url_for_file(entry)
 
     context = {
-        **navigation_context("orphans"),
+        # Shares the Orphan Finder's navigation key, so the classification is what
+        # distinguishes one of these tabs from another.
+        **navigation_context("orphans", page_title=FileInventory.Classification(classification).label),
         "latest_scan": _latest_result_scan(),
         "classification_value": classification,
         "classification_label": FileInventory.Classification(classification).label,
-        "files": page_files,
-        "total": total,
-        "page": page,
-        "has_prev": page > 0,
-        "has_next": start + page_size < total,
-        "start_index": start + 1 if total else 0,
-        "end_index": min(start + page_size, total),
-        "prev_query": urlencode({**query, "page": page - 1}),
-        "next_query": urlencode({**query, "page": page + 1}),
+        **page,
     }
     return render(request, "core/classified_files.html", context)
 
@@ -2911,22 +2897,72 @@ def _current_classification_counts(storages: list[StorageMount]) -> dict[str, in
     return totals
 
 
-def _current_orphan_files() -> list[FileInventory]:
-    files = []
-    for storage in StorageMount.objects.filter(enabled=True).order_by("display_name"):
+# One page of a classification list. Both surfaces that render such a list share
+# it, so "Next 200" means the same thing on each.
+_FILE_PAGE_SIZE = 200
+
+
+def _classified_files_queryset(classification: str, storages) -> QuerySet[FileInventory]:
+    """Every file with this classification, across the latest scan of each storage.
+
+    One query, not one per storage. The `(scan, storage)` pairing has to survive
+    into the filter: a scan with `target_storage=NULL` is a whole-fleet scan and
+    is the latest result for several storages at once, so neither a plain
+    `scan_run__in` nor a plain `storage__in` describes the set — only the pairs
+    do.
+
+    Returned unsliced and ordered, so the caller can count and page in the
+    database. The previous shape took 200 rows per storage and re-sliced the
+    concatenation to 200, which silently dropped files that sorted late within
+    their own storage: the result was neither the first 200 nor all of them.
+    """
+    pairs = []
+    for storage in storages:
         scan = _latest_storage_result_scan(storage)
-        if not scan:
-            continue
-        files.extend(
-            FileInventory.objects.select_related("storage", "scan_run")
-            .filter(
-                scan_run=scan,
-                storage=storage,
-                classification=FileInventory.Classification.LIKELY_ORPHAN,
-            )
-            .order_by("storage__display_name", "path")[:200]
-        )
-    return sorted(files, key=lambda item: (item.storage.display_name, item.path))[:200]
+        if scan:
+            pairs.append(Q(scan_run=scan, storage=storage))
+    if not pairs:
+        return FileInventory.objects.none()
+    latest_scans = pairs[0]
+    for pair in pairs[1:]:
+        latest_scans |= pair
+    return (
+        FileInventory.objects.select_related("storage", "scan_run")
+        .filter(latest_scans, classification=classification)
+        .order_by("storage__display_name", "path")
+    )
+
+
+def _classified_files_page(request, classification: str, storages, query: dict[str, str]) -> dict[str, object]:
+    """Context for one page of a classification list.
+
+    Shared by the Orphan Finder and the generic classification drill-down so the
+    two cannot disagree about page size, bounds or the "N-M of TOTAL" they show.
+    Orphan Finder shipped with no pagination at all while its sibling had all of
+    it, three functions away; a review queue that silently ends at 200 cannot
+    tell an operator whether the work is done.
+
+    `query` carries the view's own GET parameters into the prev/next links.
+    """
+    queryset = _classified_files_queryset(classification, storages)
+    total = queryset.count()
+    try:
+        page = max(0, int(request.GET.get("page", "0")))
+    except ValueError:
+        page = 0
+    page = min(page, max(0, (total - 1) // _FILE_PAGE_SIZE) if total else 0)
+    start = page * _FILE_PAGE_SIZE
+    return {
+        "files": list(queryset[start : start + _FILE_PAGE_SIZE]),
+        "total": total,
+        "page": page,
+        "has_prev": page > 0,
+        "has_next": start + _FILE_PAGE_SIZE < total,
+        "start_index": start + 1 if total else 0,
+        "end_index": min(start + _FILE_PAGE_SIZE, total),
+        "prev_query": urlencode({**query, "page": page - 1}),
+        "next_query": urlencode({**query, "page": page + 1}),
+    }
 
 
 def _storage_gate_rows(storages: list[StorageMount], result_scan: ScanRun | None) -> list[dict[str, object]]:

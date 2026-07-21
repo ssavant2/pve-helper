@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import datetime, time, timedelta
 from datetime import timezone as dt_timezone
 from functools import wraps
@@ -149,8 +149,50 @@ def app_login_required(view_func):
     return login_required(view_func)
 
 
-def navigation_context(active: str, **extra: str) -> dict[str, str]:
-    return {"active_nav": active, **extra}
+APP_TITLE = "pve-helper"
+
+# One browser title per sidebar destination, keyed by the same `active_nav` value
+# that lights the sidebar entry. Deriving the title from the navigation key is the
+# point: the tab and the highlighted menu entry then answer "where am I" from one
+# fact, and a new destination that wires up its navigation gets a real title
+# without anyone remembering to add one.
+NAV_PAGE_TITLES = {
+    "dashboard": "Storage Overview",
+    "datastore": "Datastore",
+    "orphans": "Orphan Finder",
+    "vms": "Virtual Machines",
+    "vms_overview": "VM Overview",
+    "clusters": "Clusters",
+    "tags": "Tags",
+    "scheduled_tasks": "Scheduled Tasks",
+    "audit": "Audit Log",
+    "pve_settings": "Settings",
+}
+
+
+def browser_title(*parts: str) -> str:
+    """`Object · Section · pve-helper`, most specific first.
+
+    Every title in the application is composed here, so the separator and the
+    trailing application name exist once. Empty parts drop out, which lets a
+    caller pass an optional object label unconditionally.
+    """
+    return " · ".join([*(str(part) for part in parts if part), APP_TITLE])
+
+
+def navigation_context(active: str, *, page_title: str | Sequence[str] = "", **extra: str) -> dict[str, str]:
+    """Sidebar state plus the browser title for this page.
+
+    `page_title` overrides the section default for pages that share a navigation
+    key with their siblings — a guest tab, one datastore, one classification list.
+    Pass the parts most-specific-first; the section name is not prepended
+    automatically, because "web01 · Networks" reads better than repeating
+    "Virtual Machines" in every tab.
+    """
+    parts = (page_title,) if isinstance(page_title, str) else tuple(page_title)
+    if not any(parts):
+        parts = (NAV_PAGE_TITLES.get(active, ""),)
+    return {"active_nav": active, "page_title": browser_title(*parts), **extra}
 
 
 def json_task_response(view_func):

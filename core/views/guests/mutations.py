@@ -293,7 +293,7 @@ def guest_backup_restore(request, cluster_key: str):
         else:
             return redirect("core:vms")
     context = {
-        **navigation_context("vms"),
+        **navigation_context("vms", page_title="Restore backup"),
         "archives": archives,
         "nodes": nodes,
         "storage_options": storage_options,

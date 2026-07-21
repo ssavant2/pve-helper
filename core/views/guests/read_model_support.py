@@ -26,6 +26,7 @@ from ..common import (
     SimpleNamespace,
     _decorate_guests_with_scheduled_actions,
     _int_or_zero,
+    browser_title,
     extract_disk_references,
     guest_identity,
     is_template,
@@ -711,21 +712,29 @@ def _guest_tab_context(detail: SimpleNamespace, active_tab: str) -> dict:
     )
     tag_row = SimpleNamespace(tags=parse_guest_tags(detail.config))
     _decorate_guest_tag_chips([tag_row], catalog=tag_catalog)
+    identity = guest_identity(
+        detail.object_type,
+        detail.vmid,
+        detail.name,
+        ref=detail_ref,
+    )
+    tabs = _guest_tabs(detail, active_tab)
     return {
         **workspace_context,
+        # Every guest tab passes through here, which is why the guest and the tab
+        # can be named once: four workspaces open on four guests are four titles.
+        "page_title": browser_title(
+            identity.full_label_with_type,
+            next((tab["label"] for tab in tabs if tab["active"]), ""),
+        ),
         "guest": detail,
         "cluster_key": detail.cluster_key,
-        "guest_identity": guest_identity(
-            detail.object_type,
-            detail.vmid,
-            detail.name,
-            ref=detail_ref,
-        ),
+        "guest_identity": identity,
         "guest_is_template": is_tmpl,
         "guest_type_label": type_label,
         "guest_tags": parse_guest_tags(detail.config),
         "guest_tag_chips": tag_row.tag_chips,
-        "guest_tabs": _guest_tabs(detail, active_tab),
+        "guest_tabs": tabs,
         "active_guest_tab": active_tab,
         "active_object_type": detail.object_type,
         "active_vmid": detail.vmid,

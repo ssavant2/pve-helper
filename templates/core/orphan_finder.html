@@ -15,6 +15,16 @@
   {% include "core/partials/storage_gate_help.html" %}
 
   <section class="panel">
+    <div class="panel-heading">
+      <span>{{ total }} likely orphan{{ total|pluralize }}</span>
+      {% if has_prev or has_next %}
+        <span class="panel-heading-controls">
+          <a class="page-button{% if not has_prev %} disabled{% endif %}" href="?{{ prev_query }}">Previous 200</a>
+          <span class="page-label">{{ start_index }}-{{ end_index }} of {{ total }}</span>
+          <a class="page-button{% if not has_next %} disabled{% endif %}" href="?{{ next_query }}">Next 200</a>
+        </span>
+      {% endif %}
+    </div>
     <table class="data-table">
       <thead>
         <tr>

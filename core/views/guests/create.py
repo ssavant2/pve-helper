@@ -59,7 +59,7 @@ def guest_create(request, cluster_key: str, object_type: str):
         }
 
     context = {
-        **navigation_context("vms"),
+        **navigation_context("vms", page_title="Create VM" if is_vm else "Create container"),
         "object_type": object_type,
         "cluster_key": cluster.key,
         "cluster_choices": list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")),

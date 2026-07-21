@@ -3883,7 +3883,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertIn("object-src 'none'", content_security_policy)
         self.assertIn("frame-ancestors 'none'", content_security_policy)
         self.assertContains(response, "data-auto-submit-form")
-        self.assertContains(response, "<title>pve-helper</title>")
+        # Named per page since Round 9; `tests_page_titles` owns the property.
+        self.assertContains(response, "<title>Storage Overview · pve-helper</title>")
         self.assertContains(response, 'rel="icon"')
         self.assertNotContains(response, "pve-helper.example.com")
         self.assertContains(response, "data-soft-nav-content")

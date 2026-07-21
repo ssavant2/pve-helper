@@ -50,7 +50,9 @@ def _tag_context(*, cluster, selected: str = "") -> dict:
             f"{reverse('core:tag_detail', kwargs={'cluster_key': cluster.key})}?{urlencode({'tag': row.name})}"
         )
     return {
-        **navigation_context("tags"),
+        # The overview and one tag's detail render from this same context, and
+        # tags are per cluster — three things the title has to keep apart.
+        **navigation_context("tags", page_title=(selected, "Tags", cluster.display_name)),
         "tag_rows": rows,
         "registry_error": catalog.registry_error,
         "inventory_state": catalog,
