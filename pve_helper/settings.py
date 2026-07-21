@@ -335,6 +335,10 @@ STORAGE_DOWNLOAD_ACCEL_ENABLED = env_bool("STORAGE_DOWNLOAD_ACCEL_ENABLED", Fals
 STORAGE_DOWNLOAD_ACCEL_PREFIX = env("STORAGE_DOWNLOAD_ACCEL_PREFIX", "/_pve_helper_download")
 STORAGE_DOWNLOAD_ACCEL_MANIFEST_PATH = Path("/storage-accel-state/mounts")
 CURRENT_GUEST_REFRESH_INTERVAL_MINUTES = env_int("CURRENT_GUEST_REFRESH_INTERVAL_MINUTES", 1)
+# Guest-agent OS/hostname/IP enrichment rarely changes, so the periodic reconcile
+# only re-reads a guest's agent once its stored copy is older than this. Keeps the
+# extra per-guest agent calls a slow trickle even though the reconcile runs often.
+GUEST_AGENT_INFO_REFRESH_SECONDS = env_int("GUEST_AGENT_INFO_REFRESH_SECONDS", 300)
 # This is the container-visible root, never an operator supplied host path.  The
 # Compose source may vary, but application paths are always confined below this
 # fixed namespace.

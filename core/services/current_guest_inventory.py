@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
+from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from core.models import (
@@ -264,6 +266,11 @@ def reconcile_live_guest_inventory(
                 "disk_max_bytes": guest.maxdisk,
                 "uptime_seconds": guest.uptime,
                 "runtime_lock": guest.lock,
+                # Pool and HA state ride on the same cluster/resources answer, so
+                # they refresh on every reconcile. agent_info is fetched separately
+                # (slower TTL) and must not be erased by a runtime-only refresh.
+                "pool": guest.pool,
+                "ha_state": guest.hastate,
                 "runtime_observed_at": observed_at,
                 "config": config,
                 "config_complete": existing.config_complete if existing else False,
@@ -284,6 +291,61 @@ def reconcile_live_guest_inventory(
         errors={"live_inventory": list(inventory.errors)} if inventory.errors else {},
         source_scan=prior.source_scan if prior else None,
     )
+
+
+def refresh_cluster_guest_agent_info(cluster, *, now=None, ttl_seconds: int | None = None) -> dict[str, int]:
+    """Warm the guest-agent enrichment on the projection for one cluster.
+
+    The live reconcile runs every minute, but the agent's OS/hostname/IP answers
+    change rarely, so this re-reads a guest only when its ``agent_observed_at`` is
+    older than ``ttl_seconds`` (or never set). That bounds the extra provider calls
+    to a slow trickle regardless of the reconcile cadence.
+
+    Only running VMs whose config asks for the agent are probed. A config-known
+    agent-off VM still has its ``agent_observed_at`` stamped so it is not re-checked
+    every cycle. Best-effort: a guest whose agent does not answer is stored as an
+    empty (not-running) enrichment, not retried until the TTL lapses again.
+    """
+    from core.services.guest_agent_info import config_agent_enabled, fetch_guest_agent_info
+
+    now = now or timezone.now()
+    ttl = settings.GUEST_AGENT_INFO_REFRESH_SECONDS if ttl_seconds is None else ttl_seconds
+    stale_before = now - timedelta(seconds=max(0, ttl))
+    due = (
+        CurrentGuestInventory.objects.filter(
+            cluster=cluster,
+            object_type=ProxmoxInventory.ObjectType.VM,
+            status="running",
+        )
+        .filter(Q(agent_observed_at__isnull=True) | Q(agent_observed_at__lt=stale_before))
+        .order_by(F("agent_observed_at").asc(nulls_first=True), "vmid")
+    )
+    refreshed = 0
+    skipped = 0
+    for row in due:
+        config = row.config if isinstance(row.config, dict) else {}
+        if not config_agent_enabled(config):
+            row.agent_observed_at = now
+            row.save(update_fields=["agent_observed_at", "updated_at"])
+            skipped += 1
+            continue
+        summary = fetch_guest_agent_info(
+            cluster=cluster,
+            node=row.node,
+            object_type=row.object_type,
+            vmid=row.vmid,
+        )
+        row.agent_info = {
+            "os_name": summary.get("os_name", ""),
+            "os_pretty_name": summary.get("os_pretty_name", ""),
+            "os_version": summary.get("os_version", ""),
+            "hostname": summary.get("hostname", ""),
+            "ips": list(summary.get("ips", []))[:4],
+        }
+        row.agent_observed_at = now
+        row.save(update_fields=["agent_info", "agent_observed_at", "updated_at"])
+        refreshed += 1
+    return {"refreshed": refreshed, "skipped": skipped}
 
 
 def _target_cluster(cluster=None, *, endpoint=None):

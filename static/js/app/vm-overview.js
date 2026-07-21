@@ -99,6 +99,7 @@ const initVmOverviewAgentInfo = (root = document) => {
           }
           const updates = [
             [row.querySelector("[data-agent-os-cell]"), guest.guest_os],
+            [row.querySelector("[data-agent-hostname-cell]"), guest.hostname],
             [row.querySelector("[data-agent-status-cell]"), guest.agent],
           ];
           updates.forEach(([cell, value]) => {
@@ -109,7 +110,10 @@ const initVmOverviewAgentInfo = (root = document) => {
             cell.dataset.sortValue = value;
           });
           renderIpCell(row.querySelector("[data-agent-ip-cell]"), guest.ip_label);
-          const extraFilterText = [guest.guest_os, guest.ip_label, guest.agent].filter(Boolean).join(" ").toLowerCase();
+          const extraFilterText = [guest.guest_os, guest.hostname, guest.ip_label, guest.agent]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
           if (extraFilterText && !row.dataset.filterText.includes(extraFilterText)) {
             row.dataset.filterText = `${row.dataset.filterText} ${extraFilterText}`;
           }

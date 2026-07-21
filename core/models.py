@@ -927,6 +927,15 @@ class CurrentGuestInventory(TimestampedModel):
     disk_max_bytes = models.BigIntegerField(default=0)
     uptime_seconds = models.BigIntegerField(default=0)
     runtime_lock = models.CharField(max_length=80, blank=True)
+    # Cluster-wide runtime facts from cluster/resources, refreshed on every live
+    # reconcile: the guest's resource pool and HA state (blank = not HA managed).
+    pool = models.CharField(max_length=255, blank=True, default="")
+    ha_state = models.CharField(max_length=40, blank=True, default="")
+    # Guest-agent enrichment (OS pretty name, hostname, IPs) fetched by the periodic
+    # worker so overview/summary read one shared, cross-process copy instead of each
+    # web process fanning out its own agent calls. Empty until the agent answers.
+    agent_info = models.JSONField(default=dict, blank=True)
+    agent_observed_at = models.DateTimeField(null=True, blank=True)
     config = models.JSONField(default=dict, blank=True)
     config_complete = models.BooleanField(default=True)
     disk_references = models.JSONField(default=list, blank=True)

@@ -9,6 +9,7 @@ from core.services.current_guest_inventory import (
     ScanGuestObservation,
     reconcile_live_guest_inventory,
     reconcile_scan_guest_inventory,
+    refresh_cluster_guest_agent_info,
     refresh_current_guest_from_client,
     update_current_guest_config,
 )
@@ -185,6 +186,39 @@ class CurrentGuestInventoryTests(TestCase):
         self.assertTrue(state.complete)
         self.assertEqual(list(CurrentGuestInventory.objects.values_list("vmid", flat=True)), [100])
 
+    def test_live_refresh_persists_pool_and_ha_state_but_not_agent_info(self):
+        existing = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=100, name="app")
+        existing.agent_info = {"os_pretty_name": "Ubuntu 24.04", "ips": ["192.0.2.9"]}
+        existing.agent_observed_at = timezone.now()
+        existing.save(update_fields=["agent_info", "agent_observed_at"])
+        result = VerifiedGuestInventory(
+            cluster_key=self.cluster.key,
+            guests=(
+                ProxmoxGuestSummary(
+                    node="pve1",
+                    object_type="vm",
+                    vmid=100,
+                    name="app",
+                    status="running",
+                    pool="lab-pool",
+                    hastate="started",
+                ),
+            ),
+            attempted_endpoints=(self.pve1.url,),
+            successful_endpoints=(self.pve1.url,),
+            errors=(),
+        )
+
+        reconcile_live_guest_inventory(result)
+
+        existing.refresh_from_db()
+        # Pool/HA ride on the same cluster/resources answer, so a runtime refresh
+        # keeps them current...
+        self.assertEqual(existing.pool, "lab-pool")
+        self.assertEqual(existing.ha_state, "started")
+        # ...while the separately-fetched agent enrichment is left untouched.
+        self.assertEqual(existing.agent_info["os_pretty_name"], "Ubuntu 24.04")
+
     def test_direct_guest_updates_do_not_mutate_historical_scan_evidence(self):
         historical = ProxmoxInventory.objects.create(
             scan_run=self.scan,
@@ -324,6 +358,67 @@ class CurrentGuestInventoryTests(TestCase):
         guest = CurrentGuestInventory.objects.get(vmid=100)
         self.assertEqual(guest.status, "running")
         self.assertEqual(guest.cpu_usage, 0.75)
+
+    def test_agent_enrichment_warms_running_agent_vms_and_respects_ttl(self):
+        agent_vm = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=100, name="app")
+        agent_vm.status = "running"
+        agent_vm.config = {"agent": "1"}
+        agent_vm.save(update_fields=["status", "config"])
+        off_vm = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=101, name="noagent")
+        off_vm.status = "running"
+        off_vm.config = {"agent": "0"}
+        off_vm.save(update_fields=["status", "config"])
+
+        summary = {
+            "os_name": "ubuntu",
+            "os_pretty_name": "Ubuntu 24.04 LTS",
+            "os_version": "24.04",
+            "hostname": "app01",
+            "ips": ["192.0.2.5"],
+            "running": True,
+        }
+        with patch("core.services.guest_agent_info.fetch_guest_agent_info", return_value=summary) as fetch:
+            stats = refresh_cluster_guest_agent_info(self.cluster)
+
+        self.assertEqual(stats, {"refreshed": 1, "skipped": 1})
+        fetch.assert_called_once()
+        agent_vm.refresh_from_db()
+        self.assertEqual(agent_vm.agent_info["os_pretty_name"], "Ubuntu 24.04 LTS")
+        self.assertEqual(agent_vm.agent_info["hostname"], "app01")
+        self.assertEqual(agent_vm.agent_info["ips"], ["192.0.2.5"])
+        self.assertIsNotNone(agent_vm.agent_observed_at)
+        # The agent-off VM is stamped so it is not re-checked every cycle, but is
+        # never probed and keeps its empty enrichment.
+        off_vm.refresh_from_db()
+        self.assertEqual(off_vm.agent_info, {})
+        self.assertIsNotNone(off_vm.agent_observed_at)
+
+        # Within the TTL nothing is re-read.
+        with patch("core.services.guest_agent_info.fetch_guest_agent_info", return_value=summary) as fetch_again:
+            stats_again = refresh_cluster_guest_agent_info(self.cluster)
+        self.assertEqual(stats_again, {"refreshed": 0, "skipped": 0})
+        fetch_again.assert_not_called()
+
+        # A zero TTL forces the running agent VM to be re-read.
+        with patch("core.services.guest_agent_info.fetch_guest_agent_info", return_value=summary) as fetch_forced:
+            stats_forced = refresh_cluster_guest_agent_info(self.cluster, ttl_seconds=0)
+        self.assertEqual(stats_forced["refreshed"], 1)
+        fetch_forced.assert_called_once()
+
+    def test_agent_enrichment_skips_stopped_and_container_guests(self):
+        stopped = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=100, name="stopped")
+        stopped.status = "stopped"
+        stopped.config = {"agent": "1"}
+        stopped.save(update_fields=["status", "config"])
+        container = self.current_guest(endpoint=self.pve1, object_type="ct", vmid=200, name="ct")
+        container.status = "running"
+        container.save(update_fields=["status"])
+
+        with patch("core.services.guest_agent_info.fetch_guest_agent_info") as fetch:
+            stats = refresh_cluster_guest_agent_info(self.cluster)
+
+        self.assertEqual(stats, {"refreshed": 0, "skipped": 0})
+        fetch.assert_not_called()
 
 
 class DuplicateVmidAcrossClustersTests(TestCase):

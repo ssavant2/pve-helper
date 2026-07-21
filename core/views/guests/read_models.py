@@ -8,7 +8,6 @@ from ..common import (
     Http404,
     JsonResponse,
     ProxmoxInventory,
-    SimpleNamespace,
     app_login_required,
     guest_disks,
     guest_networks,
@@ -57,28 +56,22 @@ def vms_overview_agent_info(request):
     for row in rows:
         if row.object_type != ProxmoxInventory.ObjectType.VM or not row.agent_enabled:
             continue
-        detail = SimpleNamespace(
-            cluster=row.cluster,
-            cluster_key=row.cluster_key,
-            object_type=row.object_type,
-            vmid=row.vmid,
-            name=row.name,
-            node=row.node,
-            status=row.status,
-            config={"agent": 1},
-        )
-        # Overview enrichment is a passive read. Never occupy a web worker with
-        # guest-agent calls; serve only already-cached detail-page observations.
-        summary = _guest_agent_summary(detail, allow_fetch=False)
-        if not summary.get("running"):
+        # Overview enrichment is a passive read: the row labels already carry the
+        # guest-agent OS/hostname/IPs the periodic worker persisted on the projection
+        # (cross-process; the per-process cache the web workers hold can never see
+        # what the worker read). Emitting them lets a soft navigation pick up worker
+        # refreshes without a full reload. Skip guests whose agent has not answered
+        # yet so the config fallback already rendered is left in place.
+        if not (row.hostname or row.agent_label == "Running"):
             continue
         payload.append(
             {
                 "target": row.target_id,
                 "guest_ref": row.guest_ref_id,
-                "guest_os": summary.get("os_pretty_name") or summary.get("os_name") or "",
-                "ip_label": ", ".join(summary.get("ips", [])[:3]) if summary.get("ips") else "",
-                "agent": "Running",
+                "guest_os": row.guest_os_label,
+                "hostname": row.hostname or "",
+                "ip_label": row.ip_label if row.ip_label != "-" else "",
+                "agent": row.agent_label,
             }
         )
     return JsonResponse({"guests": payload})

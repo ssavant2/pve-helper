@@ -36,10 +36,12 @@
             <label><input type="checkbox" data-column-toggle="provisioned" checked> Provisioned Space</label>
             <label><input type="checkbox" data-column-toggle="used" checked> Used Space</label>
             <label><input type="checkbox" data-column-toggle="cpu" checked> Host CPU</label>
-            <label><input type="checkbox" data-column-toggle="host-mem" checked> Host Mem</label>
             <label><input type="checkbox" data-column-toggle="active-mem" checked> Active Memory</label>
             <label><input type="checkbox" data-column-toggle="guest-os" checked> Guest OS</label>
+            <label><input type="checkbox" data-column-toggle="hostname"> Hostname</label>
             <label><input type="checkbox" data-column-toggle="agent" checked> Guest Agent</label>
+            <label><input type="checkbox" data-column-toggle="pool" checked> Pool</label>
+            <label><input type="checkbox" data-column-toggle="ha" checked> HA</label>
             <label><input type="checkbox" data-column-toggle="node" checked> Node</label>
             <label><input type="checkbox" data-column-toggle="has-snapshot" checked> Has snapshot</label>
             <label><input type="checkbox" data-column-toggle="vmid"> VMID</label>
@@ -101,10 +103,12 @@
               <th data-column="provisioned" data-sort="number">Provisioned Space</th>
               <th data-column="used" data-sort="number">Used Space</th>
               <th data-column="cpu" data-sort="number">Host CPU</th>
-              <th data-column="host-mem" data-sort="number">Host Mem</th>
               <th data-column="active-mem" data-sort="number">Active Memory</th>
               <th data-column="guest-os" data-sort="text">Guest OS</th>
+              <th data-column="hostname" data-sort="text">Hostname</th>
               <th data-column="agent" data-sort="text">Guest Agent</th>
+              <th data-column="pool" data-sort="text">Pool</th>
+              <th data-column="ha" data-sort="text">HA</th>
               <th data-column="node" data-sort="text">Node</th>
               <th data-column="has-snapshot" data-sort="text">Has snapshot</th>
               <th data-column="vmid" data-sort="number">VMID</th>
@@ -149,7 +153,7 @@
                 data-edit-tags-url="{% url 'core:guest_edit' g.cluster_key g.object_type g.vmid %}?section=tags"
                 data-edit-hardware-url="{% url 'core:guest_hardware_edit' g.cluster_key g.object_type g.vmid %}"
                 data-edit-options-url="{% url 'core:guest_edit' g.cluster_key g.object_type g.vmid %}?section=options"
-                data-filter-text="{{ g.cluster.display_name|lower }} {{ g.cluster_key|lower }} {{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }} {{ g.tags_label|lower }} {{ g.guest_os_label|lower }} {{ g.ip_label|lower }} {{ g.mac_label|lower }} {{ g.storage_label|lower }} {{ g.has_snapshot_label|lower }}"
+                data-filter-text="{{ g.cluster.display_name|lower }} {{ g.cluster_key|lower }} {{ g.vmid }} {{ g.name|lower }} {{ g.node|lower }} {{ g.type_filter }} {{ g.status|lower }} {{ g.tags_label|lower }} {{ g.guest_os_label|lower }} {{ g.hostname_label|lower }} {{ g.pool_label|lower }} {{ g.ha_state_label|lower }} {{ g.ip_label|lower }} {{ g.mac_label|lower }} {{ g.storage_label|lower }} {{ g.has_snapshot_label|lower }}"
               >
                 <td class="vm-select-column">
                   <input type="checkbox" data-vm-select value="{{ g.guest_ref_id }}" aria-label="Select {{ g.guest_identity.full_label_with_type }}">
@@ -169,10 +173,12 @@
                 <td data-column="provisioned" data-sort-value="{{ g.provisioned_bytes }}">{{ g.provisioned_label }}</td>
                 <td data-column="used" data-sort-value="{{ g.used_bytes }}">{{ g.used_label }}</td>
                 <td data-column="cpu" data-sort-value="{{ g.cpu_value }}">{{ g.cpu_label }}</td>
-                <td data-column="host-mem" data-sort-value="{{ g.mem_bytes }}">{{ g.mem_label }}</td>
                 <td data-column="active-mem" data-sort-value="{{ g.active_mem_bytes }}">{{ g.active_mem_label }}</td>
                 <td data-column="guest-os" data-agent-os-cell data-sort-value="{{ g.guest_os_label }}">{{ g.guest_os_label }}</td>
+                <td data-column="hostname" data-agent-hostname-cell data-sort-value="{{ g.hostname_label }}">{{ g.hostname_label }}</td>
                 <td data-column="agent" data-agent-status-cell data-sort-value="{{ g.agent_label }}">{{ g.agent_label }}</td>
+                <td data-column="pool" data-sort-value="{{ g.pool_label }}">{{ g.pool_label }}</td>
+                <td data-column="ha" data-sort-value="{{ g.ha_state_label }}">{{ g.ha_state_label }}</td>
                 <td data-column="node" data-sort-value="{{ g.node }}">{{ g.node|default:"-" }}</td>
                 <td data-column="has-snapshot" data-snapshot-status-cell data-sort-value="{{ g.has_snapshot_label }}">{{ g.has_snapshot_label }}</td>
                 <td data-column="vmid" data-sort-value="{{ g.vmid }}">{{ g.vmid }}</td>
@@ -188,7 +194,7 @@
                 <td data-column="tags" data-sort-value="{{ g.tags_label }}">{% for tag in g.tag_chips %}<a class="tag-chip" data-user-tag="{{ tag.name }}" style="--tag-bg:#{{ tag.background }};--tag-fg:#{{ tag.foreground }}" href="{% url 'core:tag_detail' g.cluster_key %}?tag={{ tag.name|urlencode }}">{{ tag.name }}</a>{% if not forloop.last %} {% endif %}{% endfor %}</td>
               </tr>
             {% empty %}
-              <tr><td colspan="25" class="empty-state">No guests found.</td></tr>
+              <tr><td colspan="26" class="empty-state">No guests found.</td></tr>
             {% endfor %}
           </tbody>
         </table>

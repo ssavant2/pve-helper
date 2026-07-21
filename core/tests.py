@@ -8308,18 +8308,16 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             name="Lab VM",
             status="running",
             config={"agent": "1", "ostype": "l26"},
-            observed_at=timezone.now(),
-        )
-
-        cache.set(
-            cluster_cache_key("guest-agent-summary:v2", self.cluster, "pve1", "vm", 500),
-            {
-                "enabled": True,
-                "running": True,
+            # The periodic worker persists the guest-agent enrichment on the
+            # projection so the overview reads it cross-process, not from the
+            # per-process cache the web workers hold.
+            agent_info={
                 "os_pretty_name": "Ubuntu 24.04.4 LTS",
+                "hostname": "lab01",
                 "ips": ["192.0.2.50"],
             },
-            60,
+            agent_observed_at=timezone.now(),
+            observed_at=timezone.now(),
         )
         clients = Mock(return_value=[])
 
@@ -8335,6 +8333,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         payload = response.json()["guests"][0]
         self.assertEqual(payload["target"], "gr1:default:vm:500@pve1")
         self.assertEqual(payload["guest_os"], "Ubuntu 24.04.4 LTS")
+        self.assertEqual(payload["hostname"], "lab01")
         self.assertEqual(payload["ip_label"], "192.0.2.50")
         self.assertEqual(payload["agent"], "Running")
 

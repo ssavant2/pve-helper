@@ -67,6 +67,11 @@ class ProxmoxGuestSummary:
     lock: str = ""
     is_template: bool = False
     tags: tuple[str, ...] = ()
+    # Cluster-wide fields that ``cluster/resources`` already returns per guest, so
+    # they cost no extra provider call: the guest's resource pool and its HA state
+    # (empty when the guest is not managed by HA).
+    pool: str = ""
+    hastate: str = ""
 
 
 @dataclass(frozen=True)
@@ -951,6 +956,8 @@ def _add_guest_summary(
             lock=str(data.get("lock") or ""),
             is_template=_int_or_zero(data.get("template")) == 1,
             tags=tuple(part for part in re.split(r"[;,\s]+", str(data.get("tags") or "").strip()) if part),
+            pool=str(data.get("pool") or ""),
+            hastate=str(data.get("hastate") or ""),
         ),
     )
 

@@ -35,6 +35,7 @@ from .services.current_guest_inventory import (
     ScanGuestObservation,
     reconcile_live_guest_inventory,
     reconcile_scan_guest_inventory,
+    refresh_cluster_guest_agent_info,
     refresh_current_guest_from_client,
     store_guest_lineage,
     upsert_current_guest,
@@ -160,6 +161,15 @@ def _refresh_cluster_guest_inventory(cluster) -> dict[str, object]:
             store_guest_lineage(cluster, fetch_live_guest_lineage(cluster=cluster))
         except Exception:
             logger.warning("Lineage refresh failed for cluster=%s", cluster.key, exc_info=True)
+        # Warm the guest-agent enrichment (OS/hostname/IPs) on the projection while
+        # the transport is live, on its own slow TTL. Cross-process by design: the
+        # per-process cache the web workers use can never see what this worker reads,
+        # so overview/summary read the persisted copy instead. Best-effort — a stall
+        # here must not fail the guest-inventory refresh it rides along with.
+        try:
+            refresh_cluster_guest_agent_info(cluster)
+        except Exception:
+            logger.warning("Guest-agent enrichment failed for cluster=%s", cluster.key, exc_info=True)
         return {
             "skipped": False,
             "complete": state.complete,

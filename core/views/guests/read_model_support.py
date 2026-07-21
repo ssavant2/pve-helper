@@ -7,6 +7,7 @@ from django.core.cache import cache
 from core.models import ProxmoxCluster
 from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_state_identity import cluster_cache_key
+from core.services.guest_agent_info import config_agent_enabled, empty_agent_info, fetch_guest_agent_info
 from core.services.public_errors import public_exception_message
 from core.services.refs import GuestRef, RefParseError
 from core.services.tag_catalog import load_tag_catalog
@@ -312,8 +313,20 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
     uptime = _int_or_zero(getattr(runtime, "uptime", getattr(runtime, "uptime_seconds", 0)))
     cpus = _int_or_zero(config.get("vcpus")) or _cpu_count(config, object_type)
     macs = _config_mac_addresses(config)
-    ips = _config_ip_addresses(config)
+    config_ips = _config_ip_addresses(config)
     storage_ids = _config_storage_ids(config)
+    # Guest-agent enrichment persisted by the periodic worker (cross-process), with
+    # a config fallback so a guest without a running agent still shows its coarse
+    # ostype and any static cloud-init IP.
+    agent_info = getattr(current_obj, "agent_info", None) if current_obj is not None else None
+    agent_info = agent_info if isinstance(agent_info, dict) else {}
+    agent_ips = [str(ip) for ip in (agent_info.get("ips") or []) if ip]
+    os_pretty = str(agent_info.get("os_pretty_name") or agent_info.get("os_name") or "")
+    hostname = str(agent_info.get("hostname") or "")
+    display_ips = agent_ips or config_ips
+    agent_running = bool(os_pretty or hostname or agent_ips)
+    pool = str(getattr(current_obj, "pool", "") or "") if current_obj is not None else ""
+    ha_state = str(getattr(current_obj, "ha_state", "") or "") if current_obj is not None else ""
     cluster = getattr(current_obj, "cluster", None)
     ref = GuestRef(cluster.key, object_type, vmid, node or "") if cluster is not None and vmid is not None else None
     identity = guest_identity(object_type, vmid, name or "", ref=ref)
@@ -349,15 +362,23 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
         used_label=used_disk and _fmt_bytes(used_disk) or "-",
         cpu_value=round(cpu * 100, 2),
         cpu_label=f"{round(cpu * 100, 1)}%" if cpu else "0%",
-        mem_bytes=mem,
-        mem_label=mem and _fmt_bytes(mem) or "-",
+        # Proxmox reports one memory-usage figure (balloon-derived) per guest; the
+        # former "Host Mem" column was a second label over the same value, so the
+        # overview keeps a single Active Memory column.
         active_mem_bytes=mem,
         active_mem_label=mem and _fmt_bytes(mem) or "-",
         memory_size_bytes=maxmem,
         memory_size_label=maxmem and _fmt_bytes(maxmem) or "-",
-        guest_os_label=_guest_os_label(config),
+        # Prefer the guest agent's real OS name; fall back to the coarse config ostype.
+        guest_os_label=os_pretty or _guest_os_label(config),
+        hostname=hostname,
+        hostname_label=hostname or "-",
+        pool=pool,
+        pool_label=pool or "-",
+        ha_state=ha_state,
+        ha_state_label=_ha_state_label(ha_state),
         agent_enabled=_guest_agent_config_enabled(config, object_type),
-        agent_label=_guest_agent_config_label(config, object_type),
+        agent_label="Running" if agent_running else _guest_agent_config_label(config, object_type),
         uptime_seconds=uptime,
         runtime_observed_at=getattr(current_obj, "runtime_observed_at", None),
         uptime_label=_format_uptime(uptime) if uptime else "-",
@@ -367,8 +388,8 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
         nic_count_label=str(len(macs)),
         disk_count=_config_disk_count(config),
         disk_count_label=str(_config_disk_count(config)),
-        ip_addresses=ips,
-        ip_label=", ".join(ips[:3]) if ips else "-",
+        ip_addresses=display_ips,
+        ip_label=", ".join(display_ips[:3]) if display_ips else "-",
         mac_addresses=macs,
         mac_label=", ".join(macs[:3]) if macs else "-",
         storage_label=", ".join(storage_ids) if storage_ids else "-",
@@ -480,13 +501,7 @@ def _guest_agent_config_label(config: dict, object_type: str) -> str:
 def _guest_agent_config_enabled(config: dict, object_type: str) -> bool:
     if object_type != ProxmoxInventory.ObjectType.VM:
         return False
-    raw_value = (config or {}).get("agent")
-    if raw_value is True:
-        return True
-    value = str((config or {}).get("agent") or "")
-    if not value or value == "0":
-        return False
-    return value == "1" or value.lower() == "true" or value.startswith("1,") or "enabled=1" in value
+    return config_agent_enabled(config)
 
 
 def _is_disk_device_key(key: str) -> bool:
@@ -664,6 +679,9 @@ def _resolve_guest_detail(
         "disk": obj.disk_used_bytes,
         "maxdisk": obj.disk_max_bytes,
         "uptime": obj.uptime_seconds,
+        "pool": obj.pool,
+        "ha_state": obj.ha_state,
+        "agent_info": obj.agent_info if isinstance(obj.agent_info, dict) else {},
     }
 
     return SimpleNamespace(
@@ -802,105 +820,67 @@ def _guest_os_label(config: dict) -> str:
     return OSTYPE_LABELS.get(ostype, ostype or "Unknown")
 
 
+def _ha_state_label(ha_state: str) -> str:
+    """Human label for a guest's Proxmox HA state. Empty means the guest is not
+    managed by HA — shown as a plain dash, not "Unmanaged", to match the other
+    not-applicable cells in the overview."""
+    state = str(ha_state or "").strip()
+    if not state:
+        return "-"
+    return state.replace("_", " ").title()
+
+
 def _guest_agent_summary(detail: SimpleNamespace, *, allow_fetch: bool = True) -> dict:
     """Best-effort guest-agent OS name + IPs for the Summary Guest OS card.
-    Only queries when the agent is enabled; degrades silently otherwise."""
+    Only queries when the agent is enabled; degrades silently otherwise.
+
+    A live single-guest render (``allow_fetch=True``) fetches and caches. A passive
+    render (``allow_fetch=False``) never fans out an agent call from a web request:
+    it serves the cache, then the copy the periodic worker persisted on the
+    projection, so overview and summary show the same OS/IPs cross-process."""
     config = detail.config
     enabled = _guest_agent_config_enabled(config, detail.object_type)
     if detail.object_type != ProxmoxInventory.ObjectType.VM or not enabled or detail.status != "running":
-        return _empty_guest_agent_summary(enabled=enabled, running=False)
+        return empty_agent_info(enabled=enabled, running=False)
 
     cluster = getattr(detail, "cluster", None)
     if not cluster:
-        return _empty_guest_agent_summary(enabled=enabled, running=False)
+        return empty_agent_info(enabled=enabled, running=False)
     cache_key = cluster_cache_key("guest-agent-summary:v2", cluster, detail.node, detail.object_type, detail.vmid)
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
         return cached
     if not allow_fetch:
-        return _empty_guest_agent_summary(enabled=enabled, running=False)
+        persisted = _persisted_agent_summary(detail, enabled=enabled)
+        return persisted if persisted is not None else empty_agent_info(enabled=enabled, running=False)
 
-    os_name = ""
-    os_pretty_name = ""
-    os_version = ""
-    os_version_id = ""
-    architecture = ""
-    kernel_release = ""
-    kernel_version = ""
-    hostname = ""
-    ips: list[str] = []
-    interfaces: list[dict] = []
-    os_data, _err = _guest_api_get(detail, "agent/get-osinfo", timeout_seconds=GUEST_AGENT_API_TIMEOUT_SECONDS)
-    if isinstance(os_data, dict):
-        result = os_data.get("result") if isinstance(os_data.get("result"), dict) else os_data
-        if isinstance(result, dict):
-            os_name = result.get("name") or ""
-            os_pretty_name = result.get("pretty-name") or os_name
-            os_version = result.get("version") or ""
-            os_version_id = result.get("version-id") or ""
-            architecture = result.get("machine") or ""
-            kernel_release = result.get("kernel-release") or ""
-            kernel_version = result.get("kernel-version") or ""
-    host_data, _err = _guest_api_get(detail, "agent/get-host-name", timeout_seconds=GUEST_AGENT_API_TIMEOUT_SECONDS)
-    if isinstance(host_data, dict):
-        result = host_data.get("result") if isinstance(host_data.get("result"), dict) else host_data
-        if isinstance(result, dict):
-            hostname = result.get("host-name", "")
-    net_data, _err = _guest_api_get(
-        detail, "agent/network-get-interfaces", timeout_seconds=GUEST_AGENT_API_TIMEOUT_SECONDS
+    summary = fetch_guest_agent_info(
+        cluster=cluster,
+        node=detail.node,
+        object_type=detail.object_type,
+        vmid=detail.vmid,
+        timeout_seconds=GUEST_AGENT_API_TIMEOUT_SECONDS,
     )
-    if isinstance(net_data, dict):
-        for iface in net_data.get("result") or []:
-            if not isinstance(iface, dict) or iface.get("name") == "lo":
-                continue
-            addresses = []
-            for addr in iface.get("ip-addresses") or []:
-                ip = addr.get("ip-address") if isinstance(addr, dict) else None
-                if ip and not ip.startswith("127.") and ip != "::1":
-                    addresses.append(ip)
-                    ips.append(ip)
-            interfaces.append(
-                {
-                    "name": iface.get("name", ""),
-                    "mac": iface.get("hardware-address", ""),
-                    "addresses": addresses,
-                }
-            )
-    summary = {
-        "enabled": True,
-        "running": bool(os_pretty_name or os_name or hostname or ips),
-        "cached": True,
-        "os_name": os_name,
-        "os_pretty_name": os_pretty_name,
-        "os_version": os_version,
-        "os_version_id": os_version_id,
-        "architecture": architecture,
-        "kernel_release": kernel_release,
-        "kernel_version": kernel_version,
-        "hostname": hostname,
-        "ips": ips[:4],
-        "interfaces": interfaces,
-    }
     cache.set(cache_key, summary, LIVE_GUEST_INVENTORY_CACHE_SECONDS)
     return summary
 
 
-def _empty_guest_agent_summary(*, enabled: bool, running: bool) -> dict:
-    return {
-        "enabled": enabled,
-        "running": running,
-        "cached": False,
-        "os_name": "",
-        "os_pretty_name": "",
-        "os_version": "",
-        "os_version_id": "",
-        "architecture": "",
-        "kernel_release": "",
-        "kernel_version": "",
-        "hostname": "",
-        "ips": [],
-        "interfaces": [],
-    }
+def _persisted_agent_summary(detail: SimpleNamespace, *, enabled: bool) -> dict | None:
+    """Reconstruct an agent summary from the projection copy the worker stored.
+
+    Returns ``None`` when nothing has been persisted yet, so the caller can fall
+    back to an empty (not-running) summary."""
+    current = getattr(detail, "current", None)
+    stored = current.get("agent_info") if isinstance(current, dict) else None
+    if not isinstance(stored, dict) or not stored:
+        return None
+    summary = empty_agent_info(enabled=enabled, running=False)
+    summary.update({key: value for key, value in stored.items() if key in summary})
+    summary["cached"] = True
+    summary["running"] = bool(
+        summary.get("os_pretty_name") or summary.get("os_name") or summary.get("hostname") or summary.get("ips")
+    )
+    return summary
 
 
 def _guest_pool_label(detail: SimpleNamespace) -> str:
