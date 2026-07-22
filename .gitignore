@@ -13,7 +13,10 @@ staticfiles/
 media/
 logs/
 certs/
-dev-storage/
+# The example/dev stack binds ./dev-storage as its storage root, so the
+# directory itself has to exist in a fresh clone; only its contents are local.
+dev-storage/*
+!dev-storage/.gitkeep
 node_modules/
 npm-debug.log*
 
