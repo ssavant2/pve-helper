@@ -308,6 +308,46 @@
   overflow-x: auto;
 }
 
+/* Page-level notices. The three modifiers were used in templates without ever
+   being defined, so an error, a warning and a success all rendered as the same
+   neutral panel — the one place in the app where colour is the whole message.
+   The box belongs to `.notice`; the modifiers carry only the colour, so
+   `.catalog-pending` can take the tint without also taking a floating box. */
+.notice {
+  padding: 11px 14px;
+  border-left-width: 3px;
+  border-left-style: solid;
+  line-height: 1.4;
+}
+
+.notice p,
+.notice ul {
+  margin: 0;
+}
+
+.notice ul {
+  padding-left: 18px;
+}
+
+.notice li + li {
+  margin-top: 5px;
+}
+
+.notice-error {
+  border-left-color: var(--red);
+  background: var(--danger-bg);
+}
+
+.notice-warning {
+  border-left-color: var(--amber);
+  background: var(--warning-bg);
+}
+
+.notice-success {
+  border-left-color: var(--green);
+  background: var(--success-bg);
+}
+
 .metric {
   min-height: 78px;
   padding: 14px;

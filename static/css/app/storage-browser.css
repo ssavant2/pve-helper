@@ -294,10 +294,46 @@
   color: var(--green);
 }
 
+/* The question about a pending submission sits between the fields it is about and
+   the buttons that answer it, so reading it and acting on it is one movement. */
+.storage-access-confirm {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 11px 13px;
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+  background: var(--warning-bg);
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.storage-access-confirm > i,
+.storage-access-confirm > svg {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  color: var(--amber);
+}
+
+.storage-access-confirm p {
+  margin: 0;
+}
+
+.storage-access-confirm p + p {
+  margin-top: 6px;
+}
+
+.storage-access-confirm-headline {
+  font-weight: 600;
+}
+
 .storage-access-form-actions {
   display: flex;
   align-items: center;
-  margin-top: 18px;
+  gap: 9px;
+  margin-top: 16px;
 }
 
 @media (max-width: 980px) {

@@ -7633,6 +7633,11 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(blocked, "different exports")
         self.assertContains(blocked, "/mnt/Pool-VMs/VM/Proxmox")
         self.assertContains(blocked, "Register against this export anyway")
+        # The question is asked inside the form, beside the two fields it is about
+        # and above the buttons that answer it — not as a page-level error banner
+        # detached from both.
+        self.assertContains(blocked, "storage-access-confirm")
+        self.assertNotContains(blocked, "notice-error")
         self.assertFalse(ClusterStorageMount.objects.exists())
 
         health = MountHealth(available=True, writable=True, filesystem_type="nfs4")

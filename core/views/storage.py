@@ -453,6 +453,12 @@ def storage_mount_register(request):
     confirm_backend_mismatch = False
     confirmed_mismatch = False
     confirmed_distinct = False
+    # A question about the values in the form belongs beside them, not in a banner
+    # above the whole page: the answer is a button in this form, and the operator
+    # has to re-read the two fields to give it. Page-level notices stay for things
+    # that are not about a pending submission.
+    confirmation_headline = ""
+    confirmation_details: list[str] = []
     if request.method == "POST":
         if request.POST.get("action") == "remove_binding":
             try:
@@ -544,26 +550,20 @@ def storage_mount_register(request):
                 agreement = compare_mount_source(backend_identity, candidates[relative].get("source", ""))
                 if not agreement.agrees:
                     confirm_backend_mismatch = True
-                    warnings.append(agreement.reason)
-                    errors.append(
-                        "The chosen directory is not mounted from the datastore's own export. "
-                        "Choose the matching directory, or confirm that this pairing is intended."
-                    )
-            if not errors and backend_identity and not confirmed_distinct:
+                    confirmation_headline = "The chosen directory is not mounted from the datastore's own export."
+                    confirmation_details.append(agreement.reason)
+            if not errors and not confirmation_headline and backend_identity and not confirmed_distinct:
                 near_matches = near_match_mounts(backend_identity)
                 if near_matches:
                     confirm_distinct_backend = True
+                    confirmation_headline = "Backend identity looks like an existing backend spelled differently."
                     for other in near_matches:
-                        warnings.append(
+                        confirmation_details.append(
                             f"'{other.backend_identity}' ({other.display_name}) exports the same path under a "
                             "different host spelling. If that is the same physical backend, register it with the "
                             "identical identity — otherwise the cross-cluster in-use check cannot fire."
                         )
-                    errors.append(
-                        "Backend identity looks like an existing backend spelled differently. "
-                        "Use the identical value, or confirm that these are genuinely different backends."
-                    )
-            if not errors and definition is not None:
+            if not errors and not confirmation_headline and definition is not None:
                 profile = backend_profile(definition.storage_type)
                 candidate = candidates[relative]
                 existing = StorageMount.objects.filter(relative_path=relative).first()
@@ -632,6 +632,8 @@ def storage_mount_register(request):
             "form_values": form_values,
             "confirm_distinct_backend": confirm_distinct_backend,
             "confirm_backend_mismatch": confirm_backend_mismatch,
+            "confirmation_headline": confirmation_headline,
+            "confirmation_details": confirmation_details,
             # A confirmation already given has to survive the next submit, or two
             # pending confirmations would each clear the other and never resolve.
             "confirmed_backend_mismatch": confirmed_mismatch,

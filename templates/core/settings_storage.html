@@ -6,7 +6,7 @@
       <h2>Storage access</h2>
       <p>Associate host-mounted directories with storage definitions already discovered from Proxmox.</p>
     </div>
-    <div class="page-actions"><a class="button button-secondary" href="{% url 'core:dashboard' %}#storage-catalog">View storage catalog</a></div>
+    <div class="page-actions"><a class="secondary-action" href="{% url 'core:dashboard' %}#storage-catalog">View storage catalog</a></div>
   </section>
 
   {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
@@ -88,13 +88,22 @@
       </div>
       {% if confirmed_backend_mismatch %}<input type="hidden" name="confirm_backend_mismatch" value="1">{% endif %}
       {% if confirmed_distinct_backend %}<input type="hidden" name="confirm_distinct_backend" value="1">{% endif %}
+      {% if confirmation_headline %}
+        <div class="storage-access-confirm" role="alert">
+          <i data-lucide="alert-triangle" aria-hidden="true"></i>
+          <div>
+            <p class="storage-access-confirm-headline">{{ confirmation_headline }}</p>
+            {% for detail in confirmation_details %}<p>{{ detail }}</p>{% endfor %}
+          </div>
+        </div>
+      {% endif %}
       <div class="storage-access-form-actions">
         {% if confirm_backend_mismatch %}
           <button class="primary-action" type="submit" name="confirm_backend_mismatch" value="1">Register against this export anyway</button>
-          <button class="button button-secondary" type="submit">Re-check the mount</button>
+          <button class="secondary-action" type="submit">Re-check the mount</button>
         {% elif confirm_distinct_backend %}
           <button class="primary-action" type="submit" name="confirm_distinct_backend" value="1">Register as a different backend</button>
-          <button class="button button-secondary" type="submit">Re-check identity</button>
+          <button class="secondary-action" type="submit">Re-check identity</button>
         {% else %}
           <button class="primary-action" type="submit">Register mount</button>
         {% endif %}
