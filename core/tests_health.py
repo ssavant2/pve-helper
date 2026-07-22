@@ -20,7 +20,18 @@ from django.test import TestCase
 
 from core.services.health import readiness_report, reset_schema_cache, schema_state
 
-COMPOSE_FILES = ("docker-compose.yml", "docker-compose.example.yml", "docker-compose.production.yml")
+# `docker-compose.yml` is the local dev stack's own file and is git-ignored, so a
+# fresh clone and CI do not have it. Assert on it when it is present — that is the
+# stack this repo is developed against, and it drifted once already — but never let
+# its absence fail the suite for someone who has not started the stack yet.
+TRACKED_COMPOSE_FILES = ("docker-compose.example.yml", "docker-compose.production.yml")
+LOCAL_COMPOSE_FILE = "docker-compose.yml"
+
+
+def compose_files() -> tuple[str, ...]:
+    if Path(settings.BASE_DIR, LOCAL_COMPOSE_FILE).exists():
+        return (LOCAL_COMPOSE_FILE, *TRACKED_COMPOSE_FILES)
+    return TRACKED_COMPOSE_FILES
 
 
 class _FakeExecutor:
@@ -143,7 +154,7 @@ class ComposeProbeContractTests(TestCase):
         return " ".join(compose["services"][service]["healthcheck"]["test"])
 
     def test_web_and_console_are_gated_on_readiness_everywhere(self):
-        for name in COMPOSE_FILES:
+        for name in compose_files():
             for service in ("web", "console"):
                 with self.subTest(compose=name, service=service):
                     test = self._healthcheck(name, service)
@@ -152,7 +163,7 @@ class ComposeProbeContractTests(TestCase):
 
     def test_nginx_waits_for_both_application_services(self):
         # Readiness is only a deployment gate if something depends on it.
-        for name in COMPOSE_FILES:
+        for name in compose_files():
             compose = yaml.safe_load(Path(settings.BASE_DIR, name).read_text(encoding="utf-8"))
             depends = compose["services"]["nginx"]["depends_on"]
             with self.subTest(compose=name):
