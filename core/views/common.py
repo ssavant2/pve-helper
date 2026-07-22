@@ -71,6 +71,7 @@ from ..services.proxmox import (
 from ..services.recent_tasks import recent_task_page, serialize_task_page
 from ..services.request_metadata import client_ip
 from ..services.scan_schedule import scan_schedule_state, update_scan_schedule
+from ..services.scan_warnings import scan_warning_summary
 from ..services.scheduled_actions import ScheduledActionQueueError, queue_manual_scheduled_action_run
 from ..services.scheduled_recurrence import RecurrenceError, next_run_after
 from ..services.storage_actions import (
@@ -668,6 +669,8 @@ def _audit_detail_label(event: AuditEvent) -> str:
         return _bulk_file_detail(details)
     if event.action == "file.bulk_operation.answered":
         return _bulk_file_answer_detail(details)
+    if event.action in {"scan.completed", "scan.failed"}:
+        return scan_warning_summary(details.get("error_details"))
     return str(details.get("summary") or details.get("error_reason") or "")
 
 

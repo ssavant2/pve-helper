@@ -24,6 +24,7 @@ from django.utils.dateparse import parse_datetime
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
 from core.services.public_errors import SHUTDOWN_INCOMPLETE_CODES
+from core.services.scan_warnings import scan_warning_summary
 from core.services.storage_catalog_refresh import STORAGE_CATALOG_REFRESH_ACTION
 
 GUEST_TASK_NAMES = {
@@ -1114,7 +1115,10 @@ def _scan_details(scan: ScanRun) -> str:
         parts.append(f"{classifications['referenced']} referenced")
     if "likely_orphan" in classifications:
         parts.append(f"{classifications['likely_orphan']} orphans")
-    if scan.progress_message:
+    warning_summary = scan_warning_summary(scan.error_details)
+    if warning_summary:
+        parts.append(warning_summary)
+    elif scan.progress_message:
         parts.append(scan.progress_message)
     return ", ".join(str(part) for part in parts if part) or "-"
 
