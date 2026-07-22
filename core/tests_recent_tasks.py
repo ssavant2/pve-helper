@@ -543,3 +543,44 @@ class RecentTaskIndexParityTests(TestCase):
         self.assertEqual([task["id"] for task in crowded.tasks], [task["id"] for task in baseline.tasks])
         self.assertEqual(crowded.total, baseline.total + 60)
         self.assertEqual(len(after.captured_queries), len(before.captured_queries))
+
+
+class FileTaskStatusOrderTests(TestCase):
+    """A refused inflate is Failed, not Queued.
+
+    `_file_task` decides status in one `if/elif` chain, and the order of the two
+    conditions is the whole decision: `file.inflate_queued` names the moment the
+    button was pressed, not the outcome, so a preflight that refused the inflate
+    carries that action *and* `outcome="failed"`. Checking the action first
+    renders it as Queued and leaves a row waiting for a task that never existed.
+    The chain used to carry a second, unreachable `failed` branch after the queued
+    one — the leftover of that wrong order. Removing it is safe only as long as
+    nothing puts the order back, which is what this pins.
+    """
+
+    def _file_event(self, **fields):
+        return AuditEvent.objects.create(
+            object_type="file",
+            details={"storage_id": "nfs-vm", "path": "images/500/vm-500-disk-0.qcow2"},
+            **fields,
+        )
+
+    def test_a_refused_inflate_never_renders_as_queued(self):
+        task = _file_task(self._file_event(action=INFLATE_QUEUED_ACTION, outcome="failed"))
+
+        self.assertEqual(task["status"], "Failed")
+        self.assertEqual(task["status_class"], "failed")
+        self.assertIsNotNone(task["finished_at"])
+
+    def test_an_accepted_inflate_still_renders_as_queued(self):
+        task = _file_task(self._file_event(action=INFLATE_QUEUED_ACTION, outcome="queued"))
+
+        self.assertEqual(task["status"], "Queued")
+        self.assertEqual(task["status_class"], "queued")
+        self.assertIsNone(task["finished_at"])
+
+    def test_an_ordinary_failed_file_action_is_still_failed(self):
+        task = _file_task(self._file_event(action="file.trashed", outcome="failed"))
+
+        self.assertEqual(task["status"], "Failed")
+        self.assertEqual(task["status_class"], "failed")

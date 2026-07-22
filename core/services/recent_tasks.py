@@ -802,10 +802,6 @@ def _file_task(event: AuditEvent) -> dict[str, object]:
         status = "Queued"
         status_class = "queued"
         finished_at = None
-    elif event.outcome == "failed":
-        status = "Failed"
-        status_class = "failed"
-        finished_at = event.timestamp
     else:
         status = "Completed"
         status_class = "completed"
