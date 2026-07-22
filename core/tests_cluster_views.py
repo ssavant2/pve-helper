@@ -114,6 +114,37 @@ class ClusterConnectionViewTests(TestCase):
         response = self.client.get(reverse("core:legacy_tags_overview"))
         self.assertRedirects(response, reverse("core:cluster_add"), fetch_redirect_response=False)
 
+    def test_cluster_connection_pages_render_compact_layout_hooks(self):
+        cluster = ProxmoxCluster.objects.create(
+            key="clusterb",
+            display_name="Cluster B",
+            enabled=False,
+        )
+        ProxmoxCluster.objects.create(key="clusterhq", display_name="Cluster HQ", enabled=True)
+        ProxmoxEndpoint.objects.create(
+            cluster=cluster,
+            name="pve201",
+            url="https://pve201.example.test:8006",
+        )
+        approve_cluster_transport(cluster, mode=TRUST_PUBLIC)
+        set_cluster_credential(
+            cluster,
+            token_id=self.candidate.token_id,
+            token_secret=self.candidate.token_secret,
+        )
+
+        overview = self.client.get(reverse("core:clusters_overview"))
+        self.assertContains(overview, "cluster-list-heading")
+        self.assertContains(overview, "Configured clusters")
+        self.assertContains(overview, "2 total")
+
+        detail = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+        self.assertContains(detail, "cluster-display-name-form")
+        self.assertContains(detail, "cluster-remove-credential-form")
+        self.assertContains(detail, "cluster-section-heading")
+        body = detail.content.decode()
+        self.assertLess(body.index("Verify and rotate credential"), body.index("Remove stored credential"))
+
     def test_zero_cluster_state_keeps_aggregate_views_usable(self):
         for route_name in (
             "core:dashboard",
