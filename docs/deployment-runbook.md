@@ -417,49 +417,6 @@ The app still keeps destructive behavior narrow: files are moved to `.trash/pve-
 on the same storage, not permanently deleted, and V1 only offers trash actions for files
 classified as `likely_orphan`.
 
-## Upgrade halted by the storage foundation backfill
-
-Migration `0018_storage_catalog_foundation` converts the single-cluster storage tables into
-the per-cluster catalog. It refuses to guess. If legacy data cannot be attributed to exactly
-one target it aborts with a message naming this section, the affected table and the row's
-primary key. On PostgreSQL each migration runs in its own transaction, so `0018` itself
-leaves nothing behind — but any migration that already ran in the same `migrate` invocation
-stays applied, so the database now sits between two releases. **Do not start the new
-application version against it.** Keep the previous version stopped as well until the migrate
-completes: it does not know the migrations that did apply.
-
-Resolve the named rows, then re-run `docker compose run --rm web python manage.py migrate`.
-Inspect and fix the data with the **previous** release's image, which still has the legacy
-models. Take a database dump first; every fix below edits rows the app is about to rely on.
-
-**`Trash item <pk> cannot be attributed to a unique storage mount.`**
-A `TrashItem` names a `storage_id` that no `StorageMount` has. Usually the mount was renamed
-or removed while the item was still recoverable, so the trashed file has no owner to restore
-into. Look at the row's `original_path` and `trash_path`:
-
-```bash
-docker compose run --rm web python manage.py shell -c \
-  "from core.models import TrashItem; i = TrashItem.objects.get(pk=PK); print(i.storage_id, i.original_path, i.trash_path, i.restore_status)"
-```
-
-If the path lies beneath a mount that still exists under a different `storage_id`, set the
-item's `storage_id` to that mount's. If the storage is genuinely gone, the file is not
-restorable by the app: retrieve it from the path above if it is still wanted, then delete the
-row. Do not point the item at an unrelated mount to get past the migration — restore would
-write the file into the wrong storage.
-
-**`Storage consumer cannot be attributed to a cluster storage definition: consumer=<pk>.`**
-A `ProxmoxStorageConsumer` refers to a storage id that the latest completed scan for its
-cluster did not report. Either the storage was removed from Proxmox and the consumer row is
-stale, or no successful scan of that cluster exists yet. Run a scan of the cluster and re-run
-the migration; if the storage really is gone, delete the consumer row.
-
-**`Storage consumers map one cluster storage scope to multiple mounts: consumer=<pk>.`**
-Two consumer rows claim the same cluster storage — the same node for node-local storage, or
-the cluster as a whole for shared storage — but point at different host mounts. One of them
-is wrong; the catalog cannot represent both. Compare the two mounts' `path` and `export` and
-delete the consumer row that does not describe how the node actually mounts that storage.
-
 ## PostgreSQL roles
 
 The app should connect as `DB_USER`, not the Postgres bootstrap/admin role.
