@@ -85,9 +85,11 @@ from .services.storage_catalog import (
     refresh_storage_metadata,
     refresh_storage_volumes,
 )
+from .services.storage_catalog_refresh import STORAGE_CATALOG_REFRESH_ACTION
 from .services.storage_mounts import registered_mount_health, resolve_storage_mount
 from .services.storage_paths import storage_mount_root
 from .services.storage_visibility import ignored_relative_paths_for_storage
+from .services.tag_inventory_refresh import TAG_INVENTORY_REFRESH_ACTION
 from .services.task_failures import failure_fields, record_event_exception, record_event_failure
 from .services.task_queues import BULK_QUEUE_NAME, queued_task_ids
 
@@ -454,13 +456,23 @@ def reap_stale_guest_tasks() -> dict[str, int]:
             clear_live_guest_caches(cluster=cluster)
     resolved_force_stop_questions = _resolve_force_stop_questions(now=timezone.now())
     interrupted_tag_operations = _reap_stale_tag_operations(now=timezone.now())
-    interrupted_tag_inventory_refreshes = _reap_stale_tag_inventory_refreshes(now=timezone.now())
+    interrupted_tag_inventory_refreshes = _reap_stale_heartbeat_operations(
+        action=TAG_INVENTORY_REFRESH_ACTION,
+        error="The tag inventory refresh worker stopped reporting progress; start a new refresh.",
+        now=timezone.now(),
+    )
+    interrupted_storage_catalog_refreshes = _reap_stale_heartbeat_operations(
+        action=STORAGE_CATALOG_REFRESH_ACTION,
+        error="The storage catalog refresh worker stopped reporting progress; start a new refresh.",
+        now=timezone.now(),
+    )
     return {
         "resolved_from_proxmox": resolved,
         "reaped_dead": reaped,
         "resolved_force_stop_questions": resolved_force_stop_questions,
         "interrupted_tag_operations": interrupted_tag_operations,
         "interrupted_tag_inventory_refreshes": interrupted_tag_inventory_refreshes,
+        "interrupted_storage_catalog_refreshes": interrupted_storage_catalog_refreshes,
     }
 
 
@@ -514,11 +526,22 @@ def _reap_stale_tag_operations(*, now) -> int:
     return interrupted
 
 
-def _reap_stale_tag_inventory_refreshes(*, now) -> int:
+def _reap_stale_heartbeat_operations(*, action: str, error: str, now) -> int:
+    """Resolve one heartbeat-reporting bulk operation whose worker stopped.
+
+    The tag inventory refresh and the storage catalog refresh share a shape: commit
+    a ``queued`` audit row, enqueue, promote it to ``running`` and stamp
+    ``heartbeat_at`` while progressing. The heartbeat exists precisely so a slow
+    worker is distinguishable from a dead one — but a dead worker cannot finalize
+    its own row, and both rows count as active provider work in
+    ``active_cluster_operation_labels``. An unreaped one therefore refuses every
+    later disable of that cluster forever, which is a permanent lockout rather than
+    a stale status line. The catalog refresh had the heartbeat and no reaper.
+    """
     threshold = now - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
     candidates = list(
         AuditEvent.objects.filter(
-            action="tag.inventory.refresh",
+            action=action,
             outcome__in=["queued", "running"],
         )
     )
@@ -545,7 +568,7 @@ def _reap_stale_tag_inventory_refreshes(*, now) -> int:
             if task_id and task is None and task_id in queued_task_ids({task_id}):
                 continue
             details["stage"] = "interrupted"
-            details["error"] = "The tag inventory refresh worker stopped reporting progress; start a new refresh."
+            details["error"] = error
             details["interrupted_at"] = now.isoformat()
             details["finished_at"] = now.isoformat()
             event.outcome = "failed"
@@ -620,6 +643,9 @@ def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
     killed by the queue or a deploy, neither path has its normal exception
     handler. Reconcile only after the workflow timeout plus a conservative
     grace period so valid work is never marked failed prematurely.
+
+    A scan killed *before* it started never reaches running at all, so it needs
+    its own pass keyed on broker presence rather than on `started_at`.
     """
     now = now or timezone.now()
     scan_cutoff = now - timedelta(seconds=settings.SCAN_TASK_TIMEOUT_SECONDS + STALE_BULK_TASK_GRACE_SECONDS)
@@ -639,6 +665,33 @@ def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
         scan.save(update_fields=["status", "finished_at", "progress_message", "error_details", "updated_at"])
         _audit_scan_terminal(scan, "scan.failed", "failed")
         scans_reaped += 1
+
+    # A scan that never started is invisible to the branch above: it reaches
+    # `running` and stamps `started_at` only once the worker picks it up, so a
+    # broker loss or a worker killed before execution strands it at `queued` with
+    # no timestamp to age against. That row is not merely a stale status line —
+    # `enqueue_scheduled_scan` treats it as an active scan and skips every later
+    # scheduled scan, and `active_cluster_operation_labels` counts it
+    # installation-wide, so it refuses disable for *every* cluster indefinitely.
+    # Broker presence is the primary signal; the age test only guards the window
+    # between the pop and the status write.
+    queued_scans_reaped = 0
+    stranded = list(ScanRun.objects.filter(status=ScanRun.Status.QUEUED, created_at__lt=scan_cutoff))
+    still_queued = queued_task_ids({scan.queued_task_id for scan in stranded if scan.queued_task_id})
+    for scan in stranded:
+        if scan.queued_task_id and scan.queued_task_id in still_queued:
+            continue  # genuinely waiting behind other bulk work — leave it
+        scan.status = ScanRun.Status.FAILED
+        scan.finished_at = now
+        scan.progress_message = "Scan never started before the worker timeout."
+        scan.error_details = {
+            "error": "WorkerUnavailable",
+            "message": "The queued scan was no longer present in the worker queue and never started.",
+            "reaped": True,
+        }
+        scan.save(update_fields=["status", "finished_at", "progress_message", "error_details", "updated_at"])
+        _audit_scan_terminal(scan, "scan.failed", "failed")
+        queued_scans_reaped += 1
 
     inflates_reaped = 0
     queued_inflates = AuditEvent.objects.filter(action="file.inflate_queued", timestamp__lt=inflate_cutoff)
@@ -674,7 +727,11 @@ def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
         )
         inflates_reaped += 1
 
-    return {"scans_reaped": scans_reaped, "inflates_reaped": inflates_reaped}
+    return {
+        "scans_reaped": scans_reaped,
+        "queued_scans_reaped": queued_scans_reaped,
+        "inflates_reaped": inflates_reaped,
+    }
 
 
 # A distinct object, not a magic message: a cancelled step must never be

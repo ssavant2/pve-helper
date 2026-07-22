@@ -1094,6 +1094,53 @@ class StorageCatalogRefreshTaskTests(TestCase):
 
         self.assertEqual(AuditEvent.objects.filter(action=STORAGE_CATALOG_REFRESH_ACTION).count(), 1)
 
+    @patch("core.services.storage_catalog_refresh.async_task", return_value="queued-task-1")
+    def test_a_dead_refresh_worker_does_not_lock_the_cluster_out_of_being_disabled(self, _async_task_mock):
+        """The heartbeat existed for a reaper that was never wired up.
+
+        A refresh row stuck at `running` counts as active provider work, so
+        `disable_cluster` — and therefore every future retirement of this cluster —
+        was refused indefinitely with no operator path out.
+        """
+        from datetime import timedelta
+
+        from core.services.cluster_onboarding import active_cluster_operation_labels
+        from core.tasks import reap_stale_guest_tasks
+
+        event, _task_id = queue_storage_catalog_refresh(cluster=self.cluster)
+        event.outcome = "running"
+        event.details = {
+            **event.details,
+            "stage": "listing volumes",
+            "heartbeat_at": (timezone.now() - timedelta(minutes=30)).isoformat(),
+        }
+        event.save(update_fields=["outcome", "details"])
+        self.assertTrue(active_cluster_operation_labels(self.cluster))
+
+        result = reap_stale_guest_tasks()
+
+        event.refresh_from_db()
+        self.assertEqual(result["interrupted_storage_catalog_refreshes"], 1)
+        self.assertEqual(event.outcome, "failed")
+        self.assertEqual(event.details["stage"], "interrupted")
+        self.assertIn("stopped reporting progress", event.details["error"])
+        self.assertEqual(active_cluster_operation_labels(self.cluster), [])
+
+    @patch("core.services.storage_catalog_refresh.async_task", return_value="queued-task-1")
+    def test_a_refresh_that_is_still_beating_is_left_alone(self, _async_task_mock):
+        from core.tasks import reap_stale_guest_tasks
+
+        event, _task_id = queue_storage_catalog_refresh(cluster=self.cluster)
+        event.outcome = "running"
+        event.details = {**event.details, "heartbeat_at": timezone.now().isoformat()}
+        event.save(update_fields=["outcome", "details"])
+
+        result = reap_stale_guest_tasks()
+
+        event.refresh_from_db()
+        self.assertEqual(result["interrupted_storage_catalog_refreshes"], 0)
+        self.assertEqual(event.outcome, "running")
+
     @patch("core.services.storage_catalog_refresh.refresh_storage_volumes")
     @patch("core.services.storage_catalog_refresh.refresh_storage_metadata")
     @patch("core.services.storage_catalog_refresh.async_task", return_value="queued-task-1")

@@ -1189,7 +1189,7 @@ class BulkTaskReaperTests(TestCase):
 
         result = reap_stale_bulk_tasks(now=now)
 
-        self.assertEqual(result, {"scans_reaped": 1, "inflates_reaped": 1})
+        self.assertEqual(result, {"scans_reaped": 1, "queued_scans_reaped": 0, "inflates_reaped": 1})
         scan.refresh_from_db()
         self.assertEqual(scan.status, ScanRun.Status.FAILED)
         self.assertTrue(scan.error_details["reaped"])
@@ -1218,9 +1218,71 @@ class BulkTaskReaperTests(TestCase):
 
         result = reap_stale_bulk_tasks(now=now)
 
-        self.assertEqual(result, {"scans_reaped": 0, "inflates_reaped": 0})
+        self.assertEqual(result, {"scans_reaped": 0, "queued_scans_reaped": 0, "inflates_reaped": 0})
         scan.refresh_from_db()
         self.assertEqual(scan.status, ScanRun.Status.RUNNING)
+
+    @override_settings(SCAN_TASK_TIMEOUT_SECONDS=60, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_reaps_scan_stranded_at_queued_that_left_the_worker_queue(self):
+        """A scan killed before it started has no `started_at` to age against.
+
+        Left alone it blocks every later scheduled scan and refuses disable for
+        every cluster, so the reaper has to key on broker presence instead.
+        """
+        from core.tasks import STALE_BULK_TASK_GRACE_SECONDS, reap_stale_bulk_tasks
+
+        now = timezone.now()
+        expired_at = now - timedelta(seconds=61 + STALE_BULK_TASK_GRACE_SECONDS)
+        scan = ScanRun.objects.create(status=ScanRun.Status.QUEUED, queued_task_id="lost-scan-task")
+        ScanRun.objects.filter(pk=scan.pk).update(created_at=expired_at)
+
+        result = reap_stale_bulk_tasks(now=now)
+
+        self.assertEqual(result["queued_scans_reaped"], 1)
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.FAILED)
+        self.assertTrue(scan.error_details["reaped"])
+        self.assertEqual(scan.finished_at, now)
+        self.assertTrue(AuditEvent.objects.filter(action="scan.failed").exists())
+
+    @override_settings(SCAN_TASK_TIMEOUT_SECONDS=60, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_leaves_old_queued_scan_still_present_in_the_worker_queue_alone(self):
+        """Waiting behind other bulk work is not the same as being lost."""
+        from django_q.models import OrmQ
+        from django_q.signing import SignedPackage
+
+        from core.services.task_queues import BULK_QUEUE_NAME
+        from core.tasks import STALE_BULK_TASK_GRACE_SECONDS, reap_stale_bulk_tasks
+
+        now = timezone.now()
+        expired_at = now - timedelta(seconds=61 + STALE_BULK_TASK_GRACE_SECONDS)
+        scan = ScanRun.objects.create(status=ScanRun.Status.QUEUED, queued_task_id="waiting-scan-task")
+        ScanRun.objects.filter(pk=scan.pk).update(created_at=expired_at)
+        OrmQ.objects.create(
+            key=BULK_QUEUE_NAME,
+            payload=SignedPackage.dumps({"id": "waiting-scan-task"}),
+            lock=timezone.now(),
+        )
+
+        result = reap_stale_bulk_tasks(now=now)
+
+        self.assertEqual(result["queued_scans_reaped"], 0)
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.QUEUED)
+
+    @override_settings(SCAN_TASK_TIMEOUT_SECONDS=60, STORAGE_INFLATE_TIMEOUT_SECONDS=60)
+    def test_leaves_recently_queued_scan_alone(self):
+        """The window between the broker pop and the status write is not a failure."""
+        from core.tasks import reap_stale_bulk_tasks
+
+        now = timezone.now()
+        scan = ScanRun.objects.create(status=ScanRun.Status.QUEUED, queued_task_id="just-popped")
+
+        result = reap_stale_bulk_tasks(now=now)
+
+        self.assertEqual(result["queued_scans_reaped"], 0)
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.QUEUED)
 
     def test_bulk_reaper_schedule_is_ensured(self):
         from core.services.bulk_task_reaper_schedule import (
