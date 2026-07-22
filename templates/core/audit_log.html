@@ -2,7 +2,8 @@
 {% load guest_labels %}
 
 {% block content %}
-  <section class="page-header">
+  <div class="audit-page">
+    <section class="page-header">
     <div>
       <h1>Audit Log</h1>
       <p>Authentication, storage scans, and file actions</p>
@@ -20,9 +21,9 @@
         <span>days</span>
       </form>
     </div>
-  </section>
+    </section>
 
-  <section class="audit-panel panel">
+    <section class="audit-panel panel">
     <div class="audit-toolbar">
       <div class="segmented-control" aria-label="Audit module filter">
         {% for filter in audit_filters %}
@@ -44,48 +45,51 @@
         <a class="page-button{% if not audit_has_next %} disabled{% endif %}" href="?page={{ audit_page|add:"1" }}&filter={{ audit_filter }}{% if audit_query %}&q={{ audit_query|urlencode }}{% endif %}{% if audit_cluster %}&cluster={{ audit_cluster|urlencode }}{% endif %}">Next 200</a>
       </span>
     </div>
-    <table class="data-table audit-table" data-sortable-table data-resizable-columns data-column-table="audit-log">
-      <thead>
-        <tr>
-          <th data-column="time" data-sort="number">Time</th>
-          <th data-column="cluster" data-sort="text">Cluster</th>
-          <th data-column="module" data-sort="text">Module</th>
-          <th data-column="user" data-sort="text">User</th>
-          <th data-column="source" data-sort="text">Source IP</th>
-          <th data-column="action" data-sort="text">Action</th>
-          <th data-column="object" data-sort="text">Object</th>
-          <th data-column="detail" data-sort="text">Details</th>
-          <th data-column="outcome" data-sort="text">Outcome</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for event in events %}
-          <tr data-context-label="{{ event.object_id }}">
-            <td data-column="time" data-sort-value="{{ event.timestamp|date:'U' }}">{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
-            <td data-column="cluster" data-sort-value="{{ event.cluster.display_name|default:event.cluster_key_snapshot }}">{{ event.cluster.display_name|default:event.cluster_key_snapshot|default:"-" }}</td>
-            <td data-column="module" data-sort-value="{{ event.display_module }}">{{ event.display_module }}</td>
-            <td data-column="user" data-sort-value="{{ event.username|default:'-' }}">{{ event.username|default:"-" }}</td>
-            <td data-column="source" data-sort-value="{{ event.source_ip|default:'-' }}">{{ event.source_ip|default:"-" }}</td>
-            <td data-column="action" data-sort-value="{{ event.display_action }}">{{ event.display_action }}</td>
-            <td data-column="object" data-sort-value="{% if event.guest_identity %}{{ event.guest_identity.name|default:event.guest_identity.vmid }}{% else %}{{ event.display_object }}{% endif %}">
-              {% if event.guest_identity %}
-                {% guest_label event.guest_identity %}
-              {% else %}
-                {{ event.display_object }}
-              {% endif %}
-            </td>
-            <td data-column="detail" data-sort-value="{{ event.display_detail }}" title="{{ event.display_detail }}">{{ event.display_detail|default:"-" }}</td>
-            <td data-column="outcome" data-sort-value="{{ event.outcome }}"><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
-          </tr>
-        {% endfor %}
-        {% if not events %}
+    <div class="audit-table-scroll">
+      <table class="data-table audit-table" data-sortable-table data-resizable-columns data-column-table="audit-log">
+        <thead>
           <tr>
-            <td colspan="9" class="empty-state">{% if audit_filter != 'all' or audit_query or audit_cluster %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+            <th data-column="time" data-sort="number">Time</th>
+            <th data-column="cluster" data-sort="text">Cluster</th>
+            <th data-column="module" data-sort="text">Module</th>
+            <th data-column="user" data-sort="text">User</th>
+            <th data-column="source" data-sort="text">Source IP</th>
+            <th data-column="action" data-sort="text">Action</th>
+            <th data-column="object" data-sort="text">Object</th>
+            <th data-column="detail" data-sort="text">Details</th>
+            <th data-column="outcome" data-sort="text">Outcome</th>
           </tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </section>
+        </thead>
+        <tbody>
+          {% for event in events %}
+            <tr data-context-label="{{ event.object_id }}">
+              <td data-column="time" data-sort-value="{{ event.timestamp|date:'U' }}">{{ event.timestamp|date:"Y-m-d H:i:s" }}</td>
+              <td data-column="cluster" data-sort-value="{{ event.cluster.display_name|default:event.cluster_key_snapshot }}">{{ event.cluster.display_name|default:event.cluster_key_snapshot|default:"-" }}</td>
+              <td data-column="module" data-sort-value="{{ event.display_module }}">{{ event.display_module }}</td>
+              <td data-column="user" data-sort-value="{{ event.username|default:'-' }}">{{ event.username|default:"-" }}</td>
+              <td data-column="source" data-sort-value="{{ event.source_ip|default:'-' }}">{{ event.source_ip|default:"-" }}</td>
+              <td data-column="action" data-sort-value="{{ event.display_action }}">{{ event.display_action }}</td>
+              <td data-column="object" data-sort-value="{% if event.guest_identity %}{{ event.guest_identity.name|default:event.guest_identity.vmid }}{% else %}{{ event.display_object }}{% endif %}">
+                {% if event.guest_identity %}
+                  {% guest_label event.guest_identity %}
+                {% else %}
+                  {{ event.display_object }}
+                {% endif %}
+              </td>
+              <td data-column="detail" data-sort-value="{{ event.display_detail }}" title="{{ event.display_detail }}">{{ event.display_detail|default:"-" }}</td>
+              <td data-column="outcome" data-sort-value="{{ event.outcome }}"><span class="badge {{ event.outcome }}">{{ event.outcome }}</span></td>
+            </tr>
+          {% endfor %}
+          {% if not events %}
+            <tr>
+              <td colspan="9" class="empty-state">{% if audit_filter != 'all' or audit_query or audit_cluster %}No matching audit events.{% else %}No audit events yet.{% endif %}</td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+    </section>
+  </div>
 
   <dialog class="audit-export-dialog" data-audit-export-dialog>
     <form class="audit-export-form" method="get" action="{% url 'core:audit_export' %}">

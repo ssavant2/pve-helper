@@ -13,6 +13,7 @@ import { selectedVmOverviewRows } from "./scheduling.js";
 import { createIcons, escapeHtml, parseGuestRef, taskDateLabel } from "./shell.js";
 
 let activeLabel = "";
+let activeClipboardText = "";
 let activeVmOverview = null;
 let activeVmContextRows = [];
 let activeTaskRow = null;
@@ -178,6 +179,7 @@ const openTaskContextMenu = (menu, row, event) => {
   activeVmOverview = null;
   activeVmContextRows = [];
   activeLabel = "";
+  activeClipboardText = "";
   clearVmContextHighlights();
   menu.innerHTML = `
       <div class="context-menu-title">${escapeHtml(taskName)}</div>
@@ -208,6 +210,26 @@ const initContextMenu = () => {
       return;
     }
 
+    const auditRow = event.target.closest(".audit-table tbody tr[data-context-label]");
+    if (auditRow) {
+      event.preventDefault();
+      activeVmOverview = null;
+      clearVmContextHighlights();
+      activeLabel = "";
+      const headers = Array.from(auditRow.closest("table")?.querySelectorAll("thead th") || []).map((header) =>
+        header.textContent.trim()
+      );
+      activeClipboardText = Array.from(auditRow.cells)
+        .map((cell, index) => `${headers[index] || `Column ${index + 1}`}: ${cell.textContent.trim()}`)
+        .join("\n");
+      menu.innerHTML = `
+        <div class="context-menu-title">Audit event</div>
+        <button type="button" data-action="copy-audit-event">Copy to clipboard</button>
+      `;
+      positionContextMenu(menu, event);
+      return;
+    }
+
     const row = event.target.closest("[data-context-label]");
     if (!row) {
       return;
@@ -217,6 +239,7 @@ const initContextMenu = () => {
     activeVmOverview = null;
     clearVmContextHighlights();
     activeLabel = row.dataset.contextLabel || "";
+    activeClipboardText = "";
     menu.innerHTML = `
         <button type="button" data-action="details">Details</button>
         <button type="button" data-action="copy-path">Copy path</button>
@@ -228,6 +251,7 @@ const initContextMenu = () => {
     if (!menu.contains(event.target)) {
       menu.hidden = true;
       activeTaskRow = null;
+      activeClipboardText = "";
       clearVmContextHighlights();
     }
   });
@@ -477,8 +501,12 @@ const initContextMenu = () => {
     if (button.dataset.action === "copy-path" && activeLabel) {
       await navigator.clipboard.writeText(activeLabel);
     }
+    if (button.dataset.action === "copy-audit-event" && activeClipboardText) {
+      await navigator.clipboard.writeText(activeClipboardText);
+    }
 
     menu.hidden = true;
+    activeClipboardText = "";
     clearVmContextHighlights();
   });
 };

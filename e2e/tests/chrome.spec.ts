@@ -265,3 +265,73 @@ test("the audit search form filters without a document reload", async ({ page })
   const probe = await page.evaluate(() => (window as unknown as { __softNavProbe?: string }).__softNavProbe);
   expect(probe).toBe("alive");
 });
+
+test("the audit column headings stay visible while event rows scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.goto("/audit/", { waitUntil: "load" });
+
+  const scroll = page.locator(".audit-table-scroll");
+  const content = page.locator("[data-soft-nav-content]");
+  const heading = page.locator(".audit-table th").first();
+  await expect(scroll).toHaveCSS("overflow-y", "auto");
+  await expect(heading).toHaveCSS("position", "sticky");
+
+  // The isolated fixture has only a few events. Duplicate its first row in the
+  // browser so this test exercises actual vertical movement rather than merely
+  // asserting a CSS declaration.
+  await scroll.evaluate((element) => {
+    const body = element.querySelector("tbody");
+    const row = body?.querySelector("tr");
+    if (!(body && row)) return;
+    for (let index = 0; index < 30; index += 1) body.append(row.cloneNode(true));
+  });
+
+  await expect.poll(() => scroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect.poll(() => content.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
+  await expect.poll(() => scroll.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+
+  const headingTop = await heading.evaluate((element) => element.getBoundingClientRect().top);
+  const firstRow = page.locator(".audit-table tbody tr").first();
+  const rowTop = await firstRow.evaluate((element) => element.getBoundingClientRect().top);
+  await scroll.evaluate((element) => {
+    element.scrollTop = 120;
+  });
+
+  await expect.poll(() => heading.evaluate((element) => element.getBoundingClientRect().top)).toBeCloseTo(headingTop, 0);
+  await expect.poll(() => firstRow.evaluate((element) => element.getBoundingClientRect().top)).toBeLessThan(rowTop - 80);
+
+  await scroll.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect
+    .poll(() => scroll.evaluate((element) => element.scrollLeft + element.clientWidth >= element.scrollWidth - 1))
+    .toBe(true);
+});
+
+test("an audit row can be copied from its context menu", async ({ page }) => {
+  await page.goto("/audit/", { waitUntil: "load" });
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          (window as Window & { __auditClipboard?: string }).__auditClipboard = text;
+        },
+      },
+    });
+  });
+
+  await page.locator(".audit-table tbody tr[data-context-label]").first().click({ button: "right" });
+  const menu = page.locator("#context-menu");
+  await expect(menu.getByRole("button", { name: "Copy to clipboard" })).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Details" })).toHaveCount(0);
+  await expect(menu.getByRole("button", { name: "Copy path" })).toHaveCount(0);
+  await menu.getByRole("button", { name: "Copy to clipboard" }).click();
+
+  const copied = await page.evaluate(
+    () => (window as Window & { __auditClipboard?: string }).__auditClipboard || ""
+  );
+  expect(copied).toContain("Time:");
+  expect(copied).toContain("Details:");
+  expect(copied).toContain("Outcome:");
+});

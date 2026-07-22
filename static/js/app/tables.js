@@ -476,6 +476,7 @@ const initResizableColumns = (root) => {
       source: 130,
       action: 220,
       object: 260,
+      detail: 480,
       outcome: 105,
     };
 
