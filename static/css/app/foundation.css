@@ -84,6 +84,7 @@
   --storage-icon-bg: #edf8f0;
   --storage-icon-border: #9fc0a9;
   --storage-icon-text: #245f37;
+  --table-header-bg: #eef3f6;
   --table-header-text: #33414f;
   --table-hover: #f4f8fb;
   --badge-bg: #eef2f6;
@@ -146,6 +147,7 @@
   --storage-icon-bg: #173928;
   --storage-icon-border: #4d8661;
   --storage-icon-text: #e7faeb;
+  --table-header-bg: #20343d;
   --table-header-text: #cdd9df;
   --table-hover: #26414c;
   --badge-bg: #263b44;

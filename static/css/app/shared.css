@@ -277,7 +277,7 @@
 }
 
 .data-table th {
-  background: var(--surface-alt);
+  background: var(--table-header-bg);
   color: var(--table-header-text);
   font-weight: 650;
 }
