@@ -11,8 +11,11 @@
 
   {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
   {% if warnings %}<section class="panel notice notice-warning"><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}
-  {% if registered %}<section class="panel notice notice-success"><p>Mount <strong>{{ registered.display_name }}</strong> is registered. The event is recorded in Audit.</p></section>{% endif %}
-  {% if removed %}<section class="panel notice notice-success"><p>The mount association was removed. The event is recorded in Audit.</p></section>{% endif %}
+  {% comment %}
+  Nothing is announced here on success. An outcome belongs in Recent Tasks and
+  Audit, which every page already carries, so that "did that work?" has one answer
+  instead of a green panel that only this page knows how to show.
+  {% endcomment %}
 
   <section class="panel settings-storage-panel">
     <div class="panel-heading">

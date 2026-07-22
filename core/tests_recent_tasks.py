@@ -48,12 +48,16 @@ from core.services.recent_tasks import (
     FILE_TASK_ACTIONS,
     INFLATE_QUEUED_ACTION,
     INFLATE_TERMINAL_ACTIONS,
+    MOUNT_REGISTERED_ACTION,
+    MOUNT_TASK_ACTIONS,
+    MOUNT_UNREGISTERED_ACTION,
     RECENT_TASK_RETENTION_MINUTES,
     STORAGE_CATALOG_REFRESH_ACTION,
     TAG_TASK_ACTIONS,
     _catalog_refresh_task,
     _file_task,
     _guest_task,
+    _mount_task,
     _open_force_stop_question_q,
     _scan_initiators,
     _scan_task,
@@ -89,6 +93,9 @@ def _reference_page(page: int = 0, limit: int = 5, *, cluster_key: str = ""):
     )
     for event in catalog:
         entries.append(_entry(_catalog_refresh_task(event), event.id))
+
+    for event in AuditEvent.objects.filter(action__in=MOUNT_TASK_ACTIONS, timestamp__gte=cutoff):
+        entries.append(_entry(_mount_task(event), event.id))
 
     run_terminal = [
         ScheduledActionRun.Status.COMPLETED,
@@ -210,6 +217,7 @@ class RecentTaskIndexParityTests(TestCase):
         self._build_scans()
         self._build_scheduled_runs()
         self._build_catalog_refreshes()
+        self._build_mount_events()
         self._build_file_events()
         self._build_guest_events()
 
@@ -328,6 +336,32 @@ class RecentTaskIndexParityTests(TestCase):
             outcome="success",
             cluster=self.cluster_b,
             details={"cluster_key": "beta", "stage": "completed"},
+        )
+
+    def _build_mount_events(self):
+        self._audit(
+            action=MOUNT_REGISTERED_ACTION,
+            minutes_ago=4,
+            cluster=self.cluster_a,
+            object_type="storage_mount",
+            object_id="mount-nfs-vm",
+            details={
+                "cluster_key": "alpha",
+                "storage_id": "TrueNAS-VM",
+                "scope": "shared",
+                "display_name": "Production NFS",
+                "path": "/storages/truenas-vm",
+            },
+        )
+        # Attributed by snapshot only, and outside the window: the register/remove
+        # pair has no non-terminal state to keep it alive past retention.
+        self._audit(
+            action=MOUNT_UNREGISTERED_ACTION,
+            minutes_ago=200,
+            snapshot="beta",
+            object_type="storage_mount",
+            object_id="mount-old",
+            details={"cluster_key": "beta", "storage_id": "old-nfs", "scope": "pve1"},
         )
 
     def _build_file_events(self):
@@ -494,11 +528,14 @@ class RecentTaskIndexParityTests(TestCase):
     # --- the properties the reference cannot state ----------------------------
 
     def test_a_pinned_question_appears_once_across_the_whole_pagination(self):
+        total = recent_task_page(limit=3).total
         seen: list[str] = []
-        for number in range(0, 8):
+        # Derived from the total rather than a literal: a page count that no longer
+        # covers the corpus makes this assert the corpus against a prefix of itself.
+        for number in range(0, -(-total // 3)):
             seen.extend(task["id"] for task in recent_task_page(page=number, limit=3).tasks)
         self.assertEqual(len(seen), len(set(seen)))
-        self.assertEqual(len(seen), recent_task_page(limit=3).total)
+        self.assertEqual(len(seen), total)
 
     def test_open_questions_sort_ahead_of_everything_newer(self):
         page = recent_task_page(limit=5)

@@ -447,7 +447,6 @@ def storage_mount_register(request):
         )
     errors: list[str] = []
     warnings: list[str] = []
-    registered = None
     form_values: dict[str, str] = {}
     confirm_distinct_backend = False
     confirm_backend_mismatch = False
@@ -493,9 +492,13 @@ def storage_mount_register(request):
                             "storage_id": binding.cluster_storage.storage_id,
                             "mount_ref": mount.mount_ref,
                             "scope": binding.node or "shared",
+                            # The pairing, not just its key: Recent Tasks and Audit
+                            # are the only places this outcome is reported now, so
+                            # they carry both halves of what was undone.
+                            "display_name": mount.display_name,
+                            "path": mount.path,
                         },
                     )
-                    registered = "removed"
         else:
             definition = next(
                 (row for row in definitions if str(row.pk) == str(request.POST.get("cluster_storage"))),
@@ -603,7 +606,6 @@ def storage_mount_register(request):
                                 mount.delete()
                             errors.append(str(exc))
                         else:
-                            registered = mount
                             record_audit_event(
                                 request=request,
                                 user=request.user,
@@ -617,8 +619,15 @@ def storage_mount_register(request):
                                     "storage_id": definition.storage_id,
                                     "mount_ref": mount.mount_ref,
                                     "scope": node or "shared",
+                                    "display_name": mount.display_name,
+                                    "path": mount.path,
                                 },
                             )
+                            # Nothing announces the success on this page — the new
+                            # row in the table above and the Recent Tasks entry do.
+                            # An emptied form is what says the submission is spent,
+                            # and it is also what stops an accidental resubmit.
+                            form_values = {}
     return render(
         request,
         "core/settings_storage.html",
@@ -638,8 +647,6 @@ def storage_mount_register(request):
             # pending confirmations would each clear the other and never resolve.
             "confirmed_backend_mismatch": confirmed_mismatch,
             "confirmed_distinct_backend": confirmed_distinct,
-            "registered": registered if registered != "removed" else None,
-            "removed": registered == "removed",
             "bindings": _binding_rows(),
         },
     )

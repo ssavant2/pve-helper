@@ -7682,6 +7682,39 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertNotContains(response, "Register against this export anyway")
         self.assertEqual(ClusterStorageMount.objects.get().cluster_storage, definition)
 
+    def test_a_registration_is_reported_in_recent_tasks_and_nowhere_on_the_page(self):
+        """An outcome has one home. The page used to grow a green panel of its own,
+        which is a second place to look and the only one that disappears on reload."""
+        definition = self._nfs_definition(export="/mnt/tank/vm", server="nas.hq.local")
+        candidates = [{"relative_path": "nas", "filesystem_type": "nfs4", "source": "nas.hq.local:/mnt/tank/vm"}]
+        health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
+
+        with (
+            patch("core.views.storage._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mount_health", return_value=health),
+        ):
+            response = self.client.post(
+                reverse("core:settings_storage"),
+                {
+                    "cluster_storage": str(definition.pk),
+                    "relative_path": "nas",
+                    "display_name": "Production NFS",
+                    "backend_identity": "nas.hq.local:/mnt/tank/vm",
+                },
+            )
+
+        self.assertNotContains(response, "notice-success")
+        # The emptied form is the page's whole acknowledgement.
+        self.assertNotContains(response, 'value="Production NFS"')
+        task = next(task for task in recent_task_page(limit=10).tasks if task["kind"] == "storage_mount")
+        self.assertEqual(task["name"], "Register host mount")
+        self.assertEqual(task["target"], "shared-nfs")
+        self.assertEqual(task["status_class"], "completed")
+        self.assertIn("/storages/nas", str(task["details"]))
+        self.assertTrue(
+            AuditEvent.objects.filter(action="storage.mount.registered", object_type="storage_mount").exists()
+        )
+
     def test_confirming_the_export_does_not_discard_the_near_match_confirmation(self):
         """Two confirmations can be pending in sequence. Carried on the button alone,
         answering the second dropped the first and the form could never resolve."""

@@ -99,6 +99,9 @@ FILE_TASK_ACTIONS = [
 BULK_FILE_ACTION = "file.bulk_operation"
 INFLATE_QUEUED_ACTION = "file.inflate_queued"
 INFLATE_TERMINAL_ACTIONS = {"file.inflated", "file.inflate_failed"}
+MOUNT_REGISTERED_ACTION = "storage.mount.registered"
+MOUNT_UNREGISTERED_ACTION = "storage.mount.unregistered"
+MOUNT_TASK_ACTIONS = [MOUNT_REGISTERED_ACTION, MOUNT_UNREGISTERED_ACTION]
 
 
 @dataclass(frozen=True)
@@ -195,6 +198,7 @@ def _task_index(cluster_key: str):
     return _scan_index(cluster_key).union(
         _file_index(cluster_key),
         _catalog_index(cluster_key),
+        _mount_index(cluster_key),
         _scheduled_index(cluster_key),
         _guest_index(cluster_key),
         all=True,
@@ -244,6 +248,14 @@ def _catalog_index(cluster_key: str):
         _visible_catalog_refresh_tasks().filter(_audit_cluster_q(cluster_key)),
         "catalog",
         _catalog_started_at(),
+    )
+
+
+def _mount_index(cluster_key: str):
+    return _index_values(
+        _visible_mount_tasks().filter(_audit_cluster_q(cluster_key)),
+        "mount",
+        F("timestamp"),
     )
 
 
@@ -314,7 +326,7 @@ def _questions_pending(cluster_key: str) -> int:
     return files + guests
 
 
-INDEX_KINDS = ("scan", "file", "catalog", "scheduled_action", "guest")
+INDEX_KINDS = ("scan", "file", "catalog", "mount", "scheduled_action", "guest")
 
 
 def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
@@ -329,7 +341,12 @@ def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
         initiators = _scan_initiators(scans)
         for scan in scans:
             built["scan", scan.id] = _scan_task(scan, initiators.get(str(scan.id), "system"))
-    for kind, builder in (("file", _file_task), ("catalog", _catalog_refresh_task), ("guest", _guest_task)):
+    for kind, builder in (
+        ("file", _file_task),
+        ("catalog", _catalog_refresh_task),
+        ("mount", _mount_task),
+        ("guest", _guest_task),
+    ):
         if not ids_by_kind[kind]:
             continue
         events = AuditEvent.objects.filter(id__in=ids_by_kind[kind]).select_related("user", "cluster")
@@ -876,6 +893,49 @@ def _catalog_refresh_task(event: AuditEvent) -> dict[str, object]:
         "finished_at": _parsed_detail_time(details, "finished_at") if terminal else None,
         "server": str(details.get("cluster_key") or ""),
         "sort_at": event.timestamp,
+        "cancelable": False,
+    }
+
+
+def _visible_mount_tasks():
+    # No non-terminal branch, unlike the catalog refresh: binding a mount is
+    # synchronous, so an event exists only once the outcome is already known.
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    return AuditEvent.objects.filter(action__in=MOUNT_TASK_ACTIONS, timestamp__gte=cutoff)
+
+
+def _mount_task(event: AuditEvent) -> dict[str, object]:
+    """Registering or removing a host-mount association.
+
+    The settings page used to answer with a green panel of its own, which is the
+    one thing outcomes must not do here: they belong in Recent Tasks and Audit, so
+    that "did that work?" has a single answer wherever it is asked from.
+    """
+    details = event.details if isinstance(event.details, dict) else {}
+    failed = event.outcome == "failed"
+    storage_id = event.storage_id or str(details.get("storage_id") or "")
+    path = event.path or str(details.get("path") or "")
+    display_name = str(details.get("display_name") or "")
+    return {
+        "id": f"mount:{event.id}",
+        "kind": "storage_mount",
+        "action": event.action,
+        "name": ("Register host mount" if event.action == MOUNT_REGISTERED_ACTION else "Remove mount association"),
+        "target": storage_id or "-",
+        "cluster_key": event.cluster.key if event.cluster_id else event.cluster_key_snapshot or "",
+        "cluster": event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-",
+        "status": "Failed" if failed else "Completed",
+        "status_class": "failed" if failed else "completed",
+        # Both halves of the pairing, because the pairing is the whole operation:
+        # which directory was bound to which datastore is what a later reader needs.
+        "details": " · ".join(part for part in (display_name, path) if part) or event.object_id or "-",
+        "initiator": event.username or (event.user.get_username() if event.user else "system"),
+        "queued_for": "-",
+        "started_at": event.timestamp,
+        "finished_at": event.timestamp,
+        "server": str(details.get("scope") or "-"),
+        "sort_at": event.timestamp,
+        "storage_id": storage_id,
         "cancelable": False,
     }
 
