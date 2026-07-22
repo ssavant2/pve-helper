@@ -1,0 +1,77 @@
+{% extends "core/settings_base.html" %}
+
+{% block settings_content %}
+  <section class="page-header settings-page-header">
+    <div>
+      <h2>Log forwarder</h2>
+      <p>Continuously forward new Audit events as RFC 5424 syslog messages.</p>
+    </div>
+    <div class="page-actions"><a class="secondary-action" href="{% url 'core:audit_log' %}">View Audit log</a></div>
+  </section>
+
+  {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
+
+  <section
+    class="panel settings-storage-panel"
+    data-log-forwarder-status
+    data-status-url="{% url 'core:settings_log_forwarder_status' %}"
+    data-status-poll-ms="5000"
+  >
+    <div class="panel-heading">
+      <div>
+        <h2>Delivery status</h2>
+        <p class="panel-meta">Messages use RFC 6587 octet-counting framing. Connection failures are retried in order and may produce duplicates.</p>
+      </div>
+    </div>
+    <div class="log-forwarder-status-grid">
+      <div><span>State</span><strong data-log-forwarder-state>{{ delivery_status.state }}</strong></div>
+      <div>
+        <span>Pending</span>
+        <strong data-log-forwarder-pending>{{ delivery_status.pending_label }}</strong>
+        <small data-log-forwarder-paused{% if not delivery_status.paused %} hidden{% endif %}>Retained until forwarding is enabled again.</small>
+      </div>
+      <div><span>Last delivery</span><strong data-log-forwarder-last-delivery>{{ delivery_status.last_delivery }}</strong></div>
+      <div><span>Last error</span><strong data-log-forwarder-last-error>{{ delivery_status.last_error }}</strong></div>
+    </div>
+  </section>
+
+  <form method="post" class="panel settings-storage-panel settings-storage-form-panel">
+    {% csrf_token %}
+    <div class="panel-heading">
+      <div>
+        <h2>RFC 5424 destination</h2>
+        <p class="panel-meta">Only normalized Audit fields are sent. Raw provider errors and arbitrary diagnostic details are excluded.</p>
+      </div>
+      <label class="checkbox-control log-forwarder-enabled">
+        <input type="checkbox" name="enabled"{% if config.enabled %} checked{% endif %}>
+        <span>Enable log forwarding</span>
+      </label>
+    </div>
+    <div class="storage-access-form">
+      <div class="storage-access-form-grid">
+        <label><span>Host</span><input name="host" value="{{ config.host }}" maxlength="255" placeholder="siem.example.net"></label>
+        <label><span>Port</span><input type="number" name="port" min="1" max="65535" value="{{ config.port }}" required></label>
+        <label><span>Transport</span>
+          <select name="transport" required>
+            {% for value, label in transport_choices %}<option value="{{ value }}"{% if config.transport == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+          <small>TLS validates both the certificate chain and destination hostname using the system trust store.</small>
+        </label>
+      </div>
+      <div class="storage-access-form-actions">
+        <button class="secondary-action" type="submit">Save configuration</button>
+      </div>
+    </div>
+  </form>
+
+  <section class="panel settings-storage-panel">
+    <div class="panel-heading">
+      <div><h2>Test delivery</h2><p class="panel-meta">Creates a real Audit event and places it in the same durable queue used in normal operation.</p></div>
+      <form class="log-forwarder-test-form" method="post" action="{% url 'core:settings_log_forwarder_test' %}">
+        {% csrf_token %}
+        <button class="secondary-action log-forwarder-test-button" type="submit"{% if not config.enabled %} disabled{% endif %}>Send test event</button>
+      </form>
+    </div>
+    {% if test_feedback %}<div class="log-forwarder-test-feedback notice notice-{{ test_feedback.0 }}" role="status">{{ test_feedback.1 }}</div>{% endif %}
+  </section>
+{% endblock %}

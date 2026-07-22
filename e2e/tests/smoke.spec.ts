@@ -15,6 +15,7 @@ const PAGES = [
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
   { name: "PVE-helper Settings", path: "/settings/storage/" },
+  { name: "Log forwarder settings", path: "/settings/log-forwarder/" },
   { name: "Audit log", path: "/audit/" },
 ];
 
@@ -101,6 +102,54 @@ test("mount registration derives identity and offers the node instances of the c
   await expect(nodeField).toBeVisible();
   await expect(page.locator("[data-node-select] option")).toHaveText(["Choose the node instance…", "pve1"]);
   await expect(page.locator("[data-identity-source]")).toContainText("does not publish its identity");
+});
+
+test("log forwarder uses a compact header toggle and standard save action", async ({ page }) => {
+  await page.goto("/settings/log-forwarder/");
+
+  await expect(page.getByRole("navigation", { name: "PVE-helper settings areas" }).getByRole("link")).toHaveText([
+    "Log forwarder",
+    "Storage access",
+  ]);
+
+  const toggle = page.locator('input[name="enabled"]');
+  const box = await toggle.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeLessThanOrEqual(20);
+  expect(box!.height).toBeLessThanOrEqual(20);
+  await expect(toggle.locator("xpath=ancestor::div[contains(@class, 'panel-heading')]")).toHaveCount(1);
+  const saveButton = page.getByRole("button", { name: "Save configuration" });
+  await expect(saveButton).toHaveClass(/secondary-action/);
+  const testButton = page.getByRole("button", { name: "Send test event" });
+  await expect(testButton).toHaveCSS("white-space", "nowrap");
+  const testButtonBox = await testButton.boundingBox();
+  expect(testButtonBox).not.toBeNull();
+  expect(testButtonBox!.width).toBeGreaterThanOrEqual(145);
+
+  await saveButton.click();
+  await expect(page).toHaveURL(/\/settings\/log-forwarder\/$/);
+  await expect(page.locator(".messages")).toHaveCount(0);
+});
+
+test("log forwarder refreshes delivery status and labels a paused backlog", async ({ page }) => {
+  await page.route("**/settings/log-forwarder/status/", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        state: "Disabled",
+        pending: 1,
+        pending_label: "1 (paused)",
+        paused: true,
+        last_delivery: "2026-07-22 13:09:39",
+        last_error: "Connection failed at 2026-07-22 13:11:19",
+      }),
+    });
+  });
+
+  await page.goto("/settings/log-forwarder/");
+
+  await expect(page.locator("[data-log-forwarder-pending]")).toHaveText("1 (paused)");
+  await expect(page.locator("[data-log-forwarder-paused]")).toBeVisible();
 });
 
 test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {

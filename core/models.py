@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models.functions import Lower
+from django.utils import timezone
 
 # A dependency-free value object: refs.py must never import models, or this cycles.
 from core.services.refs import GuestRef, NodeRef
@@ -109,6 +110,55 @@ class AuditEvent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.timestamp:%Y-%m-%d %H:%M:%S} {self.action} {self.outcome}"
+
+
+class LogForwarderConfiguration(TimestampedModel):
+    """Installation-wide RFC 5424 destination and delivery health."""
+
+    class Transport(models.TextChoices):
+        TLS = "tls", "TCP with TLS"
+        TCP = "tcp", "TCP"
+
+    enabled = models.BooleanField(default=False)
+    host = models.CharField(max_length=255, blank=True)
+    port = models.PositiveIntegerField(default=6514)
+    transport = models.CharField(max_length=12, choices=Transport.choices, default=Transport.TLS)
+    facility = models.PositiveSmallIntegerField(default=16)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_error_at = models.DateTimeField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=80, blank=True)
+
+    def __str__(self) -> str:
+        return f"log forwarding to {self.host or '-'}:{self.port}"
+
+
+class LogForwardingDelivery(models.Model):
+    """A durable, destination-independent snapshot awaiting syslog delivery."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SENDING = "sending", "Sending"
+        SENT = "sent", "Sent"
+
+    audit_event_id = models.PositiveBigIntegerField(db_index=False)
+    sequence = models.PositiveIntegerField(default=1)
+    payload = models.JSONField(default=dict)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=80, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["audit_event_id", "sequence"], name="uniq_log_delivery_event_sequence")
+        ]
+
+    def __str__(self) -> str:
+        return f"audit:{self.audit_event_id}#{self.sequence} ({self.status})"
 
 
 def _details_text(details: dict, key: str, max_length: int) -> str:

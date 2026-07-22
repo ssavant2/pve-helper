@@ -96,8 +96,13 @@
   font-size: 12px;
 }
 
-.audit-export-header-button {
-  min-height: 30px;
+.audit-header-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 12px;
+  line-height: 1;
 }
 
 .audit-export-dialog {
@@ -400,6 +405,20 @@
   position: sticky;
   top: 0;
   z-index: 2;
+}
+
+.audit-table .column-resize-handle::after {
+  top: 2px;
+  right: 4px;
+  bottom: 2px;
+  border-right-color: var(--line-strong);
+}
+
+.audit-table .column-resize-handle:hover::after,
+.audit-table .column-resize-handle:focus-visible::after,
+.audit-table.column-resizing .column-resize-handle.active::after {
+  border-right-width: 2px;
+  border-right-color: var(--accent);
 }
 
 .audit-table td {

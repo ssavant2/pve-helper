@@ -273,8 +273,23 @@ test("the audit column headings stay visible while event rows scroll", async ({ 
   const scroll = page.locator(".audit-table-scroll");
   const content = page.locator("[data-soft-nav-content]");
   const heading = page.locator(".audit-table th").first();
+  const resizeHandle = heading.locator(".column-resize-handle");
   await expect(scroll).toHaveCSS("overflow-y", "auto");
   await expect(heading).toHaveCSS("position", "sticky");
+  await expect(resizeHandle).toHaveCount(1);
+
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => {
+      document.documentElement.dataset.theme = value;
+    }, theme);
+    const separator = await resizeHandle.evaluate((element) => {
+      const style = getComputedStyle(element, "::after");
+      return { color: style.borderRightColor, style: style.borderRightStyle, width: style.borderRightWidth };
+    });
+    expect(separator.style).toBe("solid");
+    expect(separator.width).toBe("1px");
+    expect(separator.color).not.toBe("rgba(0, 0, 0, 0)");
+  }
 
   // The isolated fixture has only a few events. Duplicate its first row in the
   // browser so this test exercises actual vertical movement rather than merely
@@ -306,6 +321,17 @@ test("the audit column headings stay visible while event rows scroll", async ({ 
   await expect
     .poll(() => scroll.evaluate((element) => element.scrollLeft + element.clientWidth >= element.scrollWidth - 1))
     .toBe(true);
+});
+
+test("audit header actions have the same height", async ({ page }) => {
+  await page.goto("/audit/", { waitUntil: "load" });
+
+  const forwarder = await page.getByRole("link", { name: "Log forwarder" }).boundingBox();
+  const exportButton = await page.getByRole("button", { name: "Export", exact: true }).boundingBox();
+
+  expect(forwarder).not.toBeNull();
+  expect(exportButton).not.toBeNull();
+  expect(forwarder!.height).toBe(exportButton!.height);
 });
 
 test("an audit row can be copied from its context menu", async ({ page }) => {

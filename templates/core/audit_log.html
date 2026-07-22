@@ -9,7 +9,8 @@
       <p>Authentication, storage scans, and file actions</p>
     </div>
     <div class="scan-controls">
-      <button class="page-button audit-export-header-button" type="button" data-audit-export-open>Export</button>
+      <a class="page-button audit-header-action" href="{% url 'core:settings_log_forwarder' %}">Log forwarder</a>
+      <button class="page-button audit-header-action" type="button" data-audit-export-open>Export</button>
       <form class="scan-schedule-form" method="post" action="{% url 'core:update_audit_retention_schedule' %}" data-auto-submit-form>
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ request.get_full_path }}">

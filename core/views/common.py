@@ -538,6 +538,10 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Audit retention purge"
     if event.action == "audit.retention.schedule.updated":
         return "Audit retention schedule updated"
+    if event.action == "log_forwarder.configuration.updated":
+        return "Update log forwarding configuration"
+    if event.action == "log_forwarder.test_requested":
+        return "Send log forwarding test event"
     if event.action == "task.cancelled":
         return "Cancel task"
     tag_action_labels = {
@@ -671,7 +675,20 @@ def _audit_detail_label(event: AuditEvent) -> str:
         return _bulk_file_answer_detail(details)
     if event.action in {"scan.completed", "scan.failed"}:
         return scan_warning_summary(details.get("error_details"))
+    if event.action == "log_forwarder.configuration.updated":
+        state = "Enabled" if details.get("enabled") else "Disabled"
+        return _log_forwarder_destination_detail(state, details)
+    if event.action == "log_forwarder.test_requested":
+        return _log_forwarder_destination_detail("Test event", details)
     return str(details.get("summary") or details.get("error_reason") or "")
+
+
+def _log_forwarder_destination_detail(prefix: str, details: dict) -> str:
+    transport = {"tcp": "TCP", "tls": "TCP with TLS"}.get(str(details.get("transport") or ""), "Syslog")
+    host = str(details.get("host") or "")
+    port = details.get("port")
+    destination = f"{host}:{port}" if host and isinstance(port, int) else host
+    return f"{prefix} · {transport} to {destination}" if destination else f"{prefix} · {transport}"
 
 
 def _bulk_file_detail(details: dict) -> str:
@@ -780,6 +797,8 @@ def _audit_object_label(event: AuditEvent) -> str:
         return "Audit retention schedule"
     if event.object_type == "audit_retention":
         return "Audit retention"
+    if event.object_type == "log_forwarder":
+        return "Log forwarder"
     if event.object_type in {"scheduled_action", "scheduled_action_run"}:
         name = details.get("scheduled_action_name")
         if name:
