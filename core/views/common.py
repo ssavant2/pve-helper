@@ -16,7 +16,6 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from django.db import connection
 from django.db.models import Count, F, Q
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseForbidden, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -55,6 +54,7 @@ from ..services.guests import (
     is_template,
     parse_guest_tags,
 )
+from ..services.health import readiness_report
 from ..services.partial_scan import refresh_storage_directory
 from ..services.permissions import storage_permissions as get_permissions
 from ..services.proxmox import (
@@ -391,17 +391,8 @@ def health_live(_request):
 
 
 def health_ready(_request):
-    checks = {"database": "unknown"}
-    status = 200
-    try:
-        connection.ensure_connection()
-        checks["database"] = "ok"
-    except Exception as exc:  # pragma: no cover - defensive health endpoint
-        checks["database"] = "error"
-        checks["database_error"] = exc.__class__.__name__
-        status = 503
-
-    return JsonResponse({"status": "ok" if status == 200 else "error", "checks": checks}, status=status)
+    payload, status = readiness_report("pve-helper")
+    return JsonResponse(payload, status=status)
 
 
 def _decorate_audit_events(events: list[AuditEvent]) -> None:

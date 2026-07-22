@@ -25,11 +25,19 @@ from websockets.exceptions import ConnectionClosed  # noqa: E402
 from core.models import ConsoleSession  # noqa: E402
 from core.services.audit_events import record_audit_event  # noqa: E402
 from core.services.console_sessions import console_token_hash  # noqa: E402
+from core.services.health import readiness_report  # noqa: E402
 from core.services.public_errors import ERROR_CODE_PROVIDER, public_exception_message  # noqa: E402
 
 
 async def health_live(_request):
     return JSONResponse({"status": "ok", "service": "pve-helper-console"})
+
+
+async def health_ready(_request):
+    # The gateway reads `ConsoleSession` through the same ORM and the same
+    # schema as the web app, so a stale database makes it just as unusable.
+    payload, status = await sync_to_async(readiness_report)("pve-helper-console")
+    return JSONResponse(payload, status_code=status)
 
 
 async def console_ws(websocket: WebSocket):
@@ -347,6 +355,7 @@ def _resolve_cluster_ssl_context(session: ConsoleSession, url: str):
 app = Starlette(
     routes=[
         Route("/healthz/live", health_live),
+        Route("/healthz/ready", health_ready),
         WebSocketRoute("/console/ws/{token}/", console_ws),
     ]
 )

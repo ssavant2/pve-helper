@@ -48,6 +48,14 @@ The sequence pulls `latest`, starts/waits for Postgres, stops application
 services, runs migrations with the newly pulled image and recreates the complete
 stack. Pulling `latest` alone never updates an already-running container.
 
+The migrate step is not optional and the health checks now say so. `web` and
+`console` report healthy through `/healthz/ready`, which fails while the image
+carries migrations the database has not applied, and nginx waits for both. A
+skipped or interrupted migration therefore makes `up --wait` fail with
+`pending_count` in the readiness body, instead of bringing the stack up green
+and returning 500 on every page. Applying the migrations makes the containers
+recover on their own; they do not need to be restarted afterwards.
+
 ### Platform version requirements
 
 | Component | Minimum | Why |

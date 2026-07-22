@@ -169,7 +169,7 @@ services:
     mem_limit: 512m
     cpu_shares: 512
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, urllib.parse, urllib.request; host=urllib.parse.urlparse(os.environ['APP_BASE_URL']).netloc; request=urllib.request.Request('http://127.0.0.1:8000/healthz/live', headers={'Host': host}); urllib.request.urlopen(request, timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import os, urllib.parse, urllib.request; host=urllib.parse.urlparse(os.environ['APP_BASE_URL']).netloc; request=urllib.request.Request('http://127.0.0.1:8000/healthz/ready', headers={'Host': host}); urllib.request.urlopen(request, timeout=5).read()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -224,7 +224,7 @@ services:
     mem_limit: 256m
     cpu_shares: 256
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz/live', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz/ready', timeout=5).read()"]
       interval: 30s
       timeout: 10s
       retries: 3
