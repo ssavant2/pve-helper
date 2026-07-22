@@ -120,6 +120,153 @@
   gap: 6px;
 }
 
+.scheduled-date-control {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 6px;
+}
+
+.scheduled-date-picker-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.scheduled-date-picker-trigger:hover,
+.scheduled-date-picker-trigger:focus-visible {
+  background: var(--blue-soft);
+  color: var(--accent-strong);
+}
+
+.scheduled-date-picker-trigger svg {
+  width: 15px;
+  height: 15px;
+  pointer-events: none;
+}
+
+.scheduled-date-picker-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(300px, calc(100vw - 32px));
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--context-shadow);
+}
+
+.scheduled-date-picker-popover[hidden] {
+  display: none;
+}
+
+.scheduled-date-picker-heading {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 8px;
+}
+
+.scheduled-date-picker-heading strong {
+  justify-self: center;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.scheduled-date-picker-heading button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.scheduled-date-picker-heading button:hover,
+.scheduled-date-picker-heading button:focus-visible {
+  background: var(--blue-soft);
+  color: var(--accent-strong);
+}
+
+.scheduled-date-picker-heading svg {
+  width: 15px;
+  height: 15px;
+}
+
+.scheduled-date-picker-weekdays,
+.scheduled-date-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.scheduled-date-picker-weekdays {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.scheduled-date-picker-grid {
+  margin-top: 6px;
+}
+
+.scheduled-date-picker-day {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  aspect-ratio: 1;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.scheduled-date-picker-day.in-month {
+  color: var(--text);
+  background: var(--surface-alt);
+}
+
+.scheduled-date-picker-day:hover,
+.scheduled-date-picker-day:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.scheduled-date-picker-day.is-selected {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--button-primary-text);
+  font-weight: 650;
+}
+
+.scheduled-date-picker-day.today:not(.is-selected) {
+  border-color: var(--muted);
+}
+
+.scheduled-field-disabled .scheduled-date-picker-trigger {
+  opacity: 0.48;
+  pointer-events: none;
+}
+
 .scheduled-form-grid .time-pair input[type="number"] {
   width: 64px;
   text-align: center;

@@ -86,7 +86,23 @@
           <div class="scheduled-form-grid">
             <label data-recurrence-field="date">
               <span>Run Date</span>
-              <input type="date" name="run_date" value="{{ form_values.run_date }}">
+              <span class="scheduled-date-control">
+                <input type="text" name="run_date" value="{{ form_values.run_date }}" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" placeholder="YYYY-MM-DD" autocomplete="off" data-schedule-run-date>
+                <button class="scheduled-date-picker-trigger" type="button" aria-label="Choose run date" data-schedule-run-date-open>
+                  <i data-lucide="calendar" aria-hidden="true"></i>
+                </button>
+                <div class="scheduled-date-picker-popover" data-schedule-run-date-popover hidden>
+                  <div class="scheduled-date-picker-heading">
+                    <button type="button" aria-label="Previous month" data-schedule-run-date-prev><i data-lucide="chevron-left" aria-hidden="true"></i></button>
+                    <strong data-schedule-run-date-month>-</strong>
+                    <button type="button" aria-label="Next month" data-schedule-run-date-next><i data-lucide="chevron-right" aria-hidden="true"></i></button>
+                  </div>
+                  <div class="scheduled-date-picker-weekdays" aria-hidden="true">
+                    <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+                  </div>
+                  <div class="scheduled-date-picker-grid" data-schedule-run-date-grid></div>
+                </div>
+              </span>
             </label>
 
             <label data-recurrence-field="time">

@@ -482,9 +482,18 @@ const initScheduledTaskForms = (root) => {
     const calendarGrid = form.querySelector("[data-schedule-calendar-grid]");
     const calendarPrev = form.querySelector("[data-schedule-calendar-prev]");
     const calendarNext = form.querySelector("[data-schedule-calendar-next]");
+    const runDateInput = form.querySelector("[data-schedule-run-date]");
+    const runDateOpen = form.querySelector("[data-schedule-run-date-open]");
+    const runDatePopover = form.querySelector("[data-schedule-run-date-popover]");
+    const runDatePickerMonth = form.querySelector("[data-schedule-run-date-month]");
+    const runDatePickerGrid = form.querySelector("[data-schedule-run-date-grid]");
+    const runDatePickerPrev = form.querySelector("[data-schedule-run-date-prev]");
+    const runDatePickerNext = form.querySelector("[data-schedule-run-date-next]");
     const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const ordinalNumbers = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
     let calendarOffset = 0;
+    let runDatePickerYear = new Date().getFullYear();
+    let runDatePickerMonthIndex = new Date().getMonth();
 
     const enabledForRecurrence = (field, kind) => {
       const fieldKind = field.dataset.recurrenceField;
@@ -525,10 +534,33 @@ const initScheduledTaskForms = (root) => {
         .filter((value) => !Number.isNaN(value) && value >= 1 && value <= 31);
     const localWeekday = (date) => (date.getDay() + 6) % 7;
     const formatTime = () => `${pad(runHour())}:${pad(runMinute())}`;
+    const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const parseIsoDate = (value) => {
+      if (!isIsoDate(value)) return null;
+      const [year, month, day] = value.split("-").map((part) => Number.parseInt(part, 10));
+      const date = new Date(year, month - 1, day);
+      if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+      return date;
+    };
+    const syncRunDatePicker = () => {
+      const parsed = parseIsoDate(runDateInput?.value || "");
+      if (parsed) {
+        runDatePickerYear = parsed.getFullYear();
+        runDatePickerMonthIndex = parsed.getMonth();
+      }
+      if (runDatePopover && !runDatePopover.hidden) {
+        renderRunDatePicker();
+      }
+    };
     const formatDateTime = (date) => {
       return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
     };
     const sameDayKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    const setRunDatePickerMonthFromInput = () => {
+      const parsed = parseIsoDate(runDateInput?.value || "") || new Date();
+      runDatePickerYear = parsed.getFullYear();
+      runDatePickerMonthIndex = parsed.getMonth();
+    };
 
     const nthWeekdayOfMonth = (year, month, weekday, ordinal) => {
       if (ordinal === "last") {
@@ -642,6 +674,36 @@ const initScheduledTaskForms = (root) => {
       }
     };
 
+    const closeRunDatePicker = () => {
+      if (runDatePopover) {
+        runDatePopover.hidden = true;
+      }
+    };
+
+    const renderRunDatePicker = () => {
+      if (!runDatePickerMonth || !runDatePickerGrid) return;
+      const monthDate = new Date(runDatePickerYear, runDatePickerMonthIndex, 1);
+      const selectedKey = sameDayKey(parseIsoDate(runDateInput?.value || "") || new Date(0));
+      const todayKey = sameDayKey(new Date());
+      const firstOffset = localWeekday(monthDate);
+      const startDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - firstOffset);
+      runDatePickerMonth.textContent = `${monthLabels[monthDate.getMonth()]} ${monthDate.getFullYear()}`;
+      runDatePickerGrid.innerHTML = "";
+      for (let index = 0; index < 42; index += 1) {
+        const date = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + index);
+        const dateKey = sameDayKey(date);
+        const day = document.createElement("button");
+        day.type = "button";
+        day.className = "scheduled-date-picker-day";
+        day.dataset.scheduleRunDateDay = dateKey;
+        day.textContent = String(date.getDate());
+        if (date.getMonth() === monthDate.getMonth()) day.classList.add("in-month");
+        if (dateKey === selectedKey) day.classList.add("is-selected");
+        if (dateKey === todayKey) day.classList.add("today");
+        runDatePickerGrid.appendChild(day);
+      }
+    };
+
     const renderPreview = () => {
       const kind = recurrenceKind?.value || "once";
       const occurrences = computeOccurrences();
@@ -682,7 +744,7 @@ const initScheduledTaskForms = (root) => {
       recurrenceFields.forEach((field) => {
         const enabled = enabledForRecurrence(field, kind);
         field.classList.toggle("scheduled-field-disabled", !enabled);
-        field.querySelectorAll("input:not([type='hidden']), select, textarea").forEach((control) => {
+        field.querySelectorAll("input:not([type='hidden']), select, textarea, button").forEach((control) => {
           control.disabled = !enabled;
         });
       });
@@ -697,9 +759,61 @@ const initScheduledTaskForms = (root) => {
       calendarOffset += 1;
       renderPreview();
     });
+    runDateOpen?.addEventListener("click", () => {
+      if (runDateOpen.disabled || !runDatePopover) return;
+      setRunDatePickerMonthFromInput();
+      renderRunDatePicker();
+      runDatePopover.hidden = !runDatePopover.hidden;
+    });
+    runDatePickerPrev?.addEventListener("click", () => {
+      runDatePickerMonthIndex -= 1;
+      if (runDatePickerMonthIndex < 0) {
+        runDatePickerMonthIndex = 11;
+        runDatePickerYear -= 1;
+      }
+      renderRunDatePicker();
+    });
+    runDatePickerNext?.addEventListener("click", () => {
+      runDatePickerMonthIndex += 1;
+      if (runDatePickerMonthIndex > 11) {
+        runDatePickerMonthIndex = 0;
+        runDatePickerYear += 1;
+      }
+      renderRunDatePicker();
+    });
+    runDatePickerGrid?.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-schedule-run-date-day]") : null;
+      if (!target || !runDateInput) return;
+      runDateInput.value = target.dataset.scheduleRunDateDay || "";
+      runDateInput.dispatchEvent(new Event("input", { bubbles: true }));
+      closeRunDatePicker();
+    });
+    runDateInput?.addEventListener("input", syncRunDatePicker);
+    const closeRunDatePickerOnOutsideClick = (event) => {
+      if (
+        runDatePopover?.hidden ||
+        !(event.target instanceof Element) ||
+        event.target.closest(".scheduled-date-control")
+      ) {
+        return;
+      }
+      closeRunDatePicker();
+    };
+    const closeRunDatePickerOnEscape = (event) => {
+      if (event.key === "Escape") {
+        closeRunDatePicker();
+      }
+    };
+    document.addEventListener("click", closeRunDatePickerOnOutsideClick);
+    document.addEventListener("keydown", closeRunDatePickerOnEscape);
+    registerPageCleanup(() => {
+      document.removeEventListener("click", closeRunDatePickerOnOutsideClick);
+      document.removeEventListener("keydown", closeRunDatePickerOnEscape);
+    });
     form.addEventListener("input", update);
     form.addEventListener("change", update);
     recurrenceKind?.addEventListener("change", update);
+    syncRunDatePicker();
     update();
   });
 };
