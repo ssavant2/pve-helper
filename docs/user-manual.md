@@ -70,8 +70,8 @@ The sidebar is the primary navigation. Its working areas are:
 | **Storage** | The Proxmox storage catalog per cluster — one page per datastore, with its nodes, volumes, guests, and (where pve-helper has a mount) its files, scans and file operations. |
 | **Tags** | Create and color tags, inspect membership, assign or remove tags, and rename or delete them across guests. |
 | **Scheduled Tasks** | One-time and recurring guest power schedules, their runs, and history. |
-| **Audit** | Authentication and administration history, filters, search, and export. |
-| **PVE-helper Settings** | Application-specific integration settings, including host-mounted storage access. |
+| **Audit** | Authentication and administration history, filters, search, export, and a shortcut to log forwarding. |
+| **PVE-helper Settings** | Application-specific integration settings, including log forwarding and host-mounted storage access. |
 
 **Network** remains reserved for a later module. Cluster **Connections** is the
 configuration surface; the broader host/cluster operations workspace arrives in
@@ -180,6 +180,47 @@ inflate can create conflicting work.
 Audit supports module and text filters, a date range, and optional technical
 fields. CSV and JSON exports stream all matching rows. Excel exports are limited
 to 5,000 events; narrow the filters or use CSV/JSON for larger exports.
+
+### Forward Audit events to syslog or a SIEM
+
+Open **Audit → Log forwarder**, or **PVE-helper Settings → Log forwarder**, to
+send new Audit events to one installation-wide RFC 5424 destination. Configure
+the receiver's host and port, choose **TCP with TLS** or plain **TCP**, enable
+forwarding, and select **Save configuration**. TLS verifies both the certificate
+chain and the destination hostname against the container's system trust store;
+there is no insecure skip-verification mode.
+
+Forwarding starts with Audit events created while the forwarder is enabled; it
+does not export the existing Audit history. Delivery is durable and ordered.
+The worker normally checks for queued messages once per minute, retries a failed
+connection with increasing delays, and resumes an abandoned in-progress
+delivery. This is at-least-once delivery, so a receiver may see a duplicate
+after an uncertain connection failure. Receivers must accept RFC 5424 messages
+over RFC 6587 octet-counted TCP framing.
+
+The **Delivery status** panel refreshes automatically:
+
+- **Pending** counts messages still waiting or currently being sent. It returns
+  to zero after the receiver accepts them; when forwarding is disabled, queued
+  messages remain as **paused** until it is enabled again.
+- **Last delivery** is the most recent successful send, not merely the most
+  recent attempt.
+- **Last error** reports a normalized connection failure and time. Detailed
+  socket or TLS exceptions remain in protected application logs.
+
+After saving an enabled destination, select **Send test event**. This creates a
+real `log_forwarder.test_requested` Audit event and sends it through the same
+durable path as ordinary events. “Queued” means accepted for delivery; confirm
+success by checking that **Pending** reaches zero, **Last delivery** advances,
+and the event appears at the receiver.
+
+Each syslog message contains normalized scalar Audit fields such as timestamp,
+action, outcome, module, username, source IP, cluster and object identity. Where
+applicable it also includes the normalized storage ID, path and target
+preallocation. Arbitrary Audit details, raw provider errors, credentials,
+certificate material and diagnostic exception text are deliberately excluded.
+Changing the configuration and requesting a test are themselves visible in
+Audit. Saving configuration has no separate confirmation popup.
 
 ## Working with VMs and containers
 
