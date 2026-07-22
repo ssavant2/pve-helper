@@ -51,13 +51,24 @@ from core.services.cluster_trust import (
 )
 from core.services.config import endpoint_name_from_url, normalize_endpoint_url
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient
+from core.services.public_errors import PROVIDER_FAILURE_MESSAGE, PublicMessageError, public_failure
 
 _ENDPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$")
 _MINIMUM_PROXMOX_VERSION = (9, 2)
 _PROXMOX_VERSION_RE = re.compile(r"^\s*(\d+)\.(\d+)(?:[.\-]|$)")
 
 
-class ClusterOnboardingError(RuntimeError):
+def _reason(exc: Exception, operation: str) -> str:
+    """The public half of `exc`, for composing into an onboarding message.
+
+    Sibling domain errors carry text written for this same operator and keep it;
+    a `ProxmoxAPIError` does not, and is replaced. Either way the raise site owns
+    what it says, which is what `PublicMessageError` promises.
+    """
+    return public_failure(exc, operation=f"cluster_onboarding.{operation}", fallback=PROVIDER_FAILURE_MESSAGE).message
+
+
+class ClusterOnboardingError(PublicMessageError, RuntimeError):
     """A candidate is invalid, untrusted or does not satisfy the admin contract."""
 
 
@@ -147,7 +158,7 @@ def inspect_transport(endpoint_url: str) -> InspectedCertificate:
     try:
         return inspect_endpoint_certificate(endpoint_url)
     except TransportTrustError as exc:
-        raise ClusterOnboardingError(str(exc)) from exc
+        raise ClusterOnboardingError(_reason(exc, "inspect_endpoint")) from exc
 
 
 def verify_new_cluster(
@@ -187,7 +198,7 @@ def verify_endpoint_for_cluster(
         trust_profile = resolve_trust_profile(cluster)
         credential = resolve_credential(cluster)
     except (TransportTrustError, ClusterCredentialError) as exc:
-        raise ClusterOnboardingError(str(exc)) from exc
+        raise ClusterOnboardingError(_reason(exc, "verify_new_cluster")) from exc
     verified = _verify_connection(
         endpoint_url=endpoint_url,
         endpoint_name=endpoint_name,
@@ -224,7 +235,7 @@ def verify_registered_endpoint(
         trust_profile = resolve_trust_profile(cluster)
         credential = resolve_credential(cluster)
     except (TransportTrustError, ClusterCredentialError) as exc:
-        raise ClusterOnboardingError(str(exc)) from exc
+        raise ClusterOnboardingError(_reason(exc, "verify_endpoint")) from exc
     verified = _verify_connection(
         endpoint_url=endpoint.url,
         endpoint_name=endpoint.name,
@@ -253,7 +264,7 @@ def verify_replacement_credential(
     try:
         trust_profile = resolve_trust_profile(cluster)
     except TransportTrustError as exc:
-        raise ClusterOnboardingError(str(exc)) from exc
+        raise ClusterOnboardingError(_reason(exc, "verify_replacement_credential")) from exc
     return _verify_enabled_endpoints(
         cluster,
         trust_profile=trust_profile,
@@ -267,7 +278,7 @@ def verify_cluster_connection(cluster: ProxmoxCluster) -> VerifiedConnection:
     try:
         credential = resolve_credential(cluster)
     except ClusterCredentialError as exc:
-        raise ClusterOnboardingError(str(exc)) from exc
+        raise ClusterOnboardingError(_reason(exc, "verify_cluster_connection")) from exc
     return verify_replacement_credential(
         cluster,
         token_id=credential.token_id,
@@ -381,7 +392,7 @@ def reapprove_cluster_identity(cluster: ProxmoxCluster) -> ObservedClusterIdenti
         trust_profile = resolve_trust_profile(cluster)
         credential = resolve_credential(cluster)
     except (TransportTrustError, ClusterCredentialError) as exc:
-        raise ClusterOnboardingError(str(exc)) from exc
+        raise ClusterOnboardingError(_reason(exc, "reapprove_identity")) from exc
     verified = _verify_enabled_endpoints(
         cluster,
         trust_profile=trust_profile,
@@ -392,7 +403,7 @@ def reapprove_cluster_identity(cluster: ProxmoxCluster) -> ObservedClusterIdenti
     try:
         reapprove_identity(cluster, verified.identity)
     except ClusterIdentityError as exc:
-        raise ClusterOnboardingError(str(exc)) from exc
+        raise ClusterOnboardingError(_reason(exc, "reapprove_identity.store")) from exc
     return verified.identity
 
 
@@ -426,7 +437,7 @@ def _verify_enabled_endpoints(
                 expected_certificate_fingerprint="",
             )
         except ClusterOnboardingError as exc:
-            failures.append(f"{endpoint.name}: {exc}")
+            failures.append(f"{endpoint.name}: {_reason(exc, 'verify_enabled_endpoint')}")
             continue
         verified_connections.append(verified)
 
@@ -516,7 +527,9 @@ def _verify_connection(
         permissions = client.get("access/permissions")
         administrator_role = client.get("access/roles/Administrator")
     except (ProxmoxAPIError, TransportTrustError) as exc:
-        raise ClusterOnboardingError(f"Verified Proxmox connection failed: {exc}") from exc
+        raise ClusterOnboardingError(
+            f"Verified Proxmox connection failed: {_reason(exc, 'verify_connection')}"
+        ) from exc
 
     node_names = (
         tuple(
@@ -536,7 +549,7 @@ def _verify_connection(
         try:
             identity = discover_cluster_identity(client, node_name)
         except (ClusterIdentityError, ProxmoxAPIError) as exc:
-            identity_errors.append(f"{node_name}: {exc}")
+            identity_errors.append(f"{node_name}: {_reason(exc, 'discover_identity')}")
             continue
         break
     if identity is None:
@@ -546,7 +559,9 @@ def _verify_connection(
     try:
         status = client.get("cluster/status")
     except ProxmoxAPIError as exc:
-        raise ClusterOnboardingError(f"Could not read Proxmox cluster metadata: {exc}") from exc
+        raise ClusterOnboardingError(
+            f"Could not read Proxmox cluster metadata: {_reason(exc, 'cluster_status')}"
+        ) from exc
 
     discovered_name = ""
     if isinstance(status, list):

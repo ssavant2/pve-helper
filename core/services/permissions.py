@@ -7,6 +7,8 @@ import stat
 import subprocess
 from dataclasses import dataclass, field
 
+from core.services.public_errors import public_exception_message
+
 
 @dataclass(frozen=True)
 class AclEntry:
@@ -35,7 +37,13 @@ def storage_permissions(path: str) -> StoragePermissions:
     try:
         st = os.stat(path)
     except OSError as exc:
-        return StoragePermissions(ok=False, path=path, error=str(exc))
+        return StoragePermissions(
+            ok=False,
+            path=path,
+            error=public_exception_message(
+                exc, operation="storage_permissions", fallback="Permissions are unavailable for this path."
+            ),
+        )
 
     try:
         owner = pwd.getpwuid(st.st_uid).pw_name

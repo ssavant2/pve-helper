@@ -24,6 +24,7 @@ from core.services.confined_filesystem import (
     open_regular_file,
     regular_file_exists,
 )
+from core.services.public_errors import PublicMessageError
 from core.services.storage_paths import storage_mount_root
 
 MAX_OVF_BYTES = 4 * 1024 * 1024
@@ -34,7 +35,7 @@ MAX_DECLARED_DISK_BYTES = 16 * 1024**4
 _MANIFEST_LINE = re.compile(r"^([A-Za-z0-9-]+)\((.+)\)=\s*([0-9A-Fa-f]+)\s*$")
 
 
-class OvfImportError(Exception):
+class OvfImportError(PublicMessageError, Exception):
     """The source package is malformed, unsafe, or cannot be imported."""
 
 

@@ -9,6 +9,7 @@ from dateutil.rrule import DAILY, FR, MO, MONTHLY, SA, SU, TH, TU, WE, WEEKLY, r
 from django.utils import timezone
 
 from core.models import ScheduledAction
+from core.services.public_errors import PublicMessageError
 
 WEEKDAYS = [MO, TU, WE, TH, FR, SA, SU]
 WEEKDAY_NAMES = {
@@ -38,7 +39,7 @@ ORDINALS = {
 
 
 @dataclass(frozen=True)
-class RecurrenceError(ValueError):
+class RecurrenceError(PublicMessageError, ValueError):
     message: str
 
     def __str__(self) -> str:

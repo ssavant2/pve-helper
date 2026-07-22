@@ -23,6 +23,7 @@ from django.utils.dateparse import parse_datetime
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
+from core.services.public_errors import SHUTDOWN_INCOMPLETE_CODES
 from core.services.storage_catalog_refresh import STORAGE_CATALOG_REFRESH_ACTION
 
 GUEST_TASK_NAMES = {
@@ -549,11 +550,25 @@ def _unanswered_question_q() -> Q:
     return ~(_dismissed_flag_q("question_dismissed") | _dismissed_flag_q("force_stop_dismissed"))
 
 
+def _shutdown_incomplete_q() -> Q:
+    """A failed shutdown that left the guest running, by code — with a legacy tail.
+
+    The decision belongs to `details["error_code"]`; matching on the prose is how
+    a wording change would have silently retired the force-stop offer. The
+    substring arm applies only to rows written before codes existed, so it
+    disappears on its own as those rows age out of the retention window.
+    """
+    legacy = ~Q(details__has_key="error_code") & (
+        Q(details__error__icontains="timeout") | Q(details__error__icontains="powerdown failed")
+    )
+    return Q(details__error_code__in=list(SHUTDOWN_INCOMPLETE_CODES)) | legacy
+
+
 def _open_force_stop_question_q() -> Q:
     """The database-side shape of the timed-out shutdown offer built in `_guest_task`."""
     return (
         Q(action="guest.power.shutdown", outcome="failed")
-        & (Q(details__error__icontains="timeout") | Q(details__error__icontains="powerdown failed"))
+        & _shutdown_incomplete_q()
         & ~Q(details__has_key="force_stop_resolved_at")
     )
 
@@ -588,6 +603,15 @@ def _visible_guest_tasks():
     return AuditEvent.objects.filter(Q(action__startswith="guest.") | Q(action__in=TAG_TASK_ACTIONS)).filter(
         Q(timestamp__gte=cutoff) | (_open_force_stop_question_q() & _unanswered_question_q())
     )
+
+
+def _shutdown_left_guest_running(details: dict) -> bool:
+    """`_shutdown_incomplete_q`, in Python. The two must agree row for row."""
+    code = str(details.get("error_code") or "")
+    if code:
+        return code in SHUTDOWN_INCOMPLETE_CODES
+    error_text = str(details.get("error") or "").lower()
+    return "timeout" in error_text or "powerdown failed" in error_text
 
 
 def _guest_task(event: AuditEvent) -> dict[str, object]:
@@ -666,12 +690,9 @@ def _guest_task(event: AuditEvent) -> dict[str, object]:
     # guest) leaves the guest running. Offer a force-stop follow-up on the task —
     # but once the guest is actually stopped, the question is resolved: stop
     # offering and present the task as completed (green, no longer pulsing/pinned).
-    error_text = str(details.get("error") or "").lower()
     force_stop_target = ""
     offer_force_stop = (
-        event.action == "guest.power.shutdown"
-        and status_class == "failed"
-        and ("timeout" in error_text or "powerdown failed" in error_text)
+        event.action == "guest.power.shutdown" and status_class == "failed" and _shutdown_left_guest_running(details)
     )
     if offer_force_stop:
         node = str(details.get("proxmox_task_node") or details.get("node") or "").strip()

@@ -57,6 +57,18 @@ from .services.proxmox import (
     fetch_live_guest_status,
     fetch_verified_guest_inventory,
 )
+from .services.public_errors import (
+    ERROR_CODE_INCOMPLETE,
+    ERROR_CODE_POWERDOWN_FAILED,
+    ERROR_CODE_PROVIDER,
+    ERROR_CODE_TASK_TIMEOUT,
+    PROVIDER_FAILURE_MESSAGE,
+    TASK_TIMEOUT_MESSAGE,
+    PublicFailure,
+    proxmox_task_failure,
+    public_exception_message,
+    public_failure,
+)
 from .services.runtime_bootstrap import ensure_bootstrap
 from .services.scan_retention import prune_scan_history
 from .services.scan_schedule import scan_schedule_state
@@ -76,6 +88,7 @@ from .services.storage_catalog import (
 from .services.storage_mounts import registered_mount_health, resolve_storage_mount
 from .services.storage_paths import storage_mount_root
 from .services.storage_visibility import ignored_relative_paths_for_storage
+from .services.task_failures import failure_fields, record_event_exception, record_event_failure
 from .services.task_queues import BULK_QUEUE_NAME, queued_task_ids
 
 SPACE_SNAPSHOT_RETENTION_DAYS = 8
@@ -230,11 +243,13 @@ def poll_guest_audit_task(
             node=node,
         )
     except DurableGuestOperationError as exc:
-        event.outcome = "failed"
-        details["error"] = str(exc)
-        details["finished_at"] = timezone.now().isoformat()
-        event.details = details
-        event.save(update_fields=["outcome", "details"])
+        record_event_exception(
+            event,
+            exc,
+            operation="poll_guest_audit_task.resolve_target",
+            fallback="The queued operation could not be resolved to a cluster target.",
+            details=details,
+        )
         return
     node = node or str(details.get("proxmox_task_node") or ref.node)
     upid = upid or str(details.get("proxmox_task_upid") or "")
@@ -242,11 +257,11 @@ def poll_guest_audit_task(
         timeout_seconds or details.get("task_timeout_seconds") or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
     )
     if not node or not upid:
-        event.outcome = "failed"
-        details["error"] = "The queued operation is missing its Proxmox task identity."
-        details["finished_at"] = timezone.now().isoformat()
-        event.details = details
-        event.save(update_fields=["outcome", "details"])
+        record_event_failure(
+            event,
+            PublicFailure("The queued operation is missing its Proxmox task identity.", ERROR_CODE_INCOMPLETE),
+            details=details,
+        )
         return
     try:
         result = client.wait_for_task(
@@ -256,17 +271,33 @@ def poll_guest_audit_task(
         )
     except ProxmoxTaskTimeout as exc:
         event.outcome = "failed"
-        details["error"] = str(exc)
+        details.update(
+            failure_fields(
+                exc,
+                operation="poll_guest_audit_task.wait",
+                fallback=TASK_TIMEOUT_MESSAGE,
+                code=ERROR_CODE_TASK_TIMEOUT,
+            )
+        )
     except ProxmoxAPIError as exc:
         event.outcome = "failed"
-        details["error"] = str(exc)
+        details.update(
+            failure_fields(
+                exc,
+                operation="poll_guest_audit_task.wait",
+                fallback=PROVIDER_FAILURE_MESSAGE,
+                code=ERROR_CODE_PROVIDER,
+            )
+        )
     else:
         details["proxmox_task"] = result.raw
         if result.success:
             event.outcome = "success"
         else:
             event.outcome = "failed"
-            details["error"] = f"Proxmox task exitstatus: {result.exitstatus or result.status or 'unknown'}"
+            failure = proxmox_task_failure(result.exitstatus, result.status)
+            details["error"] = failure.message
+            details["error_code"] = failure.code
 
     if AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists():
         return
@@ -298,10 +329,16 @@ def poll_guest_audit_task(
             else:
                 details["projection_refreshed_at"] = timezone.now().isoformat()
         except (TypeError, ValueError) as exc:
-            details["projection_refresh_error"] = f"Invalid operation target: {exc}"
-        except Exception as exc:
+            details["projection_refresh_error"] = public_exception_message(
+                exc,
+                operation="poll_guest_audit_task.projection_refresh",
+                fallback="The operation succeeded, but its target could not be identified for a refresh.",
+            )
+        except Exception:
             logger.exception("Guest operation succeeded but targeted projection refresh failed")
-            details["projection_refresh_error"] = f"{exc.__class__.__name__}: {exc}"
+            details["projection_refresh_error"] = (
+                "The operation succeeded, but refreshing this guest's projection failed."
+            )
         event.details = details
         event.save(update_fields=["details"])
 
@@ -640,6 +677,16 @@ def reap_stale_bulk_tasks(*, now=None) -> dict[str, int]:
     return {"scans_reaped": scans_reaped, "inflates_reaped": inflates_reaped}
 
 
+# A distinct object, not a magic message: a cancelled step must never be
+# mistaken for a failure whose text happens to say "cancelled".
+_STEP_CANCELLED = PublicFailure("The operation was cancelled.", "cancelled")
+
+
+def _disk_failure(disk_key: str, failure: PublicFailure) -> PublicFailure:
+    """Name the volume a sequential migration stopped on, keeping its public text."""
+    return PublicFailure(f"{disk_key}: {failure.message}", failure.code)
+
+
 def migrate_guest_disks_task(
     audit_event_id: int,
     endpoint_url: str = "",
@@ -669,9 +716,13 @@ def migrate_guest_disks_task(
             vmid=vmid,
         )
     except DurableGuestOperationError as exc:
-        event.outcome = "failed"
-        event.details = {**details, "error": str(exc), "finished_at": timezone.now().isoformat()}
-        event.save(update_fields=["outcome", "details"])
+        record_event_exception(
+            event,
+            exc,
+            operation="migrate_guest_disks_task.resolve_target",
+            fallback="The queued disk migration could not be resolved to a cluster target.",
+            details=details,
+        )
         return
     node = node or ref.node
     object_type = object_type or ref.object_type
@@ -681,20 +732,18 @@ def migrate_guest_disks_task(
         timeout_seconds or details.get("task_timeout_seconds") or settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
     )
     if not node or not isinstance(moves, list):
-        event.outcome = "failed"
-        event.details = {
-            **details,
-            "error": "The queued disk migration has incomplete target data.",
-            "finished_at": timezone.now().isoformat(),
-        }
-        event.save(update_fields=["outcome", "details"])
+        record_event_failure(
+            event,
+            PublicFailure("The queued disk migration has incomplete target data.", ERROR_CODE_INCOMPLETE),
+            details=details,
+        )
         return
     kind = "qemu" if object_type == ProxmoxInventory.ObjectType.VM else "lxc"
     subpath = "move_disk" if kind == "qemu" else "move_volume"
     disk_param = "disk" if kind == "qemu" else "volume"
 
     moved: list[str] = []
-    error: str | None = None
+    failure: PublicFailure | None = None
     for move in moves:
         disk_key, storage = move[0], move[1]
         if AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists():
@@ -705,10 +754,20 @@ def migrate_guest_disks_task(
                 data={disk_param: disk_key, "storage": storage, "delete": 1},
             )
         except ProxmoxAPIError as exc:
-            error = f"{disk_key}: {exc}"
+            failure = _disk_failure(
+                disk_key,
+                public_failure(
+                    exc,
+                    operation="migrate_guest_disks_task.submit",
+                    fallback=PROVIDER_FAILURE_MESSAGE,
+                    code=ERROR_CODE_PROVIDER,
+                ),
+            )
             break
         if not (isinstance(upid, str) and upid.startswith("UPID:")):
-            error = f"{disk_key}: unexpected Proxmox response"
+            failure = _disk_failure(
+                disk_key, PublicFailure("Proxmox returned an unexpected response.", ERROR_CODE_PROVIDER)
+            )
             break
         details["proxmox_task_upid"] = upid
         details["proxmox_task_node"] = node
@@ -718,10 +777,18 @@ def migrate_guest_disks_task(
         try:
             result = client.wait_for_task(node=node, upid=upid, timeout_seconds=timeout_seconds)
         except (ProxmoxTaskTimeout, ProxmoxAPIError) as exc:
-            error = f"{disk_key}: {exc}"
+            failure = _disk_failure(
+                disk_key,
+                public_failure(
+                    exc,
+                    operation="migrate_guest_disks_task.wait",
+                    fallback=PROVIDER_FAILURE_MESSAGE,
+                    code=ERROR_CODE_PROVIDER,
+                ),
+            )
             break
         if not result.success:
-            error = f"{disk_key}: exitstatus {result.exitstatus or result.status or 'unknown'}"
+            failure = _disk_failure(disk_key, proxmox_task_failure(result.exitstatus, result.status))
             break
         moved.append(disk_key)
 
@@ -730,13 +797,17 @@ def migrate_guest_disks_task(
     details["moved_disks"] = moved
     details.pop("proxmox_task_upid", None)
     details.pop("current_disk", None)
-    if error:
-        event.outcome = "failed"
-        details["error"] = f"Moved {', '.join(moved) or 'none'}; then failed on {error}"
+    if failure is not None:
+        record_event_failure(
+            event,
+            PublicFailure(f"Moved {', '.join(moved) or 'none'}; then failed on {failure.message}", failure.code),
+            details=details,
+            save=False,
+        )
     else:
         event.outcome = "success"
-    details["finished_at"] = timezone.now().isoformat()
-    event.details = details
+        details["finished_at"] = timezone.now().isoformat()
+        event.details = details
     event.save(update_fields=["outcome", "details"])
     clear_live_guest_caches(cluster=cluster)
 
@@ -775,9 +846,13 @@ def restore_guest_backup_task(
             vmid=vmid,
         )
     except DurableGuestOperationError as exc:
-        event.outcome = "failed"
-        event.details = {**details, "error": str(exc), "finished_at": timezone.now().isoformat()}
-        event.save(update_fields=["outcome", "details"])
+        record_event_exception(
+            event,
+            exc,
+            operation="restore_guest_backup_task.resolve_target",
+            fallback="The queued restore could not be resolved to a cluster target.",
+            details=details,
+        )
         return
     endpoint_url = endpoint_url or str(details.get("proxmox_endpoint") or getattr(client, "endpoint", ""))
     node = node or ref.node
@@ -792,28 +867,31 @@ def restore_guest_backup_task(
         timeout_seconds or details.get("task_timeout_seconds") or settings.BACKUP_TASK_TIMEOUT_SECONDS
     )
     if not node or not archive or not storage:
-        event.outcome = "failed"
-        event.details = {
-            **details,
-            "error": "The queued restore has incomplete target data.",
-            "finished_at": timezone.now().isoformat(),
-        }
-        event.save(update_fields=["outcome", "details"])
+        record_event_failure(
+            event,
+            PublicFailure("The queued restore has incomplete target data.", ERROR_CODE_INCOMPLETE),
+            details=details,
+        )
         return
     kind = "qemu" if object_type == ProxmoxInventory.ObjectType.VM else "lxc"
 
     def cancelled() -> bool:
         return AuditEvent.objects.filter(pk=audit_event_id, outcome="cancelled").exists()
 
-    def run_step(stage: str, path: str, data: dict) -> str | None:
+    def run_step(stage: str, path: str, data: dict) -> PublicFailure | None:
         if cancelled():
-            return "cancelled"
+            return _STEP_CANCELLED
         try:
             upid = client.post(path, data=data)
         except ProxmoxAPIError as exc:
-            return str(exc)
+            return public_failure(
+                exc,
+                operation=f"restore_guest_backup_task.{stage}",
+                fallback=PROVIDER_FAILURE_MESSAGE,
+                code=ERROR_CODE_PROVIDER,
+            )
         if not (isinstance(upid, str) and upid.startswith("UPID:")):
-            return f"unexpected Proxmox response during {stage}"
+            return PublicFailure(f"Proxmox returned an unexpected response during {stage}.", ERROR_CODE_PROVIDER)
         details.update(
             {
                 "stage": stage,
@@ -827,30 +905,48 @@ def restore_guest_backup_task(
         try:
             result = client.wait_for_task(node=node, upid=upid, timeout_seconds=timeout_seconds)
         except (ProxmoxTaskTimeout, ProxmoxAPIError) as exc:
-            return str(exc)
+            return public_failure(
+                exc,
+                operation=f"restore_guest_backup_task.{stage}",
+                fallback=PROVIDER_FAILURE_MESSAGE,
+                code=ERROR_CODE_PROVIDER,
+            )
         if not result.success:
-            return f"Proxmox task exitstatus: {result.exitstatus or result.status or 'unknown'}"
+            return proxmox_task_failure(result.exitstatus, result.status)
         details.setdefault("completed_stages", []).append(stage)
         return None
 
-    error: str | None = None
+    failure: PublicFailure | None = None
     if overwrite:
         try:
             current = client.guest_current(node=node, object_type=object_type, vmid=vmid)
             current_status = str((current or {}).get("status") or "").lower()
         except ProxmoxAPIError as exc:
             current_status = ""
-            error = f"Could not confirm the existing guest's power state: {exc}. Restore was not started."
-        if error is None and not current_status:
-            error = "Could not confirm the existing guest's power state. Restore was not started."
-        if error is None and current_status != "stopped":
-            error = run_step(
+            failure = PublicFailure(
+                public_exception_message(
+                    exc,
+                    operation="restore_guest_backup_task.confirm_power_state",
+                    fallback="Could not confirm the existing guest's power state. Restore was not started.",
+                ),
+                ERROR_CODE_PROVIDER,
+            )
+        if failure is None and not current_status:
+            failure = PublicFailure(
+                "Could not confirm the existing guest's power state. Restore was not started.",
+                ERROR_CODE_PROVIDER,
+            )
+        if failure is None and current_status != "stopped":
+            failure = run_step(
                 "shutdown existing guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/shutdown", {}
             )
-            if error == "cancelled":
+            if failure is _STEP_CANCELLED:
                 return
-            if error:
-                error = f"Could not shut down the existing guest cleanly: {error}. Restore was not started."
+            if failure is not None:
+                failure = PublicFailure(
+                    f"Could not shut down the existing guest cleanly: {failure.message} Restore was not started.",
+                    failure.code,
+                )
             else:
                 try:
                     stopped_status = str(
@@ -858,14 +954,22 @@ def restore_guest_backup_task(
                     ).lower()
                 except ProxmoxAPIError as exc:
                     stopped_status = ""
-                    error = f"Could not verify shutdown completion: {exc}. Restore was not started."
-                if error is None and stopped_status != "stopped":
-                    error = (
-                        f"The existing guest still reports power state '{stopped_status or 'unknown'}' after shutdown. "
-                        "Restore was not started."
+                    failure = PublicFailure(
+                        public_exception_message(
+                            exc,
+                            operation="restore_guest_backup_task.verify_shutdown",
+                            fallback="Could not verify shutdown completion. Restore was not started.",
+                        ),
+                        ERROR_CODE_PROVIDER,
+                    )
+                if failure is None and stopped_status != "stopped":
+                    failure = PublicFailure(
+                        f"The existing guest still reports power state '{stopped_status or 'unknown'}' after "
+                        "shutdown. Restore was not started.",
+                        ERROR_CODE_POWERDOWN_FAILED,
                     )
 
-    if error is None:
+    if failure is None:
         restore_data: dict[str, object] = {"vmid": vmid, "storage": storage}
         restore_path = f"nodes/{quote(node, safe='')}/{kind}"
         if kind == "qemu":
@@ -874,26 +978,25 @@ def restore_guest_backup_task(
             restore_data.update({"ostemplate": archive, "restore": 1})
         if overwrite:
             restore_data["force"] = 1
-        error = run_step("restore archive", restore_path, restore_data)
-        if error == "cancelled":
+        failure = run_step("restore archive", restore_path, restore_data)
+        if failure is _STEP_CANCELLED:
             return
 
-    if error is None and start_after:
-        error = run_step("start restored guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/start", {})
-        if error == "cancelled":
+    if failure is None and start_after:
+        failure = run_step("start restored guest", f"nodes/{quote(node, safe='')}/{kind}/{vmid}/status/start", {})
+        if failure is _STEP_CANCELLED:
             return
 
     if cancelled():
         return
     details.pop("proxmox_task_upid", None)
-    details["finished_at"] = timezone.now().isoformat()
-    if error:
-        event.outcome = "failed"
-        details["error"] = error
+    if failure is not None:
+        record_event_failure(event, failure, details=details, save=False)
     else:
         event.outcome = "success"
         details["stage"] = "completed"
-    event.details = details
+        details["finished_at"] = timezone.now().isoformat()
+        event.details = details
     event.save(update_fields=["outcome", "details"])
     clear_live_guest_caches(cluster=cluster)
 
@@ -922,9 +1025,13 @@ def register_import_vm_task(
     try:
         _client, ref, cluster = client_for_audit_event(event)
     except DurableGuestOperationError as exc:
-        event.outcome = "failed"
-        event.details = {**details, "error": str(exc), "finished_at": timezone.now().isoformat()}
-        event.save(update_fields=["outcome", "details"])
+        record_event_exception(
+            event,
+            exc,
+            operation="register_import_vm_task.resolve_target",
+            fallback="The queued VM import could not be resolved to a cluster target.",
+            details=details,
+        )
         return
     node = node or ref.node
     params = params if isinstance(params, dict) else details.get("params", {})
@@ -937,16 +1044,15 @@ def register_import_vm_task(
     source_path = source_path or str(details.get("source_path") or "")
     source_volid = source_volid or str(details.get("source_volid") or "")
     if not node or not isinstance(params, dict):
-        event.outcome = "failed"
-        event.details = {
-            **details,
-            "error": "The queued VM import has incomplete target data.",
-            "finished_at": timezone.now().isoformat(),
-        }
-        event.save(update_fields=["outcome", "details"])
+        record_event_failure(
+            event,
+            PublicFailure("The queued VM import has incomplete target data.", ERROR_CODE_INCOMPLETE),
+            details=details,
+        )
         return
     upid = ""
     error: str | None = None
+    failure: PublicFailure | None = None
     try:
         if source_volid:
             upid, error = import_volid_as_vm(
@@ -964,26 +1070,31 @@ def register_import_vm_task(
                 source_path=source_path,
                 cluster=cluster,
             )
+        if error:
+            failure = PublicFailure(error, ERROR_CODE_PROVIDER)
     except StorageMount.DoesNotExist:
-        error = "Source storage is no longer available."
+        failure = PublicFailure("Source storage is no longer available.", ERROR_CODE_INCOMPLETE)
     except VmRegisterError as exc:
-        error = str(exc)
+        failure = public_failure(exc, operation="register_import_vm_task.import")
     except Exception as exc:  # noqa: BLE001 - surface any failure into the audit row
-        error = f"{type(exc).__name__}: {exc}"
+        failure = public_failure(
+            exc,
+            operation="register_import_vm_task.import",
+            fallback="The VM import failed unexpectedly.",
+        )
 
     if event is not None:
         if upid:
             details["proxmox_task_upid"] = upid
             details["proxmox_task_node"] = node
-        if error:
-            event.outcome = "failed"
-            details["error"] = error
+        if failure is not None:
+            record_event_failure(event, failure, details=details, save=False)
         else:
             event.outcome = "success"
-        details["finished_at"] = timezone.now().isoformat()
-        event.details = details
+            details["finished_at"] = timezone.now().isoformat()
+            event.details = details
         event.save(update_fields=["outcome", "details"])
-    if not error:
+    if failure is None:
         # Refresh the target storage's inventory so the freshly created
         # images/<vmid>/ folder and disk show up in the browser immediately.
         _refresh_import_target_inventory(
@@ -1133,16 +1244,10 @@ def purge_expired_trash(max_age_days: int = 30) -> None:
         try:
             purge_trash_item(item=item)
         except StorageActionError as exc:
-            logger.warning(
-                "Scheduled trash purge failed: item_id=%s error_type=%s",
-                item.id,
-                exc.__class__.__name__,
-                exc_info=True,
-            )
-            error = (
-                "Invalid storage path." if str(exc) == "Invalid storage path." else "Trash item could not be purged."
-            )
-            errors.append({"item_id": item.id, "error": error})
+            # `StorageActionError` owns its operator text, so the message can be
+            # kept verbatim instead of being re-derived from a string compare.
+            failure = public_failure(exc, operation="purge_expired_trash_items")
+            errors.append({"item_id": item.id, "error": failure.message, "error_code": failure.code})
             continue
         purged += 1
 
@@ -1284,7 +1389,14 @@ def run_scan(scan_run_id: int) -> None:
         scan.status = ScanRun.Status.FAILED
         scan.finished_at = timezone.now()
         scan.progress_message = "Scan failed."
-        scan.error_details = {"error": exc.__class__.__name__, "message": str(exc)}
+        scan.error_details = {
+            "error": exc.__class__.__name__,
+            "message": public_exception_message(
+                exc,
+                operation="run_scan",
+                fallback="The storage scan failed.",
+            ),
+        }
         scan.save(update_fields=["status", "finished_at", "progress_message", "error_details", "updated_at"])
         _audit_scan_terminal(scan, "scan.failed", "failed")
         raise

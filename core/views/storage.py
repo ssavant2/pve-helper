@@ -48,6 +48,7 @@ from core.services.storage_paths import (
     normalized_relative_path,
     storage_mount_root,
 )
+from core.services.task_failures import failure_fields
 
 from ..services.storage import StorageScanner
 from . import common
@@ -3240,7 +3241,10 @@ def _audit_file_action_failure(
         action=action,
         storage=storage,
         path=path,
-        details={**(details or {}), "error": str(exc)},
+        details={
+            **(details or {}),
+            **failure_fields(exc, operation=f"file_action.{action}", fallback="The file action failed."),
+        },
         outcome="failed",
     )
 

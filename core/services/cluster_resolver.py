@@ -23,6 +23,7 @@ from django.db.models import Case, IntegerField, Value, When
 
 from core.models import ProxmoxCluster, ProxmoxEndpoint
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTransportError
+from core.services.public_errors import public_exception_message
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,17 @@ def cluster_wide_read(
                 operation,
                 exc,
             )
-            attempts.append(EndpointAttempt(endpoint.name, False, str(exc)))
+            attempts.append(
+                EndpointAttempt(
+                    endpoint.name,
+                    False,
+                    public_exception_message(
+                        exc,
+                        operation=f"cluster_read.{operation}",
+                        fallback="This endpoint did not answer the read.",
+                    ),
+                )
+            )
             continue
 
         attempts.append(EndpointAttempt(endpoint.name, True))
@@ -262,7 +273,17 @@ def cluster_write(
                 unsent,
                 exc,
             )
-            attempts.append(EndpointAttempt(endpoint.name, False, str(exc)))
+            attempts.append(
+                EndpointAttempt(
+                    endpoint.name,
+                    False,
+                    public_exception_message(
+                        exc,
+                        operation=f"cluster_read.{operation}",
+                        fallback="This endpoint did not answer the read.",
+                    ),
+                )
+            )
             error = error_message(exc)
             if unsent:
                 continue

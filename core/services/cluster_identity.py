@@ -31,17 +31,18 @@ from django.utils import timezone
 
 from core.services.cluster_resolver import client_for_endpoint, enabled_endpoints
 from core.services.proxmox import ProxmoxAPIError
+from core.services.public_errors import PublicMessageError, public_failure
 
 # The cluster CA subject looks like:
 #   OU=<uuid>,O=PVE Cluster Manager CA
 _CA_UUID_RE = re.compile(r"OU\s*=\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 
 
-class ClusterIdentityError(RuntimeError):
+class ClusterIdentityError(PublicMessageError, RuntimeError):
     """The cluster CA could not be discovered."""
 
 
-class ClusterIdentityMismatch(RuntimeError):
+class ClusterIdentityMismatch(PublicMessageError, RuntimeError):
     """An endpoint reported a different cluster CA than the pinned one."""
 
     def __init__(self, message: str, *, observed_uuid: str, pinned_uuid: str):
@@ -97,7 +98,10 @@ def discover_cluster_identity(client, node: str) -> ObservedClusterIdentity:
     try:
         entries = client.get(f"nodes/{quote(node, safe='')}/certificates/info")
     except ProxmoxAPIError as exc:
-        raise ClusterIdentityError(f"Could not read certificates/info from {node}: {exc}") from exc
+        raise ClusterIdentityError(
+            f"Could not read certificates/info from {node}: "
+            f"{public_failure(exc, operation='cluster_identity.certificates_info').message}"
+        ) from exc
 
     root_ca = _extract_root_ca(entries)
     subject = str(root_ca.get("subject") or "")
@@ -123,7 +127,7 @@ def observe_cluster_identity(cluster) -> ObservedClusterIdentity:
             node = client.discover_node_name(endpoint.name)
             return discover_cluster_identity(client, node)
         except (ClusterIdentityError, ProxmoxAPIError) as exc:
-            errors.append(f"{endpoint.name}: {exc}")
+            errors.append(f"{endpoint.name}: {public_failure(exc, operation='cluster_identity.observe').message}")
     raise ClusterIdentityError(
         f"No endpoint of cluster '{cluster.key}' could report its CA: {'; '.join(errors) or 'no endpoints'}"
     )

@@ -25,6 +25,7 @@ from websockets.exceptions import ConnectionClosed  # noqa: E402
 from core.models import ConsoleSession  # noqa: E402
 from core.services.audit_events import record_audit_event  # noqa: E402
 from core.services.console_sessions import console_token_hash  # noqa: E402
+from core.services.public_errors import ERROR_CODE_PROVIDER, public_exception_message  # noqa: E402
 
 
 async def health_live(_request):
@@ -78,14 +79,21 @@ async def console_ws(websocket: WebSocket):
             # The relay already ended cleanly; this is teardown noise from the
             # upstream closing without a close frame. Keep the CLOSED outcome.
             return
+        # The session row and its audit are both operator-facing surfaces, so
+        # the upstream's own text stays in the log and never reaches either.
+        public_error = public_exception_message(
+            exc,
+            operation="console_ws",
+            fallback="The console connection to Proxmox failed.",
+        )
         await _mark_session(
             session.id,
             ConsoleSession.Status.FAILED,
             closed_at=timezone.now(),
             close_reason=exc.__class__.__name__,
-            error=str(exc),
+            error=public_error,
         )
-        await _audit_session(session.id, "guest.console.failed", "failed", error=str(exc))
+        await _audit_session(session.id, "guest.console.failed", "failed", error=public_error)
         try:
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close(code=1011)
@@ -257,6 +265,7 @@ def _audit_session(session_id: int, action: str, outcome: str, *, error: str = "
     }
     if error:
         details["error"] = error
+        details["error_code"] = ERROR_CODE_PROVIDER
     guest_ref = session.guest_ref()
     record_audit_event(
         user=session.created_by,

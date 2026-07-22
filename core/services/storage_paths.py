@@ -7,9 +7,10 @@ from pathlib import Path
 from django.conf import settings
 
 from core.models import StorageMount
+from core.services.public_errors import PublicMessageError
 
 
-class StorageMountError(ValueError):
+class StorageMountError(PublicMessageError, ValueError):
     pass
 
 

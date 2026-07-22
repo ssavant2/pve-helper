@@ -101,7 +101,10 @@ class ClusterWideReadTests(ClusterResolverTestCase):
         self.assertTrue(result.complete)
         self.assertEqual(result.answering_endpoint, "a2")
         self.assertEqual([a.ok for a in result.attempted], [False, True])
-        self.assertEqual(result.errors, ["boom"])
+        # The failure is reported, but the provider's own text is not: these
+        # strings are composed into operator-facing messages.
+        self.assertEqual(result.errors, ["This endpoint did not answer the read."])
+        self.assertNotIn("boom", " ".join(result.errors))
 
     def test_never_falls_back_to_another_clusters_endpoint(self):
         clients = {

@@ -10,7 +10,9 @@ from core.services.durable_guest_operations import (
     client_for_audit_event,
 )
 from core.services.proxmox import clear_live_guest_caches
+from core.services.public_errors import ERROR_CODE_INCOMPLETE, ERROR_CODE_PROVIDER, PublicFailure
 from core.services.storage_mounts import resolve_storage_mount
+from core.services.task_failures import record_event_exception, record_event_failure
 from core.services.vm_register import import_ovf_package_as_vm
 
 
@@ -30,9 +32,13 @@ def import_ovf_package_task(
     try:
         _client, ref, cluster = client_for_audit_event(event)
     except DurableGuestOperationError as exc:
-        event.outcome = "failed"
-        event.details = {**details, "error": str(exc), "finished_at": timezone.now().isoformat()}
-        event.save(update_fields=["outcome", "details"])
+        record_event_exception(
+            event,
+            exc,
+            operation="import_ovf_package_task.resolve_target",
+            fallback="The queued OVF import could not be resolved to a cluster target.",
+            details=details,
+        )
         return
     node = node or ref.node
     params = params if isinstance(params, dict) else details.get("params", {})
@@ -44,13 +50,11 @@ def import_ovf_package_task(
     )
     source_path = source_path or str(details.get("source_path") or "")
     if not node or not isinstance(params, dict):
-        event.outcome = "failed"
-        event.details = {
-            **details,
-            "error": "The queued OVF import has incomplete target data.",
-            "finished_at": timezone.now().isoformat(),
-        }
-        event.save(update_fields=["outcome", "details"])
+        record_event_failure(
+            event,
+            PublicFailure("The queued OVF import has incomplete target data.", ERROR_CODE_INCOMPLETE),
+            details=details,
+        )
         return
 
     def progress(stage: str, index: int, total: int) -> None:
@@ -61,10 +65,11 @@ def import_ovf_package_task(
     try:
         storage = resolve_storage_mount(source_mount_ref, enabled=True)
     except StorageMount.DoesNotExist:
-        event.outcome = "failed"
-        details.update({"error": "Source storage is no longer available.", "finished_at": timezone.now().isoformat()})
-        event.details = details
-        event.save(update_fields=["outcome", "details"])
+        record_event_failure(
+            event,
+            PublicFailure("Source storage is no longer available.", ERROR_CODE_INCOMPLETE),
+            details=details,
+        )
         return
 
     upids, error = import_ovf_package_as_vm(
@@ -79,14 +84,15 @@ def import_ovf_package_task(
         details["proxmox_task_upid"] = upids[-1]
         details["proxmox_task_upids"] = upids
         details["proxmox_task_node"] = node
-    details["finished_at"] = timezone.now().isoformat()
     if error:
-        event.outcome = "failed"
-        details["error"] = error
+        # `import_ovf_package_as_vm` already returns public text.
+        record_event_failure(event, PublicFailure(error, ERROR_CODE_PROVIDER), details=details, save=False)
+        details = dict(event.details)
     else:
         event.outcome = "success"
         details["stage"] = "completed"
-    event.details = details
+        details["finished_at"] = timezone.now().isoformat()
+        event.details = details
     # A completed Recent Task must always be followed by a fresh guest list.
     clear_live_guest_caches(cluster=cluster)
     event.save(update_fields=["outcome", "details"])

@@ -7,10 +7,11 @@ from core.services.cluster_resolver import (
     client_for_endpoint,
     cluster_clients,
 )
+from core.services.public_errors import PublicMessageError
 from core.services.refs import GuestRef, RefParseError
 
 
-class DurableGuestOperationError(RuntimeError):
+class DurableGuestOperationError(PublicMessageError, RuntimeError):
     pass
 
 

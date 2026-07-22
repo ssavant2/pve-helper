@@ -17,6 +17,19 @@ from core.services.audit_events import record_audit_event
 from core.services.cluster_resolver import cluster_clients
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout, clear_live_guest_caches
+from core.services.public_errors import (
+    ERROR_CODE_PROVIDER,
+    ERROR_CODE_TASK_TIMEOUT,
+    ERROR_CODE_UNEXPECTED,
+    PROVIDER_FAILURE_MESSAGE,
+    TASK_TIMEOUT_MESSAGE,
+    UNEXPECTED_FAILURE_MESSAGE,
+    PublicFailure,
+    PublicMessageError,
+    proxmox_task_failure,
+    public_exception_message,
+    public_failure,
+)
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 
 SCHEDULED_ACTION_DISPATCH_SCHEDULE_NAME = "pve-helper scheduled action dispatcher"
@@ -52,7 +65,7 @@ class GuestTarget:
     config: dict[str, Any]
 
 
-class ScheduledActionExecutionError(Exception):
+class ScheduledActionExecutionError(PublicMessageError, Exception):
     def __init__(self, message: str, *, preflight: dict[str, Any] | None = None):
         super().__init__(message)
         self.preflight = preflight or {}
@@ -318,7 +331,12 @@ def execute_scheduled_action_run(
             status=ScheduledActionRun.Status.TIMEOUT,
             outcome=ScheduledActionRun.Outcome.TIMEOUT,
             action_status=ScheduledAction.LastStatus.TIMEOUT,
-            error=str(exc),
+            failure=public_failure(
+                exc,
+                operation="execute_scheduled_action_run",
+                fallback=TASK_TIMEOUT_MESSAGE,
+                code=ERROR_CODE_TASK_TIMEOUT,
+            ),
         )
         return
     except ScheduledActionExecutionError as exc:
@@ -328,7 +346,7 @@ def execute_scheduled_action_run(
             status=ScheduledActionRun.Status.FAILED,
             outcome=ScheduledActionRun.Outcome.FAILURE,
             action_status=ScheduledAction.LastStatus.FAILED,
-            error=str(exc),
+            failure=public_failure(exc, operation="execute_scheduled_action_run"),
         )
         return
     except Exception as exc:
@@ -337,7 +355,12 @@ def execute_scheduled_action_run(
             status=ScheduledActionRun.Status.FAILED,
             outcome=ScheduledActionRun.Outcome.FAILURE,
             action_status=ScheduledAction.LastStatus.FAILED,
-            error=f"{exc.__class__.__name__}: {exc}",
+            failure=public_failure(
+                exc,
+                operation="execute_scheduled_action_run",
+                fallback=PROVIDER_FAILURE_MESSAGE if isinstance(exc, ProxmoxAPIError) else UNEXPECTED_FAILURE_MESSAGE,
+                code=ERROR_CODE_PROVIDER if isinstance(exc, ProxmoxAPIError) else ERROR_CODE_UNEXPECTED,
+            ),
         )
         if not isinstance(exc, ProxmoxAPIError):
             raise
@@ -360,7 +383,11 @@ def execute_scheduled_action_run(
                 result_details["projection_refresh_error"] = projection.error
         except Exception as exc:
             logger.exception("Scheduled action succeeded but targeted projection refresh failed")
-            result_details["projection_refresh_error"] = f"{exc.__class__.__name__}: {exc}"
+            result_details["projection_refresh_error"] = public_exception_message(
+                exc,
+                operation="execute_scheduled_action_run.projection_refresh",
+                fallback="The action succeeded, but refreshing this guest's projection failed.",
+            )
         _finish_run(
             run,
             status=ScheduledActionRun.Status.COMPLETED,
@@ -379,7 +406,7 @@ def execute_scheduled_action_run(
             outcome=ScheduledActionRun.Outcome.FAILURE,
             action_status=ScheduledAction.LastStatus.FAILED,
             result={"proxmox_task": result.raw},
-            error=f"Proxmox task exitstatus: {result.exitstatus or 'unknown'}",
+            failure=proxmox_task_failure(result.exitstatus, result.status),
         )
 
 
@@ -399,6 +426,19 @@ def _start_run(run_id: int) -> ScheduledActionRun | None:
     return run
 
 
+def _lookup_error(exc: ProxmoxAPIError) -> str:
+    """Why one endpoint could not answer, without repeating the provider's text.
+
+    These land in the preflight snapshot an operator reads after a failed run,
+    so they follow the same boundary as every other stored failure.
+    """
+    return public_exception_message(
+        exc,
+        operation="scheduled_actions.find_guest",
+        fallback=PROVIDER_FAILURE_MESSAGE,
+    )
+
+
 def _find_guest(
     action: ScheduledAction,
     *,
@@ -416,7 +456,7 @@ def _find_guest(
         try:
             node_names = client.node_names(fallback=endpoint.name)
         except ProxmoxAPIError as exc:
-            errors.append({"endpoint": endpoint.name, "error": str(exc)})
+            errors.append({"endpoint": endpoint.name, "error": _lookup_error(exc)})
             continue
 
         for node in node_names:
@@ -432,7 +472,7 @@ def _find_guest(
                     vmid=action.target_vmid,
                 )
             except ProxmoxAPIError as exc:
-                errors.append({"endpoint": endpoint.name, "node": node, "error": str(exc)})
+                errors.append({"endpoint": endpoint.name, "node": node, "error": _lookup_error(exc)})
                 continue
             return GuestTarget(endpoint=endpoint, client=client, node=node, current=current, config=config)
 
@@ -524,8 +564,18 @@ def _finish_run(
     outcome: str,
     action_status: str,
     error: str = "",
+    failure: PublicFailure | None = None,
     result: dict[str, Any] | None = None,
 ) -> None:
+    """Close a run row and audit it.
+
+    `failure` is the boundary-checked form and carries a decision code; `error`
+    remains for the outcomes whose text is a plain statement of what happened
+    (stale, skipped) and never came from an exception.
+    """
+    if failure is not None:
+        error = failure.message
+    error_code = failure.code if failure is not None else ""
     now = timezone.now()
     with transaction.atomic():
         ScheduledActionRun.objects.filter(pk=run.pk).update(
@@ -563,6 +613,7 @@ def _finish_run(
             "status": status,
             "outcome": outcome,
             "error": error,
+            "error_code": error_code,
             "result": result or {},
         },
     )
@@ -577,7 +628,7 @@ def _advance_action_after_claim(action: ScheduledAction, now, status: str) -> st
             action.next_run_at = None
             action.enabled = False
             status = ScheduledAction.LastStatus.FAILED
-            error = str(exc)
+            error = public_failure(exc, operation="advance_scheduled_action").message
         else:
             action.enabled = action.next_run_at is not None
     else:

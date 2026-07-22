@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .classification import categorize_proxmox_path, derive_volid
+from .public_errors import public_exception_message
 
 
 @dataclass(frozen=True)
@@ -134,5 +135,7 @@ class StorageScanner:
         return {
             "path": relative or ".",
             "error": exc.__class__.__name__,
-            "message": str(exc),
+            "message": public_exception_message(
+                exc, operation="storage_scan.walk", fallback="The path could not be read during the scan."
+            ),
         }

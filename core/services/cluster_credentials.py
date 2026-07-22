@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from core.models import ClusterCredential, ProxmoxCluster, RuntimeConfigurationState
 from core.services.cluster_state_identity import invalidate_cluster_cache
+from core.services.public_errors import PublicMessageError
 from core.services.secret_encryption import (
     active_key_id,
     decrypt_secret,
@@ -32,7 +33,7 @@ from core.services.secret_encryption import (
 _CREDENTIAL_CUTOVER_LOCK_ID = 0x50564548424F02
 
 
-class ClusterCredentialError(RuntimeError):
+class ClusterCredentialError(PublicMessageError, RuntimeError):
     """A cluster has no usable credential."""
 
 

@@ -23,9 +23,10 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
 from core.services.confined_names import ConfinedNameError, confined_path_component
+from core.services.public_errors import PublicMessageError
 
 
-class ConfinedFilesystemError(Exception):
+class ConfinedFilesystemError(PublicMessageError, Exception):
     """A requested path is invalid, unavailable, or unsafe to access."""
 
 
@@ -809,7 +810,7 @@ def _reserve_then_rename(
         source_name = confined_path_component(source_name)
         target_name = confined_path_component(target_name)
     except ConfinedNameError as exc:
-        raise ConfinedFilesystemError(str(exc)) from exc
+        raise ConfinedFilesystemError("Rename names must be single path components.") from exc
     if source_is_directory:
         try:
             os.mkdir(target_name, mode=0o750, dir_fd=target_parent_fd)

@@ -32,13 +32,15 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from django.conf import settings
 
+from core.services.public_errors import PublicMessageError
+
 SECRET_FORMAT_VERSION = "v1"
 _KEY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _AES_GCM_KEY_BYTES = 32
 _AES_GCM_NONCE_BYTES = 12
 
 
-class EncryptionConfigurationError(RuntimeError):
+class EncryptionConfigurationError(PublicMessageError, RuntimeError):
     """The encryption keyring is missing, malformed or unusable."""
 
 
@@ -46,7 +48,7 @@ class MissingEncryptionKeyError(EncryptionConfigurationError):
     """A stored secret names a key that the keyring does not contain."""
 
 
-class SecretDecryptionError(RuntimeError):
+class SecretDecryptionError(PublicMessageError, RuntimeError):
     """A stored secret could not be authenticated with its named key."""
 
 

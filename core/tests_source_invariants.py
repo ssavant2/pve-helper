@@ -570,6 +570,99 @@ class ScanEntryClassifierInvariantTests(SimpleTestCase):
         self.assertEqual(set(CATALOG_AUTHORITATIVE_CATEGORIES), {"vm_disk", "base_image"})
 
 
+class PublicErrorBoundaryInvariantTests(SimpleTestCase):
+    """Review 10: provider and Python exception strings belong in protected logs,
+    never in a durable failure payload or a rendered task row.
+
+    Two rules, because one alone is not enough. Sanitising the writers is
+    pointless if a domain exception laundered the provider's text into its own
+    message first; marking classes public is pointless if a writer bypasses them
+    with `str(exc)`. The pair is what makes `PublicMessageError` mean something.
+    """
+
+    #: An exception object reaching a stored/rendered failure field.
+    _EXCEPTION_TEXT = re.compile(r"str\(\s*exc\b|\{\s*exc\b|\{\s*type\(exc\)|\{\s*exc\.__class__")
+    #: The shapes a durable failure payload is written in.
+    _DURABLE_FIELD = re.compile(r"""["']error(?:_details|_code)?["']\s*[:\]]\s*=?|\berror(?:_details)?\s*=(?!=)""")
+    #: `public_errors` itself documents these shapes; the boundary lives there.
+    _ALLOWED = frozenset({Path("core/services/public_errors.py")})
+
+    def _production_sources(self) -> list[tuple[Path, Path]]:
+        root = Path(settings.BASE_DIR)
+        found = []
+        for package in ("core", "console_app", "pve_helper"):
+            for path in sorted((root / package).rglob("*.py")):
+                relative_path = path.relative_to(root)
+                if "migrations" in relative_path.parts or path.name.startswith("tests"):
+                    continue
+                found.append((path, relative_path))
+        return found
+
+    def test_no_exception_string_reaches_a_durable_error_field(self):
+        violations = []
+        for path, relative_path in self._production_sources():
+            if relative_path in self._ALLOWED:
+                continue
+            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                if self._EXCEPTION_TEXT.search(line) and self._DURABLE_FIELD.search(line):
+                    violations.append(f"{relative_path}:{line_number}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "Stored and rendered failure fields must carry caller-owned text from "
+            "core.services.public_errors, not an exception string: " + ", ".join(violations),
+        )
+
+    def test_public_message_errors_never_interpolate_another_exception(self):
+        """A `PublicMessageError` subclass claims that its own `str()` is safe.
+
+        One raise site that interpolates `{exc}` makes that claim false for every
+        message the class carries, because the marker classifies the type and not
+        the string.
+        """
+        root = Path(settings.BASE_DIR)
+        public_classes = self._public_error_class_names(root)
+        self.assertIn("StorageActionError", public_classes, "The marker scan found no classes; it is not working.")
+
+        violations = []
+        for path, relative_path in self._production_sources():
+            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                stripped = line.strip()
+                if not stripped.startswith("raise "):
+                    continue
+                raised = stripped[len("raise ") :].split("(", 1)[0].strip()
+                if raised in public_classes and self._EXCEPTION_TEXT.search(line):
+                    violations.append(f"{relative_path}:{line_number}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "A PublicMessageError's message must be composed by its raise site, never "
+            "from another exception (use `raise ... from exc` and let the log carry it): " + ", ".join(violations),
+        )
+
+    def _public_error_class_names(self, root: Path) -> set[str]:
+        """Every class that inherits the marker, directly or through a base."""
+        names = {"PublicMessageError"}
+        definitions: list[tuple[str, list[str]]] = []
+        for path, _relative_path in self._production_sources():
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    bases = [base.id for base in node.bases if isinstance(base, ast.Name)]
+                    definitions.append((node.name, bases))
+        # Iterate to a fixed point so a subclass of a subclass is included too.
+        changed = True
+        while changed:
+            changed = False
+            for name, bases in definitions:
+                if name not in names and any(base in names for base in bases):
+                    names.add(name)
+                    changed = True
+        return names
+
+
 class BackendSourceInvariantTests(SimpleTestCase):
     def test_production_audit_writes_use_the_shared_service(self):
         root = Path(settings.BASE_DIR)

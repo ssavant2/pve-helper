@@ -26,10 +26,11 @@ from core.models import (
     RuntimeConfigurationState,
     cluster_key_validator,
 )
+from core.services.public_errors import PublicMessageError
 from core.services.runtime_bootstrap import ensure_bootstrap
 
 
-class ClusterActivationError(RuntimeError):
+class ClusterActivationError(PublicMessageError, RuntimeError):
     """A cluster enable/key change was refused because an identity contract forbids it."""
 
 

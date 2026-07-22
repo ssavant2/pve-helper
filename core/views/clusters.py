@@ -39,6 +39,7 @@ from core.services.cluster_onboarding import (
 )
 from core.services.cluster_trust import TransportTrustError
 from core.services.config import endpoint_name_from_url
+from core.services.public_errors import public_failure
 from core.services.secret_encryption import (
     EncryptionConfigurationError,
     decrypt_secret,
@@ -337,7 +338,7 @@ def cluster_connection_action(request, cluster_key: str):
         else:
             raise Http404("Unknown cluster action")
     except CLUSTER_OPERATION_ERRORS as exc:
-        error = str(exc)
+        error = public_failure(exc, operation="cluster_connection_action").message
 
     if error:
         return _render_cluster_connection(request, cluster, operation_error=error)

@@ -38,6 +38,7 @@ from core.services.confined_filesystem import (
 )
 from core.services.file_actions import ReferencedObject, file_action_risk, guest_objects_for_entry
 from core.services.image_info import probe_qemu_image_info, qemu_img_failure_cause
+from core.services.public_errors import PublicMessageError
 from core.services.storage_catalog import StorageCatalogChanged, StorageOperationScope, UsageState
 from core.services.storage_mounts import (
     registered_mount_health,
@@ -51,7 +52,7 @@ from core.services.storage_paths import (
 logger = logging.getLogger(__name__)
 
 
-class StorageActionError(Exception):
+class StorageActionError(PublicMessageError, Exception):
     pass
 
 
@@ -718,7 +719,8 @@ def validate_inflate_storage_file(
         entry=entry,
     )
     if image_info.get("error"):
-        raise StorageActionError(f"qemu-img info failed: {image_info['error']}")
+        logger.warning("qemu-img info failed: entry=%s error=%s", entry.pk, image_info["error"])
+        raise StorageActionError("Could not read the disk image with qemu-img.")
     if image_info.get("format") != "qcow2":
         raise StorageActionError("Only qcow2 images can be inflated.")
 
@@ -732,7 +734,8 @@ def validate_inflate_storage_file(
     if not isinstance(allocation_percent, (int, float)):
         allocation_error = image_info.get("qcow2_allocation_error")
         if allocation_error:
-            raise StorageActionError(f"qemu-img check failed: {allocation_error}")
+            logger.warning("qemu-img check failed: entry=%s error=%s", entry.pk, allocation_error)
+            raise StorageActionError("qemu-img could not report the image's qcow2 allocation.")
         raise StorageActionError("qemu-img check did not report qcow2 allocation.")
     if target_preallocation == INFLATE_PREALLOCATION_METADATA and allocation_percent >= MIN_INFLATE_ALLOCATED_PERCENT:
         raise StorageActionError("Disk image already appears to have fully mapped qcow2 clusters.")

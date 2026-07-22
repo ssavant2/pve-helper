@@ -8,6 +8,14 @@ from django.utils import timezone
 from .models import AuditEvent
 from .services.durable_guest_operations import DurableGuestOperationError, client_for_audit_event
 from .services.proxmox import ProxmoxAPIError, ProxmoxTaskTimeout, clear_live_guest_caches
+from .services.public_errors import (
+    ERROR_CODE_INCOMPLETE,
+    ERROR_CODE_PROVIDER,
+    PROVIDER_FAILURE_MESSAGE,
+    PublicFailure,
+    public_failure,
+)
+from .services.task_failures import record_event_failure
 
 
 def clone_guest_to_template_task(
@@ -23,13 +31,11 @@ def clone_guest_to_template_task(
         new_vmid = int(details.get("new_vmid"))
         clone_upid = str(details.get("proxmox_task_upid") or "")
     except (DurableGuestOperationError, TypeError, ValueError):
-        event.outcome = "failed"
-        event.details = {
-            **details,
-            "error": "The queued template clone has incomplete target identity.",
-            "finished_at": timezone.now().isoformat(),
-        }
-        event.save(update_fields=["outcome", "details"])
+        record_event_failure(
+            event,
+            PublicFailure("The queued template clone has incomplete target identity.", ERROR_CODE_INCOMPLETE),
+            details=details,
+        )
         return
     timeout_seconds = settings.SCHEDULED_ACTION_TIMEOUT_SECONDS
 
@@ -70,10 +76,17 @@ def clone_guest_to_template_task(
     except (ProxmoxTaskTimeout, ProxmoxAPIError) as exc:
         if cancelled():
             return
-        event.outcome = "failed"
-        details["error"] = str(exc)
-        details["finished_at"] = timezone.now().isoformat()
-        event.details = details
+        record_event_failure(
+            event,
+            public_failure(
+                exc,
+                operation="clone_guest_to_template_task",
+                fallback=PROVIDER_FAILURE_MESSAGE,
+                code=ERROR_CODE_PROVIDER,
+            ),
+            details=details,
+            save=False,
+        )
         clear_live_guest_caches(cluster=cluster)
         event.save(update_fields=["outcome", "details"])
         return

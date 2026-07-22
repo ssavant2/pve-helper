@@ -42,6 +42,7 @@ from core.services.confined_filesystem import (
 )
 from core.services.ovf_import import OvfImportError, OvfPackage, package_disk_volids, parse_ovf_package
 from core.services.proxmox import ProxmoxAPIError
+from core.services.public_errors import PublicMessageError, public_exception_message, public_failure
 from core.services.storage_paths import storage_mount_root
 
 # Disk bus -> config key prefix. The default bus is SATA (boots almost any image
@@ -64,7 +65,7 @@ MACHINE_CHOICES = [("i440fx", "i440fx (most compatible)"), ("q35", "q35 (modern,
 _VOLID_VMID_RE = re.compile(r"/(?:vm|base)-(\d+)-disk-")
 
 
-class VmRegisterError(Exception):
+class VmRegisterError(PublicMessageError, Exception):
     """Raised for pre-flight / staging problems before any Proxmox write."""
 
 
@@ -77,7 +78,7 @@ def _client(*, cluster):
     try:
         _endpoint, client = pin_cluster_write_client(cluster)
     except ClusterResolutionError as exc:
-        raise VmRegisterError(str(exc)) from exc
+        raise VmRegisterError("The cluster has no usable Proxmox endpoint for this write.") from exc
     return client
 
 
@@ -176,7 +177,9 @@ def adopt_orphan_disk(
     try:
         upid = client.post(f"nodes/{quote(node, safe='')}/qemu", data=body)
     except ProxmoxAPIError as exc:
-        return "", str(exc)
+        return "", public_exception_message(
+            exc, operation="vm_register.create_shell", fallback="Creating the VM shell failed."
+        )
 
     exit_status = _poll_task(client, node, upid, timeout=120)
     if exit_status not in ("OK", ""):
@@ -188,7 +191,11 @@ def adopt_orphan_disk(
             data={bus_key: volid, "boot": f"order={bus_key}"},
         )
     except ProxmoxAPIError as exc:
-        return upid, f"VM created but attaching the disk failed: {exc}"
+        return upid, public_exception_message(
+            exc,
+            operation="vm_register.attach_disk",
+            fallback="The VM was created, but attaching the disk failed.",
+        )
     return upid, None
 
 
@@ -213,7 +220,7 @@ def _detect_image_format(source: BinaryIO) -> str:
         )
         fmt = str(json.loads(result.stdout).get("format", "")).lower()
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        raise VmRegisterError(f"Could not detect the image format: {exc}") from exc
+        raise VmRegisterError("Could not detect the image format.") from exc
     if fmt not in {"qcow2", "raw", "vmdk"}:
         raise VmRegisterError(f"Unsupported image format: {fmt or 'unknown'}")
     return fmt
@@ -284,7 +291,9 @@ def _create_vm_importing(
     try:
         upid = client.post(f"nodes/{quote(node, safe='')}/qemu", data=body)
     except ProxmoxAPIError as exc:
-        return "", str(exc)
+        return "", public_exception_message(
+            exc, operation="vm_register.import_volid", fallback="Creating the VM from the volume failed."
+        )
     exit_status = _poll_task(client, node, upid)
     if exit_status not in ("OK", ""):
         return upid, f"Import failed: {exit_status}"
@@ -418,18 +427,18 @@ def import_ovf_package_as_vm(
     try:
         package = parse_ovf_package(source_storage, source_path, validate_manifest=True)
     except OvfImportError as exc:
-        return [], str(exc)
+        return [], public_failure(exc, operation="vm_register.parse_ovf").message
     if not package.disks:
         return [], "OVF package does not contain an importable disk."
     bus = str(params.get("disk_bus") or "sata")
     try:
         disk_keys = [_disk_key(bus, index) for index in range(len(package.disks))]
     except VmRegisterError as exc:
-        return [], str(exc)
+        return [], public_failure(exc, operation="vm_register.disk_keys").message
     try:
         source_volids, staged_paths = _stage_ovf_package_sources(source_storage, source_path, package)
     except VmRegisterError as exc:
-        return [], str(exc)
+        return [], public_failure(exc, operation="vm_register.stage_ovf").message
 
     client = _client(cluster=cluster)
     upids: list[str] = []
@@ -478,6 +487,8 @@ def import_ovf_package_as_vm(
                 return upids, f"VM imported but could not start: {error}"
         return upids, None
     except ProxmoxAPIError as exc:
-        return upids, str(exc)
+        return upids, public_exception_message(
+            exc, operation="vm_register.import_ovf", fallback="The OVF import request failed."
+        )
     finally:
         _remove_staged_files(source_storage, staged_paths)

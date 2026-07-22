@@ -19,6 +19,7 @@ from core.models import (
 )
 from core.services.classification import extract_disk_references
 from core.services.proxmox import ProxmoxAPIError, ProxmoxGuestSummary, VerifiedGuestInventory
+from core.services.public_errors import public_exception_message
 from core.services.tags import join_tags
 
 GUEST_TYPES = (ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT)
@@ -437,6 +438,16 @@ def delete_current_guest(*, object_type: str, vmid: int, cluster) -> None:
     CurrentGuestInventory.objects.filter(cluster=_target_cluster(cluster), object_type=object_type, vmid=vmid).delete()
 
 
+def _refresh_error(exc: ProxmoxAPIError, step: str) -> str:
+    """A refresh failure ends up in `details["projection_refresh_error"]`, which
+    Recent Tasks renders, so it gets the same boundary as any other stored text."""
+    return public_exception_message(
+        exc,
+        operation=f"refresh_current_guest.{step}",
+        fallback="Proxmox did not answer the follow-up status read.",
+    )
+
+
 def refresh_current_guest_from_client(
     client,
     *,
@@ -462,13 +473,13 @@ def refresh_current_guest_from_client(
             if not isinstance(current, dict):
                 raise ProxmoxAPIError("Proxmox returned an invalid guest status.")
         except ProxmoxAPIError as exc:
-            direct_error = str(exc)
+            direct_error = _refresh_error(exc, "guest_current")
 
     if current is None and allow_relocation:
         try:
             resources = client.get("cluster/resources?type=vm")
         except ProxmoxAPIError as exc:
-            return TargetedGuestRefresh(found=False, error=str(exc))
+            return TargetedGuestRefresh(found=False, error=_refresh_error(exc, "cluster_resources"))
         if not isinstance(resources, list):
             return TargetedGuestRefresh(found=False, error="Proxmox returned an invalid guest inventory.")
         expected_type = "qemu" if object_type == ProxmoxInventory.ObjectType.VM else "lxc"
@@ -498,7 +509,9 @@ def refresh_current_guest_from_client(
             if not isinstance(current, dict):
                 raise ProxmoxAPIError("Proxmox returned an invalid guest status.")
         except ProxmoxAPIError as exc:
-            return TargetedGuestRefresh(found=False, node=resolved_node, error=str(exc))
+            return TargetedGuestRefresh(
+                found=False, node=resolved_node, error=_refresh_error(exc, "guest_current_relocated")
+            )
 
     if current is None:
         return TargetedGuestRefresh(found=False, node=resolved_node, error=direct_error or "Guest status unavailable.")

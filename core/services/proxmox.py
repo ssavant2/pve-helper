@@ -135,6 +135,21 @@ class ProxmoxAPIError(Exception):
     pass
 
 
+def _collected_error(exc: ProxmoxAPIError, action: str) -> str:
+    """One entry in an inventory scan's `errors` list, which operators read.
+
+    Uses the same boundary as every other stored failure: the provider's own
+    text — which carries the request path — stays in the log.
+    """
+    from core.services.public_errors import public_exception_message
+
+    return public_exception_message(
+        exc,
+        operation=f"proxmox.{action}",
+        fallback="Proxmox did not return this resource.",
+    )
+
+
 class ProxmoxTransportError(ProxmoxAPIError):
     """The call failed below the API: no Proxmox response was interpreted.
 
@@ -501,7 +516,7 @@ class ProxmoxClient:
         try:
             data = self.get(path)
         except ProxmoxAPIError as exc:
-            errors.append({"action": action, "path": path, "error": str(exc)})
+            errors.append({"action": action, "path": path, "error": _collected_error(exc, action)})
             return []
         return data if isinstance(data, list) else []
 
@@ -515,7 +530,7 @@ class ProxmoxClient:
         try:
             data = self.get(path)
         except ProxmoxAPIError as exc:
-            errors.append({"action": action, "path": path, "vmid": vmid, "error": str(exc)})
+            errors.append({"action": action, "path": path, "vmid": vmid, "error": _collected_error(exc, action)})
             return None
         return data if isinstance(data, dict) else {}
 

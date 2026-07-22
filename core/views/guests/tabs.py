@@ -1,6 +1,7 @@
 """Guest read-only tabs: monitor, permissions, cloud-init (+edit) — extracted from _core."""
 
 from core.services.current_guest_inventory import refresh_current_guest_from_client, update_current_guest_config
+from core.services.public_errors import public_exception_message
 
 from .. import common
 from ..common import (
@@ -81,7 +82,11 @@ def guest_permissions(request, cluster_key: str, object_type: str, vmid: int):
             error = ""
             break
         except ProxmoxAPIError as exc:
-            error = str(exc)
+            error = public_exception_message(
+                exc,
+                operation="guest_permissions.acl",
+                fallback="Proxmox did not return the access control list.",
+            )
     guest_path = f"/vms/{vmid}"
     entries = []
     if isinstance(acl, list):

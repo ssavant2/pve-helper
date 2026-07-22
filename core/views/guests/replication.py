@@ -1,5 +1,7 @@
 """Guest replication tab + create/delete (extracted from _core)."""
 
+from core.services.public_errors import public_exception_message
+
 from .. import common
 from ..common import (
     ProxmoxAPIError,
@@ -35,7 +37,11 @@ def guest_replication(request, cluster_key: str, object_type: str, vmid: int):
                     }
                 )
     except ProxmoxAPIError as exc:
-        error = str(exc)
+        error = public_exception_message(
+            exc,
+            operation="guest_replication.list",
+            fallback="Proxmox did not return this guest's replication jobs.",
+        )
     target_nodes = []
     if clients:
         target_nodes = [n for n in clients[0].node_names(fallback="") if n != detail.node]

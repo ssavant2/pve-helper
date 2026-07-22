@@ -29,13 +29,15 @@ from dataclasses import dataclass
 import httpx
 from django.conf import settings
 
+from core.services.public_errors import PublicMessageError
+
 # Transport trust modes.
 TRUST_PUBLIC = "public"  # the system CA store (publicly trusted pveproxy cert)
 TRUST_CA_PEM = "ca_pem"  # a specific CA bundle, trusted exclusively
 TRUST_INSECURE = "insecure"  # no verification — only the credential-free inspection
 
 
-class TransportTrustError(RuntimeError):
+class TransportTrustError(PublicMessageError, RuntimeError):
     """A trust profile could not be turned into a usable TLS decision."""
 
 
@@ -74,7 +76,7 @@ class TrustProfile:
             try:
                 context.load_verify_locations(cadata=self.ca_pem)
             except ssl.SSLError as exc:
-                raise TransportTrustError(f"The configured CA bundle is not valid PEM: {exc}") from exc
+                raise TransportTrustError("The configured CA bundle is not valid PEM.") from exc
             return context
         raise TransportTrustError(f"Unknown transport trust mode {self.mode!r}.")
 
@@ -97,7 +99,7 @@ def ssl_context_for(profile: TrustProfile) -> ssl.SSLContext:
         try:
             context.load_verify_locations(cadata=profile.ca_pem)
         except ssl.SSLError as exc:
-            raise TransportTrustError(f"The configured CA bundle is not valid PEM: {exc}") from exc
+            raise TransportTrustError("The configured CA bundle is not valid PEM.") from exc
         return context
     return ssl.create_default_context()
 
@@ -115,7 +117,7 @@ def legacy_trust_profile() -> TrustProfile:
             with open(bundle, encoding="utf-8") as handle:
                 return TrustProfile(mode=TRUST_CA_PEM, ca_pem=handle.read())
         except OSError as exc:
-            raise TransportTrustError(f"PVE_CA_BUNDLE {bundle!r} could not be read: {exc}") from exc
+            raise TransportTrustError(f"PVE_CA_BUNDLE {bundle!r} could not be read.") from exc
     return TrustProfile(mode=TRUST_PUBLIC if settings.PVE_VERIFY_TLS else TRUST_INSECURE)
 
 
@@ -221,7 +223,7 @@ def inspect_endpoint_certificate(url: str, *, timeout: float = 8.0) -> Inspected
             with context.wrap_socket(sock, server_hostname=host) as tls:
                 der = tls.getpeercert(binary_form=True)
     except (OSError, ssl_module.SSLError) as exc:
-        raise TransportTrustError(f"Could not reach {host}:{port} to inspect its certificate: {exc}") from exc
+        raise TransportTrustError(f"Could not reach {host}:{port} to inspect its certificate.") from exc
 
     cert = x509.load_der_x509_certificate(der)
     return InspectedCertificate(
