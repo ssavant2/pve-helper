@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 # the migration set is frozen at build time, so a process that has confirmed it
 # once cannot legitimately fall behind again.  The check therefore runs only in
 # the window between container start and `migrate` finishing, and the docker
-# probe that repeats every 30s reads a boolean after that.  The deliberate cost
-# is that a manually reversed migration goes unnoticed by an already-green
-# process; a restart reports it.
+# probe that repeats every 30s reads a boolean after that.  Only a manually
+# reversed migration could invalidate a confirmation, and this project fixes
+# forward rather than reversing; a restart would report it anyway.
 _schema_confirmed_current = False
 
 

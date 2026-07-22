@@ -311,14 +311,30 @@ They are not redundant, and neither implies the other:
 A destructive action must pass both. If one refuses, the refusal names which
 one and why; an Unknown or Blocked verdict is never a deletion candidate.
 
-#### Referenced disks: detach first
+#### Referenced disks: one hard block, one answerable warning
 
-Trash, rename, move and transfer make the file leave its volid, so pve-helper
-refuses them for a disk image any guest configuration still references — and a
-stopped guest does not change that. The guest would simply break on its next
-boot instead of immediately. To replace a disk (a restore, for instance), detach
-it from the guest in Proxmox, attach the replacement, and then act on the loose
-file.
+Trash, rename, move and transfer make the file leave its volid, so a disk image
+that some guest configuration still points at is never treated as loose. What
+that costs you depends on what is actually known about the guest:
+
+| Verdict | What triggers it | What you can do |
+| --- | --- | --- |
+| **Blocked** | A node that answered reports a guest running on the file, or the file sits in the `images/<vmid>` directory of such a guest. | Stop the guest in Proxmox. Nothing in pve-helper overrides this. |
+| **Danger, acknowledgeable** | A guest configuration references the file but no reachable node reports it running; or a node did not report its storage inventory, so a guest there could be using the file unseen; or the guest was last seen running on a node that cannot be reached now. | Answer the confirmation, which names every fact that applies at once. The answer is recorded in Audit whether the action then succeeds or fails. |
+
+The line between them is where the refusal sends you. A running guest on a
+reachable node is live breakage and you have somewhere to go — stop it. An
+unreachable node is not: it can die for good and be replaced by a differently
+named one, and its guests' configurations die with it. "Detach it in Proxmox
+first" then becomes an instruction nobody can carry out, and the file would stay
+unreachable through this app forever. Those cases escalate to a question instead
+of a refusal.
+
+Detaching first is still the better workflow wherever it is available. To
+replace a disk (a restore, for instance), detach it from the guest in Proxmox,
+attach the replacement, and then act on the loose file — the reference is gone
+and no risk confirmation is needed. The acknowledgement exists for when that
+path is closed, not as a shortcut past it.
 
 **Inflate is the exception, deliberately.** It rewrites the image in place under
 the same volid, for the guest that owns it, so a reference is expected. Its gate
