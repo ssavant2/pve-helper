@@ -71,10 +71,11 @@
           </select>
         </label>
         <label><span>Visible host mount</span>
-          <select name="relative_path" required>
+          <select name="relative_path" data-mount-select required>
             <option value="">Choose a directory…</option>
-            {% for candidate in candidates %}<option value="{{ candidate.relative_path }}"{% if form_values.relative_path == candidate.relative_path %} selected{% endif %}>/storages/{{ candidate.relative_path }} · {{ candidate.filesystem_type }}</option>{% endfor %}
+            {% for candidate in candidates %}<option value="{{ candidate.relative_path }}" data-source="{{ candidate.source }}"{% if form_values.relative_path == candidate.relative_path %} selected{% endif %}>/storages/{{ candidate.relative_path }} · {{ candidate.filesystem_type }}{% if candidate.source %} · {{ candidate.source }}{% endif %}</option>{% endfor %}
           </select>
+          <small data-mount-source>Where this directory is mounted from, compared against the datastore's own export.</small>
         </label>
         <label><span>Display name</span><input name="display_name" required placeholder="Production NFS" value="{{ form_values.display_name|default:'' }}"></label>
         <label data-node-field{% if not form_values.node %} hidden{% endif %}><span>Node</span>
@@ -85,8 +86,13 @@
         </label>
         <label class="storage-access-identity"><span>Backend/export identity</span><input name="backend_identity" required placeholder="server:/export or other operator-verified identity" value="{{ form_values.backend_identity|default:'' }}"><small data-identity-source>Filled from the Proxmox definition where the backend publishes one. Two clusters using the same export must end up with the identical value, or the cross-cluster in-use check cannot fire.</small></label>
       </div>
+      {% if confirmed_backend_mismatch %}<input type="hidden" name="confirm_backend_mismatch" value="1">{% endif %}
+      {% if confirmed_distinct_backend %}<input type="hidden" name="confirm_distinct_backend" value="1">{% endif %}
       <div class="storage-access-form-actions">
-        {% if confirm_distinct_backend %}
+        {% if confirm_backend_mismatch %}
+          <button class="primary-action" type="submit" name="confirm_backend_mismatch" value="1">Register against this export anyway</button>
+          <button class="button button-secondary" type="submit">Re-check the mount</button>
+        {% elif confirm_distinct_backend %}
           <button class="primary-action" type="submit" name="confirm_distinct_backend" value="1">Register as a different backend</button>
           <button class="button button-secondary" type="submit">Re-check identity</button>
         {% else %}

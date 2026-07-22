@@ -7587,6 +7587,140 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(binding.cluster_storage, definition)
         self.assertEqual(binding.mount.identity_source, StorageMount.IdentitySource.DERIVED)
 
+    def _nfs_definition(self, storage_id="shared-nfs", *, server="nas.hq.local", export="/mnt/tank/vm"):
+        metadata_generation = uuid.uuid4()
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id=storage_id,
+            storage_type="nfs",
+            shared=True,
+            present=True,
+            config={"server": server, "export": export},
+            observed_metadata_generation=metadata_generation,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            active=True,
+            enabled=True,
+            present=True,
+            observed_metadata_generation=metadata_generation,
+        )
+        return definition
+
+    def test_a_host_mount_from_another_export_is_refused_until_it_is_confirmed(self):
+        """Two datastores on one NAS were freely cross-wirable, and nothing downstream
+        would have noticed: the binding is the only thing that says which directory a
+        datastore's files are in."""
+        definition = self._nfs_definition(export="/mnt/Pool-FS/FS/Proxmox", server="10.10.20.10")
+        candidates = [
+            {
+                "relative_path": "truenas-vm",
+                "filesystem_type": "nfs4",
+                "source": "10.10.20.10:/mnt/Pool-VMs/VM/Proxmox",
+            }
+        ]
+        payload = {
+            "cluster_storage": str(definition.pk),
+            "relative_path": "truenas-vm",
+            "display_name": "Production NFS",
+            "backend_identity": "10.10.20.10:/mnt/Pool-FS/FS/Proxmox",
+        }
+
+        with patch("core.views.storage._mount_candidates", return_value=candidates):
+            blocked = self.client.post(reverse("core:settings_storage"), payload)
+
+        self.assertContains(blocked, "different exports")
+        self.assertContains(blocked, "/mnt/Pool-VMs/VM/Proxmox")
+        self.assertContains(blocked, "Register against this export anyway")
+        self.assertFalse(ClusterStorageMount.objects.exists())
+
+        health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
+        with (
+            patch("core.views.storage._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mount_health", return_value=health),
+        ):
+            confirmed = self.client.post(
+                reverse("core:settings_storage"),
+                {**payload, "confirm_backend_mismatch": "1"},
+            )
+
+        self.assertEqual(confirmed.status_code, 200)
+        # Deliberate, not silent: the operator may genuinely know better, and this
+        # gate escalates rather than stranding an unusual but correct layout.
+        self.assertEqual(ClusterStorageMount.objects.get().cluster_storage, definition)
+
+    def test_the_datastores_own_export_registers_without_a_question(self):
+        definition = self._nfs_definition(export="/mnt/tank/vm", server="nas.hq.local")
+        candidates = [{"relative_path": "nas", "filesystem_type": "nfs4", "source": "nas.hq.local:/mnt/tank/vm"}]
+        health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
+
+        page = self.client.get(reverse("core:settings_storage"))
+        # The source is stated at the point of choosing, not only after a submit.
+        self.assertContains(page, "data-mount-source")
+
+        with (
+            patch("core.views.storage._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mount_health", return_value=health),
+        ):
+            response = self.client.post(
+                reverse("core:settings_storage"),
+                {
+                    "cluster_storage": str(definition.pk),
+                    "relative_path": "nas",
+                    "display_name": "Production NFS",
+                    "backend_identity": "nas.hq.local:/mnt/tank/vm",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Register against this export anyway")
+        self.assertEqual(ClusterStorageMount.objects.get().cluster_storage, definition)
+
+    def test_confirming_the_export_does_not_discard_the_near_match_confirmation(self):
+        """Two confirmations can be pending in sequence. Carried on the button alone,
+        answering the second dropped the first and the form could never resolve."""
+        definition = self._nfs_definition(export="/mnt/tank/vm", server="nas.hq.local")
+        StorageMount.objects.create(
+            storage_id="mount-existing",
+            display_name="Same NAS, short name",
+            path="/storages/other",
+            relative_path="other",
+            backend_identity="nas:/mnt/tank/vm",
+        )
+        candidates = [{"relative_path": "nas", "filesystem_type": "nfs4", "source": "10.0.0.5:/mnt/tank/iso"}]
+        payload = {
+            "cluster_storage": str(definition.pk),
+            "relative_path": "nas",
+            "display_name": "Production NFS",
+            "backend_identity": "nas.hq.local:/mnt/tank/vm",
+        }
+
+        with patch("core.views.storage._mount_candidates", return_value=candidates):
+            blocked = self.client.post(reverse("core:settings_storage"), payload)
+        self.assertContains(blocked, "Register against this export anyway")
+
+        # Answering the export question surfaces the near-match one, and the answer
+        # already given is re-submitted with it rather than being asked again.
+        with patch("core.views.storage._mount_candidates", return_value=candidates):
+            second = self.client.post(reverse("core:settings_storage"), {**payload, "confirm_backend_mismatch": "1"})
+        self.assertContains(second, "spelled differently")
+        self.assertContains(second, 'name="confirm_backend_mismatch" value="1"')
+        self.assertFalse(ClusterStorageMount.objects.exists())
+
+        health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
+        with (
+            patch("core.views.storage._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mount_health", return_value=health),
+        ):
+            done = self.client.post(
+                reverse("core:settings_storage"),
+                {**payload, "confirm_backend_mismatch": "1", "confirm_distinct_backend": "1"},
+            )
+
+        self.assertEqual(done.status_code, 200)
+        self.assertEqual(ClusterStorageMount.objects.get().cluster_storage, definition)
+
     def test_removing_a_mount_association_states_current_use_and_is_audited(self):
         """The page's only destructive action: prove it works and that it warns with facts."""
         metadata_generation = uuid.uuid4()

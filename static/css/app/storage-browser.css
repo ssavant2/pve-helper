@@ -283,6 +283,17 @@
   line-height: 1.35;
 }
 
+/* A pairing that points the datastore at another export is the one mistake this
+   form can make silently, so it stops looking like help text. */
+.storage-access-form-grid small[data-state="mismatch"] {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.storage-access-form-grid small[data-state="match"] {
+  color: var(--green);
+}
+
 .storage-access-form-actions {
   display: flex;
   align-items: center;

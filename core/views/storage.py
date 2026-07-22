@@ -18,6 +18,7 @@ from core.models import (
 )
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.datastore_nav import datastore_url, nav_datastore_key
+from core.services.filesystem import mountinfo_mounts
 from core.services.storage_backends import backend_profile
 from core.services.storage_catalog import (
     StorageOperationScope,
@@ -33,10 +34,10 @@ from core.services.storage_catalog_refresh import (
 from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
+    compare_mount_source,
     derived_backend_identity,
     mount_datastore_scope,
     mount_health,
-    mountinfo_entries,
     near_match_mounts,
     normalized_backend_identity,
     registered_mount_health,
@@ -296,18 +297,24 @@ def pve_helper_settings(request):
 
 def _mount_candidates() -> list[dict[str, str]]:
     root = Path(settings.PVE_HELPER_STORAGE_CONTAINER_ROOT)
-    mounted = {path: filesystem for path, filesystem in mountinfo_entries()}
+    mounted = {mount.mount_point: mount for mount in mountinfo_mounts()}
     try:
         children = [child for child in root.iterdir() if child.is_dir() and not child.is_symlink()]
     except OSError:
         return []
-    return [
-        {
-            "relative_path": child.relative_to(root).as_posix(),
-            "filesystem_type": mounted.get(str(child), "directory"),
-        }
-        for child in sorted(children, key=lambda item: item.name.lower())
-    ]
+    rows = []
+    for child in sorted(children, key=lambda item: item.name.lower()):
+        # A directory that is not a mount point of its own has no source, and the
+        # empty string is what makes the backend comparison stand down.
+        mount = mounted.get(str(child))
+        rows.append(
+            {
+                "relative_path": child.relative_to(root).as_posix(),
+                "filesystem_type": mount.filesystem_type if mount else "directory",
+                "source": mount.source if mount else "",
+            }
+        )
+    return rows
 
 
 # A confirmation must fit on screen to be read at all; a 200-guest datastore
@@ -443,6 +450,9 @@ def storage_mount_register(request):
     registered = None
     form_values: dict[str, str] = {}
     confirm_distinct_backend = False
+    confirm_backend_mismatch = False
+    confirmed_mismatch = False
+    confirmed_distinct = False
     if request.method == "POST":
         if request.POST.get("action") == "remove_binding":
             try:
@@ -490,6 +500,7 @@ def storage_mount_register(request):
             display_name = str(request.POST.get("display_name") or "").strip()
             submitted_identity = str(request.POST.get("backend_identity") or "").strip()
             confirmed_distinct = request.POST.get("confirm_distinct_backend") == "1"
+            confirmed_mismatch = request.POST.get("confirm_backend_mismatch") == "1"
             form_values = {
                 "cluster_storage": str(request.POST.get("cluster_storage") or ""),
                 "relative_path": relative,
@@ -526,6 +537,18 @@ def storage_mount_register(request):
                     errors.append("Choose the node-local storage instance this mount represents.")
             elif definition is not None:
                 node = ""
+            # Before comparing the identity against other registrations, compare it
+            # against the kernel: a near-match check only knows what was typed
+            # before, while the mount source says what this directory actually is.
+            if not errors and backend_identity and not confirmed_mismatch:
+                agreement = compare_mount_source(backend_identity, candidates[relative].get("source", ""))
+                if not agreement.agrees:
+                    confirm_backend_mismatch = True
+                    warnings.append(agreement.reason)
+                    errors.append(
+                        "The chosen directory is not mounted from the datastore's own export. "
+                        "Choose the matching directory, or confirm that this pairing is intended."
+                    )
             if not errors and backend_identity and not confirmed_distinct:
                 near_matches = near_match_mounts(backend_identity)
                 if near_matches:
@@ -608,6 +631,11 @@ def storage_mount_register(request):
             "warnings": warnings,
             "form_values": form_values,
             "confirm_distinct_backend": confirm_distinct_backend,
+            "confirm_backend_mismatch": confirm_backend_mismatch,
+            # A confirmation already given has to survive the next submit, or two
+            # pending confirmations would each clear the other and never resolve.
+            "confirmed_backend_mismatch": confirmed_mismatch,
+            "confirmed_distinct_backend": confirmed_distinct,
             "registered": registered if registered != "removed" else None,
             "removed": registered == "removed",
             "bindings": _binding_rows(),

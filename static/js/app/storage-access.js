@@ -17,10 +17,34 @@ export const initStorageAccessForm = (root = document) => {
   const source = form.querySelector("[data-identity-source]");
   const nodeField = form.querySelector("[data-node-field]");
   const nodeSelect = form.querySelector("[data-node-select]");
+  const mountSelect = form.querySelector("[data-mount-select]");
+  const mountSource = form.querySelector("[data-mount-source]");
   const selectedNode = nodeSelect?.dataset.selectedNode || "";
   if (!datastore || !identity) return;
 
   const selected = () => datastore.selectedOptions[0] || null;
+
+  // The same comparison the server makes, so a wrong pairing is visible while it
+  // is being chosen rather than after a submit. Only equality is decided here;
+  // which kind of disagreement it is, and whether it may be confirmed, stays
+  // server-side where the refusal is enforced.
+  const renderMountSource = () => {
+    if (!mountSource || !mountSelect) return;
+    const mounted = mountSelect.selectedOptions[0]?.dataset.source || "";
+    const expected = identity.value.trim();
+    if (!mounted || !expected) {
+      mountSource.textContent = "Where this directory is mounted from, compared against the datastore's own export.";
+      mountSource.dataset.state = "unknown";
+      return;
+    }
+    if (mounted === expected) {
+      mountSource.textContent = `Mounted from ${mounted} — this is the datastore's own export.`;
+      mountSource.dataset.state = "match";
+      return;
+    }
+    mountSource.textContent = `Mounted from ${mounted}, but the datastore is on ${expected}. Registering this pairing points every scan and file action for the datastore at the wrong export.`;
+    mountSource.dataset.state = "mismatch";
+  };
 
   const renderSource = () => {
     if (!source) return;
@@ -75,9 +99,14 @@ export const initStorageAccessForm = (root = document) => {
     identity.dataset.derivedValue = derived;
     applyNodes();
     renderSource();
+    renderMountSource();
   };
 
   datastore.addEventListener("change", applyDatastore);
-  identity.addEventListener("input", renderSource);
+  identity.addEventListener("input", () => {
+    renderSource();
+    renderMountSource();
+  });
+  mountSelect?.addEventListener("change", renderMountSource);
   applyDatastore();
 };

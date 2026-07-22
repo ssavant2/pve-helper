@@ -65,20 +65,26 @@ def storage_space_info(storage: StorageMount) -> StorageSpaceInfo:
     )
 
 
+def mountinfo_mounts(path: str = "/proc/self/mountinfo") -> tuple[MountInfo, ...]:
+    """Every mount the kernel reports, parsed once.
+
+    This is the single mountinfo reader. A second, weaker one lived in
+    `storage_mounts` and decoded only four escape sequences, which is the kind of
+    divergence that stays invisible until a mount point contains the character
+    the other parser handles.
+    """
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    return tuple(mount for mount in map(_parse_mountinfo_line, lines) if mount.mount_point)
+
+
 def mount_info_for_path(path: Path) -> MountInfo:
     best_match: MountInfo | None = None
     best_length = -1
 
-    try:
-        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return MountInfo()
-
-    for line in lines:
-        mount = _parse_mountinfo_line(line)
-        if not mount.mount_point:
-            continue
-
+    for mount in mountinfo_mounts():
         mount_path = Path(mount.mount_point)
         if not _is_path_relative_to(path, mount_path):
             continue

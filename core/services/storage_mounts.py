@@ -11,6 +11,7 @@ from django.conf import settings
 from django.db import transaction
 
 from core.models import ClusterStorage, ClusterStorageMount, StorageMount
+from core.services.filesystem import mountinfo_mounts
 from core.services.refs import MountRef
 from core.services.storage_backends import StorageBackendProfile
 from core.services.storage_paths import (
@@ -174,28 +175,77 @@ def near_match_mounts(identity: str) -> list[StorageMount]:
     return matches
 
 
-def _unescape_mountinfo(value: str) -> str:
-    for encoded, decoded in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
-        value = value.replace(encoded, decoded)
-    return value
+@dataclass(frozen=True)
+class BackendAgreement:
+    """Whether a host mount really comes from the export its datastore names."""
+
+    agrees: bool
+    reason: str = ""
 
 
-def mountinfo_entries(path: str = "/proc/self/mountinfo") -> tuple[tuple[str, str], ...]:
-    rows: list[tuple[str, str]] = []
+def _is_descendant(child: str, parent: str) -> bool:
+    return bool(parent) and child.startswith(f"{parent}/")
+
+
+def compare_mount_source(identity: str, source: str) -> BackendAgreement:
+    """Check a proposed backend identity against the kernel's mount source.
+
+    A binding is the sole authority for which directory a datastore's files live
+    in — nothing downstream re-derives it — so pairing a datastore with the wrong
+    host mount silently redirects every scan, classification and file action to
+    another export. The Orphan Finder then compares one export's volume list
+    against another's files, finds no matches, and offers live disks for
+    deletion. Both halves of that pairing are knowable here, so they are compared
+    here.
+
+    Disagreement is reported, never decided: a mount of a subdirectory of the
+    export is legitimate, and so is a NAS reachable under two spellings. The
+    caller escalates to an explicit confirmation rather than refusing outright.
+    """
+    expected = str(identity or "").strip()
+    observed = str(source or "").strip()
+    # Nothing to compare: a `dir` datastore publishes no export, and a plain
+    # directory that is not a mount point of its own has no source.
+    if not expected or not observed:
+        return BackendAgreement(True)
     try:
-        with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                before, separator, after = line.rstrip("\n").partition(" - ")
-                if not separator:
-                    continue
-                left = before.split()
-                right = after.split()
-                if len(left) < 5 or not right:
-                    continue
-                rows.append((_unescape_mountinfo(left[4]), right[0]))
-    except OSError:
-        return ()
-    return tuple(rows)
+        expected = normalized_backend_identity(expected)
+        observed = normalized_backend_identity(observed)
+    except StorageMountError:
+        # An exotic source this field cannot express is not evidence of a
+        # mismatch; the mount-health check still governs whether it is usable.
+        return BackendAgreement(True)
+    if expected == observed:
+        return BackendAgreement(True)
+    expected_host, expected_path = _identity_parts(expected)
+    observed_host, observed_path = _identity_parts(observed)
+    if expected_path == observed_path:
+        return BackendAgreement(
+            False,
+            f"The datastore names host '{expected_host}' and the mount was made from "
+            f"'{observed_host}'. If that is the same server under two spellings, register the "
+            "identity the other clusters derive, or their shared-backend check cannot fire.",
+        )
+    if expected_host == observed_host and _is_descendant(observed_path, expected_path):
+        return BackendAgreement(
+            False,
+            f"'{observed}' is a subdirectory of the datastore's export '{expected}'. "
+            "PVE-helper will then see only part of the datastore, and anything outside the "
+            "mounted subtree counts as absent.",
+        )
+    if expected_host == observed_host and _is_descendant(expected_path, observed_path):
+        return BackendAgreement(
+            False,
+            f"'{observed}' is mounted above the datastore's export '{expected}' and so contains "
+            "more than this datastore. Files belonging to other datastores would be scanned as "
+            "if they belonged to this one.",
+        )
+    return BackendAgreement(
+        False,
+        f"The datastore is on '{expected}' but this directory is mounted from '{observed}'. "
+        "These are different exports: every scan, classification and file action for this "
+        "datastore would be applied to the wrong one.",
+    )
 
 
 def mount_health(mount: StorageMount, profile: StorageBackendProfile) -> MountHealth:
@@ -211,7 +261,7 @@ def mount_health(mount: StorageMount, profile: StorageBackendProfile) -> MountHe
         return MountHealth(False, False, "Mount path is unavailable.")
     fs_type = ""
     if profile.requires_mountpoint:
-        exact = {path: filesystem for path, filesystem in mountinfo_entries()}.get(str(root))
+        exact = {mount.mount_point: mount.filesystem_type for mount in mountinfo_mounts()}.get(str(root))
         if exact is None:
             return MountHealth(False, False, "Mount unavailable; refusing the backing directory.")
         fs_type = exact

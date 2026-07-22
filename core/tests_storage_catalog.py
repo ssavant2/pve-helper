@@ -27,6 +27,7 @@ from core.models import (
     StorageMount,
     StorageSpaceSnapshot,
 )
+from core.services.filesystem import mountinfo_mounts
 from core.services.proxmox import _fetch_live_guest_lineage_uncached
 from core.services.recent_tasks import recent_task_page
 from core.services.refs import (
@@ -60,6 +61,7 @@ from core.services.storage_catalog_refresh import (
 from core.services.storage_mounts import (
     StorageMountError,
     bind_storage_mount,
+    compare_mount_source,
     derived_backend_identity,
     mount_health,
     near_match_mounts,
@@ -87,6 +89,89 @@ class StorageReferenceTests(SimpleTestCase):
         )
         with self.assertRaises(StorageMountError):
             normalized_backend_identity("smb://user:secret@server/share")
+
+
+class MountSourceAgreementTests(SimpleTestCase):
+    """The kernel already knows which export a directory came from.
+
+    Nothing downstream re-derives a binding, so pairing a datastore with the
+    wrong host mount silently redirects every scan and file action to another
+    export. These pin the one comparison that can catch it before it is stored.
+    """
+
+    def test_the_datastores_own_export_agrees_silently(self):
+        agreement = compare_mount_source(
+            "10.10.20.10:/mnt/Pool-FS/FS/Proxmox",
+            "10.10.20.10:/mnt/Pool-FS/FS/Proxmox",
+        )
+
+        self.assertTrue(agreement.agrees)
+        self.assertEqual(agreement.reason, "")
+
+    def test_a_different_export_on_the_same_server_is_reported(self):
+        # The mistake the form made reachable: two NFS datastores on one NAS,
+        # each with its own directory under /storages, freely cross-wirable.
+        agreement = compare_mount_source(
+            "10.10.20.10:/mnt/Pool-FS/FS/Proxmox",
+            "10.10.20.10:/mnt/Pool-VMs/VM/Proxmox",
+        )
+
+        self.assertFalse(agreement.agrees)
+        self.assertIn("different exports", agreement.reason)
+        self.assertIn("/mnt/Pool-VMs/VM/Proxmox", agreement.reason)
+
+    def test_the_same_export_under_two_host_spellings_is_reported_not_refused(self):
+        # Legitimate and common — the NAS answers to both — but it defeats the
+        # byte-equality the cross-cluster in-use check relies on.
+        agreement = compare_mount_source("nas.hq.local:/mnt/tank/vm", "10.0.0.5:/mnt/tank/vm")
+
+        self.assertFalse(agreement.agrees)
+        self.assertIn("nas.hq.local", agreement.reason)
+        self.assertIn("10.0.0.5", agreement.reason)
+
+    def test_a_subtree_of_the_export_is_reported_as_partial_coverage(self):
+        agreement = compare_mount_source("nas:/mnt/tank/vm", "nas:/mnt/tank/vm/images")
+
+        self.assertFalse(agreement.agrees)
+        self.assertIn("subdirectory", agreement.reason)
+
+    def test_a_mount_above_the_export_is_reported_as_over_broad(self):
+        agreement = compare_mount_source("nas:/mnt/tank/vm", "nas:/mnt/tank")
+
+        self.assertFalse(agreement.agrees)
+        self.assertIn("above", agreement.reason)
+
+    def test_nothing_is_claimed_when_either_side_is_unknown(self):
+        # A `dir` datastore publishes no export, and a plain directory that is
+        # not a mount point of its own has no source. Silence, not suspicion.
+        self.assertTrue(compare_mount_source("", "nas:/mnt/tank/vm").agrees)
+        self.assertTrue(compare_mount_source("nas:/mnt/tank/vm", "").agrees)
+        # A source this field cannot express is not evidence of a mismatch.
+        self.assertTrue(compare_mount_source("nas:/mnt/tank/vm", "user@host:/export").agrees)
+
+    def test_mountinfo_carries_the_source_through(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".mountinfo", delete=False) as handle:
+            handle.write(
+                "1385 1384 0:57 / /storages/truenas-fs rw,noatime master:344 "
+                "- nfs4 10.10.20.10:/mnt/Pool-FS/FS/Proxmox rw,vers=4.2\n"
+                "1386 1384 0:56 / /storages/with\\040space rw - ext4 /dev/sdb1 rw\n"
+                "malformed line without a separator\n"
+            )
+            path = handle.name
+        self.addCleanup(Path(path).unlink)
+
+        mounts = mountinfo_mounts(path)
+
+        self.assertEqual(
+            [(mount.mount_point, mount.filesystem_type, mount.source) for mount in mounts],
+            [
+                ("/storages/truenas-fs", "nfs4", "10.10.20.10:/mnt/Pool-FS/FS/Proxmox"),
+                ("/storages/with space", "ext4", "/dev/sdb1"),
+            ],
+        )
+
+    def test_a_missing_mountinfo_is_not_an_exception(self):
+        self.assertEqual(mountinfo_mounts("/nonexistent/mountinfo"), ())
 
 
 class StorageReadModelSourceInvariantTests(SimpleTestCase):
@@ -1172,7 +1257,7 @@ class StorageMountHealthTests(TestCase):
                 mount = StorageMount.objects.create(
                     storage_id="hint", display_name="NFS", path=f"{root}/shared", relative_path="shared"
                 )
-                with patch("core.services.storage_mounts.mountinfo_entries", return_value=()):
+                with patch("core.services.storage_mounts.mountinfo_mounts", return_value=()):
                     health = mount_health(mount, backend_profile("nfs"))
 
         self.assertFalse(health.available)
