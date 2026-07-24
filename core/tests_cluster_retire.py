@@ -31,7 +31,9 @@ from django.utils import timezone
 
 from core.models import (
     AuditEvent,
+    ClusterCredential,
     ClusterStorage,
+    ClusterTransportTrust,
     ConsoleSession,
     CurrentGuestInventoryState,
     ProxmoxCluster,
@@ -45,6 +47,11 @@ from core.models import (
     StorageMount,
 )
 from core.services.audit_events import record_audit_event
+from core.services.cluster_deletion import (
+    ClusterDeletionBlocked,
+    ClusterDeletionNotAllowed,
+    delete_unused_cluster_connection,
+)
 from core.services.cluster_deletion_eligibility import (
     BLOCKER_FOOTPRINT,
     BLOCKER_RETIRED,
@@ -1086,3 +1093,149 @@ class UnusedConnectionEligibilityTests(TestCase):
         self.assertFalse(result.eligible)
         endpoint_blocker = next(b for b in result.blockers if b.relation == "endpoints")
         self.assertEqual(endpoint_blocker.kind, "unclassified_relation")
+
+
+def _configured_unused_connection(key: str, *, ca_uuid: str = "") -> ProxmoxCluster:
+    """A deliberately-created connection that never acquired operational footprint.
+
+    It carries exactly what the add path leaves behind -- one ``ProxmoxCluster``,
+    endpoints, a credential and a transport trust -- and nothing operational, so it
+    is the shape ``Delete unused connection`` is scoped for.
+    """
+    cluster = make_cluster(key, ca_uuid=ca_uuid, ca_fingerprint="AA:BB" if ca_uuid else "")
+    ClusterCredential.objects.create(
+        cluster=cluster,
+        token_id=f"pve-helper@pve!{key}",
+        token_secret_sealed="sealed",
+        encryption_key_id="key-1",
+    )
+    ClusterTransportTrust.objects.create(
+        cluster=cluster,
+        mode=ClusterTransportTrust.Mode.PUBLIC,
+        approved_at=timezone.now(),
+    )
+    return cluster
+
+
+class ClusterConnectionHardDeleteTests(TestCase):
+    """R4 slice 2: the strict unused-connection hard delete. It physically removes
+    the row and its disposable configuration, preserves the configuration Audit
+    trail by detaching it, and releases the key, CA UUID and endpoint URLs -- but
+    only for a connection the eligibility check proves carries no footprint."""
+
+    def setUp(self):
+        bootstrap_runtime()
+        self.actor = get_user_model().objects.create_user(username="operator")
+
+    def test_eligible_connection_is_deleted_with_its_configuration(self):
+        cluster = _configured_unused_connection("unused")
+        pk = cluster.pk
+
+        result = delete_unused_cluster_connection(cluster, actor=self.actor)
+
+        self.assertEqual(result.cluster_key, "unused")
+        self.assertEqual(result.endpoints_deleted, 1)
+        self.assertTrue(result.credential_deleted)
+        self.assertTrue(result.trust_deleted)
+        self.assertFalse(historical_clusters().filter(pk=pk).exists())
+        self.assertFalse(ProxmoxEndpoint.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(ClusterCredential.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(ClusterTransportTrust.objects.filter(cluster_id=pk).exists())
+
+    def test_configuration_audit_is_detached_and_preserved(self):
+        cluster = _configured_unused_connection("unused")
+        # record_audit_event always stamps the durable key snapshot on a
+        # cluster-attached event; build the config trail the same way so it stays
+        # discoverable after the relation is detached.
+        AuditEvent.objects.create(
+            action="cluster.added", object_type="cluster", cluster=cluster, cluster_key_snapshot="unused"
+        )
+        AuditEvent.objects.create(
+            action="cluster.enabled", object_type="cluster", cluster=cluster, cluster_key_snapshot="unused"
+        )
+        pk = cluster.pk
+
+        result = delete_unused_cluster_connection(cluster, actor=self.actor)
+
+        # No event still points at the removed row (PROTECT would otherwise have
+        # refused the delete)...
+        self.assertFalse(AuditEvent.objects.filter(cluster_id=pk).exists())
+        # ...but the trail survives, discoverable by the durable key snapshot,
+        # including the final deletion event itself.
+        preserved = AuditEvent.objects.filter(cluster_key_snapshot="unused", cluster__isnull=True)
+        self.assertEqual(preserved.count(), 3)
+        self.assertTrue(preserved.filter(action="cluster.unused_connection_deleted").exists())
+        self.assertGreaterEqual(result.audit_events_detached, 3)
+
+    def test_deletion_records_the_final_event_before_removal(self):
+        cluster = _configured_unused_connection("unused")
+
+        result = delete_unused_cluster_connection(cluster, actor=self.actor)
+
+        event = AuditEvent.objects.get(pk=result.audit_event_id)
+        self.assertEqual(event.action, "cluster.unused_connection_deleted")
+        self.assertEqual(event.cluster_key_snapshot, "unused")
+        self.assertIsNone(event.cluster_id)
+        self.assertEqual(event.details["endpoint_count"], 1)
+        # This connection had no prior configuration events, so only the deletion
+        # event itself is detached here; the count is of the pre-existing trail.
+        self.assertEqual(event.details["configuration_audit_events_detached"], 0)
+
+    def test_released_key_ca_and_endpoint_url_are_reusable(self):
+        cluster = _configured_unused_connection("reused", ca_uuid="dddddddd-dddd-dddd-dddd-dddddddddddd")
+        endpoint_url = cluster.endpoints.get().normalized_url
+
+        delete_unused_cluster_connection(cluster, actor=self.actor)
+
+        # The same permanent key, the same physical CA identity and the same
+        # endpoint URL all register again with no uniqueness collision.
+        replacement = ProxmoxCluster.objects.create(
+            key="reused",
+            display_name="Re-registered",
+            discovered_ca_uuid="dddddddd-dddd-dddd-dddd-dddddddddddd",
+        )
+        ProxmoxEndpoint.objects.create(cluster=replacement, name="pve1", url=endpoint_url)
+        self.assertTrue(managed_clusters().filter(key="reused").exists())
+
+    def test_operational_footprint_marker_blocks_and_commits_nothing(self):
+        cluster = _configured_unused_connection("busy")
+        stamp_operational_footprint(cluster, reason=FOOTPRINT_PROVIDER_OPERATION)
+
+        with self.assertRaises(ClusterDeletionBlocked) as ctx:
+            delete_unused_cluster_connection(cluster, actor=self.actor)
+
+        self.assertEqual(ctx.exception.blocker_relation, BLOCKER_FOOTPRINT)
+        self.assertTrue(historical_clusters().filter(pk=cluster.pk).exists())
+        self.assertTrue(ClusterCredential.objects.filter(cluster_id=cluster.pk).exists())
+
+    def test_operational_audit_row_blocks_deletion(self):
+        cluster = _configured_unused_connection("op")
+        # A provider-operation event is operational history; build it directly so
+        # it is the only thing under test.
+        AuditEvent.objects.create(action="guest.power.start", object_type="guest", cluster=cluster)
+
+        with self.assertRaises(ClusterDeletionBlocked) as ctx:
+            delete_unused_cluster_connection(cluster, actor=self.actor)
+
+        self.assertEqual(ctx.exception.blocker_relation, "audit_events")
+        self.assertTrue(historical_clusters().filter(pk=cluster.pk).exists())
+
+    def test_retired_cluster_cannot_be_hard_deleted(self):
+        cluster = retire_cluster(_configured_unused_connection("gone"))
+
+        # A retired cluster permanently reserves its key; it is outside the managed
+        # scope the deletion resolves against.
+        with self.assertRaises(ClusterDeletionNotAllowed):
+            delete_unused_cluster_connection(cluster, actor=self.actor)
+        self.assertTrue(historical_clusters().filter(pk=cluster.pk).exists())
+
+    def test_deleting_the_last_connection_does_not_reimport_bootstrap(self):
+        cluster = _configured_unused_connection("only")
+
+        delete_unused_cluster_connection(cluster, actor=self.actor)
+
+        self.assertFalse(has_managed_clusters())
+        self.assertFalse(has_historical_clusters())
+        # The durable bootstrap marker is what keeps onboarding from re-importing;
+        # it survives deleting every cluster.
+        self.assertTrue(RuntimeConfigurationState.objects.get().bootstrap_completed)
