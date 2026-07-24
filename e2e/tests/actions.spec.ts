@@ -255,3 +255,23 @@ test("a confirmation chained onto another one actually opens", async ({ page }) 
   // A closed modal leaves the document, so the stale close event has nowhere to land.
   await expect(page.locator("[data-vm-action-dialog]")).toHaveCount(0);
 });
+
+test("storage consumer release lists its exact impact before submitting acknowledgement", async ({ page }) => {
+  await page.goto("/clusters/e2e/datastores/e2e-nfs/summary/", { waitUntil: "load" });
+
+  let submitted = "";
+  await page.route("**/clusters/e2e/storage-consumers/release/", async (route) => {
+    submitted = route.request().postData() || "";
+    await route.fulfill({ status: 204 });
+  });
+
+  await page.getByRole("button", { name: "Release all consumers for E2E cluster" }).click();
+  const dialog = page.locator("[data-vm-action-dialog]");
+  await expect(dialog.getByRole("heading", { name: "Release all consumers for E2E cluster?" })).toBeVisible();
+  await expect(dialog.getByRole("cell", { name: "E2E shared storage" })).toBeVisible();
+  await expect(dialog.getByRole("cell", { name: "pve1" })).toBeVisible();
+  await expect(dialog.getByText("Consumers belonging to other managed clusters")).toBeVisible();
+
+  await dialog.getByRole("button", { name: "Release 1 consumer", exact: true }).click();
+  await expect.poll(() => submitted).toMatch(/name="confirm_release"[\s\S]*\r?\nyes/);
+});

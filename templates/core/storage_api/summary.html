@@ -124,11 +124,12 @@
           {% if consumers %}
             <table class="data-table compact table-spaced">
               <thead>
-                <tr><th>Node</th><th>Gate</th><th>Last Scan</th></tr>
+                <tr><th>Cluster</th><th>Node</th><th>Gate</th><th>Last Scan</th></tr>
               </thead>
               <tbody>
                 {% for consumer in consumers %}
                   <tr>
+                    <td>{{ consumer.cluster.display_name }} <span class="subline">{{ consumer.cluster.key }}</span></td>
                     <td>{{ consumer.expected_node_name }}</td>
                     <td><span class="badge {% if consumer.last_gate_status == 'ok' %}completed{% else %}failed{% endif %}">{{ consumer.last_gate_status|default:"-" }}</span></td>
                     <td>{{ consumer.last_successful_inventory_scan|date:"Y-m-d H:i:s"|default:"-" }}</td>
@@ -136,6 +137,49 @@
                 {% endfor %}
               </tbody>
             </table>
+          {% endif %}
+          {% if consumer_release.consumers %}
+            <form
+              method="post"
+              action="{% url 'core:release_cluster_storage_consumers' cluster_key %}"
+              data-confirm
+              data-confirm-title="Release all consumers for {{ selected_cluster.display_name }}?"
+              data-confirm-label="Release {{ consumer_release.consumers|length }} consumer{{ consumer_release.consumers|length|pluralize }}"
+              data-confirm-danger="true"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="confirmation" value="{{ consumer_release.confirmation }}">
+              <input type="hidden" name="confirm_release" value="" data-confirm-acknowledgement>
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <template data-confirm-body>
+                <p>
+                  These exact consumer relationships will be deleted. This records that
+                  <strong>{{ selected_cluster.display_name }}</strong> no longer consumes the listed storage.
+                </p>
+                <table class="data-table compact table-spaced">
+                  <thead><tr><th>Storage</th><th>Node</th><th>Last observation</th></tr></thead>
+                  <tbody>
+                    {% for consumer in consumer_release.consumers %}
+                      <tr>
+                        <td>
+                          {{ consumer.storage_name }}
+                          {% if consumer.storage_name != consumer.storage_id %}<span class="subline">{{ consumer.storage_id }}</span>{% endif %}
+                        </td>
+                        <td>{{ consumer.node }}</td>
+                        <td>{{ consumer.last_observed_at|date:"Y-m-d H:i:s"|default:"Never" }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+                <p>
+                  Consumers belonging to other managed clusters on the same shared export
+                  are not changed. Run retirement preflight again after this release.
+                </p>
+              </template>
+              <button class="secondary-action danger" type="submit">
+                Release all consumers for {{ selected_cluster.display_name }}
+              </button>
+            </form>
           {% endif %}
         {% endif %}
       </div>

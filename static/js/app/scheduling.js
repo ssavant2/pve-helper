@@ -441,9 +441,10 @@ const initConfirmForms = (root) => {
         return;
       }
       event.preventDefault();
+      const bodyTemplate = form.querySelector("template[data-confirm-body]");
       const confirmed = await openConfirmDialog({
         title: form.dataset.confirmTitle || "Confirm action",
-        body: `<p>${escapeHtml(form.dataset.confirm || "Continue?")}</p>`,
+        body: bodyTemplate?.innerHTML || `<p>${escapeHtml(form.dataset.confirm || "Continue?")}</p>`,
         confirmLabel: form.dataset.confirmLabel || "Confirm",
         danger: form.dataset.confirmDanger === "true",
       });
@@ -460,6 +461,8 @@ const initConfirmForms = (root) => {
         });
         if (!reconfirmed) return;
       }
+      const acknowledgement = form.querySelector("[data-confirm-acknowledgement]");
+      if (acknowledgement) acknowledgement.value = "yes";
       form.dataset.confirmed = "true";
       form.requestSubmit(event.submitter || undefined);
     });

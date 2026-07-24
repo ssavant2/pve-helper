@@ -13,6 +13,7 @@ const PAGES = [
   { name: "Cluster connections", path: "/clusters/" },
   { name: "Add cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
+  { name: "Datastore consumer view", path: "/clusters/e2e/datastores/e2e-nfs/summary/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
   { name: "PVE-helper Settings", path: "/settings/storage/" },
   { name: "Log forwarder settings", path: "/settings/log-forwarder/" },

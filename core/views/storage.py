@@ -16,9 +16,11 @@ from core.models import (
     ProxmoxCluster,
     ProxmoxStorageConsumer,
 )
+from core.services.cluster_scopes import managed_clusters
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.datastore_nav import datastore_url, nav_datastore_key
 from core.services.filesystem import mountinfo_mounts
+from core.services.request_metadata import client_ip
 from core.services.storage_backends import backend_profile
 from core.services.storage_catalog import (
     StorageOperationScope,
@@ -30,6 +32,11 @@ from core.services.storage_catalog_refresh import (
     StorageCatalogRefreshAlreadyActive,
     StorageCatalogRefreshQueueError,
     queue_storage_catalog_refresh,
+)
+from core.services.storage_consumers import (
+    StorageConsumerReleaseError,
+    cluster_storage_consumer_release_preflight,
+    release_cluster_storage_consumers,
 )
 from core.services.storage_mounts import (
     StorageMountError,
@@ -1061,7 +1068,13 @@ def _datastore_mount_facts(request, view):
         "classification_chips": _classification_chips(counts),
         "total_file_count": sum(counts.values()),
         "gate_status": gate_status,
-        "consumers": list(mount.consumer_statuses.order_by("expected_node_name")),
+        "consumers": list(
+            mount.consumer_statuses.select_related("cluster").order_by(
+                "cluster__display_name",
+                "cluster__key",
+                "expected_node_name",
+            )
+        ),
         "mount_unavailable_reason": "",
     }
 
@@ -1075,15 +1088,41 @@ def api_storage_summary(request, cluster_key: str, storage: str, node: str = "")
     context = _api_storage_context(cluster, definition, storage, node, "summary")
     volumes, _found, _error = _api_storage_volumes(cluster, definition, node)
     vmids = {str(v["vmid"]) for v in volumes if v.get("vmid")}
+    mount_facts = _datastore_mount_facts(request, context["catalog_view"])
+    consumer_release = cluster_storage_consumer_release_preflight(cluster, actor=request.user)
     context.update(
         {
             "volume_count": len(volumes),
             "guest_count": len(vmids),
             "metadata_cells": _datastore_metadata(definition),
-            **_datastore_mount_facts(request, context["catalog_view"]),
+            "consumer_release": consumer_release,
+            **mount_facts,
         }
     )
     return render(request, "core/storage_api/summary.html", context)
+
+
+@require_POST
+@app_login_required
+def release_cluster_storage_consumers_view(request, cluster_key: str):
+    cluster = get_object_or_404(managed_clusters(), key=cluster_key)
+    redirect_to = _safe_next_url(request)
+    if request.POST.get("confirm_release") != "yes":
+        messages.error(
+            request,
+            "Review the exact storage consumer list and confirm that every listed relationship should be released.",
+        )
+        return redirect(redirect_to)
+    try:
+        release_cluster_storage_consumers(
+            cluster,
+            confirmation=request.POST.get("confirmation", ""),
+            actor=request.user,
+            source_ip=client_ip(request),
+        )
+    except StorageConsumerReleaseError as exc:
+        messages.error(request, str(exc))
+    return redirect(redirect_to)
 
 
 @app_login_required

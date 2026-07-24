@@ -404,6 +404,11 @@ urlpatterns = [
         name="storage_catalog_refresh",
     ),
     path(
+        "clusters/<str:cluster_key>/storage-consumers/release/",
+        views.release_cluster_storage_consumers_view,
+        name="release_cluster_storage_consumers",
+    ),
+    path(
         "storage-api/<str:node>/<str:storage>/",
         legacy_node_redirect("core:storage_api_inventory"),
         name="legacy_storage_api_inventory",
