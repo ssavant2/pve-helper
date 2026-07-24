@@ -31,6 +31,8 @@ def _mounted_storage_refs(cluster_key: str, node: str) -> dict[str, str]:
         ClusterStorageMount.objects.select_related("cluster_storage", "mount")
         .filter(
             cluster_storage__cluster__key=cluster_key,
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
             cluster_storage__present=True,
             mount__enabled=True,
         )

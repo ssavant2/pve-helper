@@ -734,6 +734,8 @@ def _fetch_live_guest_lineage_uncached(*, cluster) -> dict[int, int]:
     coverage_filter = models.Q(pk__in=[])
     coverages = ClusterStorageVolumeCoverage.objects.filter(
         cluster_storage__cluster=cluster,
+        cluster_storage__cluster__retired_at__isnull=True,
+        cluster_storage__unmanaged_at__isnull=True,
         cluster_storage__present=True,
         complete=True,
         volume_generation__isnull=False,
@@ -749,6 +751,8 @@ def _fetch_live_guest_lineage_uncached(*, cluster) -> dict[int, int]:
         coverage_filter |= scope
     observations = ClusterStorageVolumeObservation.objects.filter(
         coverage_filter,
+        cluster_storage__cluster__retired_at__isnull=True,
+        cluster_storage__unmanaged_at__isnull=True,
         cluster_storage__present=True,
         content="images",
     ).only("vmid", "metadata")

@@ -1032,7 +1032,13 @@ def _require_file_not_blocked(
         raise StorageActionError(risk.warning_message)
     if relocates_file and entry.content_category in {"vm_disk", "base_image", "ct_private"}:
         scope = scope or StorageOperationScope()
-        bindings = entry.storage.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster")
+        bindings = entry.storage.cluster_bindings.select_related(
+            "cluster_storage",
+            "cluster_storage__cluster",
+        ).filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+        )
         if not bindings.exists():
             if not acknowledged_risk:
                 raise StorageActionError(

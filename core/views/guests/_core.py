@@ -428,6 +428,8 @@ def _template_storage_paths(
         binding.cluster_storage.storage_id: binding.mount
         for binding in ClusterStorageMount.objects.select_related("cluster_storage", "mount").filter(
             cluster_storage__cluster=cluster,
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
             cluster_storage__present=True,
             mount__enabled=True,
         )

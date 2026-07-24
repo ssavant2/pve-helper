@@ -281,7 +281,11 @@ def registered_mount_health(mount: StorageMount) -> MountHealth:
     from core.services.storage_backends import backend_profile
 
     definitions = [
-        binding.cluster_storage for binding in mount.cluster_bindings.select_related("cluster_storage").all()
+        binding.cluster_storage
+        for binding in mount.cluster_bindings.select_related("cluster_storage").filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+        )
     ]
     if not definitions:
         # Transitional legacy mounts are still treated as explicit directory
@@ -299,7 +303,11 @@ def registered_mount_health(mount: StorageMount) -> MountHealth:
 
 @transaction.atomic
 def bind_storage_mount(*, cluster_storage: ClusterStorage, mount: StorageMount, node: str = "") -> ClusterStorageMount:
-    definition = ClusterStorage.objects.select_for_update().get(pk=cluster_storage.pk)
+    definition = ClusterStorage.objects.select_for_update().get(
+        pk=cluster_storage.pk,
+        cluster__retired_at__isnull=True,
+        unmanaged_at__isnull=True,
+    )
     bindings = list(ClusterStorageMount.objects.select_for_update().filter(cluster_storage=definition))
     if definition.shared:
         if node:
@@ -326,7 +334,11 @@ def bind_storage_mount(*, cluster_storage: ClusterStorage, mount: StorageMount, 
 
 @transaction.atomic
 def unbind_storage_mount(binding: ClusterStorageMount) -> None:
-    definition = ClusterStorage.objects.select_for_update().get(pk=binding.cluster_storage_id)
+    definition = ClusterStorage.objects.select_for_update().get(
+        pk=binding.cluster_storage_id,
+        cluster__retired_at__isnull=True,
+        unmanaged_at__isnull=True,
+    )
     locked = (
         ClusterStorageMount.objects.select_for_update()
         .filter(
@@ -368,6 +380,10 @@ def mount_datastore_scope(mount: StorageMount):
     """
     binding = (
         mount.cluster_bindings.select_related("cluster_storage__cluster")
+        .filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+        )
         .order_by("cluster_storage__cluster__key", "node")
         .first()
     )

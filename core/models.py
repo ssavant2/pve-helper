@@ -627,6 +627,12 @@ class ClusterStorage(TimestampedModel):
     config = models.JSONField(default=dict, blank=True)
     present = models.BooleanField(default=True)
     retired_at = models.DateTimeField(null=True, blank=True)
+    # Distinct from ``retired_at`` above: catalog refresh sets ``retired_at`` when
+    # Proxmox no longer publishes the definition, while ``unmanaged_at`` means
+    # pve-helper deliberately stopped managing the owning cluster. Retirement
+    # keeps this definition as a durable tombstone but every current catalog
+    # reader excludes it.
+    unmanaged_at = models.DateTimeField(null=True, blank=True)
     observed_metadata_generation = models.UUIDField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
 
@@ -641,6 +647,7 @@ class ClusterStorage(TimestampedModel):
         indexes = [
             models.Index(fields=["cluster", "present", "disabled"], name="core_cstorage_state_idx"),
             models.Index(fields=["cluster", "retired_at"], name="core_cstorage_retired_idx"),
+            models.Index(fields=["cluster", "unmanaged_at"], name="core_cstorage_unmanaged_idx"),
         ]
 
     def __str__(self) -> str:

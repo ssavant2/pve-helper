@@ -271,7 +271,15 @@ def _metadata_semantics(cluster: ProxmoxCluster) -> dict[str, tuple[Any, ...]]:
     Capacity and observation timestamps intentionally do not participate: they
     change frequently without changing which storage instances or volumes exist.
     """
-    definitions = ClusterStorage.objects.filter(cluster=cluster).prefetch_related("node_states").order_by("storage_id")
+    definitions = (
+        ClusterStorage.objects.filter(
+            cluster=cluster,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+        )
+        .prefetch_related("node_states")
+        .order_by("storage_id")
+    )
     return {
         definition.storage_id: (
             definition.storage_id,
@@ -385,12 +393,14 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
                     },
                 )
                 seen_node_ids.add(node_state.pk)
-        ClusterStorage.objects.filter(cluster=cluster).exclude(pk__in=seen_definition_ids).update(
-            present=False, retired_at=observed_at
-        )
-        ClusterStorageNodeState.objects.filter(cluster_storage__cluster=cluster).exclude(pk__in=seen_node_ids).update(
-            present=False, active=False, unreachable=False
-        )
+        ClusterStorage.objects.filter(
+            cluster=cluster,
+            unmanaged_at__isnull=True,
+        ).exclude(pk__in=seen_definition_ids).update(present=False, retired_at=observed_at)
+        ClusterStorageNodeState.objects.filter(
+            cluster_storage__cluster=cluster,
+            cluster_storage__unmanaged_at__isnull=True,
+        ).exclude(pk__in=seen_node_ids).update(present=False, active=False, unreachable=False)
         state.metadata_generation = generation
         state.metadata_refreshed_at = observed_at
         state.metadata_last_attempt_at = attempted_at
@@ -399,7 +409,8 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
         current_semantics = _metadata_semantics(cluster)
         coverage_errors: dict[str, str] = {}
         coverage_rows = ClusterStorageVolumeCoverage.objects.select_for_update().filter(
-            cluster_storage__cluster=cluster
+            cluster_storage__cluster=cluster,
+            cluster_storage__unmanaged_at__isnull=True,
         )
         for coverage in coverage_rows.select_related("cluster_storage"):
             storage_id = coverage.cluster_storage.storage_id
@@ -443,7 +454,13 @@ def _coverage_error_key(definition: ClusterStorage, node: str | None) -> str:
 
 def _coverage_summary_complete(cluster: ProxmoxCluster, metadata_generation: uuid.UUID) -> bool:
     definitions = (
-        ClusterStorage.objects.filter(cluster=cluster, present=True, disabled=False)
+        ClusterStorage.objects.filter(
+            cluster=cluster,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+            present=True,
+            disabled=False,
+        )
         .prefetch_related("node_states", "volume_coverages")
         .order_by("storage_id")
     )
@@ -494,7 +511,10 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
     state, _ = StorageCatalogState.objects.get_or_create(cluster=cluster)
     metadata_generation = state.metadata_generation
     if not state.metadata_complete or metadata_generation is None:
-        ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster=cluster).update(
+        ClusterStorageVolumeCoverage.objects.filter(
+            cluster_storage__cluster=cluster,
+            cluster_storage__unmanaged_at__isnull=True,
+        ).update(
             complete=False,
             last_attempt_at=attempted_at,
             error_code="metadata_incomplete",
@@ -508,7 +528,13 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
     try:
         clients = _clients(cluster)
         definitions = list(
-            ClusterStorage.objects.filter(cluster=cluster, present=True, disabled=False)
+            ClusterStorage.objects.filter(
+                cluster=cluster,
+                cluster__retired_at__isnull=True,
+                unmanaged_at__isnull=True,
+                present=True,
+                disabled=False,
+            )
             .prefetch_related("node_states")
             .order_by("storage_id")
         )
@@ -628,7 +654,10 @@ def _refresh_storage_volumes_locked(cluster: ProxmoxCluster) -> StorageCatalogSt
     except Exception as exc:
         logger.exception("Storage volume refresh failed for cluster=%s", cluster.key)
         reason = _public_error(exc)
-        ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster=cluster).update(
+        ClusterStorageVolumeCoverage.objects.filter(
+            cluster_storage__cluster=cluster,
+            cluster_storage__unmanaged_at__isnull=True,
+        ).update(
             complete=False,
             last_attempt_at=attempted_at,
             error_code="refresh_failed",
@@ -970,6 +999,8 @@ def node_storage_rows(cluster: ProxmoxCluster, node: str, *, content: str = "") 
         ClusterStorageNodeState.objects.select_related("cluster_storage")
         .filter(
             cluster_storage__cluster=cluster,
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
             cluster_storage__present=True,
             node=node,
             present=True,
@@ -1006,7 +1037,13 @@ def storage_volume_rows(
     vmid: int | None = None,
 ) -> tuple[list[dict[str, Any]], bool, str]:
     definition = (
-        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage_id, present=True)
+        ClusterStorage.objects.filter(
+            cluster=cluster,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+            storage_id=storage_id,
+            present=True,
+        )
         .select_related("cluster__storage_catalog_state")
         .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .first()
@@ -1214,7 +1251,11 @@ def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[Cl
         identities = {binding.mount.backend_identity for binding in bindings}
         pairs: list[tuple[ClusterStorage, str]] = []
         others = (
-            ClusterStorage.objects.filter(present=True)
+            ClusterStorage.objects.filter(
+                cluster__retired_at__isnull=True,
+                unmanaged_at__isnull=True,
+                present=True,
+            )
             .select_related("cluster__storage_catalog_state")
             .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
             .filter(
@@ -1256,7 +1297,13 @@ def _cross_cluster_candidates(definition: ClusterStorage) -> tuple[list[tuple[Cl
     for other in (
         ClusterStorage.objects.select_related("cluster__storage_catalog_state")
         .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
-        .filter(present=True, shared=True, storage_type=definition.storage_type)
+        .filter(
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+            present=True,
+            shared=True,
+            storage_type=definition.storage_type,
+        )
         .exclude(pk=definition.pk)
     ):
         if backend_identity_from_definition(other) == identity:
@@ -1276,7 +1323,12 @@ class MountedVolumeClassifier:
     """
 
     def __init__(self, mount: StorageMount) -> None:
-        self._bindings = list(mount.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster"))
+        self._bindings = list(
+            mount.cluster_bindings.select_related("cluster_storage", "cluster_storage__cluster").filter(
+                cluster_storage__cluster__retired_at__isnull=True,
+                cluster_storage__unmanaged_at__isnull=True,
+            )
+        )
         self._scopes = [_usage_scope(binding.cluster_storage, binding.node or "") for binding in self._bindings]
         self._observed: list[set[str]] = []
         for binding in self._bindings:

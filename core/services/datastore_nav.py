@@ -88,7 +88,12 @@ def _build(cluster):
         # Unreachable instances stay in the tree. A node taken down for patching
         # has not had its disks removed, and a datastore that silently disappears
         # from navigation is indistinguishable from one that was deleted.
-        .filter(cluster_storage__cluster=cluster, cluster_storage__present=True)
+        .filter(
+            cluster_storage__cluster=cluster,
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+            cluster_storage__present=True,
+        )
         .filter(models.Q(present=True) | models.Q(unreachable=True))
         .order_by("node", "cluster_storage__storage_id")
     )

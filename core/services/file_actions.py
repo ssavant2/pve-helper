@@ -203,7 +203,12 @@ def _referenced_objects(entry: FileInventory) -> list[ReferencedObject]:
     if not separator:
         return []
     objects: list[ReferencedObject] = []
-    bindings = list(entry.storage.cluster_bindings.select_related("cluster_storage__cluster"))
+    bindings = list(
+        entry.storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+        )
+    )
     if not bindings and settings.PVE_TEST_NETWORK_DISABLED:
         return [
             _legacy_referenced_object(obj)
@@ -224,7 +229,12 @@ def _vmid_objects(entry: FileInventory) -> list[ReferencedObject]:
     if vmid is None:
         return []
     objects: list[ReferencedObject] = []
-    bindings = list(entry.storage.cluster_bindings.select_related("cluster_storage__cluster"))
+    bindings = list(
+        entry.storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+        )
+    )
     if not bindings and settings.PVE_TEST_NETWORK_DISABLED:
         return [
             _legacy_referenced_object(obj)

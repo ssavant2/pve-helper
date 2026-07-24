@@ -176,10 +176,13 @@ STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
 
 def _clusters_for_mounts(mount_ids):
     return list(
-        ProxmoxCluster.objects.filter(enabled=True)
+        ProxmoxCluster.objects.filter(enabled=True, retired_at__isnull=True)
         .filter(
             Q(storage_consumers__storage_id__in=mount_ids)
-            | Q(storage_definitions__mount_bindings__mount_id__in=mount_ids)
+            | Q(
+                storage_definitions__mount_bindings__mount_id__in=mount_ids,
+                storage_definitions__unmanaged_at__isnull=True,
+            )
         )
         .distinct()
         .order_by("display_name", "key")
@@ -194,6 +197,8 @@ def _cluster_storage_for_mount(storage: StorageMount, cluster: ProxmoxCluster):
     matches = list(
         ClusterStorage.objects.filter(
             cluster=cluster,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
             mount_bindings__mount=storage,
             present=True,
         ).distinct()[:2]
@@ -259,15 +264,28 @@ def dashboard(request):
 
 def _clusters_without_storage() -> list[ProxmoxCluster]:
     """Enabled clusters whose catalog has not published a current definition."""
-    represented = set(ClusterStorage.objects.filter(present=True).values_list("cluster_id", flat=True))
-    return list(ProxmoxCluster.objects.filter(enabled=True).exclude(pk__in=represented).order_by("key"))
+    represented = set(
+        ClusterStorage.objects.filter(
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+            present=True,
+        ).values_list("cluster_id", flat=True)
+    )
+    return list(
+        ProxmoxCluster.objects.filter(enabled=True, retired_at__isnull=True).exclude(pk__in=represented).order_by("key")
+    )
 
 
 def _storage_catalog_rows() -> list[dict]:
     catalog_rows = []
     definitions = (
         ClusterStorage.objects.select_related("cluster__storage_catalog_state")
-        .filter(cluster__enabled=True, present=True)
+        .filter(
+            cluster__enabled=True,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+            present=True,
+        )
         .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .order_by("cluster__display_name", "storage_id")
     )
@@ -375,9 +393,12 @@ def _binding_rows() -> list[dict[str, object]]:
     """
     rows = []
     bindings = list(
-        ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount").order_by(
-            "cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node"
+        ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount")
+        .filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
         )
+        .order_by("cluster_storage__cluster__display_name", "cluster_storage__storage_id", "node")
     )
     guests_by_storage = _guest_references_by_storage(bindings)
     volume_counts = _volume_counts_by_storage(bindings)
@@ -419,7 +440,12 @@ def _binding_rows() -> list[dict[str, object]]:
 def storage_mount_register(request):
     definitions = list(
         ClusterStorage.objects.select_related("cluster")
-        .filter(cluster__enabled=True, present=True)
+        .filter(
+            cluster__enabled=True,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+            present=True,
+        )
         .prefetch_related("node_states")
         .order_by("cluster__display_name", "storage_id")
     )
@@ -466,7 +492,11 @@ def storage_mount_register(request):
                 binding_id = 0
             binding = (
                 ClusterStorageMount.objects.select_related("cluster_storage__cluster", "mount")
-                .filter(pk=binding_id)
+                .filter(
+                    pk=binding_id,
+                    cluster_storage__cluster__retired_at__isnull=True,
+                    cluster_storage__unmanaged_at__isnull=True,
+                )
                 .first()
             )
             if binding is None:
@@ -697,7 +727,13 @@ def _resolve_datastore_scope(cluster, storage: str, node: str):
     not-found state, which is why this does not raise.
     """
     definition = (
-        ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True)
+        ClusterStorage.objects.filter(
+            cluster=cluster,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
+            storage_id=storage,
+            present=True,
+        )
         .select_related("cluster__storage_catalog_state")
         .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .first()
@@ -831,7 +867,13 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
 @app_login_required
 def storage_catalog_refresh_view(request, cluster_key: str, storage: str):
     cluster = get_object_or_404(ProxmoxCluster, key=cluster_key, enabled=True)
-    if not ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True).exists():
+    if not ClusterStorage.objects.filter(
+        cluster=cluster,
+        cluster__retired_at__isnull=True,
+        unmanaged_at__isnull=True,
+        storage_id=storage,
+        present=True,
+    ).exists():
         raise Http404("Storage is not present in the latest catalog.")
     try:
         event, _task_id = queue_storage_catalog_refresh(cluster=cluster, storage=storage, request=request)
@@ -1090,7 +1132,13 @@ def api_storage_vms(request, cluster_key: str, storage: str, node: str = ""):
 
 
 def _api_live_content_values(cluster, storage: str) -> list[str]:
-    definition = ClusterStorage.objects.filter(cluster=cluster, storage_id=storage, present=True).first()
+    definition = ClusterStorage.objects.filter(
+        cluster=cluster,
+        cluster__retired_at__isnull=True,
+        unmanaged_at__isnull=True,
+        storage_id=storage,
+        present=True,
+    ).first()
     return list(definition.content) if definition else []
 
 
@@ -1586,7 +1634,10 @@ def _storage_browser_context(request, storage):
             "storage_id": binding.cluster_storage.storage_id,
         }
         for binding in storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
-            cluster_storage__cluster__enabled=True, cluster_storage__present=True
+            cluster_storage__cluster__enabled=True,
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+            cluster_storage__present=True,
         )
     }
     storage.backup_restore_clusters = list(restore_clusters.values())
@@ -1888,7 +1939,12 @@ def _trash_rows(storage: StorageMount, items: list[TrashItem]) -> list[dict[str,
     still points at it — a still-referenced disk means restoring is the only way
     back for that guest.
     """
-    bindings = list(storage.cluster_bindings.select_related("cluster_storage__cluster"))
+    bindings = list(
+        storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+        )
+    )
     references: dict[str, list[str]] = {}
     if bindings:
         clusters = {binding.cluster_storage.cluster_id: binding.cluster_storage.cluster for binding in bindings}
@@ -2164,6 +2220,8 @@ def _storage_content_values(storage: StorageMount, *, cluster=None) -> list[str]
     if cluster is not None:
         definition = ClusterStorage.objects.filter(
             cluster=cluster,
+            cluster__retired_at__isnull=True,
+            unmanaged_at__isnull=True,
             mount_bindings__mount=storage,
             present=True,
         ).first()

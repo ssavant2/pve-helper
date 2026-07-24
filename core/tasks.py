@@ -1463,6 +1463,8 @@ def _record_local_space_snapshots(recorded_at: datetime) -> int:
     created = 0
     states = ClusterStorageNodeState.objects.select_related("cluster_storage", "cluster_storage__cluster").filter(
         cluster_storage__cluster__enabled=True,
+        cluster_storage__cluster__retired_at__isnull=True,
+        cluster_storage__unmanaged_at__isnull=True,
         cluster_storage__present=True,
         cluster_storage__shared=False,
         present=True,

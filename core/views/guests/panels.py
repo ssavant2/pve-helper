@@ -26,6 +26,8 @@ def guest_datastores(request, cluster_key: str, object_type: str, vmid: int):
         binding.cluster_storage.storage_id: binding.mount
         for binding in ClusterStorageMount.objects.select_related("cluster_storage", "mount").filter(
             cluster_storage__cluster__key=detail.cluster_key,
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
             cluster_storage__present=True,
             mount__enabled=True,
         )
