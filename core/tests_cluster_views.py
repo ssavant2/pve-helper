@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from core.models import (
     AuditEvent,
@@ -144,6 +145,44 @@ class ClusterConnectionViewTests(TestCase):
         self.assertContains(detail, "cluster-section-heading")
         body = detail.content.decode()
         self.assertLess(body.index("Verify and rotate credential"), body.index("Remove stored credential"))
+
+    def _inspect_key(self, cluster_key):
+        with patch("core.views.clusters.inspect_transport", return_value=self.certificate):
+            return self.client.post(
+                reverse("core:cluster_add"),
+                {
+                    "action": "inspect",
+                    "display_name": "Replacement",
+                    "cluster_key": cluster_key,
+                    "endpoint_url": "https://pve1.example.test:8006",
+                    "endpoint_name": "pve1",
+                },
+            )
+
+    def test_add_form_rejects_a_retired_key_as_permanently_reserved(self):
+        ProxmoxCluster.objects.create(
+            key="clusterb",
+            display_name="Retired B",
+            enabled=False,
+            retired_at=timezone.now(),
+            retirement_mode=ProxmoxCluster.RetirementMode.FORCED,
+            retirement_reason="The site was decommissioned.",
+        )
+
+        response = self._inspect_key("clusterb")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "belonged to a retired cluster")
+        self.assertEqual(response.context["step"], "identity")
+
+    def test_add_form_points_a_managed_key_collision_at_delete_unused(self):
+        ProxmoxCluster.objects.create(key="clusterb", display_name="Existing B", enabled=False)
+
+        response = self._inspect_key("clusterb")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "already uses this permanent key")
+        self.assertContains(response, "Delete unused connection")
 
     def test_zero_cluster_state_keeps_aggregate_views_usable(self):
         for route_name in (

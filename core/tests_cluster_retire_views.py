@@ -1,5 +1,6 @@
 """Operator-facing R3 danger-zone retirement wiring."""
 
+import base64
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -7,13 +8,17 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from core.models import AuditEvent, ProxmoxCluster, ProxmoxEndpoint
+from core.models import AuditEvent, CurrentGuestInventory, ProxmoxCluster, ProxmoxEndpoint, ScanRun
+from core.services.cluster_credentials import set_cluster_credential
 from core.services.cluster_retirement import (
     ERROR_CODE_PREFLIGHT_IDENTITY_MISMATCH,
     ERROR_CODE_RETIREMENT_CONFIRMATION,
     RetirementPreflightIdentityMismatch,
 )
+from core.services.cluster_trust import TRUST_PUBLIC, approve_cluster_transport
 from core.tests_cluster_retire_preflight import CA_UUID, IdentityClient
+
+_ENCRYPTION_KEY = base64.b64encode(b"v" * 32).decode()
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)
@@ -331,3 +336,156 @@ class ClusterRetirementViewTests(TestCase):
                 details__reason_code=ERROR_CODE_RETIREMENT_CONFIRMATION,
             ).exists()
         )
+
+
+@override_settings(
+    APP_REQUIRE_LOGIN=False,
+    PVE_HELPER_ENCRYPTION_KEYS=f"test:{_ENCRYPTION_KEY}",
+    PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID="test",
+)
+class ClusterUnusedDeletionViewTests(TestCase):
+    """R4 slice 3: the operator-facing hard-delete control and exact-key retry UX."""
+
+    def setUp(self):
+        self.actor = get_user_model().objects.create_user(username="unused-deletion-operator")
+        self.client.force_login(self.actor)
+
+    def _action_url(self, cluster):
+        return reverse("core:cluster_connection_action", kwargs={"cluster_key": cluster.key})
+
+    def _eligible_connection(self, *, key="unused"):
+        cluster = ProxmoxCluster.objects.create(
+            key=key,
+            display_name="Unused connection",
+            enabled=False,
+        )
+        ProxmoxEndpoint.objects.create(cluster=cluster, name="pve1", url=f"https://pve1.{key}.test:8006/")
+        approve_cluster_transport(cluster, mode=TRUST_PUBLIC)
+        set_cluster_credential(cluster, token_id="pve-helper@pve!token", token_secret="never-render-this")
+        return cluster
+
+    def _preflight(self, cluster):
+        return self.client.post(
+            self._action_url(cluster),
+            {"action": "delete-unused-preflight"},
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="fetch",
+        )
+
+    def test_danger_zone_shows_the_delete_control_only_when_eligible(self):
+        eligible = self._eligible_connection(key="eligible")
+        eligible_page = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": eligible.key}))
+        self.assertContains(eligible_page, "data-cluster-unused-deletion-form")
+
+        used = self._eligible_connection(key="used")
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        CurrentGuestInventory.objects.create(
+            cluster=used,
+            source_scan=scan,
+            node="pve1",
+            object_type="vm",
+            vmid=100,
+            name="e2e-vm",
+            status="running",
+            observed_at=timezone.now(),
+        )
+        used_page = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": used.key}))
+        self.assertNotContains(used_page, "data-cluster-unused-deletion-form")
+        self.assertContains(used_page, "cannot be deleted")
+
+    def test_preflight_reports_eligibility_and_connection_config(self):
+        cluster = self._eligible_connection(key="preflight")
+
+        payload = self._preflight(cluster).json()
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["eligible"])
+        self.assertEqual(payload["blockers"], [])
+        self.assertEqual(payload["config"]["token_id"], "pve-helper@pve!token")
+        self.assertEqual(payload["config"]["trust_mode"], "Publicly trusted")
+        self.assertEqual([endpoint["name"] for endpoint in payload["config"]["endpoints"]], ["pve1"])
+
+    def test_preflight_reports_blockers_when_footprint_is_present(self):
+        cluster = self._eligible_connection(key="blocked")
+        ProxmoxCluster.objects.filter(pk=cluster.pk).update(
+            operational_footprint_at=timezone.now(),
+            operational_footprint_reason="scan_observation",
+        )
+
+        payload = self._preflight(cluster).json()
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["eligible"])
+        self.assertEqual(payload["blockers"][0]["relation"], "operational_footprint")
+
+    def test_final_post_deletes_the_connection_and_releases_the_key(self):
+        cluster = self._eligible_connection(key="deletable")
+
+        response = self.client.post(
+            self._action_url(cluster),
+            {"action": "delete-unused-connection", "typed_cluster_key": cluster.key},
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="fetch",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["redirect_url"], reverse("core:clusters_overview"))
+        self.assertFalse(ProxmoxCluster.objects.filter(key="deletable").exists())
+        self.assertTrue(
+            AuditEvent.objects.filter(action="cluster.unused_connection_deleted", cluster__isnull=True).exists()
+        )
+
+    def test_final_post_rejects_a_wrong_typed_key_without_deleting(self):
+        cluster = self._eligible_connection(key="guarded")
+
+        response = self.client.post(
+            self._action_url(cluster),
+            {"action": "delete-unused-connection", "typed_cluster_key": "not-the-key"},
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="fetch",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json()["ok"])
+        self.assertTrue(ProxmoxCluster.objects.filter(key="guarded").exists())
+
+    def test_final_post_refuses_when_footprint_appeared_after_the_page_loaded(self):
+        cluster = self._eligible_connection(key="raced")
+        # Footprint is acquired between the operator's read and the final POST; the
+        # service's under-lock re-check must reject with the exact key still typed.
+        ProxmoxCluster.objects.filter(pk=cluster.pk).update(
+            operational_footprint_at=timezone.now(),
+            operational_footprint_reason="scan_observation",
+        )
+
+        response = self.client.post(
+            self._action_url(cluster),
+            {"action": "delete-unused-connection", "typed_cluster_key": "raced"},
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="fetch",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(response.json()["ok"])
+        self.assertTrue(ProxmoxCluster.objects.filter(key="raced").exists())
+
+    def test_delete_routes_fail_closed_for_a_retired_cluster(self):
+        retired = ProxmoxCluster.objects.create(
+            key="retired-del",
+            display_name="Retired connection",
+            enabled=False,
+            retired_at=timezone.now(),
+            retirement_mode=ProxmoxCluster.RetirementMode.FORCED,
+            retirement_reason="The site was decommissioned.",
+        )
+
+        preflight = self._preflight(retired)
+        final = self.client.post(
+            self._action_url(retired),
+            {"action": "delete-unused-connection", "typed_cluster_key": retired.key},
+            HTTP_ACCEPT="application/json",
+            HTTP_X_REQUESTED_WITH="fetch",
+        )
+
+        self.assertEqual(preflight.status_code, 404)
+        self.assertEqual(final.status_code, 404)

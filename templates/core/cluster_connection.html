@@ -90,5 +90,24 @@
         </form>
       </div>
     </details>
+    <div class="cluster-unused-deletion">
+      <h3>Delete unused connection</h3>
+      {% if deletion_eligibility.eligible %}
+        <p>This connection has never acquired operational or inventory history. Deleting it permanently removes the cluster record and releases its permanent key <code>{{ cluster.key }}</code>, pinned identity and endpoint URLs so the same connection can be configured again. Its configuration Audit trail is detached and preserved.</p>
+        <form
+          method="post"
+          action="{% url 'core:cluster_connection_action' cluster.key %}"
+          class="cluster-unused-deletion-action"
+          data-cluster-unused-deletion-form
+          data-cluster-key="{{ cluster.key }}"
+        >
+          {% csrf_token %}
+          <input type="hidden" name="action" value="delete-unused-preflight">
+          <button class="secondary-action danger" type="submit">Delete unused connection</button>
+        </form>
+      {% else %}
+        <p class="cluster-unused-deletion-blocked">This connection cannot be deleted.{% if deletion_eligibility.blockers.0 %} {{ deletion_eligibility.blockers.0.detail }}{% endif %} Retire it instead to preserve its history.</p>
+      {% endif %}
+    </div>
   </section>
 {% endblock %}

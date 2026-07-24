@@ -30,6 +30,12 @@ from core.models import (
 from core.services.audit_events import record_audit_event
 from core.services.cluster_activation import ClusterActivationError, enable_cluster
 from core.services.cluster_credentials import ClusterCredentialError, set_cluster_credential
+from core.services.cluster_deletion import (
+    ClusterDeletionError,
+    ClusterDeletionNotAllowed,
+    delete_unused_cluster_connection,
+)
+from core.services.cluster_deletion_eligibility import unused_connection_deletion_eligibility
 from core.services.cluster_onboarding import (
     ClusterCandidate,
     ClusterOnboardingError,
@@ -298,6 +304,88 @@ def _cluster_retirement_final_response(request, cluster: ProxmoxCluster):
     )
 
 
+def _deletion_error_response(exc: Exception, *, status: int = 409):
+    failure = public_failure(
+        exc,
+        operation="cluster_deletion.final",
+        fallback="Deleting the unused connection failed safely. No changes were committed.",
+    )
+    return JsonResponse(
+        {
+            "ok": False,
+            "error": {
+                "code": failure.code,
+                "message": failure.message,
+            },
+        },
+        status=status,
+    )
+
+
+def _unused_deletion_preflight_response(request, cluster: ProxmoxCluster):
+    """Re-prove eligibility right before the typed-key ceremony.
+
+    A pure read: no lock, no mutation and no provider call. It re-checks
+    eligibility so a page that has since acquired footprint shows the blocker
+    rather than leading the operator through a typed-key confirmation that the
+    under-lock re-check would only reject at the end.
+    """
+    eligibility = unused_connection_deletion_eligibility(cluster)
+    credential_token = ClusterCredential.objects.filter(cluster=cluster).values_list("token_id", flat=True).first()
+    trust = ClusterTransportTrust.objects.filter(cluster=cluster).first()
+    return JsonResponse(
+        {
+            "ok": True,
+            "eligible": eligibility.eligible,
+            "cluster": {
+                "key": cluster.key,
+                "display_name": cluster.display_name,
+            },
+            "blockers": [
+                {
+                    "relation": blocker.relation,
+                    "kind": blocker.kind,
+                    "count": blocker.count,
+                    "detail": blocker.detail,
+                }
+                for blocker in eligibility.blockers
+            ],
+            "config": {
+                "endpoints": [
+                    {"name": endpoint.name, "url": endpoint.normalized_url}
+                    for endpoint in cluster.endpoints.order_by("name")
+                ],
+                "token_id": credential_token or "",
+                "trust_mode": trust.get_mode_display() if trust is not None else "",
+                "ca_uuid": cluster.discovered_ca_uuid,
+            },
+        }
+    )
+
+
+def _unused_deletion_final_response(request, cluster: ProxmoxCluster):
+    # The typed permanent key is enforced server-side, not only in the dialog:
+    # the exact-key ceremony is a real gate, mirroring forced retirement. The
+    # service's own under-lock eligibility re-check closes the TOCTOU.
+    if request.POST.get("typed_cluster_key", "").strip() != cluster.key:
+        return _deletion_error_response(
+            ClusterDeletionNotAllowed("Type the exact permanent cluster key to delete this connection."),
+            status=400,
+        )
+    try:
+        delete_unused_cluster_connection(cluster, actor=request.user)
+    except ClusterDeletionError as exc:
+        return _deletion_error_response(exc)
+    except Exception as exc:
+        return _deletion_error_response(exc, status=500)
+    return JsonResponse(
+        {
+            "ok": True,
+            "redirect_url": reverse("core:clusters_overview"),
+        }
+    )
+
+
 @app_login_required
 def clusters_overview(request):
     historical = list(historical_clusters().prefetch_related("endpoints").order_by("display_name", "key"))
@@ -491,6 +579,7 @@ def _render_cluster_connection(
             "endpoints": cluster.endpoints.order_by("name"),
             "retirement_endpoints": enabled_endpoints(cluster),
             "retirement_reason_max_length": RETIREMENT_REASON_MAX_LENGTH,
+            "deletion_eligibility": unused_connection_deletion_eligibility(cluster),
             "credential": credential,
             "trust": trust,
             "display_name_form": ClusterDisplayNameForm(initial={"display_name": cluster.display_name}),
@@ -510,6 +599,10 @@ def cluster_connection_action(request, cluster_key: str):
         return _cluster_retirement_preflight_response(request, cluster)
     if action == "retire":
         return _cluster_retirement_final_response(request, cluster)
+    if action == "delete-unused-preflight":
+        return _unused_deletion_preflight_response(request, cluster)
+    if action == "delete-unused-connection":
+        return _unused_deletion_final_response(request, cluster)
     error = ""
     try:
         if action == "display-name":

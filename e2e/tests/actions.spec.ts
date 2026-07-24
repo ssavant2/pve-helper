@@ -470,3 +470,70 @@ test("forced cluster retirement uses impact fields and a separate swapped final 
   expect(finalSubmission).toContain("The site was decommissioned.");
   expect(finalSubmission).toContain("permanent_unavailability_asserted");
 });
+
+test("delete unused connection types the exact key and confirms in a separate swapped dialog", async ({ page }) => {
+  await page.goto("/clusters/unused-e2e/connection/", { waitUntil: "load" });
+
+  // The eligible connection renders the real control; only the mutation endpoint is mocked.
+  await expect(page.getByRole("button", { name: "Delete unused connection", exact: true })).toBeVisible();
+
+  let finalSubmission = "";
+  await page.route("**/clusters/unused-e2e/connection/action/", async (route) => {
+    const posted = route.request().postData() || "";
+    if (posted.includes("delete-unused-preflight")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          eligible: true,
+          cluster: { key: "unused-e2e", display_name: "Unused E2E connection" },
+          blockers: [],
+          config: {
+            endpoints: [{ name: "pve1", url: "https://pve1.unused-e2e.test:8006/" }],
+            token_id: "e2e@pve!token",
+            trust_mode: "Publicly trusted certificate",
+            ca_uuid: "33333333-3333-3333-3333-333333333333",
+          },
+        }),
+      });
+      return;
+    }
+    finalSubmission = posted;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, redirect_url: "/clusters/" }),
+    });
+  });
+
+  await page.getByRole("button", { name: "Delete unused connection", exact: true }).click();
+
+  const first = page.locator("[data-vm-action-dialog]").last();
+  await expect(first.getByRole("heading", { name: "Delete unused connection" })).toBeVisible();
+  await expect(first.getByText("Endpoints removed")).toBeVisible();
+  await expect(first.getByText("pve1")).toBeVisible();
+  await first.evaluate((element) => {
+    (window as Window & { deletionFirstDialog?: Element }).deletionFirstDialog = element;
+  });
+
+  await first.getByLabel("Type the permanent cluster key").fill("wrong");
+  await first.getByRole("button", { name: "Delete this connection", exact: true }).click();
+  await expect(first.getByText("Type unused-e2e exactly.")).toBeVisible();
+  await first.getByLabel("Type the permanent cluster key").fill("unused-e2e");
+  await first.getByRole("button", { name: "Delete this connection", exact: true }).click();
+
+  const second = page.locator("[data-vm-action-dialog]").last();
+  await expect(second.getByRole("heading", { name: "Are you really sure?" })).toBeVisible();
+  expect(
+    await second.evaluate(
+      (element) => element !== (window as Window & { deletionFirstDialog?: Element }).deletionFirstDialog
+    )
+  ).toBe(true);
+  await expect(second.locator(".form-actions button")).toHaveText(["Go back", "Delete permanently"]);
+  await second.getByRole("button", { name: "Delete permanently" }).click();
+
+  await expect(page).toHaveURL(/\/clusters\/$/);
+  expect(finalSubmission).toContain("delete-unused-connection");
+  expect(finalSubmission).toContain("unused-e2e");
+});

@@ -1,5 +1,5 @@
 import { initClusterFilter } from "./cluster-filter.js";
-import { initClusterRetirement } from "./cluster-retirement.js";
+import { initClusterRetirement, initClusterUnusedDeletion } from "./cluster-retirement.js";
 import { initConsolePages } from "./console.js";
 import { initContextMenu } from "./context-menus.js";
 import { initBackupRestoreForms, initGuestActionForms } from "./guest-actions.js";
@@ -72,6 +72,7 @@ const initPage = (root = document) => {
   initGuestListFilter(root);
   initClusterFilter(root);
   initClusterRetirement(root);
+  initClusterUnusedDeletion(root);
   sortGuestList(document.documentElement.dataset.guestNameStyle !== "name-only");
   initNodeReload(root);
   initSummaryCards(root);

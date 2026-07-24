@@ -3,6 +3,7 @@ from __future__ import annotations
 from django import forms
 
 from core.models import cluster_key_validator
+from core.services.cluster_scopes import historical_clusters
 from core.services.cluster_trust import TRUST_CA_PEM, TRUST_PUBLIC
 
 
@@ -41,7 +42,24 @@ class ClusterInspectForm(forms.Form):
     )
 
     def clean_cluster_key(self):
-        return self.cleaned_data["cluster_key"].strip().lower()
+        # The permanent key is case-insensitively unique (Lower("key")). Explain
+        # the two collisions specifically instead of letting persistence raise the
+        # generic concurrent-registration IntegrityError: a retired key stays
+        # reserved forever, while a still-registered managed key can be freed with
+        # Delete unused connection.
+        key = self.cleaned_data["cluster_key"].strip().lower()
+        existing = historical_clusters().filter(key__iexact=key).first()
+        if existing is not None:
+            if existing.is_retired:
+                raise forms.ValidationError(
+                    "This permanent key belonged to a retired cluster and stays reserved so its "
+                    "history keeps its meaning. Choose a new permanent key for the replacement."
+                )
+            raise forms.ValidationError(
+                "A cluster connection already uses this permanent key. To re-register it, first "
+                "remove it with Delete unused connection on its connection page, or choose a new key."
+            )
+        return key
 
 
 class TrustCredentialForm(forms.Form):

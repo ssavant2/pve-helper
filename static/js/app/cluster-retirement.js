@@ -185,4 +185,122 @@ const initClusterRetirement = (root = document) => {
   });
 };
 
-export { initClusterRetirement };
+const showDeletionFailure = (message) =>
+  openNoticeDialog({
+    title: "Delete unused connection refused",
+    body: `<p>${escapeHtml(message)}</p>`,
+  });
+
+const deletionConfigBody = (payload) => {
+  const config = payload.config || {};
+  const endpoints = config.endpoints || [];
+  const endpointRows = endpoints
+    .map((endpoint) => `<li>${escapeHtml(endpoint.name || "")} — <code>${escapeHtml(endpoint.url || "")}</code></li>`)
+    .join("");
+  return `
+    <p>
+      <strong>${escapeHtml(payload.cluster?.display_name || "")}</strong>
+      (<code>${escapeHtml(payload.cluster?.key || "")}</code>)
+    </p>
+    <p>
+      This connection has no operational or inventory history. Deleting it is permanent: it
+      removes the cluster record and releases the permanent key, pinned CA identity and endpoint
+      URLs for reuse. The configuration Audit trail is detached and preserved.
+    </p>
+    <dl class="cluster-retirement-impact">
+      ${countRow("Endpoints removed", endpoints.length)}
+      ${countRow("Token ID", config.token_id || "—")}
+      ${countRow("Transport trust", config.trust_mode || "—")}
+    </dl>
+    ${endpointRows ? `<ul class="cluster-unused-deletion-endpoints">${endpointRows}</ul>` : ""}
+    <p>The API token still exists in Proxmox. Revoke it there separately whenever the site is reachable.</p>
+  `;
+};
+
+const deletionBlockedBody = (payload) => {
+  const blockers = (payload.blockers || [])
+    .map((blocker) => `<li data-deletion-blocker="${escapeHtml(blocker.relation)}">${escapeHtml(blocker.detail)}</li>`)
+    .join("");
+  return `
+    <p>
+      <strong>${escapeHtml(payload.cluster?.display_name || "")}</strong> can no longer be deleted as an
+      unused connection.
+    </p>
+    ${blockers ? `<ul class="cluster-retirement-blockers">${blockers}</ul>` : ""}
+    <p>Retire the cluster instead to preserve its history.</p>
+  `;
+};
+
+const runUnusedDeletion = async (form) => {
+  const button = form.querySelector('button[type="submit"]');
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const payload = await postRetirement(form, new FormData(form));
+    if (!payload.eligible) {
+      await openNoticeDialog({
+        title: "This connection cannot be deleted",
+        body: deletionBlockedBody(payload),
+      });
+      return;
+    }
+
+    const clusterKey = payload.cluster?.key || form.dataset.clusterKey || "";
+    const first = await openFieldsDialog({
+      title: "Delete unused connection",
+      body: deletionConfigBody(payload),
+      fields: [
+        {
+          name: "typed_cluster_key",
+          label: "Type the permanent cluster key",
+          required: true,
+          validate: (value) => (value === clusterKey ? "" : `Type ${clusterKey} exactly.`),
+        },
+      ],
+      confirmLabel: "Delete this connection",
+      cancelLabel: "Keep the connection",
+      danger: true,
+      distinguishDismiss: true,
+    });
+    if (first?.outcome !== "confirm") return;
+
+    const finalConfirmed = await openConfirmDialog({
+      title: "Are you really sure?",
+      body: `
+        <p>
+          Deleting <strong>${escapeHtml(payload.cluster?.display_name || "")}</strong> is irreversible.
+        </p>
+        <p>The permanent key <code>${escapeHtml(clusterKey)}</code> is released and can be registered again.</p>
+      `,
+      confirmLabel: "Delete permanently",
+      cancelLabel: "Go back",
+      danger: true,
+      swapActions: true,
+    });
+    if (!finalConfirmed) return;
+
+    const finalBody = new FormData(form);
+    finalBody.set("action", "delete-unused-connection");
+    finalBody.set("typed_cluster_key", first.values?.typed_cluster_key || "");
+    const result = await postRetirement(form, finalBody);
+    window.location.assign(result.redirect_url || "/clusters/");
+  } catch (error) {
+    await showDeletionFailure(error instanceof Error ? error.message : "Deleting the unused connection failed safely.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+};
+
+const initClusterUnusedDeletion = (root = document) => {
+  root.querySelectorAll("[data-cluster-unused-deletion-form]").forEach((form) => {
+    if (form.dataset.initialized === "true") return;
+    form.dataset.initialized = "true";
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      runUnusedDeletion(form);
+    });
+  });
+};
+
+export { initClusterRetirement, initClusterUnusedDeletion };
