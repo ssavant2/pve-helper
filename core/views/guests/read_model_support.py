@@ -8,6 +8,12 @@ from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_scopes import managed_clusters
 from core.services.cluster_state_identity import cluster_cache_key
 from core.services.guest_agent_info import config_agent_enabled, empty_agent_info, fetch_guest_agent_info
+from core.services.guest_observation import (
+    UNOBSERVED_LABEL,
+    UNOBSERVED_VALUE_TEXT,
+    runtime_is_observed,
+    unobserved_scope_label,
+)
 from core.services.public_errors import public_exception_message
 from core.services.refs import GuestRef, RefParseError
 from core.services.tag_catalog import load_tag_catalog
@@ -214,7 +220,7 @@ def _vms_workspace_context(active_nav: str) -> dict:
         "guests": rows,
         "guest_list": guest_list,
         "guest_count": len(rows),
-        "running_count": sum(1 for row in rows if row.status == "running"),
+        **_guest_state_histogram(rows),
         "live_available": live_available,
         "runtime_inventory_stale": _runtime_inventory_is_stale(scan_at, rows=rows),
         "inventory_scan_at": scan_at,
@@ -255,6 +261,30 @@ def _guest_rows(*, current_guests=None):
         default=None,
     )
     return rows, latest_runtime_at is not None, latest_runtime_at
+
+
+def _guest_state_histogram(rows) -> dict:
+    """Publish the whole distribution, not just the running slice.
+
+    "12 guests / 2 running" reads as ten powered-off guests, which is exactly the
+    wrong conclusion when ten of them sit on a node that stopped answering. The
+    unknown count carries the names of the nodes that went silent, because that —
+    not the guests — is what needs attention.
+    """
+    unobserved = [row for row in rows if not runtime_is_observed(row.status, row.runtime_observed_at)]
+    scopes = sorted(
+        {
+            unobserved_scope_label(node=row.node, cluster_label=getattr(row.cluster, "display_name", ""))
+            for row in unobserved
+        }
+    )
+    return {
+        "running_count": sum(1 for row in rows if row.status == "running"),
+        "stopped_count": sum(1 for row in rows if row.status == "stopped"),
+        "unknown_count": len(unobserved),
+        "unobserved_scopes": scopes,
+        "unobserved_scope_text": ", ".join(scopes),
+    }
 
 
 def _runtime_inventory_is_stale(refreshed_at, *, rows=None) -> bool:
@@ -537,9 +567,41 @@ def _size_text_to_bytes(value: str) -> int:
 
 
 def _guest_health(detail: SimpleNamespace) -> dict:
-    """Read-only health signals for a guest. Currently a stale/active config lock,
-    with a copy/paste unlock command for the specific guest (clearing a lock via
-    our API token is root@pam-only, so we point at the node CLI instead)."""
+    """Read-only health signals for a guest, as a three-valued verdict.
+
+    The card is `unknown` before it is `ok`: if no node answered for this guest we
+    have observed nothing, and reporting "Healthy — no issues detected" from an
+    empty observation is the same error as reporting its power state as stopped.
+    Absence outranks the lock check, which reads stored config and would happily
+    return a clean verdict about a host nobody can reach.
+
+    Issues are conditions an operator should act on: currently a stale/active
+    config lock, with a copy/paste unlock command for the specific guest (clearing
+    a lock via our API token is root@pam-only, so we point at the node CLI).
+
+    Notes are observations that are *not* faults. A VM with no QEMU guest agent is
+    a legitimate configuration and never lands here — flagging it would train
+    people to ignore the card. Only the mismatch between stated intent and reality
+    (config asks for an agent, running guest has none answering) is worth a line,
+    and it is a note rather than an issue.
+    """
+    observed = runtime_is_observed(detail.status, getattr(detail, "runtime_observed_at", None))
+    if not observed:
+        cluster = getattr(detail, "cluster", None)
+        scope = unobserved_scope_label(
+            node=getattr(detail, "node", ""),
+            cluster_label=getattr(cluster, "display_name", "") or getattr(detail, "cluster_key", ""),
+        )
+        return {
+            "ok": False,
+            "observed": False,
+            "state": "unknown",
+            "state_label": UNOBSERVED_LABEL,
+            "scope_label": scope,
+            "issues": [],
+            "notes": [],
+        }
+
     lock = str((detail.current or {}).get("lock") or (detail.config or {}).get("lock") or "").strip()
     issues: list[dict] = []
     # A 'suspended' lock is hibernate (expected state), not a health problem.
@@ -558,7 +620,37 @@ def _guest_health(detail: SimpleNamespace) -> dict:
                 "command": f"{unlock_cmd} unlock {detail.vmid}",
             }
         )
-    return {"ok": not issues, "issues": issues}
+
+    notes: list[dict] = []
+    agent_info = (detail.current or {}).get("agent_info")
+    if (
+        _guest_agent_config_enabled(detail.config, detail.object_type)
+        and detail.status == "running"
+        and isinstance(agent_info, dict)
+        and not agent_info.get("running")
+    ):
+        notes.append(
+            {
+                "kind": "agent",
+                "title": "Guest agent not answering",
+                "detail": (
+                    "This VM is configured to use the QEMU guest agent, but the agent is "
+                    "not responding. Power state and usage above are unaffected — they "
+                    "come from the hypervisor — but the guest's OS name, hostname and IP "
+                    "addresses cannot be read."
+                ),
+            }
+        )
+
+    return {
+        "ok": not issues,
+        "observed": True,
+        "state": "attention" if issues else "ok",
+        "state_label": "Attention" if issues else "Healthy",
+        "scope_label": "",
+        "issues": issues,
+        "notes": notes,
+    }
 
 
 def _guest_lineage(detail: SimpleNamespace) -> dict:
@@ -664,6 +756,7 @@ def _resolve_guest_detail(
             config={},
             current={},
             live_ok=False,
+            runtime_observed_at=None,
             ambiguous=False,
             ambiguous_nodes=[],
             found=False,
@@ -697,6 +790,7 @@ def _resolve_guest_detail(
         config=config,
         current=current,
         live_ok=bool(obj.runtime_observed_at),
+        runtime_observed_at=obj.runtime_observed_at,
         ambiguous=False,
         ambiguous_nodes=[],
         found=True,
@@ -1092,10 +1186,15 @@ def _guest_cpu_topology(config: dict, object_type: str) -> dict | None:
     }
 
 
-def _guest_usage(current: dict, config: dict, object_type: str) -> dict:
+def _guest_usage(current: dict, config: dict, object_type: str, *, observed: bool = True) -> dict:
     """Always returns usage figures. When the guest is stopped the used values
-    are 0 and the totals come from the config, so the Usage card never vanishes."""
-    running = isinstance(current, dict) and current.get("status") == "running"
+    are 0 and the totals come from the config, so the Usage card never vanishes.
+
+    ``observed`` separates "nothing is being used" from "nobody told us". Zero is
+    the truth for a stopped guest and a fabrication for an unreachable one, so the
+    totals still render (they are config-derived and stay valid) while the used
+    figures are withheld rather than shown as 0.0%."""
+    running = observed and isinstance(current, dict) and current.get("status") == "running"
     if running:
         cpu = float(current.get("cpu") or 0)
         cpus = _int_or_zero(current.get("cpus")) or _cpu_count(config, object_type)
@@ -1110,6 +1209,8 @@ def _guest_usage(current: dict, config: dict, object_type: str) -> dict:
         maxdisk = 0
     return {
         "running": running,
+        "observed": observed,
+        "unobserved_text": UNOBSERVED_VALUE_TEXT,
         "cpu_pct": round(cpu * 100, 1),
         "cpus": cpus,
         "mem": mem,

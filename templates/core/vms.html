@@ -7,7 +7,9 @@
         <h2>{{ guest_count }} guest{{ guest_count|pluralize }}</h2>
       </div>
       <p class="muted">
-        {{ running_count }} running. Select a VM or container from the list to view its details.
+        {{ running_count }} running, {{ stopped_count }} stopped{% if unknown_count %}, {{ unknown_count }} unknown{% endif %}.
+        {% if unknown_count %}No answer from {{ unobserved_scope_text }}.{% endif %}
+        Select a VM or container from the list to view its details.
       </p>
       {% if not live_available or runtime_inventory_stale %}
         <p>

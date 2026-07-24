@@ -115,9 +115,7 @@ def _delivery_status(config) -> dict[str, object]:
         row["status"]: row["total"]
         for row in LogForwardingDelivery.objects.values("status").annotate(total=Count("id"))
     }
-    pending = counts.get(LogForwardingDelivery.Status.PENDING, 0) + counts.get(
-        LogForwardingDelivery.Status.SENDING, 0
-    )
+    pending = counts.get(LogForwardingDelivery.Status.PENDING, 0) + counts.get(LogForwardingDelivery.Status.SENDING, 0)
     paused = bool(pending and not config.enabled)
     if config.last_error_code:
         last_error = "Connection failed"

@@ -63,7 +63,15 @@
               <summary>Actions</summary>
               <div class="actions-menu-panel">
                 {% with gn=guest.name|default:guest.vmid %}
-                {% if guest.status == "running" %}
+                {% if not guest_runtime_observed %}
+                  {% comment %}
+                    Unknown is not stopped. Falling through to the else arm would
+                    offer Power On for a guest that may well be running on a node
+                    we simply cannot reach, and for a template that only looks
+                    like a plain VM because its config could not be read.
+                  {% endcomment %}
+                  <p class="actions-menu-note muted">Power state unknown — no node answered for this guest. Power actions are hidden until it is observed again.</p>
+                {% elif guest.status == "running" %}
                   {% if guest.object_type != "ct" and guest_current.qmpstatus == "paused" %}
                     <form method="post" action="{% url 'core:guest_power' guest.cluster_key guest.object_type guest.vmid %}" data-guest-action-form data-action="resume" data-guest-target="{{ guest.guest_ref.serialize }}" data-guest-name="{{ guest.name }}" data-guest-label="{{ gn }}">{% csrf_token %}<input type="hidden" name="action" value="resume"><button type="submit">Resume</button></form>
                   {% endif %}
@@ -177,7 +185,16 @@
 
     <div class="panel summary-card{% if guest_health.issues %} summary-card-health{% endif %}" data-card-key="health" data-card-size="half">
       <div class="panel-heading"><h2>Health</h2><div class="card-heading-actions"><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div></div>
-      {% if guest_health.issues %}
+      {% if not guest_health.observed %}
+        {% comment %}
+          Nothing was observed, so there is no verdict to give. Saying "Healthy"
+          here would be a claim about a host that never answered.
+        {% endcomment %}
+        <div class="health-ok">
+          <span class="badge warning">{{ guest_health.state_label }}</span>
+          <span class="muted">No answer from {{ guest_health.scope_label }}, so this guest's power state and health are unknown. The values on this page are from the last successful scan.</span>
+        </div>
+      {% elif guest_health.issues %}
         {% for issue in guest_health.issues %}
           <div class="health-issue">
             <div class="health-issue-title"><i data-lucide="alert-triangle" aria-hidden="true"></i> {{ issue.title }}</div>
@@ -192,17 +209,31 @@
           </div>
         {% endfor %}
       {% else %}
-        <div class="health-ok"><span class="badge completed">Healthy</span> <span class="muted">No issues detected.</span></div>
+        <div class="health-ok"><span class="badge completed">{{ guest_health.state_label }}</span> <span class="muted">No issues detected.</span></div>
       {% endif %}
+      {% for note in guest_health.notes %}
+        {# Not a fault: an observation that qualifies what this page can show. #}
+        <p class="panel-meta"><strong>{{ note.title }}.</strong> {{ note.detail }}</p>
+      {% endfor %}
     </div>
 
     <div class="panel summary-card" data-card-key="usage" data-card-size="half">
       <div class="panel-heading"><h2>Usage</h2><span class="card-drag" data-card-drag title="Drag to reorder" aria-hidden="true"></span></div>
       <div class="usage-block">
-        <div class="usage-row-label">CPU <span class="muted">{{ guest_usage.cpu_pct }}% of {{ guest_usage.cpus }} vCPU</span></div>
-        <div class="usage-bar-bg"><div class="usage-bar-fill" style="width: {{ guest_usage.cpu_pct }}%;"></div></div>
-        <div class="usage-row-label">Memory <span class="muted">{{ guest_usage.mem|filesizeformat }} / {{ guest_usage.maxmem|filesizeformat }}</span></div>
-        <div class="usage-bar-bg"><div class="usage-bar-fill" style="width: {{ guest_usage.mem_pct }}%;"></div></div>
+        {% if guest_usage.observed %}
+          <div class="usage-row-label">CPU <span class="muted">{{ guest_usage.cpu_pct }}% of {{ guest_usage.cpus }} vCPU</span></div>
+          <div class="usage-bar-bg"><div class="usage-bar-fill" style="width: {{ guest_usage.cpu_pct }}%;"></div></div>
+          <div class="usage-row-label">Memory <span class="muted">{{ guest_usage.mem|filesizeformat }} / {{ guest_usage.maxmem|filesizeformat }}</span></div>
+          <div class="usage-bar-bg"><div class="usage-bar-fill" style="width: {{ guest_usage.mem_pct }}%;"></div></div>
+        {% else %}
+          {% comment %}
+            The totals are config-derived and still true; only the used figures
+            are missing, and an empty bar would read as "idle" rather than
+            "unmeasured", so the bars are withheld with them.
+          {% endcomment %}
+          <div class="usage-row-label">CPU <span class="muted">{{ guest_usage.unobserved_text }} — {{ guest_usage.cpus }} vCPU configured</span></div>
+          <div class="usage-row-label">Memory <span class="muted">{{ guest_usage.unobserved_text }} — {{ guest_usage.maxmem|filesizeformat }} configured</span></div>
+        {% endif %}
         {% if guest_usage.maxdisk %}
           <div class="usage-row-label">Storage <span class="muted">{{ guest_usage.maxdisk|filesizeformat }} provisioned</span></div>
         {% endif %}

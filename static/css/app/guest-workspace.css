@@ -1120,6 +1120,16 @@ body.cards-dragging {
   color: var(--red);
 }
 
+/* Stands in for the power actions when nothing was observed: same width as the
+   buttons it replaces, but plainly not one. */
+.actions-menu-note {
+  margin: 0;
+  padding: 7px 10px;
+  max-width: 260px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
 /* --- snapshot create form --- */
 .snapshot-form {
   display: flex;

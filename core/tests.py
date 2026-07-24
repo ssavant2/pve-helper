@@ -10,7 +10,7 @@ import threading
 import uuid
 import zipfile
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -415,18 +415,28 @@ class MigrateActionTests(HermeticProxmoxMixin, SimpleTestCase):
         self.assertIn("Choose what to migrate", err)
 
 
+_OBSERVED_AT = datetime(2026, 7, 24, 9, 0, tzinfo=UTC)
+
+
 class GuestHealthTests(SimpleTestCase):
-    def _detail(self, *, object_type=None, lock=""):
+    def _detail(self, *, object_type=None, lock="", status="running", observed_at=_OBSERVED_AT, config=None):
         from types import SimpleNamespace
 
         from core.models import ProxmoxInventory
 
+        current = {"status": status}
+        if lock:
+            current["lock"] = lock
         return SimpleNamespace(
             object_type=object_type or ProxmoxInventory.ObjectType.VM,
             vmid=501,
             node="pve3",
-            current={"lock": lock} if lock else {},
-            config={},
+            cluster=SimpleNamespace(display_name="Lab cluster"),
+            cluster_key="lab",
+            status=status,
+            runtime_observed_at=observed_at,
+            current=current,
+            config=config if config is not None else {},
         )
 
     def test_display_lock_drops_suspended(self):
@@ -458,6 +468,127 @@ class GuestHealthTests(SimpleTestCase):
         self.assertTrue(_guest_health(self._detail())["ok"])
         # 'suspended' is hibernate, not a health problem
         self.assertTrue(_guest_health(self._detail(lock="suspended"))["ok"])
+
+    def test_unobserved_runtime_is_unknown_not_healthy(self):
+        from core.views.guests import _guest_health
+
+        for status, observed_at in (("unknown", _OBSERVED_AT), ("", _OBSERVED_AT), ("running", None)):
+            with self.subTest(status=status, observed_at=observed_at):
+                health = _guest_health(self._detail(status=status, observed_at=observed_at))
+                self.assertEqual(health["state"], "unknown")
+                self.assertFalse(health["observed"])
+                # Not "ok": a clean verdict about a host nobody reached is a claim
+                # we cannot make.
+                self.assertFalse(health["ok"])
+                self.assertEqual(health["issues"], [])
+
+    def test_unobserved_health_names_the_node_that_went_silent(self):
+        from core.views.guests import _guest_health
+
+        health = _guest_health(self._detail(status="unknown"))
+        self.assertEqual(health["scope_label"], "node pve3 in Lab cluster")
+
+    def test_unobserved_outranks_a_stale_config_lock(self):
+        from core.views.guests import _guest_health
+
+        # The lock lives in stored config and would otherwise produce a confident
+        # verdict about an unreachable guest.
+        health = _guest_health(self._detail(status="unknown", lock="backup"))
+        self.assertEqual(health["state"], "unknown")
+        self.assertEqual(health["issues"], [])
+
+    def test_missing_guest_agent_is_never_a_health_issue(self):
+        from core.views.guests import _guest_health
+
+        # No agent configured at all: a legitimate setup, so not even a note.
+        health = _guest_health(self._detail())
+        self.assertEqual(health["state"], "ok")
+        self.assertEqual(health["notes"], [])
+
+    def test_agent_requested_but_not_answering_is_a_note_not_an_issue(self):
+        from core.views.guests import _guest_health
+
+        detail = self._detail(config={"agent": "1"})
+        detail.current["agent_info"] = {"running": False}
+        health = _guest_health(detail)
+        self.assertEqual(health["state"], "ok")
+        self.assertTrue(health["ok"])
+        self.assertEqual(health["issues"], [])
+        self.assertEqual(health["notes"][0]["kind"], "agent")
+
+
+class GuestObservationTests(SimpleTestCase):
+    """Absence of an answer must stay absence on every card that publishes it."""
+
+    def _row(self, *, status, node="pve3", cluster_name="Lab cluster", observed_at=_OBSERVED_AT):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            status=status,
+            node=node,
+            cluster=SimpleNamespace(display_name=cluster_name),
+            runtime_observed_at=observed_at,
+        )
+
+    def test_histogram_separates_unknown_from_stopped(self):
+        from core.views.guests.read_model_support import _guest_state_histogram
+
+        rows = [
+            self._row(status="running"),
+            self._row(status="stopped"),
+            self._row(status="unknown"),
+            self._row(status="unknown"),
+        ]
+        histogram = _guest_state_histogram(rows)
+        self.assertEqual(histogram["running_count"], 1)
+        self.assertEqual(histogram["stopped_count"], 1)
+        self.assertEqual(histogram["unknown_count"], 2)
+
+    def test_histogram_names_every_scope_that_went_silent(self):
+        from core.views.guests.read_model_support import _guest_state_histogram
+
+        rows = [
+            self._row(status="unknown", node="pve3"),
+            self._row(status="unknown", node="pve3"),
+            self._row(status="unknown", node="pve4", cluster_name="Edge"),
+            self._row(status="running", node="pve1"),
+        ]
+        histogram = _guest_state_histogram(rows)
+        # Deduplicated by scope, not per guest: the node is what is down.
+        self.assertEqual(
+            histogram["unobserved_scopes"],
+            ["node pve3 in Lab cluster", "node pve4 in Edge"],
+        )
+
+    def test_usage_withholds_used_figures_when_unobserved(self):
+        from core.models import ProxmoxInventory
+        from core.views.guests.read_model_support import _guest_usage
+
+        current = {"status": "unknown", "cpu": 0, "mem": 0, "maxmem": 0}
+        usage = _guest_usage(current, {"cores": 2, "memory": 2048}, ProxmoxInventory.ObjectType.VM, observed=False)
+        self.assertFalse(usage["observed"])
+        self.assertFalse(usage["running"])
+        # The configured totals survive — they are not observations.
+        self.assertEqual(usage["cpus"], 2)
+        self.assertEqual(usage["maxmem"], 2048 * 1024 * 1024)
+
+    def test_usage_zero_still_means_zero_for_an_observed_stopped_guest(self):
+        from core.models import ProxmoxInventory
+        from core.views.guests.read_model_support import _guest_usage
+
+        usage = _guest_usage({"status": "stopped"}, {"cores": 2}, ProxmoxInventory.ObjectType.VM, observed=True)
+        self.assertTrue(usage["observed"])
+        self.assertEqual(usage["cpu_pct"], 0)
+
+    def test_runtime_is_observed_rejects_both_kinds_of_absence(self):
+        from core.services.guest_observation import runtime_is_observed
+
+        self.assertTrue(runtime_is_observed("running", _OBSERVED_AT))
+        self.assertTrue(runtime_is_observed("stopped", _OBSERVED_AT))
+        # A node that stopped answering keeps the timestamp of the sweep that noticed.
+        self.assertFalse(runtime_is_observed("unknown", _OBSERVED_AT))
+        # A guest that was never scanned has no timestamp at all.
+        self.assertFalse(runtime_is_observed("running", None))
 
 
 class GuestLineageTests(SimpleTestCase):
@@ -9825,8 +9956,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Monthly by date")
         self.assertContains(response, 'type="text" name="run_date"')
         self.assertContains(response, 'placeholder="YYYY-MM-DD"')
-        self.assertContains(response, 'data-schedule-run-date-open')
-        self.assertContains(response, 'data-schedule-run-date-grid')
+        self.assertContains(response, "data-schedule-run-date-open")
+        self.assertContains(response, "data-schedule-run-date-grid")
         self.assertContains(response, "<span>Mon</span><span>Tue</span><span>Wed</span>")
         self.assertNotContains(response, 'type="date" name="run_date"')
         self.assertContains(response, "Run Time")

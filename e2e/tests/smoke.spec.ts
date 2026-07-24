@@ -200,6 +200,33 @@ test("a disabled cluster still navigates and is marked degraded everywhere it ap
   );
 });
 
+test("an unobserved guest is published as unknown, not as stopped and healthy", async ({ page }) => {
+  // A node that stops answering leaves status='unknown'. Every surface used to
+  // convert that absence into a value: the header counted it as not-running, the
+  // health card called it Healthy, Usage said 0%, and the action menu offered
+  // Power On for a guest that may well have been running the whole time.
+  await page.goto("/vms/overview/");
+
+  const heading = page.getByRole("main").locator(".vm-overview-heading");
+  await expect(heading).toContainText("1 unknown");
+  // Name the thing that is actually down, not the guests downstream of it.
+  await expect(heading).toContainText("node pve2");
+
+  await page.goto("/vms/e2e/vm/102/summary/");
+
+  const health = page.locator('[data-card-key="health"]');
+  await expect(health).toContainText("Unknown");
+  await expect(health).not.toContainText("No issues detected");
+
+  const usage = page.locator('[data-card-key="usage"]');
+  await expect(usage).toContainText("Not observed");
+  await expect(usage).not.toContainText("0.0%");
+
+  await page.locator('[data-card-key="details"] .actions-menu > summary').click();
+  await expect(page.locator(".actions-menu-note")).toContainText("Power state unknown");
+  await expect(page.getByRole("button", { name: "Power On" })).toHaveCount(0);
+});
+
 test("retired connection archive opens its read-only tombstone and filtered Audit history", async ({ page }) => {
   await page.goto("/clusters/");
 

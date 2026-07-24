@@ -185,7 +185,8 @@ STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
 
 def _clusters_for_mounts(mount_ids):
     return list(
-        managed_clusters().filter(enabled=True)
+        managed_clusters()
+        .filter(enabled=True)
         .filter(
             Q(storage_consumers__storage_id__in=mount_ids)
             | Q(
@@ -280,9 +281,7 @@ def _clusters_without_storage() -> list[ProxmoxCluster]:
             present=True,
         ).values_list("cluster_id", flat=True)
     )
-    return list(
-        managed_clusters().filter(enabled=True).exclude(pk__in=represented).order_by("key")
-    )
+    return list(managed_clusters().filter(enabled=True).exclude(pk__in=represented).order_by("key"))
 
 
 def _storage_catalog_rows() -> list[dict]:

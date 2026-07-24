@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.services.guest_observation import runtime_is_observed
+
 from ..common import (
     GUEST_OBJECT_TYPES,
     CurrentGuestInventory,
@@ -160,6 +162,10 @@ def guest_summary(request, cluster_key: str, object_type: str, vmid: int):
             related_networks.append({"bridge": net["bridge"], "vlan": net["vlan"]})
 
     context = _guest_tab_context(detail, "summary")
+    # Resolved once and threaded through every card: health, usage and the action
+    # menu must agree on whether anything was observed at all, or the page states
+    # "Unknown" in one corner while offering Power On in another.
+    runtime_observed = runtime_is_observed(detail.status, detail.runtime_observed_at)
     guest_pool = _guest_pool_label(detail)
     guest_ha = _guest_ha_summary(detail)
     context.update(
@@ -168,7 +174,8 @@ def guest_summary(request, cluster_key: str, object_type: str, vmid: int):
             "guest_lineage": _guest_lineage(detail),
             "guest_os_label": _guest_os_label(config),
             "guest_agent_summary": _guest_agent_summary(detail, allow_fetch=False),
-            "guest_usage": _guest_usage(current, config, detail.object_type),
+            "guest_usage": _guest_usage(current, config, detail.object_type, observed=runtime_observed),
+            "guest_runtime_observed": runtime_observed,
             "guest_cpu_topology": _guest_cpu_topology(config, detail.object_type),
             "related_storages": related_storages,
             "related_networks": related_networks,

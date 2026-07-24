@@ -16,7 +16,16 @@
         <div>
           <h2>{{ guest_count }} guest{{ guest_count|pluralize }}</h2>
           <p class="panel-meta">
-            {{ running_count }} running.
+            {% comment %}
+              The whole distribution, not just the running slice: "2 running" on
+              its own reads as "the other ten are powered off", which is the
+              wrong conclusion when they are simply unobserved.
+            {% endcomment %}
+            {{ running_count }} running, {{ stopped_count }} stopped{% if unknown_count %}, {{ unknown_count }} unknown{% endif %}.
+            {% if unknown_count %}
+              <span class="badge warning">Unknown</span>
+              No answer from {{ unobserved_scope_text }}, so those guests' power state is unknown rather than off.
+            {% endif %}
             {% if live_available %}
               Power state updates right after an action and otherwise refreshes periodically.
               Last refreshed {{ inventory_scan_at|date:"Y-m-d H:i:s" }}.
