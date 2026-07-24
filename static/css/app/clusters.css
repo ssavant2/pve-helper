@@ -11,6 +11,23 @@
   margin-left: 0;
 }
 
+.cluster-list-heading > .panel-meta:last-child {
+  margin-left: auto;
+}
+
+.cluster-list-heading > div h2,
+.cluster-list-heading > div p {
+  margin: 0;
+}
+
+.cluster-list-heading > div p {
+  margin-top: 4px;
+}
+
+.cluster-retired-list {
+  border-color: color-mix(in srgb, var(--muted) 45%, var(--line));
+}
+
 .cluster-section-heading .secondary-action {
   margin-left: 0;
 }
@@ -359,6 +376,34 @@
   gap: 20px;
 }
 
+.cluster-retired-notice,
+.cluster-retired-evidence {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px;
+}
+
+.cluster-retired-notice {
+  border-color: color-mix(in srgb, var(--muted) 45%, var(--line));
+}
+
+.cluster-retired-notice h2,
+.cluster-retired-notice p,
+.cluster-retired-evidence h2,
+.cluster-retired-evidence p {
+  margin: 0;
+}
+
+.cluster-retired-notice p,
+.cluster-retired-evidence p {
+  max-width: 850px;
+  margin-top: 5px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .cluster-lifecycle-panel h2,
 .cluster-lifecycle-panel p {
   margin: 0;
@@ -497,6 +542,8 @@
 
   .cluster-candidate-summary,
   .cluster-lifecycle-panel,
+  .cluster-retired-notice,
+  .cluster-retired-evidence,
   .onboarding-empty-banner {
     align-items: flex-start;
     flex-direction: column;

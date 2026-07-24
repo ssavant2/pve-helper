@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from core.models import AuditEvent, ProxmoxCluster, ProxmoxEndpoint
 from core.services.cluster_retirement import (
@@ -23,6 +24,93 @@ class ClusterRetirementViewTests(TestCase):
 
     def _action_url(self, cluster):
         return reverse("core:cluster_connection_action", kwargs={"cluster_key": cluster.key})
+
+    def _retired_cluster(self, *, key="retired", mode=ProxmoxCluster.RetirementMode.FORCED):
+        return ProxmoxCluster.objects.create(
+            key=key,
+            display_name="Retired cluster",
+            enabled=False,
+            discovered_name="Former production cluster",
+            retired_at=timezone.now(),
+            retired_by=self.actor,
+            retirement_mode=mode,
+            retirement_reason="The site was permanently decommissioned." if mode == "forced" else "",
+            retired_ca_uuid=CA_UUID,
+            retired_ca_fingerprint="AA:BB:CC",
+        )
+
+    def test_overview_separates_managed_connections_from_retired_archive(self):
+        managed = ProxmoxCluster.objects.create(
+            key="managed",
+            display_name="Managed cluster",
+            enabled=False,
+        )
+        retired = self._retired_cluster()
+
+        response = self.client.get(reverse("core:clusters_overview"))
+
+        self.assertContains(response, "1 managed")
+        self.assertContains(response, "Retired clusters")
+        self.assertContains(response, "1 retired")
+        self.assertContains(response, managed.display_name)
+        self.assertContains(response, retired.display_name)
+        self.assertContains(response, retired.key)
+        self.assertContains(response, "Forced")
+        self.assertEqual(list(response.context["clusters"]), [managed])
+        self.assertEqual(list(response.context["retired_clusters"]), [retired])
+
+    def test_only_retired_installation_shows_onboarding_and_archive(self):
+        retired = self._retired_cluster()
+
+        response = self.client.get(reverse("core:clusters_overview"))
+
+        self.assertContains(response, "No Proxmox cluster is configured")
+        self.assertContains(response, reverse("core:cluster_add"))
+        self.assertContains(response, "Retired clusters")
+        self.assertContains(response, retired.display_name)
+
+    def test_retired_detail_is_read_only_and_uses_tombstone_identity(self):
+        retired = self._retired_cluster()
+
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": retired.key}))
+
+        self.assertContains(response, "Read-only retired connection")
+        self.assertContains(response, retired.retired_ca_uuid)
+        self.assertContains(response, retired.retired_ca_fingerprint)
+        self.assertContains(response, retired.retirement_reason)
+        self.assertContains(response, self.actor.username)
+        self.assertContains(response, f"{reverse('core:audit_log')}?cluster={retired.key}")
+        main_content = response.content.decode().split("<main", 1)[1].split("</main>", 1)[0]
+        self.assertNotIn("<form", main_content)
+        self.assertNotContains(response, "Add endpoint")
+        self.assertNotContains(response, "Update name")
+        self.assertNotContains(response, "rotate credential")
+        self.assertNotContains(response, "Enable cluster")
+        self.assertNotContains(response, "Danger zone")
+
+    def test_retired_connection_mutation_routes_fail_closed(self):
+        retired = self._retired_cluster()
+        endpoint = ProxmoxEndpoint.objects.create(
+            cluster=retired,
+            name="old-endpoint",
+            url="https://old-endpoint.retired.test:8006/",
+        )
+
+        action_response = self.client.post(self._action_url(retired), {"action": "display-name"})
+        add_response = self.client.get(
+            reverse("core:cluster_endpoint_add", kwargs={"cluster_key": retired.key}),
+        )
+        endpoint_response = self.client.post(
+            reverse(
+                "core:cluster_endpoint_action",
+                kwargs={"cluster_key": retired.key, "endpoint_id": endpoint.pk},
+            ),
+            {"action": "disable"},
+        )
+
+        self.assertEqual(action_response.status_code, 404)
+        self.assertEqual(add_response.status_code, 404)
+        self.assertEqual(endpoint_response.status_code, 404)
 
     def test_danger_zone_gates_verified_retirement_but_always_offers_forced_retirement(self):
         enabled = ProxmoxCluster.objects.create(

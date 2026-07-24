@@ -136,7 +136,7 @@ class ClusterConnectionViewTests(TestCase):
         overview = self.client.get(reverse("core:clusters_overview"))
         self.assertContains(overview, "cluster-list-heading")
         self.assertContains(overview, "Configured clusters")
-        self.assertContains(overview, "2 total")
+        self.assertContains(overview, "2 managed")
 
         detail = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
         self.assertContains(detail, "cluster-display-name-form")

@@ -320,6 +320,21 @@ class ConnectionsOverviewQueryBudgetTests(TestCase):
         # ``cluster__in=[]`` filters short-circuit without hitting the database.
         self.assertEqual(self._overview_query_count(0), 1)
 
+    def test_retired_archive_stays_inside_the_set_based_query_budget(self):
+        make_cluster("managed", enabled=False)
+        retire_cluster(make_cluster("retired", enabled=False))
+
+        self.assertEqual(
+            self._overview_query_count(2),
+            4,
+            "Splitting the prefetched historical rows must not add an archive query",
+        )
+
+    def test_only_retired_archive_skips_managed_credential_and_trust_queries(self):
+        retire_cluster(make_cluster("retired", enabled=False))
+
+        self.assertEqual(self._overview_query_count(1), 2)
+
     def test_overview_touches_only_connection_tables(self):
         make_cluster("c1", enabled=False)
         request = self.factory.get("/clusters/")
@@ -336,6 +351,7 @@ class ConnectionsOverviewQueryBudgetTests(TestCase):
         # Passive rendering must not reach a provider; the default test settings
         # block unmocked Proxmox HTTP, so a provider call would raise here.
         self.assertIn("clusters", captured)
+        self.assertIn("retired_clusters", captured)
 
 
 class LifecycleParticipantContractTests(TestCase):

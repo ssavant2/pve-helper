@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header cluster-page-header">
+    <div>
+      <a href="{% url 'core:clusters_overview' %}">Cluster connections</a>
+      <h1>{{ cluster.display_name }}</h1>
+      <p><code>{{ cluster.key }}</code> · <span class="badge muted-badge">Retired</span></p>
+    </div>
+    <a class="secondary-action" href="{% url 'core:audit_log' %}?cluster={{ cluster.key|urlencode }}"><i data-lucide="scroll-text" aria-hidden="true"></i> View Audit history</a>
+  </div>
+
+  <section class="panel cluster-retired-notice">
+    <div>
+      <h2>Read-only retired connection</h2>
+      <p>This tombstone preserves identity and history. Its endpoint, trust and credential configuration has been removed, and it cannot be enabled or edited.</p>
+    </div>
+    <span class="badge muted-badge">{{ cluster.get_retirement_mode_display }}</span>
+  </section>
+
+  <div class="cluster-detail-grid panel-spaced">
+    <section class="panel">
+      <div class="panel-heading"><h2>Retired identity</h2></div>
+      <dl class="cluster-detail-list">
+        <dt>Permanent key</dt><dd><code>{{ cluster.key }}</code></dd>
+        <dt>Display name</dt><dd>{{ cluster.display_name }}</dd>
+        <dt>Discovered name</dt><dd>{{ cluster.discovered_name|default:"-" }}</dd>
+        <dt>CA UUID</dt><dd><code>{{ cluster.retired_ca_uuid|default:"Not recorded" }}</code></dd>
+        <dt>CA fingerprint</dt><dd><code>{{ cluster.retired_ca_fingerprint|default:"-" }}</code></dd>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><h2>Retirement record</h2></div>
+      <dl class="cluster-detail-list">
+        <dt>Mode</dt><dd>{{ cluster.get_retirement_mode_display }}</dd>
+        <dt>Retired at</dt><dd>{{ cluster.retired_at|date:"Y-m-d H:i:s T" }}</dd>
+        <dt>Retired by</dt><dd>{% if cluster.retired_by %}{{ cluster.retired_by.get_username }}{% else %}Unknown or deleted operator{% endif %}</dd>
+        <dt>Reason</dt><dd>{{ cluster.retirement_reason|default:"No reason recorded." }}</dd>
+      </dl>
+    </section>
+  </div>
+
+  <section class="panel panel-spaced cluster-retired-evidence">
+    <div>
+      <h2>Preserved evidence</h2>
+      <p>Audit events, guest and storage history, completed operation records and historical capacity samples remain associated with the permanent key.</p>
+    </div>
+    <a class="primary-action" href="{% url 'core:audit_log' %}?cluster={{ cluster.key|urlencode }}">Open filtered Audit</a>
+  </section>
+{% endblock %}

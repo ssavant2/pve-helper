@@ -13,6 +13,7 @@ const PAGES = [
   { name: "Cluster connections", path: "/clusters/" },
   { name: "Add cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
+  { name: "Retired cluster detail", path: "/clusters/retired-e2e/connection/" },
   { name: "Datastore consumer view", path: "/clusters/e2e/datastores/e2e-nfs/summary/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
   { name: "PVE-helper Settings", path: "/settings/storage/" },
@@ -169,6 +170,25 @@ test("cluster connection UI separates immutable identity from write-only credent
   const secret = page.locator('input[name="token_secret"]');
   await expect(secret).toHaveValue("");
   await expect(secret).toHaveAttribute("autocomplete", "new-password");
+});
+
+test("retired connection archive opens a strictly read-only tombstone", async ({ page }) => {
+  await page.goto("/clusters/");
+
+  await expect(page.getByRole("heading", { name: "Configured clusters" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Retired clusters" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Retired E2E cluster", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Retired E2E cluster", exact: true }).click();
+
+  await expect(page).toHaveURL(/\/clusters\/retired-e2e\/connection\/$/);
+  await expect(page.getByRole("heading", { name: "Read-only retired connection" })).toBeVisible();
+  await expect(page.getByText("22222222-2222-2222-2222-222222222222")).toBeVisible();
+  await expect(page.locator("main form")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Add endpoint" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Open filtered Audit" })).toHaveAttribute(
+    "href",
+    "/audit/?cluster=retired-e2e",
+  );
 });
 
 test("tag links use soft navigation", async ({ page }) => {

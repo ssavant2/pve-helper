@@ -43,7 +43,6 @@ BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
         # remaining exists()/get()/first() here with named scope decisions.
         # (context_processors.py was fully converted in R1b and struck from here.)
         "core/views/cluster_scope.py",
-        "core/views/clusters.py",
         "core/services/runtime_bootstrap.py",
         # The lifecycle lock reloads a specific cluster under select_for_update to
         # check retired_at *after* locking, so it must reach retired rows too — the

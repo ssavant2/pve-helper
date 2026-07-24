@@ -10,7 +10,7 @@
   </div>
 
   <section class="panel cluster-list-panel">
-    <div class="panel-heading cluster-list-heading"><h2>Configured clusters</h2><span class="panel-meta">{{ clusters|length }} total</span></div>
+    <div class="panel-heading cluster-list-heading"><h2>Configured clusters</h2><span class="panel-meta">{{ clusters|length }} managed</span></div>
     {% if clusters %}
       <div class="cluster-table-scroll">
         <table class="data-table compact" data-sortable-table>
@@ -41,4 +41,32 @@
       </div>
     {% endif %}
   </section>
+
+  {% if retired_clusters %}
+    <section class="panel panel-spaced cluster-list-panel cluster-retired-list">
+      <div class="panel-heading cluster-list-heading">
+        <div>
+          <h2>Retired clusters</h2>
+          <p class="panel-meta">Historical connection tombstones. They cannot be enabled or edited.</p>
+        </div>
+        <span class="panel-meta">{{ retired_clusters|length }} retired</span>
+      </div>
+      <div class="cluster-table-scroll">
+        <table class="data-table compact" data-sortable-table>
+          <thead><tr><th data-sort="text">Name</th><th data-sort="text">Permanent key</th><th data-sort="number">Retired</th><th data-sort="text">Mode</th><th><span class="sr-only">Open</span></th></tr></thead>
+          <tbody>
+            {% for cluster in retired_clusters %}
+              <tr>
+                <td data-sort-value="{{ cluster.display_name }}"><a href="{% url 'core:cluster_connection' cluster.key %}">{{ cluster.display_name }}</a></td>
+                <td data-sort-value="{{ cluster.key }}"><code>{{ cluster.key }}</code></td>
+                <td data-sort-value="{{ cluster.retired_at|date:'U' }}">{{ cluster.retired_at|date:"Y-m-d H:i" }}</td>
+                <td data-sort-value="{{ cluster.get_retirement_mode_display }}"><span class="badge muted-badge">{{ cluster.get_retirement_mode_display }}</span></td>
+                <td><a class="icon-button" href="{% url 'core:cluster_connection' cluster.key %}" aria-label="Open retired {{ cluster.display_name }}"><i data-lucide="chevron-right" aria-hidden="true"></i></a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
 {% endblock %}

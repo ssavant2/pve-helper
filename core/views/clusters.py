@@ -56,7 +56,7 @@ from core.services.cluster_retirement import (
     cluster_retirement_preflight,
     retire_cluster,
 )
-from core.services.cluster_scopes import managed_clusters
+from core.services.cluster_scopes import historical_clusters, managed_clusters
 from core.services.cluster_trust import TransportTrustError
 from core.services.config import endpoint_name_from_url
 from core.services.datastore_nav import datastore_url
@@ -300,7 +300,9 @@ def _cluster_retirement_final_response(request, cluster: ProxmoxCluster):
 
 @app_login_required
 def clusters_overview(request):
-    clusters = list(ProxmoxCluster.objects.prefetch_related("endpoints").order_by("display_name", "key"))
+    historical = list(historical_clusters().prefetch_related("endpoints").order_by("display_name", "key"))
+    clusters = [cluster for cluster in historical if not cluster.is_retired]
+    retired_clusters = [cluster for cluster in historical if cluster.is_retired]
     credential_ids = {row.cluster_id: row.token_id for row in ClusterCredential.objects.filter(cluster__in=clusters)}
     trust_modes = {
         row.cluster_id: row.get_mode_display() for row in ClusterTransportTrust.objects.filter(cluster__in=clusters)
@@ -313,7 +315,11 @@ def clusters_overview(request):
     return render(
         request,
         "core/clusters.html",
-        {**navigation_context("clusters"), "clusters": clusters},
+        {
+            **navigation_context("clusters"),
+            "clusters": clusters,
+            "retired_clusters": retired_clusters,
+        },
     )
 
 
@@ -447,7 +453,19 @@ def cluster_add(request):
 
 @app_login_required
 def cluster_connection(request, cluster_key: str):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = get_object_or_404(historical_clusters().select_related("retired_by"), key=cluster_key)
+    if cluster.is_retired:
+        return render(
+            request,
+            "core/cluster_connection_retired.html",
+            {
+                **navigation_context(
+                    "clusters",
+                    page_title=(cluster.display_name, "Retired connection"),
+                ),
+                "cluster": cluster,
+            },
+        )
     return _render_cluster_connection(request, cluster)
 
 
@@ -595,7 +613,7 @@ def cluster_connection_action(request, cluster_key: str):
 
 @app_login_required
 def cluster_endpoint_add(request, cluster_key: str):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = get_object_or_404(managed_clusters(), key=cluster_key)
     context = {
         **navigation_context(
             "clusters",
@@ -754,7 +772,7 @@ def cluster_endpoint_add(request, cluster_key: str):
 @require_POST
 @app_login_required
 def cluster_endpoint_action(request, cluster_key: str, endpoint_id: int):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = get_object_or_404(managed_clusters(), key=cluster_key)
     endpoint = get_object_or_404(ProxmoxEndpoint, pk=endpoint_id, cluster=cluster)
     action = request.POST.get("action", "")
     if action not in {"enable", "disable"}:
