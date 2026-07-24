@@ -1,0 +1,13 @@
+{% comment %}
+  Rendered on every per-cluster surface a disabled or quarantined connection can
+  still be opened on. Navigation marks the cluster as degraded, but a bookmark or
+  a hand-typed URL lands here directly, so the page has to state the reason its
+  action buttons will refuse rather than letting the operator discover it by
+  pressing one.
+{% endcomment %}
+{% if cluster_degraded_label %}
+  <p class="panel-meta cluster-degraded-notice">
+    <span class="badge warning">{{ cluster_degraded_label }}</span>
+    {{ cluster_degraded_explanation }}
+  </p>
+{% endif %}

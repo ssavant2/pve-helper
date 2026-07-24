@@ -3,12 +3,15 @@ from __future__ import annotations
 from django.db import transaction
 
 from ..models import ProxmoxCluster
+from ..services.cluster_scopes import managed_clusters
+from ..services.cluster_state_labels import cluster_degraded_context
 from ..services.public_errors import public_exception_message
 from ..services.refs import GuestRef, RefParseError
 from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
 from ..services.storage_mounts import resolve_storage_mount
 from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
 from . import common
+from .cluster_scope import managed_cluster_from_path
 from .common import (
     SCHEDULED_ACTION_DEFAULT_MONTHS,
     SCHEDULED_ACTION_MONTHS,
@@ -60,10 +63,7 @@ from .common import (
 
 
 def _scheduled_cluster_or_404(cluster_key: str) -> ProxmoxCluster:
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
-    return cluster
+    return managed_cluster_from_path(cluster_key)
 
 
 def _scheduled_tasks_url(cluster_key: str) -> str:
@@ -114,6 +114,7 @@ def scheduled_tasks(request, cluster_key: str):
 
     context = {
         **navigation_context("scheduled_tasks"),
+        **cluster_degraded_context(cluster),
         "cluster_key": cluster.key,
         "selected_cluster": cluster,
         "scheduled_actions": actions,
@@ -256,7 +257,7 @@ def recent_tasks(request):
         page = 0
 
     cluster_key = request.GET.get("cluster", "").strip()
-    if cluster_key and not ProxmoxCluster.objects.filter(key=cluster_key, enabled=True).exists():
+    if cluster_key and not managed_clusters().filter(key=cluster_key, enabled=True).exists():
         return JsonResponse({"error": "Unknown or disabled cluster."}, status=400)
 
     return JsonResponse(serialize_task_page(recent_task_page(page=page, cluster_key=cluster_key)))
@@ -826,7 +827,7 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     action.enabled = post.get("enabled") == "on"
     action.action_type = action_type
     action.action_timeout_seconds = timeout_seconds
-    action.cluster = ProxmoxCluster.objects.get(key=target_ref.cluster_key)
+    action.cluster = managed_clusters().get(key=target_ref.cluster_key)
     action.target_type = target_ref.object_type
     action.target_vmid = target_ref.vmid
     _apply_target_snapshot(action)
@@ -867,7 +868,7 @@ def _parse_scheduled_target_ref(value: str) -> GuestRef | None:
             ref = GuestRef.parse(value).without_node()
         except RefParseError:
             return None
-        return ref if ProxmoxCluster.objects.filter(key=ref.cluster_key).exists() else None
+        return ref if managed_clusters().filter(key=ref.cluster_key).exists() else None
     return None
 
 

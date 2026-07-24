@@ -289,6 +289,27 @@ button.tree-node {
   font-variant-numeric: tabular-nums;
 }
 
+/* A managed-but-not-operational cluster in the tree. Reuses the warning hue the
+   rest of the app already uses for "readable, but do not trust it as current"
+   rather than inventing a nav-only colour. */
+.tree-state-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--warning-bg);
+  color: var(--amber);
+  font-size: 10px;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.app-shell.sidebar-collapsed .tree-state-badge {
+  display: none;
+}
+
 .tree-caret {
   width: 12px;
   text-align: center;

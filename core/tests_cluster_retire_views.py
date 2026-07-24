@@ -117,6 +117,49 @@ class ClusterRetirementViewTests(TestCase):
         self.assertEqual(add_response.status_code, 404)
         self.assertEqual(endpoint_response.status_code, 404)
 
+    def test_retired_cluster_key_opens_no_operational_route(self):
+        """A retired key must not open an operational page with working buttons.
+
+        Retirement excludes a connection from every managed scope, but the
+        cluster-qualified views resolved their path cluster with a bare manager, so
+        Tags, Scheduled Tasks, the datastore tabs and the guest mutation dialogs all
+        still rendered for one. The only thing that then stopped a provider call was
+        `_require_acquirable` refusing what the check constraint had forced to
+        `enabled=False` — advising the operator to re-enable a cluster that can never
+        be re-enabled.
+        """
+        retired = self._retired_cluster()
+
+        routes = [
+            ("core:tags_overview", {"cluster_key": retired.key}),
+            ("core:tag_detail", {"cluster_key": retired.key}),
+            ("core:scheduled_tasks", {"cluster_key": retired.key}),
+            ("core:scheduled_task_create", {"cluster_key": retired.key}),
+            ("core:guest_create", {"cluster_key": retired.key, "object_type": "vm"}),
+            ("core:guest_backup_restore", {"cluster_key": retired.key}),
+            ("core:api_storage_summary", {"cluster_key": retired.key, "storage": "local"}),
+            ("core:api_storage_content", {"cluster_key": retired.key, "storage": "local"}),
+            ("core:storage_api_inventory", {"cluster_key": retired.key, "storage": "local"}),
+        ]
+        for name, kwargs in routes:
+            with self.subTest(route=name):
+                self.assertEqual(self.client.get(reverse(name, kwargs=kwargs)).status_code, 404)
+
+        # register_vm redirects before resolving without a mode, so name one.
+        register = self.client.get(reverse("core:register_vm", kwargs={"cluster_key": retired.key}) + "?mode=adopt")
+        self.assertEqual(register.status_code, 404)
+
+        posts = [
+            ("core:tag_create", {"tag": "x", "color": "#ffffff"}),
+            ("core:tag_recolor", {"tag": "x", "color": "#ffffff"}),
+            ("core:tag_operation", {"operation": "delete", "tag": "x"}),
+            ("core:tags_refresh", {}),
+        ]
+        for name, payload in posts:
+            with self.subTest(route=name):
+                response = self.client.post(reverse(name, kwargs={"cluster_key": retired.key}), payload)
+                self.assertEqual(response.status_code, 404)
+
     def test_danger_zone_gates_verified_retirement_but_always_offers_forced_retirement(self):
         enabled = ProxmoxCluster.objects.create(
             key="enabled",
@@ -343,6 +386,46 @@ class ClusterRetirementViewTests(TestCase):
     PVE_HELPER_ENCRYPTION_KEYS=f"test:{_ENCRYPTION_KEY}",
     PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID="test",
 )
+@override_settings(APP_REQUIRE_LOGIN=False)
+class DisabledClusterSurfaceTests(TestCase):
+    """A disabled connection keeps its pages, and every page says why writes refuse.
+
+    Navigation marks it degraded, but a bookmark lands on the page directly, so the
+    reason has to be on the page rather than discovered by pressing a button.
+    """
+
+    def setUp(self):
+        self.actor = get_user_model().objects.create_user(username="disabled-surface-operator")
+        self.client.force_login(self.actor)
+        self.cluster = ProxmoxCluster.objects.create(key="paused", display_name="Paused cluster", enabled=False)
+
+    def test_per_cluster_pages_render_and_carry_the_degraded_notice(self):
+        for name in ("core:tags_overview", "core:scheduled_tasks"):
+            with self.subTest(route=name):
+                response = self.client.get(reverse(name, kwargs={"cluster_key": self.cluster.key}))
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, "Disabled")
+                self.assertContains(response, "refreshes, schedules, consoles and writes are refused")
+
+    def test_quarantine_is_named_instead_of_disabled(self):
+        self.cluster.ingestion_quarantined = True
+        self.cluster.quarantine_reason = "CA mismatch."
+        self.cluster.save(update_fields=["ingestion_quarantined", "quarantine_reason"])
+
+        response = self.client.get(reverse("core:tags_overview", kwargs={"cluster_key": self.cluster.key}))
+
+        self.assertContains(response, "Quarantined")
+        self.assertContains(response, "cluster CA no longer matches")
+
+    def test_an_enabled_cluster_shows_no_notice(self):
+        self.cluster.enabled = True
+        self.cluster.save(update_fields=["enabled"])
+
+        response = self.client.get(reverse("core:tags_overview", kwargs={"cluster_key": self.cluster.key}))
+
+        self.assertNotContains(response, "cluster-degraded-notice")
+
+
 class ClusterUnusedDeletionViewTests(TestCase):
     """R4 slice 3: the operator-facing hard-delete control and exact-key retry UX."""
 

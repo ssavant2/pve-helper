@@ -16,6 +16,7 @@ from core.models import (
     ProxmoxStorageConsumer,
 )
 from core.services.cluster_scopes import has_historical_clusters, managed_clusters
+from core.services.cluster_state_labels import cluster_degraded_label
 
 from .common import app_login_required, browser_title
 
@@ -24,6 +25,22 @@ SAFE_REDIRECT_METHODS = {"GET", "HEAD"}
 
 def cluster_from_path(cluster_key: str) -> ProxmoxCluster:
     cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
+    if cluster is None:
+        raise Http404("Proxmox cluster not found")
+    return cluster
+
+
+def managed_cluster_from_path(cluster_key: str) -> ProxmoxCluster:
+    """Resolve a cluster-qualified URL segment inside the managed scope.
+
+    Every operational route resolves its path cluster through here. Managed rather
+    than provider-acquirable is deliberate: a disabled or quarantined cluster keeps
+    its last-known read models and history visible, and an attempted provider call
+    is refused by name in `_require_acquirable`. A retired cluster's key, however,
+    addresses nothing operational and must not open a page with working action
+    buttons, so it resolves to 404 here.
+    """
+    cluster = managed_clusters().filter(key=cluster_key).first()
     if cluster is None:
         raise Http404("Proxmox cluster not found")
     return cluster
@@ -73,7 +90,10 @@ def legacy_cluster_redirect(route_name: str) -> Callable:
     def view(request, **route_kwargs):
         if request.method not in SAFE_REDIRECT_METHODS:
             return _reject_legacy_mutation()
-        clusters = list(managed_clusters().filter(enabled=True).order_by("display_name", "key"))
+        # Managed, not enabled-only: the destination pages render for a disabled or
+        # quarantined cluster and say so, so skipping it here would strand the one
+        # legacy bookmark that still points at its retained data.
+        clusters = list(managed_clusters().order_by("display_name", "key"))
         if not clusters:
             # A retired-only installation still has an archive to land on; only a
             # genuinely empty one routes to onboarding.
@@ -91,6 +111,7 @@ def legacy_cluster_redirect(route_name: str) -> Callable:
             {
                 "key": cluster.key,
                 "label": cluster.display_name,
+                "degraded": cluster_degraded_label(cluster),
                 "url": _choice_url(
                     request,
                     route_name,

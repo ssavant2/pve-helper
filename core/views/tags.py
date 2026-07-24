@@ -10,7 +10,9 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from core.models import CurrentGuestInventory, ProxmoxCluster, ProxmoxInventory
+from core.models import CurrentGuestInventory, ProxmoxInventory
+from core.services.cluster_scopes import managed_clusters
+from core.services.cluster_state_labels import cluster_degraded_context
 from core.services.guests import is_template
 from core.services.proxmox import ProxmoxAPIError
 from core.services.tag_actions import (
@@ -33,13 +35,14 @@ from core.services.tag_operation_confirmation import (
 from core.services.tags import parse_tags
 
 from . import common
+from .cluster_scope import managed_cluster_from_path
 from .common import app_login_required, navigation_context, record_audit_event
 
 logger = logging.getLogger(__name__)
 
 
 def _catalog_cluster(catalog):
-    return ProxmoxCluster.objects.filter(key=catalog.cluster_key).first()
+    return managed_clusters().filter(key=catalog.cluster_key).first()
 
 
 def _tag_context(*, cluster, selected: str = "") -> dict:
@@ -62,15 +65,14 @@ def _tag_context(*, cluster, selected: str = "") -> dict:
         "selected_tag": selected,
         "cluster_key": catalog.cluster_key,
         "selected_cluster": cluster,
-        "cluster_choices": ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"),
+        "cluster_choices": managed_clusters().filter(enabled=True).order_by("display_name", "key"),
+        **cluster_degraded_context(cluster),
     }
 
 
 @app_login_required
 def tags_overview(request, cluster_key: str):
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     return render(request, "core/tags.html", _tag_context(cluster=cluster))
 
 
@@ -98,9 +100,7 @@ def tag_detail(request, cluster_key: str):
     tag = request.GET.get("tag", "").strip().lower()
     if not tag:
         raise Http404("Tag not specified")
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     context = _tag_context(cluster=cluster, selected=tag)
     summary = next((row for row in context["tag_rows"] if row.name == tag), None)
     if summary is None:
@@ -162,9 +162,7 @@ def tag_detail(request, cluster_key: str):
 @require_POST
 @app_login_required
 def tag_create(request, cluster_key: str):
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     catalog = load_tag_catalog(cluster=cluster)
     cluster = _catalog_cluster(catalog)
     _tags, error = register_tag(request.POST.get("tag", ""), request.POST.get("color", ""), cluster=cluster)
@@ -187,9 +185,7 @@ def tag_create(request, cluster_key: str):
 @app_login_required
 def tag_recolor(request, cluster_key: str):
     name = request.POST.get("tag", "").strip().lower()
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     catalog = load_tag_catalog(cluster=cluster)
     cluster = _catalog_cluster(catalog)
     _tags, error = recolor_tag(name, request.POST.get("color", ""), cluster=cluster)
@@ -217,9 +213,7 @@ def tag_operation(request, cluster_key: str):
     new_tag = request.POST.get("new_tag", "").strip().lower()
     if operation not in {"delete", "rename"}:
         raise Http404("Unknown tag operation")
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     catalog = load_tag_catalog(cluster=cluster)
     cluster = _catalog_cluster(catalog)
     summary = next((row for row in catalog.summaries if row.name == source), None)
@@ -274,9 +268,7 @@ def tag_operation(request, cluster_key: str):
 @require_POST
 @app_login_required
 def tags_refresh(request, cluster_key: str):
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     catalog = load_tag_catalog(cluster=cluster)
     try:
         event, task_id = queue_tag_inventory_refresh(

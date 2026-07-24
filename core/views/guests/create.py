@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from core.models import ProxmoxCluster
+from core.services.cluster_scopes import managed_clusters
 
+from ..cluster_scope import managed_cluster_from_path
 from ..common import (
     GUEST_OBJECT_TYPES,
     Http404,
@@ -33,9 +34,7 @@ def guest_create(request, cluster_key: str, object_type: str):
 
     is_vm = object_type == ProxmoxInventory.ObjectType.VM
     node_param = request.POST.get("node") if request.method == "POST" else request.GET.get("node")
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     options = create_options(object_type, node_param, cluster=cluster)
     if not options.get("available"):
         messages.error(request, "Could not load creation options from Proxmox (no reachable node).")
@@ -62,7 +61,7 @@ def guest_create(request, cluster_key: str, object_type: str):
         **navigation_context("vms", page_title="Create VM" if is_vm else "Create container"),
         "object_type": object_type,
         "cluster_key": cluster.key,
-        "cluster_choices": list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")),
+        "cluster_choices": list(managed_clusters().filter(enabled=True).order_by("display_name", "key")),
         "is_vm": is_vm,
         "options": options,
         "form_values": form_values,

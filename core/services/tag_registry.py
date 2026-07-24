@@ -77,17 +77,24 @@ def cluster_options(cluster) -> tuple[object | None, dict, str]:
     carry different colours, so a fallback to another cluster's options would merge
     two registries into one writable catalog.
     """
-    from core.services.cluster_resolver import cluster_wide_read
+    from core.services.cluster_resolver import ClusterResolutionError, cluster_wide_read
 
     cluster, error = resolve_tag_registry_cluster(cluster)
     if cluster is None:
         return None, {}, error
 
-    result = cluster_wide_read(
-        cluster,
-        operation="tag_registry_read",
-        call=lambda client: client.cluster_options(),
-    )
+    try:
+        result = cluster_wide_read(
+            cluster,
+            operation="tag_registry_read",
+            call=lambda client: client.cluster_options(),
+        )
+    except ClusterResolutionError as exc:
+        # A disabled or quarantined cluster keeps its Tags page — that retained
+        # membership is what disabling promises to leave readable — so refused
+        # acquisition is a registry that is unavailable, not a 500. The page states
+        # the cluster's state separately; this is the registry's own reason.
+        return None, {}, str(exc)
     if not result.complete:
         error = "No Proxmox endpoint could read cluster tag options."
         if result.attempted:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from django.core.cache import cache
 
-from core.models import ProxmoxCluster
 from core.services.classification import DISK_CONFIG_KEYS
+from core.services.cluster_scopes import managed_clusters
 from core.services.cluster_state_identity import cluster_cache_key
 from core.services.guest_agent_info import config_agent_enabled, empty_agent_info, fetch_guest_agent_info
 from core.services.public_errors import public_exception_message
@@ -191,7 +191,7 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
 
 def _vms_workspace_context(active_nav: str) -> dict:
     rows, live_available, scan_at = _guest_rows()
-    cluster_choices = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
+    cluster_choices = list(managed_clusters().filter(enabled=True).order_by("display_name", "key"))
     clusters = {row.cluster_key: row.cluster for row in rows if row.cluster is not None and row.cluster_key}
     catalogs = {cluster_key: load_tag_catalog(cluster=cluster) for cluster_key, cluster in clusters.items()}
     available_user_tags = sorted(
@@ -685,7 +685,7 @@ def _resolve_guest_detail(
     }
 
     return SimpleNamespace(
-        cluster=obj.cluster or ProxmoxCluster.objects.get(key=ref.cluster_key),
+        cluster=obj.cluster or managed_clusters().get(key=ref.cluster_key),
         cluster_key=ref.cluster_key,
         guest_ref=GuestRef(ref.cluster_key, obj.object_type, obj.vmid, obj.node),
         node_ref=GuestRef(ref.cluster_key, obj.object_type, obj.vmid, obj.node).node_ref,

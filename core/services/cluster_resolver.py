@@ -40,19 +40,33 @@ class ClusterQuarantinedError(ClusterResolutionError):
     """Acquisition was attempted against a cluster whose identity is in doubt."""
 
 
-def _require_acquirable(cluster: ProxmoxCluster) -> None:
-    """Refuse live acquisition against a disabled or quarantined cluster.
+class ClusterRetiredError(ClusterResolutionError):
+    """Acquisition was attempted against a permanently retired cluster."""
 
-    Both block new provider writes, scheduled executions, consoles and refresh
+
+def _require_acquirable(cluster: ProxmoxCluster) -> None:
+    """Refuse live acquisition against a retired, disabled or quarantined cluster.
+
+    All three block new provider writes, scheduled executions, consoles and refresh
     acquisition immediately, while last-known read models and history stay readable
     as visibly stale. Disabling is an operator choice; quarantine is automatic on a
     cluster-CA mismatch, where ingesting would merge a different cluster's guests.
+    Retirement is terminal, and it is checked *first* and by name: the retirement
+    check constraint forces `enabled=False`, so without its own arm a retired
+    cluster is refused as merely "disabled" and the operator is told to re-enable
+    something that can never be re-enabled.
 
     The check lives at each acquisition entry point, not inside the endpoint query,
     because verification flows legitimately talk to a cluster that is neither enabled
     nor cleared: onboarding, re-verifying identity, and the CA discovery that lifts a
     quarantine all build clients via `client_for_endpoint`, which stays ungated.
     """
+    if cluster.retired_at is not None:
+        raise ClusterRetiredError(
+            f"Cluster '{cluster.key}' is retired. Retirement is permanent, so this "
+            "connection can never read from or write to Proxmox again; its retained "
+            "history stays readable under Connections."
+        )
     if not cluster.enabled:
         raise ClusterDisabledError(
             f"Cluster '{cluster.key}' is disabled. Re-enable it, which re-verifies its "

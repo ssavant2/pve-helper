@@ -81,6 +81,7 @@ from core.services.cluster_scopes import (
     managed_clusters,
     provider_acquirable_clusters,
 )
+from core.services.cluster_state_labels import cluster_degraded_label
 from core.services.scan_retention import prune_scan_history
 from core.tasks import (
     _reap_orphaned_cluster_operations,
@@ -731,14 +732,44 @@ class ContextProcessorScopeCutoverTests(TestCase):
         make_cluster("live")
         retire_cluster(make_cluster("retired"))
         ctx = self._app_settings()
+        self.assertEqual([c.key for c in ctx["app_nav_clusters"]], ["live"])
         self.assertEqual([c.key for c in ctx["app_enabled_clusters"]], ["live"])
         self.assertTrue(ctx["app_has_clusters"])
 
     def test_only_retired_installation_still_reports_a_history(self):
         only_retired_installation()
         ctx = self._app_settings()
+        self.assertEqual(list(ctx["app_nav_clusters"]), [])
         self.assertEqual(list(ctx["app_enabled_clusters"]), [])
         self.assertTrue(ctx["app_has_clusters"])
+
+    def test_disabled_clusters_navigate_but_are_not_write_targets(self):
+        """Disabling retains inventory, schedules and history — and must not hide them.
+
+        Navigation was built from `managed_clusters().filter(enabled=True)`, so
+        disabling a cluster removed its datastore, Tags and Scheduled Tasks entries
+        outright. Verified retirement is gated on disabling first, so an operator
+        preparing to retire a cluster lost the ability to browse it and decide.
+        """
+        make_cluster("live")
+        disabled = make_cluster("paused", enabled=False)
+        retire_cluster(make_cluster("gone"))
+
+        ctx = self._app_settings()
+
+        self.assertEqual([c.key for c in ctx["app_nav_clusters"]], ["live", "paused"])
+        # Write targets — "register this disk as a VM in ..." — stay enabled-only.
+        self.assertEqual([c.key for c in ctx["app_enabled_clusters"]], ["live"])
+        self.assertTrue(ctx["app_multiple_clusters"])
+        self.assertEqual(cluster_degraded_label(disabled), "Disabled")
+
+    def test_quarantine_outranks_disabled_in_the_navigation_label(self):
+        cluster = make_cluster("suspect", enabled=False)
+        cluster.ingestion_quarantined = True
+        cluster.quarantine_reason = "CA mismatch."
+        cluster.save(update_fields=["ingestion_quarantined", "quarantine_reason"])
+
+        self.assertEqual(cluster_degraded_label(cluster), "Quarantined")
 
     def test_empty_installation_reports_no_clusters(self):
         self.assertFalse(self._app_settings()["app_has_clusters"])

@@ -154,6 +154,7 @@
                       <span class="tree-caret" data-tree-caret>v</span>
                       <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
                       <span class="tree-label">{{ group.cluster_name }}</span>
+                      {% if group.degraded %}<span class="tree-state-badge" title="{{ group.degraded }}">{{ group.degraded }}</span>{% endif %}
                     </button>
                     <div class="tree-children">
                       {% include "core/partials/nav_datastore_groups.html" with group=group %}
@@ -190,10 +191,11 @@
                 <span class="tree-label">Tags</span>
               </button>
               <div class="tree-children">
-                {% for cluster in app_enabled_clusters %}
+                {% for cluster in app_nav_clusters %}
                   <a class="tree-node tree-leaf {% if active_nav == 'tags' and cluster.key == cluster_key %}active{% endif %}" href="{% url 'core:tags_overview' cluster.key %}">
                     <span class="tree-icon"><i data-lucide="tag" aria-hidden="true"></i></span>
                     <span class="tree-label">{{ cluster.display_name }}</span>
+                    {% cluster_degraded_badge cluster %}
                   </a>
                 {% endfor %}
               </div>
@@ -220,10 +222,11 @@
                 <span class="tree-label">Scheduled Tasks</span>
               </button>
               <div class="tree-children">
-                {% for cluster in app_enabled_clusters %}
+                {% for cluster in app_nav_clusters %}
                   <a class="tree-node tree-leaf {% if active_nav == 'scheduled_tasks' and cluster.key == cluster_key %}active{% endif %}" href="{% url 'core:scheduled_tasks' cluster.key %}">
                     <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
                     <span class="tree-label">{{ cluster.display_name }}</span>
+                    {% cluster_degraded_badge cluster %}
                   </a>
                 {% endfor %}
               </div>
@@ -301,7 +304,7 @@
                 <span class="sr-only">Filter recent tasks by cluster</span>
                 <select data-task-cluster-filter aria-label="Filter recent tasks by cluster">
                   <option value="">All clusters</option>
-                  {% for cluster in app_enabled_clusters %}<option value="{{ cluster.key }}">{{ cluster.display_name }}</option>{% endfor %}
+                  {% for cluster in app_nav_clusters %}<option value="{{ cluster.key }}">{{ cluster.display_name }}</option>{% endfor %}
                 </select>
               </label>
             {% endif %}

@@ -12,6 +12,8 @@
     </div>
   </div>
 
+  {% include "core/partials/cluster_degraded_notice.html" %}
+
   {% if registry_error %}<div class="panel tag-warning"><strong>Registry unavailable:</strong> {{ registry_error }}</div>{% endif %}
   {% if inventory_errors %}<div class="panel tag-warning"><strong>Membership inventory is partial:</strong> {{ inventory_errors|join:"; " }}</div>{% endif %}
 

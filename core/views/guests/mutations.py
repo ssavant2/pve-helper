@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from core.models import ProxmoxCluster
+from core.services.cluster_scopes import managed_clusters
 
+from ..cluster_scope import managed_cluster_from_path
 from ..common import (
     GUEST_POWER_ACTIONS,
     POWER_ACTION_REQUESTS,
@@ -239,9 +240,7 @@ def guest_backup_delete(request, cluster_key, object_type, vmid):
 
 @app_login_required
 def guest_backup_restore(request, cluster_key: str):
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     archives, nodes, storage_options, nextid = _restore_options(cluster)
     restore_error = ""
     selected_archive_key = (
@@ -303,7 +302,7 @@ def guest_backup_restore(request, cluster_key: str):
         "source_type": source_type,
         "source_vmid": source_vmid or "",
         "cluster_key": cluster.key,
-        "cluster_choices": list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")),
+        "cluster_choices": list(managed_clusters().filter(enabled=True).order_by("display_name", "key")),
         "form_values": request.POST
         if request.method == "POST"
         else {"node": nodes[0]["key"] if nodes else "", "vmid": nextid},

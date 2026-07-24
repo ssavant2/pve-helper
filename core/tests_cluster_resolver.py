@@ -3,11 +3,13 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from core.models import ProxmoxCluster, ProxmoxEndpoint
 from core.services.cluster_resolver import (
     ClusterDisabledError,
     ClusterResolutionError,
+    ClusterRetiredError,
     cluster_clients,
     cluster_wide_read,
     cluster_write,
@@ -193,6 +195,38 @@ class DisabledClusterTests(ClusterResolverTestCase):
         # Onboarding and re-enable must be able to inspect a cluster that is not
         # enabled yet; only acquisition is gated.
         self.assertEqual([e.name for e in enabled_endpoints(self.cluster_a)], ["a1", "a2"])
+
+
+class RetiredClusterTests(ClusterResolverTestCase):
+    """Retirement is terminal, and acquisition must say so in its own words.
+
+    The retirement check constraint forces ``enabled=False``, so before Review 11
+    a retired cluster was refused as merely "disabled" and the operator was told to
+    re-enable a connection that can never be re-enabled.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.cluster_a.enabled = False
+        self.cluster_a.retirement_mode = ProxmoxCluster.RetirementMode.VERIFIED
+        self.cluster_a.retired_at = timezone.now()
+        self.cluster_a.save(update_fields=["enabled", "retirement_mode", "retired_at"])
+
+    def test_acquisition_is_refused_as_retired_not_as_disabled(self):
+        for acquire in (
+            lambda: cluster_wide_read(self.cluster_a, operation="inventory", call=lambda c: c.read()),
+            lambda: cluster_clients(self.cluster_a),
+            lambda: pin_cluster_write_client(self.cluster_a),
+        ):
+            with self.assertRaises(ClusterRetiredError) as caught:
+                acquire()
+            message = str(caught.exception)
+            self.assertIn("retired", message)
+            self.assertNotIn("Re-enable", message)
+
+    def test_retired_is_still_a_resolution_error_for_existing_handlers(self):
+        with self.assertRaises(ClusterResolutionError):
+            cluster_clients(self.cluster_a)
 
 
 class ClusterWriteContractTests(ClusterResolverTestCase):

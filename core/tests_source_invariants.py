@@ -66,6 +66,9 @@ BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
         # it. The IS NULL filter is what makes it monotonic, not a scope.
         "core/services/cluster_footprint.py",
         # Read/mutation/worker call sites migrated as R1b/R2 reach each module.
+        # The cluster-qualified URL views were converted in Review 11 and struck
+        # from here: every one of them now resolves its path cluster through
+        # core.views.cluster_scope.managed_cluster_from_path.
         "core/services/audit_events.py",
         "core/services/current_guest_inventory.py",
         "core/services/durable_guest_operations.py",
@@ -75,13 +78,6 @@ BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
         "core/services/tag_actions.py",
         "core/services/tag_inventory_refresh.py",
         "core/tasks.py",
-        "core/views/guests/create.py",
-        "core/views/guests/mutations.py",
-        "core/views/guests/read_model_support.py",
-        "core/views/scheduling.py",
-        "core/views/storage.py",
-        "core/views/tags.py",
-        "core/views/vm_register.py",
     }
 )
 

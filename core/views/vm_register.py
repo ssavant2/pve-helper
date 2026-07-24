@@ -14,10 +14,9 @@ from __future__ import annotations
 import os
 
 from django.contrib import messages
-from django.http import Http404
 from django.shortcuts import redirect, render
 
-from core.models import ProxmoxCluster, StorageMount
+from core.models import StorageMount
 from core.services import vm_register as reg
 from core.services.guest_create import create_options
 from core.services.ovf_import import OvfImportError, parse_ovf_package
@@ -25,6 +24,7 @@ from core.services.proxmox import clear_live_guest_caches
 from core.services.refs import GuestRef
 from core.services.storage_mounts import resolve_storage_mount
 
+from .cluster_scope import managed_cluster_from_path
 from .common import app_login_required, enqueue_bulk_task, navigation_context, record_audit_event
 
 
@@ -102,9 +102,7 @@ def register_vm(request, cluster_key: str):
         messages.error(request, "Unknown register mode.")
         return redirect("core:vms")
 
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
+    cluster = managed_cluster_from_path(cluster_key)
     options = _register_options(src.get("node") or None, cluster=cluster)
     if not options.get("available"):
         messages.error(request, "Could not load creation options from Proxmox.")

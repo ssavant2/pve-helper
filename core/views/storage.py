@@ -17,6 +17,7 @@ from core.models import (
     ProxmoxStorageConsumer,
 )
 from core.services.cluster_scopes import managed_clusters
+from core.services.cluster_state_labels import cluster_degraded_context
 from core.services.confined_filesystem import ConfinedFilesystemError, open_regular_file_handle
 from core.services.datastore_nav import datastore_url, nav_datastore_key
 from core.services.filesystem import mountinfo_mounts
@@ -60,6 +61,7 @@ from core.services.task_failures import failure_fields
 
 from ..services.storage import StorageScanner
 from . import common
+from .cluster_scope import managed_cluster_from_path
 from .common import (
     FILE_BROWSER_BATCH_SIZE,
     INFLATE_PREALLOCATION_FULL,
@@ -183,7 +185,7 @@ STORAGE_CONTENT_ORDER = [item["key"] for item in STORAGE_CONTENT_TYPES]
 
 def _clusters_for_mounts(mount_ids):
     return list(
-        ProxmoxCluster.objects.filter(enabled=True, retired_at__isnull=True)
+        managed_clusters().filter(enabled=True)
         .filter(
             Q(storage_consumers__storage_id__in=mount_ids)
             | Q(
@@ -223,7 +225,7 @@ def _lineage_by_cluster(clusters=None) -> dict[str, dict[int, int]]:
     templates that happen to share a VMID answer for each other.
     """
     if clusters is None:
-        clusters = ProxmoxCluster.objects.filter(enabled=True).order_by("key")
+        clusters = managed_clusters().filter(enabled=True).order_by("key")
     return {cluster.key: common.stored_guest_lineage(cluster) for cluster in clusters}
 
 
@@ -279,7 +281,7 @@ def _clusters_without_storage() -> list[ProxmoxCluster]:
         ).values_list("cluster_id", flat=True)
     )
     return list(
-        ProxmoxCluster.objects.filter(enabled=True, retired_at__isnull=True).exclude(pk__in=represented).order_by("key")
+        managed_clusters().filter(enabled=True).exclude(pk__in=represented).order_by("key")
     )
 
 
@@ -835,6 +837,7 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
                 next((label for key, label, _name in _API_STORAGE_TABS if key == active_tab), ""),
             ),
         ),
+        **cluster_degraded_context(cluster),
         "node": node,
         "datastore_scope_label": (
             f"Shared datastore in {cluster.display_name}"
@@ -873,7 +876,7 @@ def _api_storage_context(cluster, definition, storage: str, node: str, active_ta
 @require_POST
 @app_login_required
 def storage_catalog_refresh_view(request, cluster_key: str, storage: str):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key, enabled=True)
+    cluster = managed_cluster_from_path(cluster_key)
     if not ClusterStorage.objects.filter(
         cluster=cluster,
         cluster__retired_at__isnull=True,
@@ -936,7 +939,7 @@ def _api_storage_volumes(cluster, definition, node: str, highlight_vmid=None):
 def storage_api_inventory(request, cluster_key: str, storage: str, node: str = ""):
     """Entry point without a tab; redirects to Summary, keeping the optional ?vmid
     highlight used by the guest Datastores tab."""
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     _definition, node, _moved = _resolve_datastore_scope(cluster, storage, node)
     return _datastore_redirect(request, "core:api_storage_summary", cluster, storage, node)
 
@@ -1081,7 +1084,7 @@ def _datastore_mount_facts(request, view):
 
 @app_login_required
 def api_storage_summary(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_summary", cluster, storage, node)
@@ -1105,7 +1108,7 @@ def api_storage_summary(request, cluster_key: str, storage: str, node: str = "")
 @require_POST
 @app_login_required
 def release_cluster_storage_consumers_view(request, cluster_key: str):
-    cluster = get_object_or_404(managed_clusters(), key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     redirect_to = _safe_next_url(request)
     if request.POST.get("confirm_release") != "yes":
         messages.error(
@@ -1127,7 +1130,7 @@ def release_cluster_storage_consumers_view(request, cluster_key: str):
 
 @app_login_required
 def api_storage_volumes(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_volumes", cluster, storage, node)
@@ -1147,7 +1150,7 @@ def api_storage_volumes(request, cluster_key: str, storage: str, node: str = "")
 
 @app_login_required
 def api_storage_vms(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_vms", cluster, storage, node)
@@ -1235,7 +1238,7 @@ def _api_content_blockers(usage: dict[str, dict], removed: list[str]) -> list[di
 
 @app_login_required
 def api_storage_content(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_content", cluster, storage, node)
@@ -1255,7 +1258,7 @@ def api_storage_content(request, cluster_key: str, storage: str, node: str = "")
 @require_POST
 @app_login_required
 def update_api_storage_content(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, _moved = _resolve_datastore_scope(cluster, storage, node)
     redirect_to = datastore_url("core:api_storage_content", cluster.key, storage, node)
     if not settings.STORAGE_WRITE_ENABLED:
@@ -1310,7 +1313,7 @@ def update_api_storage_content(request, cluster_key: str, storage: str, node: st
 
 @app_login_required
 def api_storage_monitor(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_monitor", cluster, storage, node)
@@ -1332,7 +1335,7 @@ def api_storage_monitor(request, cluster_key: str, storage: str, node: str = "")
 
 @app_login_required
 def api_storage_configure(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_configure", cluster, storage, node)
@@ -1394,7 +1397,7 @@ def api_storage_nodes(request, cluster_key: str, storage: str, node: str = ""):
     saw. Neither implies the other, and a destructive file action must pass both,
     so showing them in one table with separate columns is the honest rendering.
     """
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_nodes", cluster, storage, node)
@@ -1446,7 +1449,7 @@ def api_storage_nodes(request, cluster_key: str, storage: str, node: str = ""):
 
 @app_login_required
 def api_storage_permissions(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_permissions", cluster, storage, node)
@@ -1569,7 +1572,7 @@ def _storage_browser_context(request, storage):
     # A mount nobody has bound yet has no cluster to narrow to; there the old wide
     # search is the only thing left, and the ambiguity rule below still applies.
     link_clusters = _storage_clusters(storage) or list(
-        ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key")
+        managed_clusters().filter(enabled=True).order_by("display_name", "key")
     )
     guests_by_vmid: dict[int, list[CurrentGuestInventory]] = {}
     for obj in CurrentGuestInventory.objects.select_related("cluster").filter(cluster__in=link_clusters):
@@ -1725,7 +1728,7 @@ def _storage_browser_context(request, storage):
 
 @app_login_required
 def api_storage_files(request, cluster_key: str, storage: str, node: str = ""):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = managed_cluster_from_path(cluster_key)
     definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
     if moved:
         return _datastore_redirect(request, "core:api_storage_files", cluster, storage, node)

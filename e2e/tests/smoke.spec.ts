@@ -157,7 +157,9 @@ test("log forwarder refreshes delivery status and labels a paused backlog", asyn
 test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {
   await page.goto("/clusters/");
   await expect(page.getByRole("heading", { name: "Cluster connections" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "E2E cluster", exact: true })).toBeVisible();
+  // Scoped to main: the sidebar now lists every managed cluster under Tags and
+  // Scheduled Tasks, so the bare name matches three links.
+  await expect(page.getByRole("main").getByRole("link", { name: "E2E cluster", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Add cluster", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "Add Proxmox cluster" })).toBeVisible();
@@ -170,6 +172,32 @@ test("cluster connection UI separates immutable identity from write-only credent
   const secret = page.locator('input[name="token_secret"]');
   await expect(secret).toHaveValue("");
   await expect(secret).toHaveAttribute("autocomplete", "new-password");
+});
+
+test("a disabled cluster still navigates and is marked degraded everywhere it appears", async ({ page }) => {
+  // Disabling retains inventory, schedules and history. Building navigation from
+  // the enabled set deleted all of it from the UI, and verified retirement is gated
+  // on disabling first — so preparing to retire removed the means to decide.
+  await page.goto("/vms/overview/");
+
+  const tagsLeaf = page
+    .getByLabel("Tags module")
+    .getByRole("link", { name: "Unused E2E connection" });
+  await expect(tagsLeaf).toBeVisible();
+  await expect(tagsLeaf.locator(".tree-state-badge")).toHaveText("Disabled");
+  await expect(
+    page.getByLabel("Scheduled Tasks module").getByRole("link", { name: "Unused E2E connection" }),
+  ).toBeVisible();
+  // Retired stays out of navigation entirely; it is an archive row, not a target.
+  await expect(page.getByRole("link", { name: "Retired E2E cluster" })).toHaveCount(0);
+
+  await tagsLeaf.click();
+
+  await expect(page).toHaveURL(/\/clusters\/unused-e2e\/tags\/$/);
+  await expect(page.locator(".cluster-degraded-notice")).toContainText("Disabled");
+  await expect(page.locator(".cluster-degraded-notice")).toContainText(
+    "refreshes, schedules, consoles and writes are refused",
+  );
 });
 
 test("retired connection archive opens its read-only tombstone and filtered Audit history", async ({ page }) => {

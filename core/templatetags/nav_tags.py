@@ -54,3 +54,17 @@ def sticky_object_url(context, summary_url):
     except Resolver404:
         return summary_url
     return candidate
+
+
+@register.inclusion_tag("core/partials/nav_cluster_state_badge.html")
+def cluster_degraded_badge(cluster):
+    """Mark a navigation entry whose cluster is managed but not operational.
+
+    Navigation lists the managed scope, so a disabled or quarantined cluster is
+    reachable — its retained inventory, schedules and history are exactly what
+    disabling promises to keep. Reachable and indistinguishable from healthy is the
+    part that would mislead, so the entry carries the reason it will refuse writes.
+    """
+    from core.services.cluster_state_labels import cluster_degraded_label
+
+    return {"label": cluster_degraded_label(cluster)}
