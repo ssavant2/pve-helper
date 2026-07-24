@@ -144,6 +144,184 @@ const openInputDialog = ({ title = "Enter a value", label = "", value = "", conf
   });
 
 /**
+ * Open a trusted-HTML consequence dialog with multiple text fields.
+ *
+ * Each field accepts `name`, `label`, `type` (`"text"` or `"textarea"`),
+ * `value`, `placeholder`, `autocomplete`, `required`, `maxLength`, `rows`,
+ * `hint`, `trim` and a `validate(value, values)` callback. The dialog-level
+ * `validate(values)` callback can enforce relationships between fields. All
+ * validation errors stay inside the active dialog.
+ *
+ * The ordinary result is the submitted values object, or `null` when the
+ * operator declines or dismisses. With `distinguishDismiss`, the result is
+ * `{ outcome: "confirm" | "decline" | "dismiss", values }`; `values` is only
+ * populated for a confirmed outcome. `body` is trusted HTML on the same terms as
+ * openConfirmDialog.
+ */
+const openFieldsDialog = ({
+  title = "Please confirm",
+  body = "",
+  fields = [],
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  danger = false,
+  swapActions = false,
+  distinguishDismiss = false,
+  validate = null,
+}) => {
+  const names = new Set();
+  const fieldDefinitions = fields.map((field, index) => {
+    const name = String(field.name ?? "").trim();
+    const type = field.type ?? "text";
+    if (!name || names.has(name)) {
+      throw new TypeError("Dialog field names must be present and unique.");
+    }
+    if (type !== "text" && type !== "textarea") {
+      throw new TypeError(`Unsupported dialog field type at index ${index}.`);
+    }
+    names.add(name);
+    return {
+      ...field,
+      name,
+      type,
+      label: String(field.label ?? name),
+      value: String(field.value ?? ""),
+      trim: field.trim !== false,
+    };
+  });
+
+  return new Promise((resolve) => {
+    const dialog = createActionDialog();
+    let decided = false;
+    const fieldMarkup = fieldDefinitions
+      .map((field, index) => {
+        const commonAttributes = [
+          `name="${escapeHtml(field.name)}"`,
+          `data-fields-value="${index}"`,
+          field.required ? 'aria-required="true"' : "",
+          Number.isInteger(field.maxLength) && field.maxLength >= 0 ? `maxlength="${field.maxLength}"` : "",
+          field.placeholder ? `placeholder="${escapeHtml(field.placeholder)}"` : "",
+          field.autocomplete ? `autocomplete="${escapeHtml(field.autocomplete)}"` : 'autocomplete="off"',
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const control =
+          field.type === "textarea"
+            ? `<textarea ${commonAttributes} rows="${Number.isInteger(field.rows) && field.rows > 0 ? field.rows : 3}">${escapeHtml(field.value)}</textarea>`
+            : `<input type="text" ${commonAttributes} value="${escapeHtml(field.value)}">`;
+        return `
+          <label class="form-field">
+            <span>${escapeHtml(field.label)}</span>
+            ${control}
+            ${field.hint ? `<small class="form-hint">${escapeHtml(field.hint)}</small>` : ""}
+            <small class="form-error" data-fields-field-error="${index}" role="alert" hidden></small>
+          </label>
+        `;
+      })
+      .join("");
+
+    dialog.innerHTML = `
+      <form class="vm-action-dialog-form" method="dialog" novalidate>
+        <div class="vm-action-dialog-heading">
+          <h2>${escapeHtml(title)}</h2>
+          <button type="button" data-fields-dismiss aria-label="Close">×</button>
+        </div>
+        <div class="vm-action-dialog-body">${body}</div>
+        <div data-fields-fields>${fieldMarkup}</div>
+        <p class="form-error" data-fields-error role="alert" hidden></p>
+        <div class="form-actions">
+          ${
+            swapActions
+              ? `<button class="primary-action" type="button" data-fields-no>${escapeHtml(cancelLabel)}</button>
+          <button class="secondary-action${danger ? " danger-action" : ""}" type="submit" data-fields-yes>${escapeHtml(confirmLabel)}</button>`
+              : `<button class="primary-action${danger ? " danger-action" : ""}" type="submit" data-fields-yes>${escapeHtml(confirmLabel)}</button>
+          <button class="secondary-action" type="button" data-fields-no>${escapeHtml(cancelLabel)}</button>`
+          }
+        </div>
+      </form>
+    `;
+
+    const controls = fieldDefinitions.map((_field, index) => dialog.querySelector(`[data-fields-value="${index}"]`));
+    const formError = dialog.querySelector("[data-fields-error]");
+    const finish = (outcome, values = null) => {
+      if (decided) return;
+      decided = true;
+      resolve(distinguishDismiss ? { outcome, values: outcome === "confirm" ? values : null } : values);
+      dialog.close();
+    };
+    const showFieldError = (index, message) => {
+      const control = controls[index];
+      const error = dialog.querySelector(`[data-fields-field-error="${index}"]`);
+      control?.setAttribute("aria-invalid", "true");
+      if (error) {
+        error.textContent = message;
+        error.hidden = false;
+      }
+    };
+    const clearErrors = () => {
+      controls.forEach((control, index) => {
+        control?.removeAttribute("aria-invalid");
+        const error = dialog.querySelector(`[data-fields-field-error="${index}"]`);
+        if (error) {
+          error.textContent = "";
+          error.hidden = true;
+        }
+      });
+      if (formError) {
+        formError.textContent = "";
+        formError.hidden = true;
+      }
+    };
+
+    dialog.querySelector("form")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      clearErrors();
+      const values = Object.fromEntries(
+        fieldDefinitions.map((field, index) => {
+          const value = controls[index]?.value ?? "";
+          return [field.name, field.trim ? value.trim() : value];
+        })
+      );
+      let firstInvalid = -1;
+      fieldDefinitions.forEach((field, index) => {
+        const value = values[field.name];
+        let validationError = "";
+        if (field.required && !value) {
+          validationError = `${field.label} is required.`;
+        } else if (Number.isInteger(field.maxLength) && field.maxLength >= 0 && value.length > field.maxLength) {
+          validationError = `${field.label} must be at most ${field.maxLength} characters.`;
+        } else if (typeof field.validate === "function") {
+          validationError = field.validate(value, values) || "";
+        }
+        if (validationError) {
+          showFieldError(index, validationError);
+          if (firstInvalid < 0) firstInvalid = index;
+        }
+      });
+      if (firstInvalid >= 0) {
+        controls[firstInvalid]?.focus();
+        return;
+      }
+      const validationError = typeof validate === "function" ? validate(values) : "";
+      if (validationError) {
+        if (formError) {
+          formError.textContent = validationError;
+          formError.hidden = false;
+        }
+        controls[0]?.focus();
+        return;
+      }
+      finish("confirm", values);
+    });
+    dialog.querySelector("[data-fields-no]")?.addEventListener("click", () => finish("decline"));
+    dialog.querySelector("[data-fields-dismiss]")?.addEventListener("click", () => finish("dismiss"));
+    dialog.addEventListener("close", () => finish("dismiss"), { once: true });
+    dialog.showModal?.();
+    controls[0]?.focus();
+  });
+};
+
+/**
  * Report an outcome where the operator's flow was, rather than behind it.
  *
  * A refusal that arrives as a banner on the page underneath is a refusal the
@@ -180,4 +358,4 @@ const openNoticeDialog = ({ title = "Action failed", body = "", closeLabel = "Cl
     dialog.querySelector("[data-notice-close]")?.focus();
   });
 
-export { createActionDialog, openConfirmDialog, openInputDialog, openNoticeDialog };
+export { createActionDialog, openConfirmDialog, openFieldsDialog, openInputDialog, openNoticeDialog };

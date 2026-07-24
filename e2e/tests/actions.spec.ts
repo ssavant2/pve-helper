@@ -256,6 +256,110 @@ test("a confirmation chained onto another one actually opens", async ({ page }) 
   await expect(page.locator("[data-vm-action-dialog]")).toHaveCount(0);
 });
 
+test("two chained fields dialogs validate and own separate elements", async ({ page }) => {
+  await page.evaluate(async () => {
+    const { openFieldsDialog } = await import("/static/js/app/dialogs.js");
+    // biome-ignore lint/suspicious/noExplicitAny: test-only handle for the pending chain
+    (window as any).chainedFieldDialogs = (async () => {
+      const first = await openFieldsDialog({
+        title: "Forced retirement",
+        body: "<p>Trusted consequence summary</p>",
+        confirmLabel: "Continue",
+        danger: true,
+        fields: [
+          {
+            name: "permanent_key",
+            label: "Permanent key",
+            required: true,
+            validate: (value: string) => (value === "e2e" ? "" : "Enter e2e to continue."),
+          },
+          {
+            name: "reason",
+            label: "Reason",
+            type: "textarea",
+            required: true,
+            maxLength: 40,
+            validate: (value: string) => (value.length >= 8 ? "" : "Give a more specific reason."),
+          },
+        ],
+      });
+      if (!first) return { first: null, second: null };
+
+      const second = await openFieldsDialog({
+        title: "Are you really sure?",
+        confirmLabel: "Retire permanently",
+        cancelLabel: "Go back",
+        danger: true,
+        swapActions: true,
+        distinguishDismiss: true,
+        fields: [{ name: "final_key", label: "Permanent key again", required: true }],
+      });
+      return { first, second };
+    })();
+  });
+
+  const dialog = () => page.locator("[data-vm-action-dialog]").last();
+  await expect(dialog().getByRole("heading", { name: "Forced retirement" })).toBeVisible();
+  await expect(dialog().getByText("Trusted consequence summary")).toBeVisible();
+  const firstElement = await dialog().elementHandle();
+  expect(firstElement).not.toBeNull();
+
+  await dialog().getByLabel("Permanent key").fill("wrong");
+  await dialog().getByLabel("Reason").fill("short");
+  await dialog().getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(dialog().getByText("Enter e2e to continue.")).toBeVisible();
+  await expect(dialog().getByText("Give a more specific reason.")).toBeVisible();
+
+  await dialog().getByLabel("Permanent key").fill("  e2e  ");
+  await dialog().getByLabel("Reason").fill("  Cluster no longer exists.  ");
+  await dialog().getByRole("button", { name: "Continue", exact: true }).click();
+
+  await expect(dialog().getByRole("heading", { name: "Are you really sure?" })).toBeVisible();
+  expect(await dialog().evaluate((current, previous) => current === previous, firstElement)).toBe(false);
+  await expect(dialog().locator(".form-actions button")).toHaveText(["Go back", "Retire permanently"]);
+  await dialog().getByLabel("Permanent key again").fill("e2e");
+  await dialog().getByRole("button", { name: "Retire permanently", exact: true }).click();
+
+  // biome-ignore lint/suspicious/noExplicitAny: test-only handle for the pending chain
+  expect(await page.evaluate(() => (window as any).chainedFieldDialogs)).toEqual({
+    first: { permanent_key: "e2e", reason: "Cluster no longer exists." },
+    second: { outcome: "confirm", values: { final_key: "e2e" } },
+  });
+  await expect(page.locator("[data-vm-action-dialog]")).toHaveCount(0);
+});
+
+test("fields dialogs distinguish declining from dismissing", async ({ page }) => {
+  await page.evaluate(async () => {
+    const { openFieldsDialog } = await import("/static/js/app/dialogs.js");
+    // biome-ignore lint/suspicious/noExplicitAny: test-only handle for the pending chain
+    (window as any).fieldDialogOutcomes = (async () => {
+      const dismissed = await openFieldsDialog({
+        title: "Dismiss this question",
+        distinguishDismiss: true,
+        fields: [{ name: "value", label: "Value" }],
+      });
+      const declined = await openFieldsDialog({
+        title: "Decline this question",
+        distinguishDismiss: true,
+        fields: [{ name: "value", label: "Value" }],
+      });
+      return { dismissed, declined };
+    })();
+  });
+
+  const dialog = () => page.locator("[data-vm-action-dialog]").last();
+  await expect(dialog().getByRole("heading", { name: "Dismiss this question" })).toBeVisible();
+  await dialog().getByRole("button", { name: "Close" }).click();
+  await expect(dialog().getByRole("heading", { name: "Decline this question" })).toBeVisible();
+  await dialog().locator("[data-fields-no]").click();
+
+  // biome-ignore lint/suspicious/noExplicitAny: test-only handle for the pending chain
+  expect(await page.evaluate(() => (window as any).fieldDialogOutcomes)).toEqual({
+    dismissed: { outcome: "dismiss", values: null },
+    declined: { outcome: "decline", values: null },
+  });
+});
+
 test("storage consumer release lists its exact impact before submitting acknowledgement", async ({ page }) => {
   await page.goto("/clusters/e2e/datastores/e2e-nfs/summary/", { waitUntil: "load" });
 

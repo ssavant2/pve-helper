@@ -76,6 +76,7 @@
 
 .vm-action-dialog input[type="text"],
 .vm-action-dialog input[type="number"],
+.vm-action-dialog textarea,
 .vm-action-dialog select {
   width: 100%;
   padding: 8px 10px;
@@ -84,6 +85,15 @@
   background: var(--surface-alt);
   color: var(--text);
   font: inherit;
+}
+
+.vm-action-dialog textarea {
+  resize: vertical;
+}
+
+.vm-action-dialog [data-fields-fields] {
+  display: grid;
+  gap: 12px;
 }
 
 .vm-action-dialog .form-field-inline {
