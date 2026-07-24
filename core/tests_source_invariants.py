@@ -28,6 +28,56 @@ LEGACY_CLUSTER_SCOPE_ADAPTER_ALLOWLIST = frozenset()
 
 LEGACY_ADAPTER_NAME = "require_sole_enabled_cluster_for_legacy_caller"
 
+# R1a: retirement makes "which clusters does this query mean" a three-way decision
+# (managed / provider-acquirable / historical), and a bare `ProxmoxCluster.objects`
+# answers none of them -- it silently includes retired rows in a live selector or
+# excludes them from a retention writer. Access must name a scope via
+# core.services.cluster_scopes. Roughly thirty call sites predate that module and are
+# migrated across R1b..R4; this allowlist freezes the set so no *new* bare caller
+# appears, and a file migrated onto the scope resolvers must be struck from the list.
+# The prose rule would otherwise decay exactly as confined_filesystem adoption did.
+CLUSTER_SCOPE_MODULE = "core/services/cluster_scopes.py"
+BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
+    {
+        # Installation booleans and passive reads; R1b replaces exists()/get() here
+        # with named has_managed_clusters / historical decisions.
+        "core/context_processors.py",
+        "core/views/cluster_scope.py",
+        "core/views/clusters.py",
+        "core/services/runtime_bootstrap.py",
+        # Onboarding / activation / credential / trust write paths (Phase 5 surface).
+        "core/services/cluster_activation.py",
+        "core/services/cluster_credentials.py",
+        "core/services/cluster_onboarding.py",
+        "core/services/cluster_trust.py",
+        # Management commands operate on a single operator-named key.
+        "core/management/commands/add_cluster.py",
+        "core/management/commands/approve_cluster_transport.py",
+        "core/management/commands/enable_cluster.py",
+        "core/management/commands/reapprove_cluster_identity.py",
+        "core/management/commands/set_cluster_credential.py",
+        "core/management/commands/set_initial_cluster_key.py",
+        # Read/mutation/worker call sites migrated as R1b/R2 reach each module.
+        "core/services/audit_events.py",
+        "core/services/current_guest_inventory.py",
+        "core/services/durable_guest_operations.py",
+        "core/services/file_actions.py",
+        "core/services/storage_actions.py",
+        "core/services/storage_catalog_refresh.py",
+        "core/services/tag_actions.py",
+        "core/services/tag_inventory_refresh.py",
+        "core/tasks.py",
+        "core/views/audit.py",
+        "core/views/guests/create.py",
+        "core/views/guests/mutations.py",
+        "core/views/guests/read_model_support.py",
+        "core/views/scheduling.py",
+        "core/views/storage.py",
+        "core/views/tags.py",
+        "core/views/vm_register.py",
+    }
+)
+
 
 class ClusterScopeSourceInvariantTests(SimpleTestCase):
     """Phase 1b: cluster selection must be explicit, and the legacy surface may
@@ -118,6 +168,28 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
             offenders,
             [],
             f"Cluster operations may not use one global overlap/advisory lock: {', '.join(offenders)}",
+        )
+
+    def test_bare_cluster_objects_stays_on_the_scope_module_and_allowlist(self):
+        offenders = self._modules_containing("ProxmoxCluster.objects")
+        offenders.discard(CLUSTER_SCOPE_MODULE)
+
+        unexpected = sorted(offenders - BARE_CLUSTER_OBJECTS_ALLOWLIST)
+        self.assertEqual(
+            unexpected,
+            [],
+            "A new bare ProxmoxCluster.objects appeared. Retirement made cluster "
+            "selection a three-way scope decision; resolve through "
+            "core.services.cluster_scopes (managed / provider_acquirable / historical) "
+            f"instead: {', '.join(unexpected)}",
+        )
+
+        stale = sorted(BARE_CLUSTER_OBJECTS_ALLOWLIST - offenders)
+        self.assertEqual(
+            stale,
+            [],
+            "These files were migrated off bare ProxmoxCluster.objects; strike them from "
+            f"BARE_CLUSTER_OBJECTS_ALLOWLIST so the ratchet only tightens: {', '.join(stale)}",
         )
 
     def test_production_proxmox_clients_are_built_only_by_scoped_factories(self):

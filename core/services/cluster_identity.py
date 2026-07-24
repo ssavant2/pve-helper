@@ -62,15 +62,13 @@ class ObservedClusterIdentity:
 
 
 def _assert_ca_uuid_is_unclaimed(cluster, observed: ObservedClusterIdentity) -> None:
-    from core.models import ProxmoxCluster
+    from core.services.cluster_scopes import managed_clusters
 
-    owner = (
-        ProxmoxCluster.objects.filter(
-            discovered_ca_uuid=observed.ca_uuid,
-        )
-        .exclude(pk=cluster.pk)
-        .first()
-    )
+    # Managed scope only: a retired tombstone clears its live ``discovered_ca_uuid``
+    # and keeps a non-unique copy, so it must never claim a physical identity here.
+    # Checking retired rows too would make a mistaken retirement a permanent lockout
+    # against re-onboarding the same hardware.
+    owner = managed_clusters().filter(discovered_ca_uuid=observed.ca_uuid).exclude(pk=cluster.pk).first()
     if owner is not None:
         raise ClusterIdentityCollision(
             f"Cluster CA {observed.ca_uuid} is already registered as '{owner.key}'. "

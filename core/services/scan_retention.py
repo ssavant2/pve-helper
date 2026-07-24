@@ -6,7 +6,8 @@ from datetime import timedelta
 from django.db.models import F, Q
 from django.utils import timezone
 
-from core.models import FileInventory, ProxmoxCluster, ProxmoxInventory, ScanRun, StorageMount
+from core.models import FileInventory, ProxmoxInventory, ScanRun, StorageMount
+from core.services.cluster_scopes import historical_clusters
 
 SCAN_METADATA_RETENTION_DAYS = 7
 
@@ -81,7 +82,13 @@ def _current_proxmox_inventory_scan_ids() -> set[int]:
     read is about to select. Legacy null-cluster inventory keeps its own latest.
     """
     ids: set[int] = set()
-    scoped_clusters = list(ProxmoxCluster.objects.all())
+    # Historical scope, deliberately: a retired cluster's last completed scan is the
+    # only thing keeping its immutable ProxmoxInventory evidence alive. Narrowing
+    # this to the managed scope — the exact edit this refactor invites — would make
+    # the retention worker delete a retired cluster's inventory within
+    # SCAN_METADATA_RETENTION_DAYS, silently destroying the history retirement
+    # promises to preserve. Guarded by test_retired_cluster_inventory_survives_pruning.
+    scoped_clusters = list(historical_clusters())
     filters = [{"proxmox_objects__cluster": cluster} for cluster in scoped_clusters]
     filters.append({"proxmox_objects__cluster__isnull": True})
     for scan_filter in filters:

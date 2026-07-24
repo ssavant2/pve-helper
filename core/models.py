@@ -187,6 +187,10 @@ class ProxmoxCluster(TimestampedModel):
     discovered_* fields corroborate the binding and must never define it.
     """
 
+    class RetirementMode(models.TextChoices):
+        VERIFIED = "verified", "Verified"
+        FORCED = "forced", "Forced"
+
     key = models.CharField(max_length=63, validators=[cluster_key_validator])
     display_name = models.CharField(max_length=160)
     enabled = models.BooleanField(default=True)
@@ -208,6 +212,37 @@ class ProxmoxCluster(TimestampedModel):
     # cluster's process-local cache entries across every web/worker process.
     cache_generation = models.PositiveBigIntegerField(default=1)
 
+    # --- Retirement lifecycle (see docs/cluster-retire.local.md). ---
+    # `retired_at` is the single source of truth for lifecycle state. A retired
+    # cluster is always disabled and carries a mode; it is never re-enabled and is
+    # excluded from every managed/provider-acquirable scope. `enabled=False` alone
+    # stays reversible and never means retired.
+    retired_at = models.DateTimeField(null=True, blank=True)
+    retired_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    retirement_mode = models.CharField(max_length=16, choices=RetirementMode.choices, blank=True)
+    retirement_reason = models.CharField(max_length=1000, blank=True)
+    # Tombstone copies of the pinned identity, taken as the live pinned columns are
+    # cleared on retirement. Non-unique on purpose: the physical cluster is released
+    # so it can be re-onboarded under a new key, while these preserve what the
+    # retired row once described for Audit and the read-only detail page.
+    retired_ca_uuid = models.CharField(max_length=64, blank=True)
+    retired_ca_fingerprint = models.CharField(max_length=200, blank=True)
+    # Retirement bumps this. The signed retirement preflight binds it so a token
+    # issued against one lifecycle state is rejected after any concurrent change.
+    lifecycle_generation = models.PositiveBigIntegerField(default=1)
+    # Monotonic, never-cleared memory that this cluster once carried operational
+    # footprint. Stamped the first time it acquires any non-configuration footprint
+    # and never reset by a retention purge, cleanup or retirement, so hard-delete
+    # eligibility can never be recovered by waiting for timed retention to run.
+    operational_footprint_at = models.DateTimeField(null=True, blank=True)
+    operational_footprint_reason = models.CharField(max_length=64, blank=True)
+
     class Meta:
         ordering = ["key"]
         constraints = [
@@ -215,10 +250,36 @@ class ProxmoxCluster(TimestampedModel):
                 Lower("key"),
                 name="unique_cluster_key_case_insensitive",
             ),
+            # Released, not reserved: a retired tombstone must not keep a physical
+            # cluster's CA UUID claimed, or that hardware could never be onboarded
+            # again. Narrowed to live rows so uniqueness holds only among managed
+            # clusters; retirement copies the value into the tombstone columns.
             models.UniqueConstraint(
                 fields=["discovered_ca_uuid"],
-                condition=~models.Q(discovered_ca_uuid=""),
+                condition=~models.Q(discovered_ca_uuid="") & models.Q(retired_at__isnull=True),
                 name="unique_nonblank_cluster_ca_uuid",
+            ),
+            # A retired cluster is disabled and has a mode; both parts hold together
+            # or the row is rejected. Forced retirement stamps enabled=False and
+            # retired_at in one transaction precisely so this can never be violated.
+            models.CheckConstraint(
+                name="retired_cluster_is_disabled_and_moded",
+                condition=(
+                    models.Q(retired_at__isnull=True) | (models.Q(enabled=False) & ~models.Q(retirement_mode=""))
+                ),
+            ),
+            # An active (non-retired) cluster carries no retirement metadata, so a
+            # mode/reason/actor can never linger on a row that was never retired.
+            models.CheckConstraint(
+                name="active_cluster_has_no_retirement_metadata",
+                condition=(
+                    models.Q(retired_at__isnull=False)
+                    | (
+                        models.Q(retirement_mode="")
+                        & models.Q(retirement_reason="")
+                        & models.Q(retired_by__isnull=True)
+                    )
+                ),
             ),
         ]
 
