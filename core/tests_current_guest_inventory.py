@@ -1,16 +1,27 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from django.db import connection
+from django.db.models.query import QuerySet
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from core.models import CurrentGuestInventory, ProxmoxEndpoint, ProxmoxInventory, ScanRun
+from core.models import (
+    CurrentGuestInventory,
+    CurrentGuestInventoryState,
+    ProxmoxCluster,
+    ProxmoxEndpoint,
+    ProxmoxInventory,
+    ScanRun,
+)
 from core.services.current_guest_inventory import (
     ScanGuestObservation,
     reconcile_live_guest_inventory,
     reconcile_scan_guest_inventory,
     refresh_cluster_guest_agent_info,
     refresh_current_guest_from_client,
+    retire_cluster_guest_inventory,
     update_current_guest_config,
 )
 from core.services.proxmox import ProxmoxAPIError, ProxmoxGuestSummary, VerifiedGuestInventory
@@ -514,3 +525,110 @@ class DuplicateVmidAcrossClustersTests(TestCase):
         state = current_inventory_state(self.hq)
         self.assertTrue(state.unreachable)
         self.assertFalse(state.complete)
+
+
+class GuestInventoryRetirementTests(TestCase):
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="retiring", display_name="Retiring")
+        self.other_cluster = ProxmoxCluster.objects.create(key="managed", display_name="Managed")
+        self.scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+
+    def _current_guest(self, cluster, vmid):
+        return CurrentGuestInventory.objects.create(
+            cluster=cluster,
+            node="pve1",
+            object_type=CurrentGuestInventory.ObjectType.VM,
+            vmid=vmid,
+            name=f"vm-{vmid}",
+            observed_at=timezone.now(),
+        )
+
+    def test_retirement_removes_only_target_current_projection_and_state(self):
+        self._current_guest(self.cluster, 100)
+        self._current_guest(self.cluster, 101)
+        preserved_guest = self._current_guest(self.other_cluster, 100)
+        target_state = CurrentGuestInventoryState.objects.create(
+            cluster=self.cluster,
+            source_scan=self.scan,
+            complete=True,
+        )
+        preserved_state = CurrentGuestInventoryState.objects.create(
+            cluster=self.other_cluster,
+            source_scan=self.scan,
+            complete=True,
+        )
+        historical = ProxmoxInventory.objects.create(
+            scan_run=self.scan,
+            cluster=self.cluster,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=100,
+        )
+
+        result = retire_cluster_guest_inventory(self.cluster)
+
+        self.assertEqual(result.guest_rows_deleted, 2)
+        self.assertEqual(result.state_rows_deleted, 1)
+        self.assertFalse(CurrentGuestInventory.objects.filter(cluster=self.cluster).exists())
+        self.assertFalse(CurrentGuestInventoryState.objects.filter(pk=target_state.pk).exists())
+        self.assertTrue(CurrentGuestInventory.objects.filter(pk=preserved_guest.pk).exists())
+        self.assertTrue(CurrentGuestInventoryState.objects.filter(pk=preserved_state.pk).exists())
+        self.assertTrue(ProxmoxInventory.objects.filter(pk=historical.pk).exists())
+
+    def test_retirement_is_idempotent(self):
+        first = retire_cluster_guest_inventory(self.cluster)
+        second = retire_cluster_guest_inventory(self.cluster)
+
+        self.assertEqual(first.guest_rows_deleted, 0)
+        self.assertEqual(first.state_rows_deleted, 0)
+        self.assertEqual(second, first)
+
+    def test_retirement_query_budget_is_constant_in_guest_count(self):
+        single = ProxmoxCluster.objects.create(key="single", display_name="Single")
+        many = ProxmoxCluster.objects.create(key="many", display_name="Many")
+        self._current_guest(single, 1)
+        CurrentGuestInventoryState.objects.create(cluster=single)
+        CurrentGuestInventory.objects.bulk_create(
+            [
+                CurrentGuestInventory(
+                    cluster=many,
+                    node="pve1",
+                    object_type=CurrentGuestInventory.ObjectType.VM,
+                    vmid=vmid,
+                    name=f"vm-{vmid}",
+                    observed_at=timezone.now(),
+                )
+                for vmid in range(1, 101)
+            ]
+        )
+        CurrentGuestInventoryState.objects.create(cluster=many)
+
+        with CaptureQueriesContext(connection) as single_queries:
+            retire_cluster_guest_inventory(single)
+        with CaptureQueriesContext(connection) as many_queries:
+            retire_cluster_guest_inventory(many)
+
+        self.assertEqual(len(many_queries), len(single_queries))
+        self.assertEqual(
+            sum(query["sql"].lstrip().upper().startswith("DELETE") for query in many_queries.captured_queries),
+            2,
+        )
+
+    def test_failure_after_guest_delete_rolls_back_projection_and_state(self):
+        guest = self._current_guest(self.cluster, 100)
+        state = CurrentGuestInventoryState.objects.create(cluster=self.cluster)
+        queryset_delete = QuerySet.delete
+
+        def fail_on_state(queryset):
+            if queryset.model is CurrentGuestInventoryState:
+                raise RuntimeError("injected state cleanup failure")
+            return queryset_delete(queryset)
+
+        with (
+            patch.object(QuerySet, "delete", new=fail_on_state),
+            self.assertRaisesRegex(RuntimeError, "injected state cleanup failure"),
+        ):
+            retire_cluster_guest_inventory(self.cluster)
+
+        self.assertTrue(CurrentGuestInventory.objects.filter(pk=guest.pk).exists())
+        self.assertTrue(CurrentGuestInventoryState.objects.filter(pk=state.pk).exists())

@@ -39,6 +39,14 @@ class TargetedGuestRefresh:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class GuestInventoryRetirementResult:
+    """Audit-safe counts from removing one cluster's mutable projection."""
+
+    guest_rows_deleted: int
+    state_rows_deleted: int
+
+
 def current_inventory_state(cluster) -> CurrentGuestInventoryState | None:
     """Return the freshness/coverage record for one explicit cluster."""
     if cluster is None:
@@ -436,6 +444,24 @@ def upsert_current_guest(
 
 def delete_current_guest(*, object_type: str, vmid: int, cluster) -> None:
     CurrentGuestInventory.objects.filter(cluster=_target_cluster(cluster), object_type=object_type, vmid=vmid).delete()
+
+
+@transaction.atomic
+def retire_cluster_guest_inventory(cluster) -> GuestInventoryRetirementResult:
+    """Remove one cluster's mutable guest projection in set-based operations.
+
+    Historical ``ProxmoxInventory`` scan evidence is deliberately outside this
+    owner transition. The surrounding retirement barrier prevents new writes;
+    this inner transaction/savepoint keeps the projection and its coverage state
+    all-or-nothing for direct callers and for the eventual retirement finalizer.
+    """
+    target = _target_cluster(cluster)
+    _guest_total, guest_deletions = CurrentGuestInventory.objects.filter(cluster_id=target.pk).delete()
+    _state_total, state_deletions = CurrentGuestInventoryState.objects.filter(cluster_id=target.pk).delete()
+    return GuestInventoryRetirementResult(
+        guest_rows_deleted=guest_deletions.get(CurrentGuestInventory._meta.label, 0),
+        state_rows_deleted=state_deletions.get(CurrentGuestInventoryState._meta.label, 0),
+    )
 
 
 def _refresh_error(exc: ProxmoxAPIError, step: str) -> str:
