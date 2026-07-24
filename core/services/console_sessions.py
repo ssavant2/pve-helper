@@ -6,11 +6,29 @@ from dataclasses import dataclass
 from urllib.parse import quote
 
 from django.conf import settings
+from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 
-from core.models import ConsoleSession
+from core.models import ConsoleSession, ProxmoxCluster
+from core.services.cluster_lifecycle_registry import (
+    CODE_FORCE_RETIRED_UNRESOLVABLE,
+    CODE_RETIRED_BEFORE_START,
+)
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, clear_live_guest_caches
 from core.services.request_metadata import client_ip
+
+_RETIREMENT_DETAIL_LIMIT = 100
+_RETIREMENT_PENDING_STATUSES = {ConsoleSession.Status.PENDING}
+_RETIREMENT_ACTIVE_STATUSES = {
+    ConsoleSession.Status.CONNECTING,
+    ConsoleSession.Status.CONNECTED,
+}
+_RETIREMENT_TERMINAL_STATUSES = {
+    ConsoleSession.Status.CLOSED,
+    ConsoleSession.Status.FAILED,
+    ConsoleSession.Status.EXPIRED,
+}
 
 
 @dataclass(frozen=True)
@@ -19,6 +37,172 @@ class ConsoleSessionResult:
     token: str
     password: str
     console_type: str
+
+
+@dataclass(frozen=True)
+class ConsoleRetirementParticipant:
+    pk: int
+    status: str
+    target_type: str
+    target_vmid: int
+    target_node: str
+
+
+@dataclass(frozen=True)
+class ConsoleRetirementPreflight:
+    mode: str
+    pending_count: int
+    active_count: int
+    unknown_count: int
+    participants: tuple[ConsoleRetirementParticipant, ...]
+    participant_count: int
+    participants_omitted: int
+
+    @property
+    def gate_clear(self) -> bool:
+        return not self.unknown_count and (self.mode == ProxmoxCluster.RetirementMode.FORCED or not self.active_count)
+
+
+@dataclass(frozen=True)
+class ConsoleRetirementResult:
+    pending_closed: int
+    active_closed: int
+    sessions_sanitized: int
+    participants: tuple[ConsoleRetirementParticipant, ...]
+    participant_count: int
+    participants_omitted: int
+
+
+class ConsoleRetirementBlocked(RuntimeError):
+    def __init__(self, preflight: ConsoleRetirementPreflight):
+        self.preflight = preflight
+        super().__init__("Console retirement is blocked by active or unclassified sessions.")
+
+
+def _retirement_mode(mode: str) -> str:
+    value = str(getattr(mode, "value", mode))
+    if value not in {
+        ProxmoxCluster.RetirementMode.VERIFIED,
+        ProxmoxCluster.RetirementMode.FORCED,
+    }:
+        raise ValueError(f"Unsupported retirement mode: {value!r}")
+    return value
+
+
+def _console_retirement_preflight(
+    cluster,
+    *,
+    mode: str,
+    lock: bool,
+) -> ConsoleRetirementPreflight:
+    sessions = ConsoleSession.objects.filter(cluster_id=cluster.pk).exclude(status__in=_RETIREMENT_TERMINAL_STATUSES)
+    if lock:
+        sessions = sessions.select_for_update()
+        rows = list(
+            sessions.order_by("pk").values_list(
+                "pk",
+                "status",
+                "target_type",
+                "target_vmid",
+                "target_node",
+            )
+        )
+        participant_count = len(rows)
+        pending_count = sum(status in _RETIREMENT_PENDING_STATUSES for _pk, status, *_target in rows)
+        active_count = sum(status in _RETIREMENT_ACTIVE_STATUSES for _pk, status, *_target in rows)
+    else:
+        counts = sessions.aggregate(
+            total=Count("pk"),
+            pending=Count("pk", filter=Q(status__in=_RETIREMENT_PENDING_STATUSES)),
+            active=Count("pk", filter=Q(status__in=_RETIREMENT_ACTIVE_STATUSES)),
+        )
+        participant_count = counts["total"]
+        pending_count = counts["pending"]
+        active_count = counts["active"]
+        rows = list(
+            sessions.order_by("pk").values_list(
+                "pk",
+                "status",
+                "target_type",
+                "target_vmid",
+                "target_node",
+            )[:_RETIREMENT_DETAIL_LIMIT]
+        )
+    participants = tuple(ConsoleRetirementParticipant(*row) for row in rows)
+    unknown_count = participant_count - pending_count - active_count
+    bounded = participants[:_RETIREMENT_DETAIL_LIMIT]
+    return ConsoleRetirementPreflight(
+        mode=mode,
+        pending_count=pending_count,
+        active_count=active_count,
+        unknown_count=unknown_count,
+        participants=bounded,
+        participant_count=participant_count,
+        participants_omitted=participant_count - len(bounded),
+    )
+
+
+def cluster_retirement_console_preflight(
+    cluster,
+    *,
+    mode: str,
+) -> ConsoleRetirementPreflight:
+    """Classify console sessions without contacting Proxmox."""
+    return _console_retirement_preflight(cluster, mode=_retirement_mode(mode), lock=False)
+
+
+@transaction.atomic
+def finalize_cluster_retirement_consoles(
+    cluster,
+    *,
+    mode: str,
+    retired_at=None,
+) -> ConsoleRetirementResult:
+    """Close eligible sessions and remove every retained provider secret."""
+    mode = _retirement_mode(mode)
+    retired_at = retired_at or timezone.now()
+    sessions = ConsoleSession.objects.filter(cluster_id=cluster.pk)
+    list(sessions.select_for_update().order_by("pk").values_list("pk", flat=True))
+    preflight = _console_retirement_preflight(cluster, mode=mode, lock=True)
+    if not preflight.gate_clear:
+        raise ConsoleRetirementBlocked(preflight)
+
+    sensitive = ~Q(proxmox_ticket="") | ~Q(proxmox_password="") | ~Q(proxmox_endpoint="")
+    sessions_sanitized = sessions.filter(sensitive).count()
+    pending_closed = sessions.filter(status__in=_RETIREMENT_PENDING_STATUSES).update(
+        status=ConsoleSession.Status.CLOSED,
+        closed_at=retired_at,
+        close_reason=CODE_RETIRED_BEFORE_START,
+        proxmox_ticket="",
+        proxmox_password="",
+        proxmox_endpoint="",
+        updated_at=retired_at,
+    )
+    active_closed = 0
+    if mode == ProxmoxCluster.RetirementMode.FORCED:
+        active_closed = sessions.filter(status__in=_RETIREMENT_ACTIVE_STATUSES).update(
+            status=ConsoleSession.Status.CLOSED,
+            closed_at=retired_at,
+            close_reason=CODE_FORCE_RETIRED_UNRESOLVABLE,
+            proxmox_ticket="",
+            proxmox_password="",
+            proxmox_endpoint="",
+            updated_at=retired_at,
+        )
+    sessions.filter(sensitive).update(
+        proxmox_ticket="",
+        proxmox_password="",
+        proxmox_endpoint="",
+        updated_at=retired_at,
+    )
+    return ConsoleRetirementResult(
+        pending_closed=pending_closed,
+        active_closed=active_closed,
+        sessions_sanitized=sessions_sanitized,
+        participants=preflight.participants,
+        participant_count=preflight.participant_count,
+        participants_omitted=preflight.participants_omitted,
+    )
 
 
 def console_token_hash(token: str) -> str:

@@ -1,10 +1,264 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
+from django.db import transaction
+from django.db.models import Count, Q
+from django.utils import timezone
+
 from core.models import AuditEvent, ProxmoxCluster
+from core.services.cluster_lifecycle_registry import (
+    CODE_FORCE_RETIRED_UNRESOLVABLE,
+    CODE_RETIRED_BEFORE_START,
+)
 from core.services.refs import GuestRef, NodeRef
 from core.services.request_metadata import client_ip
+
+# Configuration-only events are retained during retirement and may later be
+# detached by the unused-connection hard-delete path. Everything else claiming
+# queued/running is operational and must be registered below or fail closed.
+CLUSTER_CONFIGURATION_AUDIT_ACTIONS = frozenset(
+    {
+        "cluster.add",
+        "cluster.added",
+        "cluster.credential.cutover",
+        "cluster.credential.rotate",
+        "cluster.credential.set",
+        "cluster.credential_removed",
+        "cluster.credential_rotated",
+        "cluster.disabled",
+        "cluster.display_name_changed",
+        "cluster.enabled",
+        "cluster.endpoint_added",
+        "cluster.endpoint_disabled",
+        "cluster.endpoint_enabled",
+        "cluster.identity.reapprove",
+        "cluster.identity_reapproved",
+        "cluster.initial_key.set",
+        "cluster.transport.approve",
+        "cluster.trust.cutover",
+    }
+)
+CLUSTER_PROVIDER_AUDIT_ACTIONS = frozenset(
+    {
+        "storage.catalog.refresh",
+        "tag.bulk_operation",
+        "tag.inventory.refresh",
+    }
+)
+CLUSTER_PROVIDER_AUDIT_ACTION_PREFIXES = ("guest.",)
+_RETIREMENT_ACTIVE_OUTCOMES = {"queued", "running"}
+_RETIREMENT_TERMINAL_OUTCOMES = {
+    "cancelled",
+    "failed",
+    "failure",
+    "missed",
+    "refused",
+    "skipped",
+    "success",
+    "warning",
+}
+_RETIREMENT_DETAIL_LIMIT = 100
+
+
+@dataclass(frozen=True)
+class AuditRetirementParticipant:
+    pk: int
+    action: str
+    outcome: str
+    object_type: str
+    object_id: str
+
+
+@dataclass(frozen=True)
+class AuditRetirementPreflight:
+    mode: str
+    queued_count: int
+    running_count: int
+    unknown_count: int
+    participants: tuple[AuditRetirementParticipant, ...]
+    participant_count: int
+    participants_omitted: int
+
+    @property
+    def gate_clear(self) -> bool:
+        return not self.unknown_count and (self.mode == ProxmoxCluster.RetirementMode.FORCED or not self.running_count)
+
+
+@dataclass(frozen=True)
+class AuditRetirementResult:
+    queued_cancelled: int
+    running_abandoned: int
+    participants: tuple[AuditRetirementParticipant, ...]
+    participant_count: int
+    participants_omitted: int
+
+
+class AuditRetirementBlocked(RuntimeError):
+    def __init__(self, preflight: AuditRetirementPreflight):
+        self.preflight = preflight
+        super().__init__("Audit retirement is blocked by active or unclassified operations.")
+
+
+def _retirement_mode(mode: str) -> str:
+    value = str(getattr(mode, "value", mode))
+    if value not in {
+        ProxmoxCluster.RetirementMode.VERIFIED,
+        ProxmoxCluster.RetirementMode.FORCED,
+    }:
+        raise ValueError(f"Unsupported retirement mode: {value!r}")
+    return value
+
+
+def _provider_action_query() -> Q:
+    query = Q(action__in=CLUSTER_PROVIDER_AUDIT_ACTIONS)
+    for prefix in CLUSTER_PROVIDER_AUDIT_ACTION_PREFIXES:
+        query |= Q(action__startswith=prefix)
+    return query
+
+
+def _is_provider_action(action: str) -> bool:
+    return action in CLUSTER_PROVIDER_AUDIT_ACTIONS or any(
+        action.startswith(prefix) for prefix in CLUSTER_PROVIDER_AUDIT_ACTION_PREFIXES
+    )
+
+
+def _audit_retirement_preflight(
+    cluster,
+    *,
+    mode: str,
+    lock: bool,
+) -> AuditRetirementPreflight:
+    provider_action = _provider_action_query()
+    candidates = (
+        AuditEvent.objects.filter(cluster_id=cluster.pk)
+        .exclude(action__in=CLUSTER_CONFIGURATION_AUDIT_ACTIONS)
+        .filter(
+            Q(outcome__in=_RETIREMENT_ACTIVE_OUTCOMES)
+            | (provider_action & ~Q(outcome__in=_RETIREMENT_TERMINAL_OUTCOMES))
+        )
+    )
+    if lock:
+        candidates = candidates.select_for_update()
+        rows = list(
+            candidates.order_by("pk").values_list(
+                "pk",
+                "action",
+                "outcome",
+                "object_type",
+                "object_id",
+            )
+        )
+        participant_count = len(rows)
+        queued_count = sum(
+            _is_provider_action(action) and outcome == "queued"
+            for _pk, action, outcome, _object_type, _object_id in rows
+        )
+        running_count = sum(
+            _is_provider_action(action) and outcome == "running"
+            for _pk, action, outcome, _object_type, _object_id in rows
+        )
+    else:
+        counts = candidates.aggregate(
+            total=Count("pk"),
+            queued=Count("pk", filter=_provider_action_query() & Q(outcome="queued")),
+            running=Count("pk", filter=_provider_action_query() & Q(outcome="running")),
+        )
+        participant_count = counts["total"]
+        queued_count = counts["queued"]
+        running_count = counts["running"]
+        rows = list(
+            candidates.order_by("pk").values_list(
+                "pk",
+                "action",
+                "outcome",
+                "object_type",
+                "object_id",
+            )[:_RETIREMENT_DETAIL_LIMIT]
+        )
+    participants = tuple(AuditRetirementParticipant(*row) for row in rows)
+    unknown_count = participant_count - queued_count - running_count
+    bounded = participants[:_RETIREMENT_DETAIL_LIMIT]
+    return AuditRetirementPreflight(
+        mode=mode,
+        queued_count=queued_count,
+        running_count=running_count,
+        unknown_count=unknown_count,
+        participants=bounded,
+        participant_count=participant_count,
+        participants_omitted=participant_count - len(bounded),
+    )
+
+
+def cluster_retirement_audit_preflight(
+    cluster,
+    *,
+    mode: str,
+) -> AuditRetirementPreflight:
+    """Classify active cluster Audit operations without contacting Proxmox."""
+    return _audit_retirement_preflight(cluster, mode=_retirement_mode(mode), lock=False)
+
+
+@transaction.atomic
+def finalize_cluster_retirement_audit_operations(
+    cluster,
+    *,
+    mode: str,
+    retired_at=None,
+) -> AuditRetirementResult:
+    """Terminalize registered provider operations and preserve all Audit rows."""
+    mode = _retirement_mode(mode)
+    retired_at = retired_at or timezone.now()
+    preflight = _audit_retirement_preflight(cluster, mode=mode, lock=True)
+    if not preflight.gate_clear:
+        raise AuditRetirementBlocked(preflight)
+
+    participant_ids = [item.pk for item in preflight.participants]
+    if preflight.participants_omitted:
+        participant_ids = list(
+            AuditEvent.objects.filter(cluster_id=cluster.pk)
+            .filter(_provider_action_query(), outcome__in=_RETIREMENT_ACTIVE_OUTCOMES)
+            .order_by("pk")
+            .values_list("pk", flat=True)
+        )
+    events = list(AuditEvent.objects.filter(pk__in=participant_ids).order_by("pk"))
+    queued_cancelled = 0
+    running_abandoned = 0
+    changed: list[AuditEvent] = []
+    for event in events:
+        if event.outcome == "running":
+            if mode != ProxmoxCluster.RetirementMode.FORCED:
+                continue
+            code = CODE_FORCE_RETIRED_UNRESOLVABLE
+            running_abandoned += 1
+        elif event.outcome == "queued":
+            code = (
+                CODE_FORCE_RETIRED_UNRESOLVABLE
+                if mode == ProxmoxCluster.RetirementMode.FORCED
+                else CODE_RETIRED_BEFORE_START
+            )
+            queued_cancelled += 1
+        else:
+            continue
+        details = dict(event.details) if isinstance(event.details, dict) else {}
+        event.outcome = "cancelled"
+        event.details = {
+            **details,
+            "stage": "cancelled",
+            "retirement_code": code,
+            "finished_at": retired_at.isoformat(),
+        }
+        changed.append(event)
+    if changed:
+        AuditEvent.objects.bulk_update(changed, ["outcome", "details"])
+    return AuditRetirementResult(
+        queued_cancelled=queued_cancelled,
+        running_abandoned=running_abandoned,
+        participants=preflight.participants,
+        participant_count=preflight.participant_count,
+        participants_omitted=preflight.participants_omitted,
+    )
 
 
 def audit_module_key(action: str, object_type: str = "", details: Any = None) -> str:

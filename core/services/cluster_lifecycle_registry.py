@@ -196,7 +196,10 @@ LIFECYCLE_PARTICIPANTS: tuple[ParticipantStatus, ...] = (
         "verified blocks",
     ),
     ParticipantStatus(
-        "audit_events (provider op)", "success|failure|refused|skipped", ParticipantLifecycleClass.RETAINED_HISTORY, ""
+        "audit_events (provider op)",
+        "success|failed|failure|refused|skipped|warning|cancelled|missed",
+        ParticipantLifecycleClass.RETAINED_HISTORY,
+        "",
     ),
     ParticipantStatus("audit_events (config, allowlist)", "any", ParticipantLifecycleClass.RETAINED_HISTORY, ""),
     ParticipantStatus(

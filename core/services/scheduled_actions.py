@@ -8,12 +8,17 @@ from typing import Any
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 from django_q.models import Schedule
 from django_q.tasks import async_task
 
-from core.models import ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
+from core.models import ProxmoxCluster, ProxmoxEndpoint, ScheduledAction, ScheduledActionRun
 from core.services.audit_events import record_audit_event
+from core.services.cluster_lifecycle_registry import (
+    CODE_FORCE_RETIRED_UNRESOLVABLE,
+    CODE_RETIRED_BEFORE_START,
+)
 from core.services.cluster_resolver import cluster_clients
 from core.services.current_guest_inventory import refresh_current_guest_from_client
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTaskTimeout, clear_live_guest_caches
@@ -47,6 +52,24 @@ IN_FLIGHT_RUN_STATUSES = {
     ScheduledActionRun.Status.SUBMITTED,
     ScheduledActionRun.Status.POLLING,
 }
+RETIREMENT_NOT_STARTED_RUN_STATUSES = {
+    ScheduledActionRun.Status.QUEUED,
+    ScheduledActionRun.Status.PREFLIGHT,
+}
+RETIREMENT_ACTIVE_RUN_STATUSES = {
+    ScheduledActionRun.Status.SUBMITTED,
+    ScheduledActionRun.Status.POLLING,
+}
+RETIREMENT_TERMINAL_RUN_STATUSES = {
+    ScheduledActionRun.Status.COMPLETED,
+    ScheduledActionRun.Status.FAILED,
+    ScheduledActionRun.Status.SKIPPED,
+    ScheduledActionRun.Status.MISSED,
+    ScheduledActionRun.Status.TIMEOUT,
+    ScheduledActionRun.Status.STALE,
+    ScheduledActionRun.Status.CANCELLED,
+}
+_RETIREMENT_DETAIL_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -65,6 +88,47 @@ class GuestTarget:
     config: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ScheduledRunRetirementParticipant:
+    pk: int
+    scheduled_action_id: int
+    status: str
+
+
+@dataclass(frozen=True)
+class ScheduledActionRetirementPreflight:
+    mode: str
+    active_schedule_count: int
+    not_started_run_count: int
+    active_run_count: int
+    unknown_run_count: int
+    participants: tuple[ScheduledRunRetirementParticipant, ...]
+    participant_count: int
+    participants_omitted: int
+
+    @property
+    def gate_clear(self) -> bool:
+        return not self.unknown_run_count and (
+            self.mode == ProxmoxCluster.RetirementMode.FORCED or not self.active_run_count
+        )
+
+
+@dataclass(frozen=True)
+class ScheduledActionRetirementResult:
+    schedules_deleted: int
+    not_started_runs_cancelled: int
+    active_runs_abandoned: int
+    participants: tuple[ScheduledRunRetirementParticipant, ...]
+    participant_count: int
+    participants_omitted: int
+
+
+class ScheduledActionRetirementBlocked(RuntimeError):
+    def __init__(self, preflight: ScheduledActionRetirementPreflight):
+        self.preflight = preflight
+        super().__init__("Scheduled action retirement is blocked by active or unclassified runs.")
+
+
 class ScheduledActionExecutionError(PublicMessageError, Exception):
     def __init__(self, message: str, *, preflight: dict[str, Any] | None = None):
         super().__init__(message)
@@ -73,6 +137,142 @@ class ScheduledActionExecutionError(PublicMessageError, Exception):
 
 class ScheduledActionQueueError(Exception):
     pass
+
+
+def _retirement_mode(mode: str) -> str:
+    value = str(getattr(mode, "value", mode))
+    if value not in {
+        ProxmoxCluster.RetirementMode.VERIFIED,
+        ProxmoxCluster.RetirementMode.FORCED,
+    }:
+        raise ValueError(f"Unsupported retirement mode: {value!r}")
+    return value
+
+
+def _scheduled_retirement_preflight(
+    cluster,
+    *,
+    mode: str,
+    lock: bool,
+) -> ScheduledActionRetirementPreflight:
+    runs = ScheduledActionRun.objects.filter(scheduled_action__cluster_id=cluster.pk).exclude(
+        status__in=RETIREMENT_TERMINAL_RUN_STATUSES
+    )
+    if lock:
+        runs = runs.select_for_update()
+        rows = list(runs.order_by("pk").values_list("pk", "scheduled_action_id", "status"))
+        participant_count = len(rows)
+        not_started_count = sum(status in RETIREMENT_NOT_STARTED_RUN_STATUSES for _pk, _action_id, status in rows)
+        active_count = sum(status in RETIREMENT_ACTIVE_RUN_STATUSES for _pk, _action_id, status in rows)
+    else:
+        counts = runs.aggregate(
+            total=Count("pk"),
+            not_started=Count("pk", filter=Q(status__in=RETIREMENT_NOT_STARTED_RUN_STATUSES)),
+            active=Count("pk", filter=Q(status__in=RETIREMENT_ACTIVE_RUN_STATUSES)),
+        )
+        participant_count = counts["total"]
+        not_started_count = counts["not_started"]
+        active_count = counts["active"]
+        rows = list(runs.order_by("pk").values_list("pk", "scheduled_action_id", "status")[:_RETIREMENT_DETAIL_LIMIT])
+    participants = tuple(
+        ScheduledRunRetirementParticipant(pk=pk, scheduled_action_id=action_id, status=status)
+        for pk, action_id, status in rows
+    )
+    unknown_count = participant_count - not_started_count - active_count
+    bounded = participants[:_RETIREMENT_DETAIL_LIMIT]
+    return ScheduledActionRetirementPreflight(
+        mode=mode,
+        active_schedule_count=ScheduledAction.objects.filter(
+            cluster_id=cluster.pk,
+            deleted_at__isnull=True,
+        ).count(),
+        not_started_run_count=not_started_count,
+        active_run_count=active_count,
+        unknown_run_count=unknown_count,
+        participants=bounded,
+        participant_count=participant_count,
+        participants_omitted=participant_count - len(bounded),
+    )
+
+
+def cluster_retirement_scheduled_actions_preflight(
+    cluster,
+    *,
+    mode: str,
+) -> ScheduledActionRetirementPreflight:
+    """Classify the schedule-owned rows retirement would transition."""
+    return _scheduled_retirement_preflight(cluster, mode=_retirement_mode(mode), lock=False)
+
+
+@transaction.atomic
+def finalize_cluster_retirement_scheduled_actions(
+    cluster,
+    *,
+    mode: str,
+    retired_at=None,
+) -> ScheduledActionRetirementResult:
+    """Stop future dispatch and terminalize known in-flight runs without provider calls."""
+    mode = _retirement_mode(mode)
+    retired_at = retired_at or timezone.now()
+
+    # Queue/manual-dispatch paths lock the action before creating a run. Taking
+    # those locks first closes the create-run vs retirement race.
+    list(
+        ScheduledAction.objects.select_for_update()
+        .filter(cluster_id=cluster.pk)
+        .order_by("pk")
+        .values_list("pk", flat=True)
+    )
+    preflight = _scheduled_retirement_preflight(cluster, mode=mode, lock=True)
+    if not preflight.gate_clear:
+        raise ScheduledActionRetirementBlocked(preflight)
+
+    schedules_deleted = ScheduledAction.objects.filter(
+        cluster_id=cluster.pk,
+        deleted_at__isnull=True,
+    ).update(
+        enabled=False,
+        next_run_at=None,
+        deleted_at=retired_at,
+        updated_at=retired_at,
+    )
+
+    not_started_code = (
+        CODE_FORCE_RETIRED_UNRESOLVABLE if mode == ProxmoxCluster.RetirementMode.FORCED else CODE_RETIRED_BEFORE_START
+    )
+    not_started_runs_cancelled = ScheduledActionRun.objects.filter(
+        scheduled_action__cluster_id=cluster.pk,
+        status__in=RETIREMENT_NOT_STARTED_RUN_STATUSES,
+    ).update(
+        status=ScheduledActionRun.Status.CANCELLED,
+        outcome=ScheduledActionRun.Outcome.CANCELLED,
+        finished_at=retired_at,
+        error=not_started_code,
+        result={"retirement_code": not_started_code},
+        updated_at=retired_at,
+    )
+    active_runs_abandoned = 0
+    if mode == ProxmoxCluster.RetirementMode.FORCED:
+        active_runs_abandoned = ScheduledActionRun.objects.filter(
+            scheduled_action__cluster_id=cluster.pk,
+            status__in=RETIREMENT_ACTIVE_RUN_STATUSES,
+        ).update(
+            status=ScheduledActionRun.Status.CANCELLED,
+            outcome=ScheduledActionRun.Outcome.CANCELLED,
+            finished_at=retired_at,
+            error=CODE_FORCE_RETIRED_UNRESOLVABLE,
+            result={"retirement_code": CODE_FORCE_RETIRED_UNRESOLVABLE},
+            updated_at=retired_at,
+        )
+
+    return ScheduledActionRetirementResult(
+        schedules_deleted=schedules_deleted,
+        not_started_runs_cancelled=not_started_runs_cancelled,
+        active_runs_abandoned=active_runs_abandoned,
+        participants=preflight.participants,
+        participant_count=preflight.participant_count,
+        participants_omitted=preflight.participants_omitted,
+    )
 
 
 def ensure_scheduled_action_dispatch_schedule() -> Schedule:
