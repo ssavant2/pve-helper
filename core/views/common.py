@@ -578,6 +578,11 @@ def _audit_action_label(event: AuditEvent) -> str:
         "cluster.credential.rotate": "Re-encrypt cluster credential",
         "cluster.identity_reapproved": "Re-approve cluster identity",
         "cluster.identity.reapprove": "Re-approve cluster identity",
+        "cluster.retirement_verification_failed": "Verify cluster retirement",
+        "cluster.retirement_refused": "Retirement refused",
+        "cluster.retired": "Retire cluster",
+        "cluster.force_retired": "Force-retire cluster",
+        "cluster.unused_connection_deleted": "Delete unused cluster connection",
     }
     if event.action in cluster_action_labels:
         return cluster_action_labels[event.action]
@@ -682,7 +687,60 @@ def _audit_detail_label(event: AuditEvent) -> str:
         return _log_forwarder_destination_detail(state, details)
     if event.action == "log_forwarder.test_requested":
         return _log_forwarder_destination_detail("Test event", details)
+    if event.action in {
+        "cluster.retirement_verification_failed",
+        "cluster.retirement_refused",
+        "cluster.retired",
+        "cluster.force_retired",
+    }:
+        return _retirement_audit_detail(event.action, details)
     return str(details.get("summary") or details.get("error_reason") or "")
+
+
+_RETIREMENT_REASON_LABELS = {
+    "active_scan": "An installation-wide scan is active",
+    "cluster_retirement_blocked": "Retirement is blocked",
+    "cluster_retirement_confirmation_required": "The retirement confirmation is invalid or expired",
+    "cluster_retirement_failed": "Retirement failed safely",
+    "cluster_retirement_postcondition_failed": "Cleanup could not be verified",
+    "cluster_retirement_preflight_changed": "Cluster state changed after preflight",
+    "cluster_retirement_preflight_endpoint": "The selected endpoint is unavailable",
+    "cluster_retirement_preflight_identity_mismatch": "The endpoint reports a different cluster identity",
+    "cluster_retirement_preflight_invalid": "The retirement preflight is invalid or expired",
+    "cluster_retirement_preflight_not_allowed": "Verified retirement is not available",
+    "cluster_retirement_preflight_unreachable": "The selected endpoint could not be reached",
+    "participant_changed": "Protected cluster activity changed after preflight",
+}
+
+
+def _retirement_audit_detail(action: str, details: dict) -> str:
+    mode = str(details.get("retirement_mode") or "")
+    mode_label = {"verified": "Verified retirement", "forced": "Forced retirement"}.get(mode, "Retirement")
+    if action in {"cluster.retirement_verification_failed", "cluster.retirement_refused"}:
+        reason_code = str(details.get("reason_code") or "")
+        reason = _RETIREMENT_REASON_LABELS.get(reason_code, "Retirement was refused")
+        return f"{mode_label} · {reason}"
+
+    verification = {
+        "matched": "Identity matched",
+        "skipped": "Identity verification skipped",
+    }.get(str(details.get("identity_verification") or ""), "")
+    endpoint_count = details.get("endpoint_count")
+    endpoints = (
+        f"{endpoint_count} endpoint{'s' if endpoint_count != 1 else ''} removed"
+        if isinstance(endpoint_count, int) and not isinstance(endpoint_count, bool)
+        else ""
+    )
+    cleanup = details.get("cleanup") if isinstance(details.get("cleanup"), dict) else {}
+    cleanup_count = sum(
+        value for value in cleanup.values() if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    )
+    cleanup_label = f"{cleanup_count} cleanup change{'s' if cleanup_count != 1 else ''}"
+    parts = [part for part in (verification, endpoints, cleanup_label) if part]
+    reason = str(details.get("retirement_reason") or "").strip()
+    if reason:
+        parts.append(f"Reason: {reason}")
+    return " · ".join(parts)
 
 
 def _log_forwarder_destination_detail(prefix: str, details: dict) -> str:

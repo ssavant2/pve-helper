@@ -172,7 +172,7 @@ test("cluster connection UI separates immutable identity from write-only credent
   await expect(secret).toHaveAttribute("autocomplete", "new-password");
 });
 
-test("retired connection archive opens a strictly read-only tombstone", async ({ page }) => {
+test("retired connection archive opens its read-only tombstone and filtered Audit history", async ({ page }) => {
   await page.goto("/clusters/");
 
   await expect(page.getByRole("heading", { name: "Configured clusters" })).toBeVisible();
@@ -185,10 +185,16 @@ test("retired connection archive opens a strictly read-only tombstone", async ({
   await expect(page.getByText("22222222-2222-2222-2222-222222222222")).toBeVisible();
   await expect(page.locator("main form")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Add endpoint" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Open filtered Audit" })).toHaveAttribute(
-    "href",
-    "/audit/?cluster=retired-e2e",
-  );
+  await page.getByRole("link", { name: "Open filtered Audit" }).click();
+
+  await expect(page).toHaveURL(/\/audit\/\?cluster=retired-e2e$/);
+  const clusterFilter = page.getByLabel("Cluster", { exact: true });
+  await expect(clusterFilter).toHaveValue("retired-e2e");
+  await expect(clusterFilter).toContainText("Retired E2E cluster (retired)");
+  await expect(page.getByRole("cell", { name: "Force-retire cluster" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /Identity verification skipped · 2 endpoints removed/ })).toBeVisible();
+  await expect(page.locator(".audit-table").getByText("E2E Store")).toHaveCount(0);
+  await expect(page.locator(".audit-table").getByText("cluster.force_retired")).toHaveCount(0);
 });
 
 test("tag links use soft navigation", async ({ page }) => {

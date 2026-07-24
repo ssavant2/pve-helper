@@ -70,7 +70,6 @@ BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
         "core/services/tag_actions.py",
         "core/services/tag_inventory_refresh.py",
         "core/tasks.py",
-        "core/views/audit.py",
         "core/views/guests/create.py",
         "core/views/guests/mutations.py",
         "core/views/guests/read_model_support.py",

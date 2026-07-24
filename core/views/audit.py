@@ -10,7 +10,7 @@ from xml.sax.saxutils import escape as xml_escape
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from core.models import ProxmoxCluster
+from core.services.cluster_scopes import historical_clusters
 
 from .common import (
     AUDIT_PAGE_SIZE,
@@ -85,7 +85,7 @@ def audit_log(request):
         "audit_filter": module_filter,
         "audit_query": query,
         "audit_cluster": cluster_filter,
-        "audit_clusters": ProxmoxCluster.objects.order_by("display_name", "key"),
+        "audit_clusters": historical_clusters().order_by("display_name", "key"),
         "audit_retention_schedule": audit_retention_schedule_state(),
         "audit_filters": AUDIT_MODULE_FILTERS,
         "audit_xlsx_max_rows": AUDIT_XLSX_MAX_ROWS,
@@ -180,7 +180,7 @@ def _audit_query(value: str) -> str:
 
 def _audit_cluster_filter(value: str) -> str:
     key = str(value or "").strip().lower()
-    return key if key and ProxmoxCluster.objects.filter(key=key).exists() else ""
+    return key if key and historical_clusters().filter(key=key).exists() else ""
 
 
 def _audit_events_queryset(*, module_filter: str, query: str, cluster_key: str = "", started_at=None, ended_at=None):
