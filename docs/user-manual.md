@@ -129,6 +129,42 @@ If a file-tree datastore should also be browsable, mount it beneath the deployme
 existing directory to the correct cluster storage and, for node-local storage,
 node. Registration does not create or edit a Proxmox storage definition.
 
+### Retiring or deleting a connection
+
+Removing a cluster from pve-helper is local: it never deletes Proxmox guests,
+storage, tokens or the Proxmox cluster itself. The connection detail page offers
+three removal outcomes in its danger zone, and which ones appear depends on the
+cluster's state.
+
+- **Retire cluster** (verified) is the normal removal. Disable the cluster first,
+  then retire it: pve-helper verifies one selected endpoint's pinned Proxmox CA
+  identity, removes the stored credential, trust record and endpoints, stops future
+  schedules and clears current inventory — while preserving the permanent key, all
+  Audit history, scan evidence and past run history. The retired connection moves to
+  the **Retired clusters** archive with a `Verified` badge and a read-only detail
+  page linking to its filtered Audit history.
+- **Force retire** is for a cluster that is permanently gone and will never answer
+  again. It makes no provider call, disables and retires in one step even when an
+  ordinary disable is refused by stuck provider work, and requires you to type the
+  exact permanent key and a reason asserting the site is permanently unavailable.
+  It carries a `Forced` badge. Because there is no provider confirmation, its Audit
+  wording records abandoned work as "abandoned without confirmation", never
+  "cancelled".
+- **Delete unused connection** appears **only** for a connection that has never
+  acquired any operational or inventory history — a fresh onboarding mistake. It is
+  the only action that physically deletes the cluster row and releases its permanent
+  key and CA identity for reuse. It requires typing the exact key and confirms twice.
+  Any scan, guest, storage, console or scheduled-action history hides this control;
+  retire the connection instead to preserve that history.
+
+Retirement releases the pinned Proxmox CA UUID in both retirement modes, so the
+same physical cluster can be re-onboarded later under a **new** permanent key. A
+retired cluster's original key stays permanently reserved so its history keeps its
+meaning; a replacement may reuse the display name but not the key. Only a
+deleted-unused connection frees its exact key for re-entry. In all cases the
+Proxmox API token still exists on the Proxmox side and should be revoked there
+separately when the site is reachable.
+
 ## Recent Tasks and audit trail
 
 Every submitted guest operation, storage action, scan, import, scheduled run,
