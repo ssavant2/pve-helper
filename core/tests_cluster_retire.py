@@ -17,17 +17,20 @@ retire button or contacts a provider; that is R3.
 
 from __future__ import annotations
 
+import threading
 from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core import signing
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.http import HttpResponse
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, TestCase, TransactionTestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
 from core.models import (
+    AuditEvent,
     ProxmoxCluster,
     ProxmoxEndpoint,
     ProxmoxInventory,
@@ -36,10 +39,17 @@ from core.models import (
     ScanRun,
     StorageMount,
 )
+from core.services.cluster_lifecycle_lock import (
+    ClusterNotEnabledError,
+    ClusterRetiredError,
+    acquire_operable_cluster,
+    cluster_lifecycle_lock,
+)
 from core.services.cluster_lifecycle_registry import (
     CLUSTER_REVERSE_RELATIONS,
     FUTURE_PARTICIPANTS,
 )
+from core.services.cluster_onboarding import disable_cluster
 from core.services.cluster_scopes import (
     has_historical_clusters,
     has_managed_clusters,
@@ -48,6 +58,12 @@ from core.services.cluster_scopes import (
     provider_acquirable_clusters,
 )
 from core.services.scan_retention import prune_scan_history
+from core.tasks import (
+    _reap_orphaned_cluster_operations,
+    enqueue_scheduled_scan,
+    reap_stale_guest_tasks,
+    refresh_storage_catalog_for_cluster,
+)
 from core.views.clusters import clusters_overview
 
 # ---------------------------------------------------------------------------
@@ -512,3 +528,357 @@ class ScanRetentionRetiredClusterTests(TestCase):
             "A retired cluster's immutable inventory must survive retention; the scan "
             "id keeper must use the historical scope, not managed.",
         )
+
+
+# ---------------------------------------------------------------------------
+# R1b: the acquisition barrier.
+# ---------------------------------------------------------------------------
+
+
+def _make_stale_audit(*, action, outcome, cluster=None, details=None, minutes_ago=30):
+    """A queued/running audit row older than the reaper threshold.
+
+    ``timestamp`` is ``auto_now_add`` so it cannot be set on create; the row is
+    aged with a follow-up update, which is exactly how a genuinely stale row looks.
+    """
+    event = AuditEvent.objects.create(action=action, outcome=outcome, cluster=cluster, details=details or {})
+    AuditEvent.objects.filter(pk=event.pk).update(timestamp=timezone.now() - timedelta(minutes=minutes_ago))
+    event.refresh_from_db()
+    return event
+
+
+class AcquireOperableClusterTests(TestCase):
+    """The acquisition half of the barrier: retired/disabled state becomes a terminal
+    result under the lock, never a provider round-trip against a gone cluster."""
+
+    def test_returns_the_row_locked_cluster_when_operable(self):
+        cluster = make_cluster("ok")
+        with transaction.atomic():
+            locked = acquire_operable_cluster(cluster)
+        self.assertEqual(locked.pk, cluster.pk)
+
+    def test_raises_for_a_retired_cluster(self):
+        cluster = retire_cluster(make_cluster("gone"))
+        with self.assertRaises(ClusterRetiredError):
+            with transaction.atomic():
+                acquire_operable_cluster(cluster)
+
+    def test_raises_for_a_disabled_cluster_when_enabled_required(self):
+        cluster = make_cluster("off", enabled=False)
+        with self.assertRaises(ClusterNotEnabledError):
+            with transaction.atomic():
+                acquire_operable_cluster(cluster)
+
+    def test_a_disabled_cluster_is_reachable_when_enabled_is_not_required(self):
+        cluster = make_cluster("off", enabled=False)
+        with transaction.atomic():
+            locked = acquire_operable_cluster(cluster, require_enabled=False)
+        self.assertEqual(locked.pk, cluster.pk)
+        # ...but a retired one is refused even then: retirement is terminal.
+        retired = retire_cluster(make_cluster("gone"))
+        with self.assertRaises(ClusterRetiredError):
+            with transaction.atomic():
+                acquire_operable_cluster(retired, require_enabled=False)
+
+
+class AcquireOperableClusterTransactionTests(TransactionTestCase):
+    """Separated from the ``TestCase`` above because that class wraps every test in an
+    atomic block, which would mask the 'must be inside a transaction' guard."""
+
+    databases = {"default"}
+
+    def test_refuses_to_run_outside_a_transaction(self):
+        cluster = make_cluster("ok")
+        with self.assertRaises(RuntimeError):
+            acquire_operable_cluster(cluster)
+
+
+class ReaperSelfHealingTests(TestCase):
+    """Every queued/running audit row blocks disable via
+    ``active_cluster_operation_labels``, so each must have a reaper or a dead worker
+    is a permanent lockout. R1b closes the queued gap and adds the catch-all."""
+
+    def test_orphaned_non_guest_running_row_is_reaped(self):
+        cluster = make_cluster("c")
+        event = _make_stale_audit(action="provider.some.future_op", outcome="running", cluster=cluster)
+        reaped = _reap_orphaned_cluster_operations(now=timezone.now())
+        event.refresh_from_db()
+        self.assertEqual(reaped, 1)
+        self.assertEqual(event.outcome, "failed")
+        self.assertTrue(event.details.get("retryable"))
+
+    def test_orphaned_queued_row_is_reaped(self):
+        event = _make_stale_audit(action="provider.some.future_op", outcome="queued")
+        _reap_orphaned_cluster_operations(now=timezone.now())
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "failed")
+
+    def test_a_row_with_a_live_broker_task_is_left_alone(self):
+        event = _make_stale_audit(
+            action="provider.some.future_op", outcome="running", details={"worker_task_id": "live-1"}
+        )
+        with patch("core.tasks.queued_task_ids", return_value={"live-1"}):
+            reaped = _reap_orphaned_cluster_operations(now=timezone.now())
+        event.refresh_from_db()
+        self.assertEqual(reaped, 0)
+        self.assertEqual(event.outcome, "running")
+
+    def test_guest_actions_are_not_touched_by_the_catch_all(self):
+        # guest.* is owned by the provider-resolving loop; the catch-all must skip it
+        # so a genuinely long-running migrate is not failed without asking Proxmox.
+        event = _make_stale_audit(action="guest.power.stop", outcome="running")
+        reaped = _reap_orphaned_cluster_operations(now=timezone.now())
+        event.refresh_from_db()
+        self.assertEqual(reaped, 0)
+        self.assertEqual(event.outcome, "running")
+
+    def test_owned_heartbeat_actions_are_not_touched_by_the_catch_all(self):
+        from core.services.storage_catalog_refresh import STORAGE_CATALOG_REFRESH_ACTION
+
+        event = _make_stale_audit(action=STORAGE_CATALOG_REFRESH_ACTION, outcome="queued")
+        reaped = _reap_orphaned_cluster_operations(now=timezone.now())
+        event.refresh_from_db()
+        self.assertEqual(reaped, 0)
+        self.assertEqual(event.outcome, "queued")
+
+    def test_stale_queued_guest_row_with_no_live_task_is_reaped(self):
+        cluster = make_cluster("c")
+        event = _make_stale_audit(action="guest.power.stop", outcome="queued", cluster=cluster)
+        with patch("core.tasks.queued_task_ids", return_value=set()):
+            reap_stale_guest_tasks()
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "failed")
+
+    def test_queued_guest_row_with_a_live_task_survives_the_reaper(self):
+        cluster = make_cluster("c")
+        event = _make_stale_audit(
+            action="guest.power.stop", outcome="queued", cluster=cluster, details={"poll_task_id": "live-2"}
+        )
+        with patch("core.tasks.queued_task_ids", return_value={"live-2"}):
+            reap_stale_guest_tasks()
+        event.refresh_from_db()
+        self.assertEqual(event.outcome, "queued")
+
+
+class RefreshStorageCatalogRetiredTerminalTests(TestCase):
+    """The worker resolves an unmanaged cluster to a terminal result, not the
+    unhandled ``DoesNotExist`` retirement would otherwise make ordinary."""
+
+    def test_retired_cluster_refresh_is_a_terminal_skip(self):
+        cluster = retire_cluster(make_cluster("gone"))
+        result = refresh_storage_catalog_for_cluster(cluster.key)
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "cluster_not_operable")
+
+    def test_disabled_cluster_refresh_is_a_terminal_skip(self):
+        cluster = make_cluster("off", enabled=False)
+        self.assertTrue(refresh_storage_catalog_for_cluster(cluster.key)["skipped"])
+
+    def test_missing_cluster_refresh_is_a_terminal_skip(self):
+        self.assertTrue(refresh_storage_catalog_for_cluster("no-such-key")["skipped"])
+
+
+class ContextProcessorScopeCutoverTests(TestCase):
+    """The taskbar's cluster list is the managed set; the archive flag is historical."""
+
+    def _app_settings(self):
+        from core.context_processors import app_settings
+
+        request = RequestFactory().get("/")
+        return app_settings(request)
+
+    def test_retired_clusters_are_excluded_from_navigation(self):
+        make_cluster("live")
+        retire_cluster(make_cluster("retired"))
+        ctx = self._app_settings()
+        self.assertEqual([c.key for c in ctx["app_enabled_clusters"]], ["live"])
+        self.assertTrue(ctx["app_has_clusters"])
+
+    def test_only_retired_installation_still_reports_a_history(self):
+        only_retired_installation()
+        ctx = self._app_settings()
+        self.assertEqual(list(ctx["app_enabled_clusters"]), [])
+        self.assertTrue(ctx["app_has_clusters"])
+
+    def test_empty_installation_reports_no_clusters(self):
+        self.assertFalse(self._app_settings()["app_has_clusters"])
+
+
+@override_settings(APP_REQUIRE_LOGIN=False)
+class LegacyRedirectScopeCutoverTests(TestCase):
+    """The unscoped-URL redirect routes a retired-only install to its archive, not to
+    onboarding, and never treats a retired cluster as an active target."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.user = get_user_model().objects.create_user(username="op")
+
+    def _redirect_response(self):
+        from core.views.cluster_scope import legacy_cluster_redirect
+
+        view = legacy_cluster_redirect("core:clusters_overview")
+        request = self.factory.get("/legacy/")
+        request.user = self.user
+        return view(request)
+
+    def test_retired_only_install_lands_on_the_archive_overview(self):
+        only_retired_installation()
+        response = self._redirect_response()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("core:clusters_overview"))
+
+    def test_empty_install_lands_on_onboarding(self):
+        response = self._redirect_response()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("core:cluster_add"))
+
+
+class ScanAdmissionLockTests(TestCase):
+    """The admission decision — 'is a scan active?' and the create it gates — is one
+    step, so a second admission cannot slip a duplicate scan past the first."""
+
+    @patch("core.tasks.async_task", return_value="scan-task-1")
+    def test_first_admission_creates_exactly_one_scan(self, _async_task):
+        scan_id = enqueue_scheduled_scan()
+        self.assertIsNotNone(scan_id)
+        self.assertEqual(ScanRun.objects.filter(status=ScanRun.Status.QUEUED).count(), 1)
+
+    @patch("core.tasks.async_task", return_value="scan-task-1")
+    def test_an_active_scan_blocks_a_new_admission(self, _async_task):
+        ScanRun.objects.create(status=ScanRun.Status.QUEUED, progress_message="already active")
+        self.assertIsNone(enqueue_scheduled_scan())
+        self.assertEqual(ScanRun.objects.count(), 1)
+
+
+class ScanAdmissionConcurrencyTests(TransactionTestCase):
+    """The PostgreSQL proof: concurrent admissions serialise on the installation-wide
+    lock and admit exactly one scan. Without the lock they each read 'none active'
+    and create their own."""
+
+    databases = {"default"}
+
+    def test_concurrent_admissions_admit_exactly_one_scan(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("advisory-lock serialisation only holds on PostgreSQL")
+        barrier = threading.Barrier(4)
+        errors: list[Exception] = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=10)
+                enqueue_scheduled_scan()
+            except Exception as exc:  # a silent thread failure would fake a pass
+                errors.append(exc)
+            finally:
+                connection.close()
+
+        with patch("core.tasks.async_task", return_value="scan-task"):
+            threads = [threading.Thread(target=worker) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(ScanRun.objects.filter(status=ScanRun.Status.QUEUED).count(), 1)
+
+
+class ClusterLifecycleLockConcurrencyTests(TransactionTestCase):
+    """Provider-operation acquisition and disable serialise on the same per-cluster
+    lock, and a different cluster is never caught by it."""
+
+    databases = {"default"}
+
+    def test_acquisition_blocks_a_concurrent_disable_of_the_same_cluster(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("advisory-lock serialisation only holds on PostgreSQL")
+        cluster = make_cluster("locked")
+        acquired = threading.Event()
+        release = threading.Event()
+
+        def holder():
+            try:
+                with transaction.atomic():
+                    acquire_operable_cluster(cluster)
+                    acquired.set()
+                    release.wait(timeout=10)
+            finally:
+                connection.close()
+
+        disable_result: dict[str, object] = {}
+
+        def disabler():
+            try:
+                disable_cluster(cluster)
+                disable_result["ok"] = True
+            except Exception as exc:
+                disable_result["error"] = exc
+            finally:
+                connection.close()
+
+        holder_thread = threading.Thread(target=holder)
+        holder_thread.start()
+        self.assertTrue(acquired.wait(timeout=10))
+
+        disabler_thread = threading.Thread(target=disabler)
+        disabler_thread.start()
+        # The holder keeps its transaction — and the lifecycle lock — open, so the
+        # disable cannot proceed until it is released.
+        disabler_thread.join(timeout=1)
+        self.assertTrue(disabler_thread.is_alive(), "disable must block behind the held lifecycle lock")
+
+        release.set()
+        holder_thread.join(timeout=10)
+        disabler_thread.join(timeout=10)
+        self.assertFalse(disabler_thread.is_alive())
+        self.assertEqual(disable_result, {"ok": True})
+        cluster.refresh_from_db()
+        self.assertFalse(cluster.enabled)
+
+    def test_a_second_cluster_is_not_blocked_by_the_first(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("advisory-lock serialisation only holds on PostgreSQL")
+        held = make_cluster("held")
+        other = make_cluster("other")
+        acquired = threading.Event()
+        release = threading.Event()
+
+        def holder():
+            try:
+                with transaction.atomic():
+                    acquire_operable_cluster(held)
+                    acquired.set()
+                    release.wait(timeout=10)
+            finally:
+                connection.close()
+
+        holder_thread = threading.Thread(target=holder)
+        holder_thread.start()
+        try:
+            self.assertTrue(acquired.wait(timeout=10))
+            # A different cluster uses a different lock, so this must not block.
+            disable_cluster(other)
+            other.refresh_from_db()
+            self.assertFalse(other.enabled)
+        finally:
+            release.set()
+            holder_thread.join(timeout=10)
+
+
+class LifecycleLockContextManagerTests(TransactionTestCase):
+    """The context managers take transaction-scoped locks, so they require an open
+    transaction and release on its end with no explicit unlock to leak."""
+
+    databases = {"default"}
+
+    def test_cluster_lifecycle_lock_is_reentrant_within_one_transaction(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("advisory locks are a no-op off PostgreSQL")
+        cluster = make_cluster("c")
+        # pg_advisory_xact_lock is reentrant on the same connection, so nesting the
+        # same cluster's lock inside one transaction must not self-deadlock.
+        with transaction.atomic():
+            with cluster_lifecycle_lock(cluster):
+                with cluster_lifecycle_lock(cluster):
+                    locked = ProxmoxCluster.objects.select_for_update().get(pk=cluster.pk)
+        self.assertEqual(locked.pk, cluster.pk)

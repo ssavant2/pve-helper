@@ -286,6 +286,12 @@ class ProxmoxCluster(TimestampedModel):
     def __str__(self) -> str:
         return f"{self.display_name} ({self.key})"
 
+    @property
+    def is_retired(self) -> bool:
+        """Whether this cluster has been retired. ``retired_at`` is the single
+        source of truth; ``enabled=False`` alone is reversible and not retirement."""
+        return self.retired_at is not None
+
 
 class ClusterCredential(TimestampedModel):
     """The API token pve-helper authenticates to one cluster with.

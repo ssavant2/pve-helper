@@ -28,7 +28,9 @@ from .models import (
     TrashItem,
 )
 from .services.audit_events import record_audit_event
+from .services.cluster_lifecycle_lock import scan_admission_lock
 from .services.cluster_resolver import client_for_endpoint, cluster_clients
+from .services.cluster_scopes import managed_clusters
 from .services.cluster_state_identity import cluster_advisory_lock_id
 from .services.console_session_cleanup import prune_console_sessions
 from .services.current_guest_inventory import (
@@ -129,7 +131,13 @@ def refresh_all_storage_volumes() -> dict[str, object]:
 
 
 def refresh_storage_catalog_for_cluster(cluster_key: str) -> dict[str, object]:
-    cluster = ProxmoxCluster.objects.get(key=cluster_key, enabled=True)
+    cluster = managed_clusters().filter(key=cluster_key, enabled=True).first()
+    if cluster is None:
+        # Retired, disabled or removed between enqueue and run. A catalog refresh for
+        # a cluster the app no longer manages is a terminal no-op — returning it as a
+        # result keeps the worker from raising an unhandled DoesNotExist on a race
+        # that retirement makes ordinary rather than exceptional.
+        return {"cluster_key": cluster_key, "skipped": True, "reason": "cluster_not_operable"}
     state = refresh_storage_catalog(cluster)
     return {
         "cluster_key": cluster.key,
@@ -357,32 +365,41 @@ def enqueue_storage_rescan(storage_ids: list[str], *, cluster: ProxmoxCluster | 
     or running, and dedupes."""
     active = {ScanRun.Status.QUEUED, ScanRun.Status.RUNNING}
     seen: set[str] = set()
-    for storage_id in storage_ids:
-        if not storage_id or storage_id in seen:
-            continue
-        seen.add(storage_id)
-        if cluster is not None:
-            storages = StorageMount.objects.filter(
-                enabled=True,
-                cluster_bindings__cluster_storage__cluster=cluster,
-                cluster_bindings__cluster_storage__storage_id=storage_id,
-            ).distinct()
-        else:
-            # Bounded legacy caller support: only an unambiguous display hint may
-            # resolve without explicit cluster scope.
-            matches = list(StorageMount.objects.filter(storage_id=storage_id, enabled=True)[:2])
-            storages = matches if len(matches) == 1 else []
-        for storage in storages:
-            if ScanRun.objects.filter(target_storage=storage, status__in=active).exists():
-                continue
-            scan = ScanRun.objects.create(
-                progress_message="Auto-scan after clone/destroy",
-                target_storage=storage,
-                target_label=storage.display_name,
-            )
-            task_id = async_task("core.tasks.run_scan", scan.id, q_options={"cluster": BULK_QUEUE_NAME})
-            scan.queued_task_id = task_id
-            scan.save(update_fields=["queued_task_id", "updated_at"])
+    created_scans: list[ScanRun] = []
+    # One admission decision covering every storage in this call: the per-storage
+    # "already queued?" check and the ScanRun it creates share the installation-wide
+    # admission lock, so this cannot race another admission into a duplicate scan.
+    with transaction.atomic():
+        with scan_admission_lock():
+            for storage_id in storage_ids:
+                if not storage_id or storage_id in seen:
+                    continue
+                seen.add(storage_id)
+                if cluster is not None:
+                    storages = StorageMount.objects.filter(
+                        enabled=True,
+                        cluster_bindings__cluster_storage__cluster=cluster,
+                        cluster_bindings__cluster_storage__storage_id=storage_id,
+                    ).distinct()
+                else:
+                    # Bounded legacy caller support: only an unambiguous display hint
+                    # may resolve without explicit cluster scope.
+                    matches = list(StorageMount.objects.filter(storage_id=storage_id, enabled=True)[:2])
+                    storages = matches if len(matches) == 1 else []
+                for storage in storages:
+                    if ScanRun.objects.filter(target_storage=storage, status__in=active).exists():
+                        continue
+                    created_scans.append(
+                        ScanRun.objects.create(
+                            progress_message="Auto-scan after clone/destroy",
+                            target_storage=storage,
+                            target_label=storage.display_name,
+                        )
+                    )
+    for scan in created_scans:
+        task_id = async_task("core.tasks.run_scan", scan.id, q_options={"cluster": BULK_QUEUE_NAME})
+        scan.queued_task_id = task_id
+        scan.save(update_fields=["queued_task_id", "updated_at"])
 
 
 # A guest audit event stuck at outcome="running" longer than this, with no live
@@ -401,7 +418,11 @@ def reap_stale_guest_tasks() -> dict[str, int]:
     failed so it stops showing as a phantom running row.
     """
     threshold = timezone.now() - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
-    stale = AuditEvent.objects.filter(action__startswith="guest.", outcome="running", timestamp__lt=threshold)
+    # Include queued, not only running: a guest event that never reached provider
+    # submission (no UPID) is otherwise reaped by nobody and blocks disable forever.
+    stale = AuditEvent.objects.filter(
+        action__startswith="guest.", outcome__in=("queued", "running"), timestamp__lt=threshold
+    )
     resolved = 0
     reaped = 0
     changed = False
@@ -411,6 +432,13 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         upid = details.get("proxmox_task_upid")
         node = details.get("proxmox_task_node")
         endpoint_url = details.get("proxmox_endpoint") or ""
+        # No UPID means the provider was never reached (a stuck queued/pre-submit
+        # row). Before declaring it dead, make sure its background task is not merely
+        # slow to start: a task still in the broker is genuinely queued, not lost.
+        if not (upid and node):
+            task_id = str(details.get("poll_task_id") or details.get("worker_task_id") or "")
+            if task_id and task_id in queued_task_ids({task_id}):
+                continue
         status = None
         if upid and node:
             client = None
@@ -466,6 +494,7 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         error="The storage catalog refresh worker stopped reporting progress; start a new refresh.",
         now=timezone.now(),
     )
+    interrupted_orphaned_operations = _reap_orphaned_cluster_operations(now=timezone.now())
     return {
         "resolved_from_proxmox": resolved,
         "reaped_dead": reaped,
@@ -473,7 +502,65 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         "interrupted_tag_operations": interrupted_tag_operations,
         "interrupted_tag_inventory_refreshes": interrupted_tag_inventory_refreshes,
         "interrupted_storage_catalog_refreshes": interrupted_storage_catalog_refreshes,
+        "interrupted_orphaned_operations": interrupted_orphaned_operations,
     }
+
+
+# Actions whose queued/running audit rows are already reaped by a dedicated reaper
+# above (or, for ``guest.``, by the provider-resolving loop in
+# ``reap_stale_guest_tasks``). Every other action is swept by
+# ``_reap_orphaned_cluster_operations`` so a future provider action that forgets to
+# register its own reaper self-heals rather than blocking every later disable of its
+# cluster forever. ``ReaperCoverageInvariantTests`` asserts this stays exhaustive.
+_REAPER_OWNED_ACTIONS = frozenset(
+    {
+        "tag.bulk_operation",
+        TAG_INVENTORY_REFRESH_ACTION,
+        STORAGE_CATALOG_REFRESH_ACTION,
+    }
+)
+_REAPER_OWNED_ACTION_PREFIXES = ("guest.",)
+
+
+def _reap_orphaned_cluster_operations(*, now) -> int:
+    """Sweep queued/running audit rows that no dedicated reaper owns.
+
+    ``active_cluster_operation_labels`` blocks disable on *every* queued/running
+    ``AuditEvent`` for a cluster, so a row whose owner never finalises it is a
+    permanent lockout, not a stale status line. The specialised reapers cover the
+    actions that exist today; this is the catch-all that keeps a newly added action
+    from silently reintroducing that lockout. It is conservative: a row whose
+    background task is still present in the broker is genuinely in flight and left
+    alone, so only orphaned rows are resolved.
+    """
+    threshold = now - timedelta(seconds=STALE_GUEST_TASK_SECONDS)
+    candidates = list(
+        AuditEvent.objects.filter(outcome__in=["queued", "running"], timestamp__lt=threshold)
+        .exclude(action__startswith="guest.")
+        .exclude(action__in=_REAPER_OWNED_ACTIONS)
+    )
+    interrupted = 0
+    for candidate in candidates:
+        with transaction.atomic():
+            event = AuditEvent.objects.select_for_update().get(pk=candidate.pk)
+            if event.outcome not in {"queued", "running"}:
+                continue
+            details = dict(event.details) if isinstance(event.details, dict) else {}
+            task_id = str(details.get("worker_task_id") or details.get("poll_task_id") or details.get("task_id") or "")
+            if task_id and task_id in queued_task_ids({task_id}):
+                continue
+            details["stage"] = "interrupted"
+            details["error"] = details.get("error") or (
+                "The operation's background worker is no longer present; retry is safe."
+            )
+            details["retryable"] = True
+            details["interrupted_at"] = now.isoformat()
+            details["finished_at"] = now.isoformat()
+            event.outcome = "failed"
+            event.details = details
+            event.save(update_fields=["outcome", "details"])
+            interrupted += 1
+    return interrupted
 
 
 def _reap_stale_tag_operations(*, now) -> int:
@@ -1247,28 +1334,35 @@ def _refresh_import_target_inventory(
 
 def enqueue_scheduled_scan() -> int | None:
     schedule_state = scan_schedule_state()
-    active_scan = (
-        ScanRun.objects.filter(
-            status__in=[
-                ScanRun.Status.QUEUED,
-                ScanRun.Status.RUNNING,
-            ]
-        )
-        .order_by("-created_at")
-        .first()
-    )
-    if active_scan:
-        record_audit_event(
-            username="system",
-            action="scan.schedule.skipped",
-            object_type="scan_run",
-            object_id=str(active_scan.id),
-            outcome="skipped",
-            details={"reason": "A scan is already queued or running."},
-        )
-        return None
+    # The admission lock closes the scan-vs-retire TOCTOU: the "is a scan already
+    # active?" check and the ScanRun row it decides to create must be one indivisible
+    # step, or two schedulers (or a scheduler and a retirement) both read "none
+    # active" and disagree about what is running. It is the outermost lifecycle lock,
+    # so it is taken before any per-cluster lock — never after one.
+    with transaction.atomic():
+        with scan_admission_lock():
+            active_scan = (
+                ScanRun.objects.filter(
+                    status__in=[
+                        ScanRun.Status.QUEUED,
+                        ScanRun.Status.RUNNING,
+                    ]
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            if active_scan:
+                record_audit_event(
+                    username="system",
+                    action="scan.schedule.skipped",
+                    object_type="scan_run",
+                    object_id=str(active_scan.id),
+                    outcome="skipped",
+                    details={"reason": "A scan is already queued or running."},
+                )
+                return None
 
-    scan = ScanRun.objects.create(progress_message="Queued from schedule")
+            scan = ScanRun.objects.create(progress_message="Queued from schedule")
     task_id = async_task("core.tasks.run_scan", scan.id, q_options={"cluster": BULK_QUEUE_NAME})
     scan.queued_task_id = task_id
     scan.save(update_fields=["queued_task_id", "updated_at"])

@@ -2,7 +2,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.functional import SimpleLazyObject
 
-from .models import ProxmoxCluster
+from .services.cluster_scopes import has_historical_clusters, managed_clusters
 from .services.datastore_nav import datastore_nav
 from .services.recent_tasks import recent_task_page
 
@@ -14,8 +14,12 @@ def app_settings(request):
     # context, and `base.html` — the only template that reads these — is nowhere in
     # sight. Composing the task page for those responses was pure waste.
     task_page = SimpleLazyObject(recent_task_page)
-    has_configured_clusters = ProxmoxCluster.objects.exists()
-    enabled_clusters = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
+    # "Has clusters" is the historical decision: an all-retired installation still
+    # has a Connections archive to show rather than the first-run onboarding CTA.
+    # The taskbar's cluster list is the managed, enabled set — retired clusters are
+    # never active navigation targets, only archive rows.
+    has_configured_clusters = has_historical_clusters()
+    enabled_clusters = list(managed_clusters().filter(enabled=True).order_by("display_name", "key"))
     # One entry per cluster that publishes anything, so the sidebar's top level is
     # the cluster rather than a shared/local split the catalog does not have.
     datastore_clusters = []

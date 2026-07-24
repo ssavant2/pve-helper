@@ -39,12 +39,16 @@ LEGACY_ADAPTER_NAME = "require_sole_enabled_cluster_for_legacy_caller"
 CLUSTER_SCOPE_MODULE = "core/services/cluster_scopes.py"
 BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
     {
-        # Installation booleans and passive reads; R1b replaces exists()/get() here
-        # with named has_managed_clusters / historical decisions.
-        "core/context_processors.py",
+        # Installation booleans and passive reads; later phases replace the
+        # remaining exists()/get()/first() here with named scope decisions.
+        # (context_processors.py was fully converted in R1b and struck from here.)
         "core/views/cluster_scope.py",
         "core/views/clusters.py",
         "core/services/runtime_bootstrap.py",
+        # The lifecycle lock reloads a specific cluster under select_for_update to
+        # check retired_at *after* locking, so it must reach retired rows too — the
+        # one acquisition primitive scopes cannot express.
+        "core/services/cluster_lifecycle_lock.py",
         # Onboarding / activation / credential / trust write paths (Phase 5 surface).
         "core/services/cluster_activation.py",
         "core/services/cluster_credentials.py",

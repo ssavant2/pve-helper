@@ -38,6 +38,7 @@ from core.services.cluster_identity import (
     discover_cluster_identity,
     reapprove_identity,
 )
+from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock
 from core.services.cluster_state_identity import invalidate_cluster_cache
 from core.services.cluster_trust import (
     TRUST_CA_PEM,
@@ -344,19 +345,31 @@ def persist_endpoint(
 
 @transaction.atomic
 def disable_cluster(cluster: ProxmoxCluster) -> ProxmoxCluster:
-    locked = ProxmoxCluster.objects.select_for_update().get(pk=cluster.pk)
-    blockers = active_cluster_operation_labels(locked)
-    if blockers:
-        raise ClusterOnboardingError("Disable was refused while provider work is active: " + "; ".join(blockers) + ".")
-    if locked.enabled:
-        locked.enabled = False
-        locked.save(update_fields=["enabled", "updated_at"])
-        invalidate_cluster_cache(locked)
-    return locked
+    # Disable is retirement's mandated precondition, so it must serialise against
+    # provider-operation acquisition on the same lifecycle lock the barrier uses;
+    # its own row lock alone would leave the acquire-vs-transition race one step
+    # earlier. Lifecycle lock first, then the row lock, per the documented order.
+    with cluster_lifecycle_lock(cluster):
+        locked = ProxmoxCluster.objects.select_for_update().get(pk=cluster.pk)
+        blockers = active_cluster_operation_labels(locked)
+        if blockers:
+            raise ClusterOnboardingError(
+                "Disable was refused while provider work is active: " + "; ".join(blockers) + "."
+            )
+        if locked.enabled:
+            locked.enabled = False
+            locked.save(update_fields=["enabled", "updated_at"])
+            invalidate_cluster_cache(locked)
+        return locked
 
 
 @transaction.atomic
 def remove_stored_credential(cluster: ProxmoxCluster) -> None:
+    with cluster_lifecycle_lock(cluster):
+        return _remove_stored_credential_locked(cluster)
+
+
+def _remove_stored_credential_locked(cluster: ProxmoxCluster) -> None:
     locked = ProxmoxCluster.objects.select_for_update().get(pk=cluster.pk)
     if locked.enabled:
         raise ClusterOnboardingError("Disable the cluster before removing its stored credential.")

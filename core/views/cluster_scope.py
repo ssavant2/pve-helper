@@ -15,6 +15,7 @@ from core.models import (
     ProxmoxInventory,
     ProxmoxStorageConsumer,
 )
+from core.services.cluster_scopes import has_historical_clusters, managed_clusters
 
 from .common import app_login_required, browser_title
 
@@ -72,10 +73,12 @@ def legacy_cluster_redirect(route_name: str) -> Callable:
     def view(request, **route_kwargs):
         if request.method not in SAFE_REDIRECT_METHODS:
             return _reject_legacy_mutation()
-        clusters = list(ProxmoxCluster.objects.filter(enabled=True).order_by("display_name", "key"))
+        clusters = list(managed_clusters().filter(enabled=True).order_by("display_name", "key"))
         if not clusters:
+            # A retired-only installation still has an archive to land on; only a
+            # genuinely empty one routes to onboarding.
             destination = (
-                reverse("core:clusters_overview") if ProxmoxCluster.objects.exists() else reverse("core:cluster_add")
+                reverse("core:clusters_overview") if has_historical_clusters() else reverse("core:cluster_add")
             )
             return HttpResponseRedirect(destination)
         if len(clusters) == 1:
