@@ -28,6 +28,7 @@ from .models import (
     TrashItem,
 )
 from .services.audit_events import record_audit_event
+from .services.cluster_footprint import FOOTPRINT_SCAN_OBSERVATION, stamp_operational_footprint
 from .services.cluster_lifecycle_lock import scan_admission_lock
 from .services.cluster_resolver import client_for_endpoint, cluster_clients
 from .services.cluster_scopes import managed_clusters
@@ -2054,6 +2055,9 @@ def _record_cluster_observations(
                 "errors": cluster_errors.get(cluster_id, {}),
             },
         )
+        # A scan observation is inventory footprint: the connection was scanned,
+        # so it is no longer a never-used onboarding mistake.
+        stamp_operational_footprint(cluster_id, reason=FOOTPRINT_SCAN_OBSERVATION)
 
 
 def _storage_gate_status(

@@ -60,6 +60,11 @@ BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
         "core/management/commands/reapprove_cluster_identity.py",
         "core/management/commands/set_cluster_credential.py",
         "core/management/commands/set_initial_cluster_key.py",
+        # Footprint stamping is not a cluster *selection*: it is a scope-agnostic,
+        # set-based UPDATE keyed by primary key that must reach the row whatever its
+        # scope (a disabled cluster still stamps), so a scope resolver cannot express
+        # it. The IS NULL filter is what makes it monotonic, not a scope.
+        "core/services/cluster_footprint.py",
         # Read/mutation/worker call sites migrated as R1b/R2 reach each module.
         "core/services/audit_events.py",
         "core/services/current_guest_inventory.py",

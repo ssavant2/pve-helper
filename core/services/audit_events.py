@@ -8,6 +8,10 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from core.models import AuditEvent, ProxmoxCluster
+from core.services.cluster_footprint import (
+    FOOTPRINT_PROVIDER_OPERATION,
+    stamp_operational_footprint,
+)
 from core.services.cluster_lifecycle_registry import (
     CODE_FORCE_RETIRED_UNRESOLVABLE,
     CODE_RETIRED_BEFORE_START,
@@ -18,6 +22,16 @@ from core.services.request_metadata import client_ip
 # Configuration-only events are retained during retirement and may later be
 # detached by the unused-connection hard-delete path. Everything else claiming
 # queued/running is operational and must be registered below or fail closed.
+#
+# This is the single source of truth for "cluster-attached, but connection or
+# lifecycle management rather than operational footprint". It gates three things
+# that must agree: which Audit events block retirement (below), which stamp
+# ``operational_footprint_at`` (they must not — see ``record_audit_event``), and
+# which block unused-connection hard deletion (they must not — see
+# ``cluster_deletion_eligibility``). The retirement/deletion lifecycle actions
+# belong here too: a *failed* verified-retirement attempt on an otherwise-unused
+# connection must not brand it operational, and the final deletion event is
+# preserved with its relation detached, never as a blocker.
 CLUSTER_CONFIGURATION_AUDIT_ACTIONS = frozenset(
     {
         "cluster.add",
@@ -33,11 +47,18 @@ CLUSTER_CONFIGURATION_AUDIT_ACTIONS = frozenset(
         "cluster.endpoint_added",
         "cluster.endpoint_disabled",
         "cluster.endpoint_enabled",
+        "cluster.force_retired",
         "cluster.identity.reapprove",
         "cluster.identity_reapproved",
         "cluster.initial_key.set",
+        "cluster.retired",
+        "cluster.retirement_preflight_identity_mismatch",
+        "cluster.retirement_refused",
+        "cluster.retirement_verification_failed",
         "cluster.transport.approve",
         "cluster.trust.cutover",
+        "cluster.unused_connection_deleted",
+        "cluster.updated",
     }
 )
 CLUSTER_PROVIDER_AUDIT_ACTIONS = frozenset(
@@ -354,7 +375,7 @@ def record_audit_event(
         elif not getattr(resolved_user, "is_authenticated", False):
             resolved_user = None
 
-    return AuditEvent.objects.create(
+    event = AuditEvent.objects.create(
         user=resolved_user,
         username=resolved_username,
         source_ip=resolved_source_ip,
@@ -367,3 +388,9 @@ def record_audit_event(
         cluster_key_snapshot=cluster_key_snapshot,
         details=details,
     )
+    # A cluster-attached provider operation is operational footprint. Connection
+    # and lifecycle events (the allowlist) are not, so retiring or reconfiguring
+    # a connection never makes it look operational.
+    if cluster is not None and action not in CLUSTER_CONFIGURATION_AUDIT_ACTIONS:
+        stamp_operational_footprint(cluster, reason=FOOTPRINT_PROVIDER_OPERATION)
+    return event

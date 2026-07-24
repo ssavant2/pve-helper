@@ -31,6 +31,7 @@ from core.models import (
     StorageMount,
 )
 from core.services.classification import ClassificationResult
+from core.services.cluster_footprint import FOOTPRINT_STORAGE_PROJECTION, stamp_operational_footprint
 from core.services.cluster_resolver import ClusterResolutionError, cluster_clients
 from core.services.cluster_state_identity import cluster_advisory_lock_id
 from core.services.proxmox import ProxmoxAPIError
@@ -339,6 +340,9 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
     node_online = {str(row["node"]): str(row.get("status") or "").lower() in {"online", ""} for row in nodes}
     with transaction.atomic():
         state, _ = StorageCatalogState.objects.select_for_update().get_or_create(cluster=cluster)
+        if definitions:
+            # Publishing a storage definition is storage-projection footprint.
+            stamp_operational_footprint(cluster, reason=FOOTPRINT_STORAGE_PROJECTION)
         previous_semantics = _metadata_semantics(cluster)
         seen_definition_ids: set[int] = set()
         seen_node_ids: set[int] = set()

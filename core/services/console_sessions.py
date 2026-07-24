@@ -11,6 +11,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from core.models import ConsoleSession, ProxmoxCluster
+from core.services.cluster_footprint import FOOTPRINT_CONSOLE_SESSION, stamp_operational_footprint
 from core.services.cluster_lifecycle_registry import (
     CODE_FORCE_RETIRED_UNRESOLVABLE,
     CODE_RETIRED_BEFORE_START,
@@ -302,5 +303,8 @@ def create_guest_console_session(*, request, detail) -> ConsoleSessionResult:
             "proxmox_user": proxmox_user,
         },
     )
+    # Opening a console is operational footprint even after the 24h session-row
+    # retention deletes this row; the marker is the durable memory of it.
+    stamp_operational_footprint(cluster, reason=FOOTPRINT_CONSOLE_SESSION)
     clear_live_guest_caches(cluster=cluster)
     return ConsoleSessionResult(session=session, token=token, password=password, console_type=console_type)

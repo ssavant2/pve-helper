@@ -18,6 +18,7 @@ from core.models import (
     ScanRun,
 )
 from core.services.classification import extract_disk_references
+from core.services.cluster_footprint import FOOTPRINT_GUEST_PROJECTION, stamp_operational_footprint
 from core.services.proxmox import ProxmoxAPIError, ProxmoxGuestSummary, VerifiedGuestInventory
 from core.services.public_errors import public_exception_message
 from core.services.tags import join_tags
@@ -97,6 +98,9 @@ def _update_state(
     state.endpoints_succeeded = succeeded
     state.errors = errors
     state.save()
+    # A reconciled inventory-state row is current-projection footprint: the
+    # connection was contacted and produced (or invalidated) guest inventory.
+    stamp_operational_footprint(cluster, reason=FOOTPRINT_GUEST_PROJECTION)
     return state
 
 

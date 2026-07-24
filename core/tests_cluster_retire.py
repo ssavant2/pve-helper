@@ -31,13 +31,30 @@ from django.utils import timezone
 
 from core.models import (
     AuditEvent,
+    ClusterStorage,
+    ConsoleSession,
+    CurrentGuestInventoryState,
     ProxmoxCluster,
     ProxmoxEndpoint,
     ProxmoxInventory,
     ProxmoxStorageConsumer,
     RuntimeConfigurationState,
+    ScanClusterObservation,
     ScanRun,
+    ScheduledAction,
     StorageMount,
+)
+from core.services.audit_events import record_audit_event
+from core.services.cluster_deletion_eligibility import (
+    BLOCKER_FOOTPRINT,
+    BLOCKER_RETIRED,
+    unused_connection_deletion_eligibility,
+)
+from core.services.cluster_footprint import (
+    FOOTPRINT_CONSOLE_SESSION,
+    FOOTPRINT_PROVIDER_OPERATION,
+    FOOTPRINT_SCAN_OBSERVATION,
+    stamp_operational_footprint,
 )
 from core.services.cluster_lifecycle_lock import (
     ClusterNotEnabledError,
@@ -898,3 +915,174 @@ class LifecycleLockContextManagerTests(TransactionTestCase):
                 with cluster_lifecycle_lock(cluster):
                     locked = ProxmoxCluster.objects.select_for_update().get(pk=cluster.pk)
         self.assertEqual(locked.pk, cluster.pk)
+
+
+# ---------------------------------------------------------------------------
+# R4 slice 1: operational-footprint stamping and fail-closed unused-connection
+# hard-delete eligibility. No mutation, no UI -- a durable marker and a read.
+# ---------------------------------------------------------------------------
+
+
+def _reload(cluster: ProxmoxCluster) -> ProxmoxCluster:
+    return ProxmoxCluster.objects.get(pk=cluster.pk)
+
+
+class OperationalFootprintStampingTests(TestCase):
+    """``operational_footprint_at`` is the durable memory the eligibility check
+    leans on, so it must be stamped exactly once, monotonically, at each place a
+    cluster first acquires non-configuration footprint -- and never by a mere
+    connection/lifecycle event."""
+
+    def test_stamp_is_idempotent_and_monotonic(self):
+        cluster = make_cluster("c")
+        self.assertTrue(stamp_operational_footprint(cluster, reason=FOOTPRINT_SCAN_OBSERVATION))
+        first = _reload(cluster)
+        self.assertIsNotNone(first.operational_footprint_at)
+        self.assertEqual(first.operational_footprint_reason, FOOTPRINT_SCAN_OBSERVATION)
+        # A later footprint of a different kind must not move the timestamp or the
+        # reason: the marker records that footprint was *first* acquired, not last.
+        self.assertFalse(stamp_operational_footprint(cluster.pk, reason=FOOTPRINT_CONSOLE_SESSION))
+        second = _reload(cluster)
+        self.assertEqual(second.operational_footprint_at, first.operational_footprint_at)
+        self.assertEqual(second.operational_footprint_reason, FOOTPRINT_SCAN_OBSERVATION)
+
+    def test_missing_cluster_id_is_a_safe_no_op(self):
+        self.assertFalse(stamp_operational_footprint(None, reason=FOOTPRINT_SCAN_OBSERVATION))
+
+    def test_provider_operation_audit_event_stamps_footprint(self):
+        cluster = make_cluster("c")
+        record_audit_event(action="guest.power.start", cluster=cluster, object_type="guest")
+        self.assertEqual(_reload(cluster).operational_footprint_reason, FOOTPRINT_PROVIDER_OPERATION)
+
+    def test_configuration_audit_event_does_not_stamp_footprint(self):
+        cluster = make_cluster("c")
+        record_audit_event(action="cluster.enabled", cluster=cluster, object_type="cluster")
+        # A refused verified-retirement attempt is lifecycle, not footprint: an
+        # otherwise-unused connection must not be branded operational by trying.
+        record_audit_event(action="cluster.retirement_refused", cluster=cluster, object_type="cluster")
+        self.assertIsNone(_reload(cluster).operational_footprint_at)
+
+    def test_cluster_free_audit_event_stamps_nothing(self):
+        cluster = make_cluster("c")
+        record_audit_event(action="guest.power.start", object_type="guest")
+        self.assertIsNone(_reload(cluster).operational_footprint_at)
+
+    def test_scan_observation_stamps_footprint(self):
+        cluster = make_cluster("c")
+        from core.tasks import _record_cluster_observations
+
+        scan = ScanRun.objects.create()
+        endpoints = list(cluster.endpoints.all())
+        _record_cluster_observations(scan, endpoints, {}, {}, {})
+        self.assertEqual(_reload(cluster).operational_footprint_reason, FOOTPRINT_SCAN_OBSERVATION)
+
+
+class UnusedConnectionEligibilityTests(TestCase):
+    """``Delete unused connection`` may run only for a connection proven to carry
+    no operational footprint. The check fails closed: any blocking relation row,
+    the durable marker, a retired state, or an unclassified relation blocks it."""
+
+    def _blocker_relations(self, cluster) -> set[str]:
+        return {b.relation for b in unused_connection_deletion_eligibility(cluster).blockers}
+
+    def test_a_clean_connection_is_eligible(self):
+        # make_cluster creates endpoints -- disposable config that must not block.
+        cluster = make_cluster("unused")
+        result = unused_connection_deletion_eligibility(cluster)
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.blockers, ())
+
+    def test_operational_footprint_marker_blocks(self):
+        cluster = make_cluster("unused")
+        stamp_operational_footprint(cluster, reason=FOOTPRINT_PROVIDER_OPERATION)
+        self.assertIn(BLOCKER_FOOTPRINT, self._blocker_relations(_reload(cluster)))
+
+    def test_footprint_marker_blocks_even_with_every_relation_empty(self):
+        # The whole point of the marker: audit/scan/console retention can empty
+        # every blocker relation, and eligibility must still refuse. No relation
+        # rows exist here, only the marker.
+        cluster = make_cluster("unused")
+        stamp_operational_footprint(cluster, reason=FOOTPRINT_CONSOLE_SESSION)
+        result = unused_connection_deletion_eligibility(_reload(cluster))
+        self.assertFalse(result.eligible)
+        self.assertEqual([b.relation for b in result.blockers], [BLOCKER_FOOTPRINT])
+
+    def test_retired_cluster_is_ineligible(self):
+        cluster = retire_cluster(make_cluster("gone"))
+        self.assertIn(BLOCKER_RETIRED, self._blocker_relations(cluster))
+
+    def test_operational_audit_event_blocks_but_configuration_does_not(self):
+        # Build rows directly so the audit-sweep is isolated from footprint
+        # stamping (record_audit_event would stamp the marker as well).
+        operational = make_cluster("op")
+        AuditEvent.objects.create(action="guest.power.start", object_type="guest", cluster=operational)
+        self.assertIn("audit_events", self._blocker_relations(operational))
+
+        configured = make_cluster("cfg")
+        AuditEvent.objects.create(action="cluster.enabled", object_type="cluster", cluster=configured)
+        AuditEvent.objects.create(action="cluster.unused_connection_deleted", object_type="cluster", cluster=configured)
+        self.assertTrue(unused_connection_deletion_eligibility(configured).eligible)
+
+    def test_each_blocking_relation_kind_fails_closed(self):
+        immutable = make_cluster("imm")
+        ScanClusterObservation.objects.create(scan_run=ScanRun.objects.create(), cluster=immutable)
+        self.assertIn("scan_observations", self._blocker_relations(immutable))
+
+        projection = make_cluster("proj")
+        CurrentGuestInventoryState.objects.create(cluster=projection)
+        self.assertIn("inventory_state", self._blocker_relations(projection))
+
+        storage_owned = make_cluster("stor")
+        ClusterStorage.objects.create(cluster=storage_owned, storage_id="local", storage_type="dir")
+        self.assertIn("storage_definitions", self._blocker_relations(storage_owned))
+
+        console = make_cluster("con")
+        ConsoleSession.objects.create(
+            cluster=console,
+            token_hash="deadbeef",
+            target_type="vm",
+            target_vmid=100,
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        self.assertIn("console_sessions", self._blocker_relations(console))
+
+        _storage, first, _second = shared_storage_with_consumers()
+        self.assertIn("storage_consumers", self._blocker_relations(first))
+
+    def test_active_and_soft_deleted_schedules_both_block(self):
+        active = make_cluster("sched-a")
+        ScheduledAction.objects.create(
+            cluster=active,
+            name="nightly",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=100,
+        )
+        self.assertIn("scheduled_actions", self._blocker_relations(active))
+
+        retired_schedule = make_cluster("sched-b")
+        ScheduledAction.objects.create(
+            cluster=retired_schedule,
+            name="was-nightly",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=100,
+            deleted_at=timezone.now(),
+        )
+        # Soft-deleted schedules are retained history; their presence still blocks.
+        self.assertIn("scheduled_actions", self._blocker_relations(retired_schedule))
+
+    def test_an_unclassified_reverse_relation_blocks(self):
+        # Simulate a relation the registry has not yet classified by dropping a
+        # known accessor from the classification the service reads. A real future
+        # relation added without a registry row must land here, not default-allow.
+        cluster = make_cluster("unclassified")
+        trimmed = {k: v for k, v in CLUSTER_REVERSE_RELATIONS.items() if k != "endpoints"}
+        with patch(
+            "core.services.cluster_deletion_eligibility.CLUSTER_REVERSE_RELATIONS",
+            trimmed,
+        ):
+            result = unused_connection_deletion_eligibility(cluster)
+        self.assertFalse(result.eligible)
+        endpoint_blocker = next(b for b in result.blockers if b.relation == "endpoints")
+        self.assertEqual(endpoint_blocker.kind, "unclassified_relation")
