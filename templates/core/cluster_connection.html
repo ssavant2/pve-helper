@@ -6,7 +6,7 @@
     <a class="primary-action" href="{% url 'core:cluster_endpoint_add' cluster.key %}"><i data-lucide="plus" aria-hidden="true"></i> Add endpoint</a>
   </div>
 
-  {% if operation_error %}<div class="panel cluster-operation-error"><strong>Operation refused:</strong> {{ operation_error }}</div>{% endif %}
+  {% if operation_error %}<div class="panel cluster-operation-error"><strong>Operation refused:</strong> {{ operation_error }}{% if show_force_retire %}<button class="secondary-action danger" type="submit" form="cluster-force-retire-form">Force-retire a permanently unavailable site</button>{% endif %}</div>{% endif %}
   {% if cluster.ingestion_quarantined %}<div class="panel cluster-quarantine"><strong>Identity quarantine:</strong> {{ cluster.quarantine_reason }}</div>{% endif %}
 
   <div class="cluster-detail-grid">
@@ -35,5 +35,60 @@
   <section class="panel panel-spaced cluster-lifecycle-panel">
     <div><h2>Connection lifecycle</h2><p>Disabling blocks new refreshes, schedules, consoles and writes while retaining inventory, schedules and Audit history. Cluster records with retained history are deliberately not hard-deleted.</p></div>
     {% if cluster.enabled %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" data-confirm="Disable {{ cluster.display_name }}? New provider operations stop, but last-known data and history remain." data-confirm-title="Disable cluster" data-confirm-label="Disable" data-confirm-danger="true">{% csrf_token %}<input type="hidden" name="action" value="disable"><button class="secondary-action danger" type="submit">Disable cluster</button></form>{% else %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}">{% csrf_token %}<input type="hidden" name="action" value="enable"><button class="primary-action" type="submit" {% if not credential or not trust %}disabled title="Credential and trust are required"{% endif %}>Verify and enable cluster</button></form>{% endif %}
+  </section>
+
+  <section class="panel panel-spaced cluster-retirement-panel" data-cluster-retirement>
+    <div class="cluster-retirement-heading">
+      <div>
+        <h2>Danger zone</h2>
+        <p>Retirement permanently removes this connection from managed use while preserving its tombstone and history.</p>
+      </div>
+    </div>
+    {% if not cluster.enabled %}
+      <form
+        method="post"
+        action="{% url 'core:cluster_connection_action' cluster.key %}"
+        class="cluster-retirement-action"
+        data-cluster-retirement-form
+        data-retirement-mode="verified"
+        data-cluster-key="{{ cluster.key }}"
+        data-reason-max-length="{{ retirement_reason_max_length }}"
+      >
+        {% csrf_token %}
+        <input type="hidden" name="action" value="retirement-preflight">
+        <input type="hidden" name="mode" value="verified">
+        <div>
+          <h3>Verified retirement</h3>
+          <p>Contact one endpoint and verify that it still reports the pinned Proxmox cluster identity.</p>
+        </div>
+        <label>
+          <span>Verification endpoint</span>
+          <select name="endpoint_id" required>
+            {% for endpoint in retirement_endpoints %}<option value="{{ endpoint.id }}">{{ endpoint.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <button class="secondary-action danger" type="submit" {% if not retirement_endpoints %}disabled title="An enabled endpoint is required"{% endif %}>Retire cluster</button>
+      </form>
+    {% endif %}
+    <details class="cluster-force-retirement">
+      <summary>Need to retire a permanently unavailable site?</summary>
+      <div>
+        <p>Forced retirement does not contact Proxmox. It can disable and retire this cluster in one atomic step, and may abandon provider-dependent work.</p>
+        <form
+          id="cluster-force-retire-form"
+          method="post"
+          action="{% url 'core:cluster_connection_action' cluster.key %}"
+          data-cluster-retirement-form
+          data-retirement-mode="forced"
+          data-cluster-key="{{ cluster.key }}"
+          data-reason-max-length="{{ retirement_reason_max_length }}"
+        >
+          {% csrf_token %}
+          <input type="hidden" name="action" value="retirement-preflight">
+          <input type="hidden" name="mode" value="forced">
+          <button class="secondary-action danger" type="submit">Force retire</button>
+        </form>
+      </div>
+    </details>
   </section>
 {% endblock %}

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from django.core import signing
 from django.db import transaction
-from django.http import Http404
+from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 
 from core.cluster_forms import (
@@ -16,7 +19,14 @@ from core.cluster_forms import (
     EndpointTrustConfirmForm,
     TrustCredentialForm,
 )
-from core.models import ClusterCredential, ClusterTransportTrust, ProxmoxCluster, ProxmoxEndpoint
+from core.models import (
+    ClusterCredential,
+    ClusterTransportTrust,
+    CurrentGuestInventory,
+    ProxmoxCluster,
+    ProxmoxEndpoint,
+    ProxmoxInventory,
+)
 from core.services.audit_events import record_audit_event
 from core.services.cluster_activation import ClusterActivationError, enable_cluster
 from core.services.cluster_credentials import ClusterCredentialError, set_cluster_credential
@@ -37,8 +47,19 @@ from core.services.cluster_onboarding import (
     verify_registered_endpoint,
     verify_replacement_credential,
 )
+from core.services.cluster_resolver import enabled_endpoints
+from core.services.cluster_retirement import (
+    RETIREMENT_REASON_MAX_LENGTH,
+    ClusterRetirementError,
+    RetirementPreflightEndpointError,
+    RetirementPreflightError,
+    cluster_retirement_preflight,
+    retire_cluster,
+)
+from core.services.cluster_scopes import managed_clusters
 from core.services.cluster_trust import TransportTrustError
 from core.services.config import endpoint_name_from_url
+from core.services.datastore_nav import datastore_url
 from core.services.public_errors import public_failure
 from core.services.secret_encryption import (
     EncryptionConfigurationError,
@@ -66,6 +87,215 @@ _CANDIDATE_SALT = "pve-helper.cluster-onboarding.candidate.v1"
 _ENDPOINT_INSPECTION_SALT = "pve-helper.endpoint-onboarding.inspection.v1"
 _ENDPOINT_CANDIDATE_SALT = "pve-helper.endpoint-onboarding.candidate.v1"
 _TOKEN_MAX_AGE_SECONDS = 10 * 60
+
+logger = logging.getLogger(__name__)
+
+
+def _retirement_error_response(exc: Exception, *, operation: str, status: int = 409):
+    failure = public_failure(
+        exc,
+        operation=operation,
+        fallback="Cluster retirement failed safely. Review the connection state and try again.",
+    )
+    return JsonResponse(
+        {
+            "ok": False,
+            "error": {
+                "code": failure.code,
+                "message": failure.message,
+            },
+        },
+        status=status,
+    )
+
+
+def _retirement_blockers(preflight) -> list[dict[str, str]]:
+    messages = {
+        "active_scan": "Wait for the installation-wide scan to finish, then run preflight again.",
+        "storage_consumers": (
+            "Release this cluster's storage consumer relationships from their datastore pages, "
+            "then run preflight again."
+        ),
+        "scheduled_actions_active": "Wait for active scheduled runs to finish before verified retirement.",
+        "scheduled_actions_unknown": "A scheduled run has an unclassified state and must be resolved first.",
+        "consoles_active": "Close active console sessions before verified retirement.",
+        "consoles_unknown": "A console session has an unclassified state and must be resolved first.",
+        "audit_operations_active": "Wait for active provider operations to finish before verified retirement.",
+        "audit_operations_unknown": "A provider operation has an unclassified state and must be resolved first.",
+    }
+    return [
+        {"code": code, "message": messages.get(code, "Retirement is blocked by unresolved work.")}
+        for code in preflight.blocker_codes
+    ]
+
+
+def _retirement_impact_payload(cluster: ProxmoxCluster, preflight) -> dict:
+    endpoint = next(
+        (candidate for candidate in cluster.endpoints.all() if candidate.pk == preflight.endpoint_id),
+        None,
+    )
+    consumers = [
+        {
+            "storage_id": consumer.storage_id,
+            "storage_name": consumer.storage_name,
+            "node": consumer.node,
+            "last_observed_at": consumer.last_observed_at.isoformat() if consumer.last_observed_at else "",
+            "url": datastore_url("core:api_storage_summary", cluster.key, consumer.storage_id),
+        }
+        for consumer in preflight.storage.consumers
+    ]
+    return {
+        "mode": preflight.mode,
+        "identity_verification": preflight.identity_verification,
+        "endpoint": endpoint.name if endpoint is not None else "",
+        "observed_at": preflight.observed_at.isoformat(),
+        "counts": {
+            "schedules": preflight.scheduled_actions.active_schedule_count,
+            "schedule_runs_not_started": preflight.scheduled_actions.not_started_run_count,
+            "schedule_runs_active": preflight.scheduled_actions.active_run_count,
+            "current_projections": CurrentGuestInventory.objects.filter(cluster_id=cluster.pk).count(),
+            "history": ProxmoxInventory.objects.filter(cluster_id=cluster.pk).count(),
+            "storage_definitions": preflight.storage.definition_count,
+            "storage_consumers": len(preflight.storage.consumers),
+            "consoles_pending": preflight.consoles.pending_count,
+            "consoles_active": preflight.consoles.active_count,
+            "provider_operations_queued": preflight.audit_operations.queued_count,
+            "provider_operations_running": preflight.audit_operations.running_count,
+            "active_scans": preflight.active_scan_count,
+        },
+        "storage_consumers": consumers,
+        "blockers": _retirement_blockers(preflight),
+    }
+
+
+def _record_retirement_verification_failure(
+    request,
+    cluster: ProxmoxCluster,
+    *,
+    mode: str,
+    endpoint_id: int | None,
+    error_code: str,
+) -> None:
+    try:
+        record_audit_event(
+            request,
+            action="cluster.retirement_verification_failed",
+            object_type="cluster",
+            object_id=cluster.key,
+            outcome="refused",
+            cluster=cluster,
+            cluster_key_snapshot=cluster.key,
+            details={
+                "cluster_key": cluster.key,
+                "retirement_mode": mode,
+                "verified_endpoint_id": endpoint_id,
+                "reason_code": error_code,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Could not record cluster retirement verification failure",
+            extra={"cluster_pk": cluster.pk, "reason_code": error_code},
+        )
+
+
+def _cluster_retirement_preflight_response(request, cluster: ProxmoxCluster):
+    mode = request.POST.get("mode", "")
+    raw_endpoint_id = request.POST.get("endpoint_id", "").strip()
+    endpoint_id = None
+    try:
+        if raw_endpoint_id:
+            try:
+                endpoint_id = int(raw_endpoint_id)
+            except ValueError as exc:
+                raise RetirementPreflightEndpointError("Choose an enabled endpoint for verified retirement.") from exc
+        preflight = cluster_retirement_preflight(
+            cluster,
+            mode=mode,
+            endpoint_id=endpoint_id,
+        )
+    except RetirementPreflightError as exc:
+        failure = public_failure(exc, operation="cluster_retirement.preflight")
+        _record_retirement_verification_failure(
+            request,
+            cluster,
+            mode=mode,
+            endpoint_id=endpoint_id,
+            error_code=failure.code,
+        )
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": {
+                    "code": failure.code,
+                    "message": failure.message,
+                },
+            },
+            status=409,
+        )
+    except Exception as exc:
+        failure = public_failure(
+            exc,
+            operation="cluster_retirement.preflight",
+            fallback="Retirement preflight failed safely. No cluster state was changed.",
+        )
+        _record_retirement_verification_failure(
+            request,
+            cluster,
+            mode=mode,
+            endpoint_id=endpoint_id,
+            error_code=failure.code,
+        )
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": {
+                    "code": failure.code,
+                    "message": failure.message,
+                },
+            },
+            status=500,
+        )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "ready": preflight.gate_clear,
+            "confirmation": preflight.confirmation,
+            "cluster": {
+                "key": cluster.key,
+                "display_name": cluster.display_name,
+            },
+            "impact": _retirement_impact_payload(cluster, preflight),
+        }
+    )
+
+
+def _cluster_retirement_final_response(request, cluster: ProxmoxCluster):
+    try:
+        result = retire_cluster(
+            cluster,
+            confirmation=request.POST.get("confirmation", ""),
+            actor=request.user,
+            typed_cluster_key=request.POST.get("typed_cluster_key", ""),
+            reason=request.POST.get("reason", ""),
+            permanent_unavailability_asserted=(request.POST.get("permanent_unavailability_asserted", "") == "yes"),
+        )
+    except (RetirementPreflightError, ClusterRetirementError) as exc:
+        return _retirement_error_response(exc, operation="cluster_retirement.final")
+    except Exception as exc:
+        return _retirement_error_response(
+            exc,
+            operation="cluster_retirement.final",
+            status=500,
+        )
+    return JsonResponse(
+        {
+            "ok": True,
+            "mode": result.mode,
+            "redirect_url": reverse("core:clusters_overview"),
+        }
+    )
 
 
 @app_login_required
@@ -221,7 +451,13 @@ def cluster_connection(request, cluster_key: str):
     return _render_cluster_connection(request, cluster)
 
 
-def _render_cluster_connection(request, cluster: ProxmoxCluster, *, operation_error: str = ""):
+def _render_cluster_connection(
+    request,
+    cluster: ProxmoxCluster,
+    *,
+    operation_error: str = "",
+    show_force_retire: bool = False,
+):
     credential = ClusterCredential.objects.filter(cluster=cluster).first()
     trust = ClusterTransportTrust.objects.filter(cluster=cluster).first()
     return render(
@@ -235,11 +471,14 @@ def _render_cluster_connection(request, cluster: ProxmoxCluster, *, operation_er
             ),
             "cluster": cluster,
             "endpoints": cluster.endpoints.order_by("name"),
+            "retirement_endpoints": enabled_endpoints(cluster),
+            "retirement_reason_max_length": RETIREMENT_REASON_MAX_LENGTH,
             "credential": credential,
             "trust": trust,
             "display_name_form": ClusterDisplayNameForm(initial={"display_name": cluster.display_name}),
             "credential_form": CredentialRotationForm(initial={"token_id": credential.token_id if credential else ""}),
             "operation_error": operation_error,
+            "show_force_retire": show_force_retire,
         },
     )
 
@@ -247,8 +486,12 @@ def _render_cluster_connection(request, cluster: ProxmoxCluster, *, operation_er
 @require_POST
 @app_login_required
 def cluster_connection_action(request, cluster_key: str):
-    cluster = get_object_or_404(ProxmoxCluster, key=cluster_key)
+    cluster = get_object_or_404(managed_clusters(), key=cluster_key)
     action = request.POST.get("action", "")
+    if action == "retirement-preflight":
+        return _cluster_retirement_preflight_response(request, cluster)
+    if action == "retire":
+        return _cluster_retirement_final_response(request, cluster)
     error = ""
     try:
         if action == "display-name":
@@ -341,7 +584,12 @@ def cluster_connection_action(request, cluster_key: str):
         error = public_failure(exc, operation="cluster_connection_action").message
 
     if error:
-        return _render_cluster_connection(request, cluster, operation_error=error)
+        return _render_cluster_connection(
+            request,
+            cluster,
+            operation_error=error,
+            show_force_retire=(action == "disable" and cluster.enabled),
+        )
     return redirect("core:cluster_connection", cluster_key=cluster.key)
 
 

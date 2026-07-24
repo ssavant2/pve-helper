@@ -379,3 +379,94 @@ test("storage consumer release lists its exact impact before submitting acknowle
   await dialog.getByRole("button", { name: "Release 1 consumer", exact: true }).click();
   await expect.poll(() => submitted).toMatch(/name="confirm_release"[\s\S]*\r?\nyes/);
 });
+
+test("forced cluster retirement uses impact fields and a separate swapped final dialog", async ({ page }) => {
+  await page.goto("/clusters/e2e/connection/", { waitUntil: "load" });
+
+  let finalSubmission = "";
+  await page.route("**/clusters/e2e/connection/action/", async (route) => {
+    const posted = route.request().postData() || "";
+    if (posted.includes('name="action"') && posted.includes("retirement-preflight")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          ready: true,
+          confirmation: "signed-e2e-confirmation",
+          cluster: { key: "e2e", display_name: "E2E cluster" },
+          impact: {
+            mode: "forced",
+            identity_verification: "skipped",
+            endpoint: "",
+            counts: {
+              schedules: 2,
+              schedule_runs_not_started: 1,
+              schedule_runs_active: 1,
+              current_projections: 2,
+              history: 4,
+              storage_definitions: 2,
+              storage_consumers: 1,
+              consoles_pending: 0,
+              consoles_active: 1,
+              provider_operations_queued: 1,
+              provider_operations_running: 1,
+              active_scans: 0,
+            },
+            storage_consumers: [
+              {
+                storage_id: "e2e-nfs",
+                storage_name: "E2E shared storage",
+                node: "pve1",
+                url: "/clusters/e2e/datastores/e2e-nfs/summary/",
+              },
+            ],
+            blockers: [],
+          },
+        }),
+      });
+      return;
+    }
+    finalSubmission = posted;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, mode: "forced", redirect_url: "/clusters/" }),
+    });
+  });
+
+  await page.getByText("Need to retire a permanently unavailable site?").click();
+  await page.getByRole("button", { name: "Force retire", exact: true }).click();
+
+  const first = page.locator("[data-vm-action-dialog]").last();
+  await expect(first.getByRole("heading", { name: "Force-retire cluster" })).toBeVisible();
+  await expect(first.getByText("Skipped — forced retirement makes no provider request")).toBeVisible();
+  await expect(first.getByText("Current guest projections")).toBeVisible();
+  await expect(first.getByRole("link", { name: "E2E shared storage" })).toBeVisible();
+  await first.evaluate((element) => {
+    (window as Window & { retirementFirstDialog?: Element }).retirementFirstDialog = element;
+  });
+
+  await first.getByLabel("Type the permanent cluster key").fill("wrong");
+  await first.getByLabel("Why is this site permanently unavailable?").fill("The site was decommissioned.");
+  await first.getByRole("button", { name: "Site is permanently unavailable" }).click();
+  await expect(first.getByText("Type e2e exactly.")).toBeVisible();
+  await first.getByLabel("Type the permanent cluster key").fill("e2e");
+  await first.getByRole("button", { name: "Site is permanently unavailable" }).click();
+
+  const second = page.locator("[data-vm-action-dialog]").last();
+  await expect(second.getByRole("heading", { name: "Are you really sure?" })).toBeVisible();
+  expect(
+    await second.evaluate(
+      (element) => element !== (window as Window & { retirementFirstDialog?: Element }).retirementFirstDialog
+    )
+  ).toBe(true);
+  await expect(second.locator(".form-actions button")).toHaveText(["Go back", "Force-retire permanently"]);
+  await second.getByRole("button", { name: "Force-retire permanently" }).click();
+
+  await expect(page).toHaveURL(/\/clusters\/$/);
+  expect(finalSubmission).toContain("retire");
+  expect(finalSubmission).toContain("signed-e2e-confirmation");
+  expect(finalSubmission).toContain("The site was decommissioned.");
+  expect(finalSubmission).toContain("permanent_unavailability_asserted");
+});
