@@ -456,12 +456,15 @@ class ConfinedFilesystemAdoptionInvariantTests(SimpleTestCase):
     """
 
     # Modules that write to, or delete from, operator-visible mounted storage.
-    STORAGE_WRITE_MODULES = (
+    # The storage view package is covered by directory rather than by filename:
+    # it was one 3908-line module until Review 11 split it, and naming its members
+    # here would mean a new domain module silently leaving the scan.
+    STORAGE_WRITE_SERVICES = (
         "core/services/storage_actions.py",
         "core/services/vm_register.py",
         "core/services/ovf_import.py",
-        "core/views/storage.py",
     )
+    STORAGE_WRITE_VIEW_PACKAGE = "core/views/storage"
 
     # Each of these resolves a name a second time, at the moment it acts on it.
     # Between the containment check and the call, Proxmox or another storage
@@ -481,10 +484,13 @@ class ConfinedFilesystemAdoptionInvariantTests(SimpleTestCase):
     # for producing something to write to.
     TRUSTED_ROOT_RESOLVERS = {
         "core/services/storage_actions.py": {"_storage_root", "_trash_root_relative"},
-        "core/services/vm_register.py": set(),
-        "core/services/ovf_import.py": set(),
-        "core/views/storage.py": set(),
     }
+
+    def _storage_write_modules(self) -> list[str]:
+        root = Path(settings.BASE_DIR)
+        package = sorted(str(path.relative_to(root)) for path in (root / self.STORAGE_WRITE_VIEW_PACKAGE).glob("*.py"))
+        self.assertTrue(package, "The storage view package was not found; the scan covers nothing.")
+        return [*self.STORAGE_WRITE_SERVICES, *package]
 
     def _code_lines(self, relative_path: str) -> list[tuple[int, str]]:
         source = (Path(settings.BASE_DIR) / relative_path).read_text()
@@ -496,7 +502,7 @@ class ConfinedFilesystemAdoptionInvariantTests(SimpleTestCase):
 
     def test_storage_writes_do_not_resolve_a_path_and_then_act_on_it(self):
         offenders: list[str] = []
-        for relative_path in self.STORAGE_WRITE_MODULES:
+        for relative_path in self._storage_write_modules():
             for number, line in self._code_lines(relative_path):
                 if self.RESOLVE_THEN_ACT_CALLS.search(line):
                     offenders.append(f"{relative_path}:{number}: {line.strip()}")
@@ -513,8 +519,8 @@ class ConfinedFilesystemAdoptionInvariantTests(SimpleTestCase):
 
     def test_path_resolution_in_storage_writes_is_confined_to_root_discovery(self):
         offenders: list[str] = []
-        for relative_path in self.STORAGE_WRITE_MODULES:
-            allowed = self.TRUSTED_ROOT_RESOLVERS[relative_path]
+        for relative_path in self._storage_write_modules():
+            allowed = self.TRUSTED_ROOT_RESOLVERS.get(relative_path, set())
             current_function = ""
             for number, line in self._code_lines(relative_path):
                 match = re.match(r"\s*def\s+(\w+)", line)

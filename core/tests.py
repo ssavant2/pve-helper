@@ -188,7 +188,7 @@ def browser_url(mount, path: str = "") -> str:
     binding has no datastore to browse and that is the product's answer, not a
     test-setup shortcut.
     """
-    from core.views.storage import _storage_browser_url
+    from core.views.storage._shared import _storage_browser_url
 
     if isinstance(mount, str):
         from core.services.storage_mounts import resolve_storage_mount
@@ -765,7 +765,7 @@ class LinkedCloneBaseProtectionTests(TestCase):
 
     def test_storage_gate_blocks_base_volume_with_clones(self):
         from core.services.storage_actions import StorageActionError
-        from core.views.storage import _require_linked_clone_base_unblocked
+        from core.views.storage.actions import _require_linked_clone_base_unblocked
 
         ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
         entry = self._entry("images/505/base-505-disk-0.qcow2")
@@ -777,7 +777,7 @@ class LinkedCloneBaseProtectionTests(TestCase):
     def test_storage_gate_ignores_non_base_entries_without_live_call(self):
         # A plain directory is not a base volume; the guard must short-circuit
         # before any live lineage call (the empty-dir rule covers directories).
-        from core.views.storage import _require_linked_clone_base_unblocked
+        from core.views.storage.actions import _require_linked_clone_base_unblocked
 
         entry = self._entry("images/505", category="", directory=True)
         with patch("core.views.common.fetch_live_guest_lineage") as fetch:
@@ -785,7 +785,7 @@ class LinkedCloneBaseProtectionTests(TestCase):
         fetch.assert_not_called()
 
     def test_storage_gate_allows_base_volume_without_clones(self):
-        from core.views.storage import _require_linked_clone_base_unblocked
+        from core.views.storage.actions import _require_linked_clone_base_unblocked
 
         ProxmoxCluster.objects.create(key="default", display_name="Default", enabled=True)
         entry = self._entry("images/505/base-505-disk-0.qcow2")
@@ -895,7 +895,7 @@ class FileBrowserClusterScopedGuestLinkTests(TestCase):
         return scan
 
     def _browse(self):
-        from core.views.storage import _storage_browser_url
+        from core.views.storage._shared import _storage_browser_url
 
         return self.client.get(_storage_browser_url(self.mount, "images/500"))
 
@@ -961,7 +961,7 @@ class FileBrowserClusterScopedGuestLinkTests(TestCase):
     def test_the_base_volume_block_ignores_clones_in_a_cluster_without_this_mount(self):
         from types import SimpleNamespace
 
-        from core.views.storage import _require_linked_clone_base_unblocked
+        from core.views.storage.actions import _require_linked_clone_base_unblocked
 
         self._bind(self.cluster_a)
         entry = SimpleNamespace(
@@ -983,7 +983,7 @@ class FileBrowserClusterScopedGuestLinkTests(TestCase):
         from types import SimpleNamespace
 
         from core.services.storage_actions import StorageActionError
-        from core.views.storage import _require_linked_clone_base_unblocked
+        from core.views.storage.actions import _require_linked_clone_base_unblocked
 
         self._bind(self.cluster_a)
         entry = SimpleNamespace(
@@ -1083,7 +1083,7 @@ class DisplayDiskReferenceTests(SimpleTestCase):
     '(backed by base-<template>)', with the template's base volumes dropped."""
 
     def test_linked_clone_annotates_and_drops_base(self):
-        from core.views.storage import _display_disk_references
+        from core.views.storage.api import _display_disk_references
 
         refs = _display_disk_references(
             102,
@@ -1096,7 +1096,7 @@ class DisplayDiskReferenceTests(SimpleTestCase):
         self.assertEqual(refs, [{"volid": "TrueNAS-FS:102/vm-102-disk-0.qcow2", "backed_by": "base-505"}])
 
     def test_non_clone_unchanged(self):
-        from core.views.storage import _display_disk_references
+        from core.views.storage.api import _display_disk_references
 
         refs = _display_disk_references(100, ["TrueNAS-FS:100/vm-100-disk-0.qcow2"], {})
         self.assertEqual(refs, [{"volid": "TrueNAS-FS:100/vm-100-disk-0.qcow2", "backed_by": ""}])
@@ -1780,7 +1780,7 @@ class ScannerToInventoryPathTests(TestCase):
             self._tree(root)
             storage = self._mount(root)
 
-            from core.views.storage import _run_storage_content_preflight_scan
+            from core.views.storage.content import _run_storage_content_preflight_scan
 
             scan = _run_storage_content_preflight_scan(storage)
 
@@ -2378,7 +2378,7 @@ class ApiStorageContentTests(SimpleTestCase):
     """Local-storage content editor blocker/options logic (API-volume based)."""
 
     def test_blocker_flags_content_types_in_use(self):
-        from core.views.storage import _api_content_blockers, _api_content_options
+        from core.views.storage.api import _api_content_blockers, _api_content_options
 
         usage = {"images": {"count": 3, "examples": ["local-lvm:vm-100-disk-0"]}}
         # Removing a type volumes still use is blocked; an unused type is fine.
@@ -4000,7 +4000,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, ">Nodes<")
 
-        with patch("core.views.storage.common.cluster_scoped_clients", return_value=[]):
+        with patch("core.views.common.cluster_scoped_clients", return_value=[]):
             response = self.client.get(browser_url("nfs-vm").replace("/files/", "/content/"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Content Types")
@@ -4114,8 +4114,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         fake_client.storage_config.return_value = {"content": "images,iso"}
 
         with (
-            patch("core.views.storage._run_storage_content_preflight_scan", return_value=scan),
-            patch("core.views.storage.common.cluster_scoped_clients", return_value=[fake_client]),
+            patch("core.views.storage.content._run_storage_content_preflight_scan", return_value=scan),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:storage_content_update", args=["nfs-vm"]),
@@ -4155,8 +4155,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         fake_client.storage_config.return_value = {"content": "images,iso,backup"}
 
         with (
-            patch("core.views.storage._run_storage_content_preflight_scan", return_value=scan),
-            patch("core.views.storage.common.cluster_scoped_clients", return_value=[fake_client]),
+            patch("core.views.storage.content._run_storage_content_preflight_scan", return_value=scan),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
         ):
             response = self.client.post(
                 reverse("core:storage_content_update", args=["nfs-vm"]),
@@ -4203,7 +4203,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
             with (
                 patch("core.tasks.ensure_bootstrap"),
-                patch("core.views.storage.common.cluster_scoped_clients", return_value=[fake_client]),
+                patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
             ):
                 response = self.client.post(
                     reverse("core:storage_content_update", args=["nfs-vm"]),
@@ -6287,7 +6287,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             read_only_health = MountHealth(True, False, "Mount is read-only.")
             with (
                 patch("core.views.common.storage_space_info", return_value=read_only_info),
-                patch("core.views.storage.registered_mount_health", return_value=read_only_health),
+                patch("core.views.storage._shared.registered_mount_health", return_value=read_only_health),
                 # The datastore header reads write capability from the catalog's
                 # capabilities, which resolve the mount's health themselves.
                 patch("core.services.storage_catalog.mount_health", return_value=read_only_health),
@@ -7142,7 +7142,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     raise StorageActionError("Blocked by preflight.")
                 return real_trash(*args, **kwargs)
 
-            with patch("core.views.storage.move_file_to_trash", side_effect=fail_the_second):
+            with patch("core.views.storage.actions.move_file_to_trash", side_effect=fail_the_second):
                 response = self.client.post(
                     reverse("core:storage_trash_file", args=[storage.mount_ref]),
                     {"path": paths, "confirm_basic": "yes", "next": expected_browser_url},
@@ -7755,7 +7755,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             "display_name": "Production NFS",
             "backend_identity": "nas.hq.local:/mnt/tank/vm",
         }
-        with patch("core.views.storage._mount_candidates", return_value=candidates):
+        with patch("core.views.storage.mounts._mount_candidates", return_value=candidates):
             blocked = self.client.post(reverse("core:settings_storage"), payload)
 
         self.assertContains(blocked, "spelled differently")
@@ -7767,8 +7767,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
         with (
-            patch("core.views.storage._mount_candidates", return_value=candidates),
-            patch("core.views.storage.mount_health", return_value=health),
+            patch("core.views.storage.mounts._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mounts.mount_health", return_value=health),
         ):
             confirmed = self.client.post(
                 reverse("core:settings_storage"),
@@ -7820,7 +7820,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             "backend_identity": "10.10.20.10:/mnt/Pool-FS/FS/Proxmox",
         }
 
-        with patch("core.views.storage._mount_candidates", return_value=candidates):
+        with patch("core.views.storage.mounts._mount_candidates", return_value=candidates):
             blocked = self.client.post(reverse("core:settings_storage"), payload)
 
         self.assertContains(blocked, "different exports")
@@ -7835,8 +7835,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
         with (
-            patch("core.views.storage._mount_candidates", return_value=candidates),
-            patch("core.views.storage.mount_health", return_value=health),
+            patch("core.views.storage.mounts._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mounts.mount_health", return_value=health),
         ):
             confirmed = self.client.post(
                 reverse("core:settings_storage"),
@@ -7858,8 +7858,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(page, "data-mount-source")
 
         with (
-            patch("core.views.storage._mount_candidates", return_value=candidates),
-            patch("core.views.storage.mount_health", return_value=health),
+            patch("core.views.storage.mounts._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mounts.mount_health", return_value=health),
         ):
             response = self.client.post(
                 reverse("core:settings_storage"),
@@ -7883,8 +7883,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
 
         with (
-            patch("core.views.storage._mount_candidates", return_value=candidates),
-            patch("core.views.storage.mount_health", return_value=health),
+            patch("core.views.storage.mounts._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mounts.mount_health", return_value=health),
         ):
             response = self.client.post(
                 reverse("core:settings_storage"),
@@ -7927,13 +7927,13 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             "backend_identity": "nas.hq.local:/mnt/tank/vm",
         }
 
-        with patch("core.views.storage._mount_candidates", return_value=candidates):
+        with patch("core.views.storage.mounts._mount_candidates", return_value=candidates):
             blocked = self.client.post(reverse("core:settings_storage"), payload)
         self.assertContains(blocked, "Register against this export anyway")
 
         # Answering the export question surfaces the near-match one, and the answer
         # already given is re-submitted with it rather than being asked again.
-        with patch("core.views.storage._mount_candidates", return_value=candidates):
+        with patch("core.views.storage.mounts._mount_candidates", return_value=candidates):
             second = self.client.post(reverse("core:settings_storage"), {**payload, "confirm_backend_mismatch": "1"})
         self.assertContains(second, "spelled differently")
         self.assertContains(second, 'name="confirm_backend_mismatch" value="1"')
@@ -7941,8 +7941,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         health = MountHealth(available=True, writable=True, filesystem_type="nfs4")
         with (
-            patch("core.views.storage._mount_candidates", return_value=candidates),
-            patch("core.views.storage.mount_health", return_value=health),
+            patch("core.views.storage.mounts._mount_candidates", return_value=candidates),
+            patch("core.views.storage.mounts.mount_health", return_value=health),
         ):
             done = self.client.post(
                 reverse("core:settings_storage"),

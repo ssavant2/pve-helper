@@ -207,7 +207,9 @@ class StorageReadModelSourceInvariantTests(SimpleTestCase):
         self.assertNotIn("fresh=True", actions)
         self.assertIn("scope: StorageOperationScope | None = None", actions)
 
-        views = (root / "views" / "storage.py").read_text(encoding="utf-8")
+        # The bulk file actions own the operation scope; Review 11 moved them out
+        # of the single storage view module into the storage view package.
+        views = (root / "views" / "storage" / "actions.py").read_text(encoding="utf-8")
         for marker in ("scope = StorageOperationScope()", "scope=scope"):
             self.assertIn(marker, views)
 
@@ -1405,7 +1407,7 @@ class ApiStorageContextTests(TestCase):
         self.cluster = ProxmoxCluster.objects.create(key="cluster-ctx", display_name="Cluster Ctx")
 
     def test_absent_storage_yields_no_catalog_context(self):
-        from core.views.storage import _api_storage_context, _resolve_datastore_scope
+        from core.views.storage.api import _api_storage_context, _resolve_datastore_scope
 
         definition, node, _moved = _resolve_datastore_scope(self.cluster, "missing", "pve1")
         context = _api_storage_context(self.cluster, definition, "missing", node, "summary")
@@ -1415,7 +1417,7 @@ class ApiStorageContextTests(TestCase):
         self.assertFalse(context["storage_shared"])
 
     def test_catalogued_shared_storage_reports_itself_as_shared(self):
-        from core.views.storage import _api_storage_context, _resolve_datastore_scope
+        from core.views.storage.api import _api_storage_context, _resolve_datastore_scope
 
         definition = ClusterStorage.objects.create(
             cluster=self.cluster,
@@ -1763,7 +1765,7 @@ class DatastorePageKeepsEveryPanelTests(TestCase):
         """Snapshots are recorded per node because that is how Proxmox reports
         capacity. A shared datastore carries no node, so pinning the query to one
         left its chart permanently empty."""
-        from core.views.storage import _api_storage_space_chart_data
+        from core.views.storage.api import _api_storage_space_chart_data
 
         for node, used in (("pve1", 400), ("pve2", 420)):
             StorageSpaceSnapshot.objects.create(
@@ -1861,7 +1863,7 @@ class BindingRowCostTests(TestCase):
             )
 
     def _query_count(self) -> int:
-        from core.views.storage import _binding_rows
+        from core.views.storage.mounts import _binding_rows
 
         with CaptureQueriesContext(connection) as captured:
             _binding_rows()
@@ -1880,7 +1882,7 @@ class BindingRowCostTests(TestCase):
         """A volid is ``storage:content/file``, so the datastore is the segment
         before the first colon — and a guest with disks on two datastores must
         appear in both confirmations, not only the first one matched."""
-        from core.views.storage import _binding_rows
+        from core.views.storage.mounts import _binding_rows
 
         self._cluster_with_bindings("multi", 2)
         CurrentGuestInventory.objects.create(
@@ -1903,7 +1905,7 @@ class BindingRowCostTests(TestCase):
     def test_a_running_guest_is_named_before_a_stopped_one(self):
         """The display cap drops the tail, so the entries an operator most needs
         to see must not be the ones it silently removes."""
-        from core.views.storage import _binding_rows
+        from core.views.storage.mounts import _binding_rows
 
         self._cluster_with_bindings("order", 1)
         CurrentGuestInventory.objects.create(
