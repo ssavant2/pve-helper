@@ -460,3 +460,65 @@ class ClusterConnectionViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Disable the cluster before removing")
         self.assertTrue(ClusterCredential.objects.filter(cluster=cluster).exists())
+
+    def _retirement_ready_cluster(self, *, enabled: bool) -> ProxmoxCluster:
+        cluster = ProxmoxCluster.objects.create(
+            key="clusterb",
+            display_name="Cluster B",
+            enabled=enabled,
+            discovered_ca_uuid=self.identity.ca_uuid,
+            discovered_ca_fingerprint=self.identity.ca_fingerprint,
+        )
+        ProxmoxEndpoint.objects.create(
+            cluster=cluster,
+            name="pve201",
+            url=self.candidate.endpoint_url,
+            enabled=True,
+        )
+        approve_cluster_transport(cluster, mode=TRUST_PUBLIC)
+        set_cluster_credential(
+            cluster,
+            token_id=self.candidate.token_id,
+            token_secret=self.candidate.token_secret,
+        )
+        return cluster
+
+    def test_enabled_cluster_shows_verified_retirement_with_its_precondition(self):
+        cluster = self._retirement_ready_cluster(enabled=True)
+
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+
+        # The recommended path must be visible with its precondition named, not
+        # hidden behind the forced path it is meant to keep operators away from.
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Verified retirement")
+        self.assertEqual(response.context["verified_retirement_blocker"], "Disable the cluster first")
+        self.assertContains(response, "Disable the cluster first to use the recommended path.")
+
+    def test_disabled_cluster_offers_verified_retirement_without_a_blocker(self):
+        cluster = self._retirement_ready_cluster(enabled=False)
+
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Verified retirement")
+        self.assertEqual(response.context["verified_retirement_blocker"], "")
+
+    def test_verified_retirement_blocker_names_the_missing_precondition(self):
+        cluster = self._retirement_ready_cluster(enabled=False)
+        cluster.endpoints.update(enabled=False)
+
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+        self.assertEqual(response.context["verified_retirement_blocker"], "An enabled endpoint is required")
+
+        cluster.discovered_ca_uuid = ""
+        cluster.save(update_fields=["discovered_ca_uuid"])
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+        self.assertEqual(response.context["verified_retirement_blocker"], "A pinned Proxmox CA identity is required")
+
+        ClusterCredential.objects.filter(cluster=cluster).delete()
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+        self.assertEqual(
+            response.context["verified_retirement_blocker"],
+            "A stored credential and transport trust are required",
+        )

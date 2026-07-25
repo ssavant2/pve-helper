@@ -537,3 +537,51 @@ test("delete unused connection types the exact key and confirms in a separate sw
   expect(finalSubmission).toContain("delete-unused-connection");
   expect(finalSubmission).toContain("unused-e2e");
 });
+
+test("verified retirement states its precondition and reveals the forced path only after it fails", async ({
+  page,
+}) => {
+  // An enabled cluster must still show the recommended path, disabled and explained.
+  await page.goto("/clusters/e2e/connection/", { waitUntil: "load" });
+  const enabledRetire = page.getByRole("button", { name: "Retire cluster", exact: true });
+  await expect(enabledRetire).toBeVisible();
+  await expect(enabledRetire).toBeDisabled();
+  await expect(enabledRetire).toHaveAttribute("title", "Disable the cluster first");
+  await expect(page.getByText("Disable the cluster first to use the recommended path.")).toBeVisible();
+  await expect(page.locator("[data-cluster-force-retirement]")).not.toHaveAttribute(
+    "data-force-retirement-escalated",
+    "true"
+  );
+
+  // A disabled, fully configured connection offers it for real.
+  await page.goto("/clusters/unused-e2e/connection/", { waitUntil: "load" });
+  const retire = page.getByRole("button", { name: "Retire cluster", exact: true });
+  await expect(retire).toBeEnabled();
+
+  const forced = page.locator("[data-cluster-force-retirement]");
+  await expect(forced).not.toHaveAttribute("open", /.*/);
+
+  await page.route("**/clusters/unused-e2e/connection/action/", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        error: {
+          code: "cluster_retirement_preflight_unreachable",
+          message: "The selected endpoint could not report its Proxmox cluster identity.",
+        },
+      }),
+    });
+  });
+
+  await retire.click();
+  const notice = page.locator("[data-vm-action-dialog]").last();
+  await expect(notice.getByRole("heading", { name: "Cluster retirement refused" })).toBeVisible();
+  await notice.getByRole("button").last().click();
+
+  // Only a real, failed provider attempt escalates to the forced path.
+  await expect(forced).toHaveAttribute("data-force-retirement-escalated", "true");
+  await expect(forced).toHaveAttribute("open", /.*/);
+  await expect(page.getByRole("button", { name: "Force retire", exact: true })).toBeVisible();
+});

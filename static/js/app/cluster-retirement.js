@@ -68,6 +68,23 @@ const impactBody = (payload) => {
 
 const errorMessage = (payload, fallback) => payload?.error?.message || fallback;
 
+// Verified retirement failing on the provider call is the evidence — and the only
+// evidence there can be — that the site may be permanently gone. Reveal the forced
+// path then, rather than guessing reachability before anyone has tried.
+const ESCALATING_ERROR_CODES = new Set([
+  "cluster_retirement_preflight_unreachable",
+  "cluster_retirement_preflight_identity_mismatch",
+]);
+
+const escalateToForcedRetirement = (form) => {
+  if ((form.dataset.retirementMode || "") !== "verified") return;
+  const details = form.closest("[data-cluster-retirement]")?.querySelector("[data-cluster-force-retirement]");
+  if (!details) return;
+  details.dataset.forceRetirementEscalated = "true";
+  details.open = true;
+  details.scrollIntoView({ block: "nearest" });
+};
+
 const postRetirement = async (form, body) => {
   // `input[name="action"]` is exposed as a named property on HTMLFormElement
   // and shadows `form.action`; read the URL attribute explicitly.
@@ -78,7 +95,9 @@ const postRetirement = async (form, body) => {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.ok) {
-    throw new Error(errorMessage(payload, `Retirement request failed: HTTP ${response.status}.`));
+    const error = new Error(errorMessage(payload, `Retirement request failed: HTTP ${response.status}.`));
+    error.code = payload?.error?.code || "";
+    throw error;
   }
   return payload;
 };
@@ -167,7 +186,9 @@ const runRetirement = async (form) => {
     const result = await postRetirement(form, finalBody);
     window.location.assign(result.redirect_url || "/clusters/");
   } catch (error) {
+    const escalates = error instanceof Error && ESCALATING_ERROR_CODES.has(error.code || "");
     await showFailure(error instanceof Error ? error.message : "Cluster retirement failed safely.");
+    if (escalates) escalateToForcedRetirement(form);
   } finally {
     if (button) button.disabled = false;
   }

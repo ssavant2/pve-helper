@@ -557,6 +557,31 @@ def cluster_connection(request, cluster_key: str):
     return _render_cluster_connection(request, cluster)
 
 
+def _verified_retirement_blocker(
+    cluster: ProxmoxCluster,
+    *,
+    credential,
+    trust,
+    endpoints,
+) -> str:
+    """The one precondition verified retirement is missing, named for the operator.
+
+    Only statically knowable preconditions belong here. Whether the site actually
+    answers is exactly what verified retirement's provider call decides, so it can
+    never gate the control — that is the case forced retirement exists for, and
+    hiding the escape hatch behind a reachability guess would strand a dead site.
+    """
+    if cluster.enabled:
+        return "Disable the cluster first"
+    if not credential or not trust:
+        return "A stored credential and transport trust are required"
+    if not cluster.discovered_ca_uuid:
+        return "A pinned Proxmox CA identity is required"
+    if not endpoints:
+        return "An enabled endpoint is required"
+    return ""
+
+
 def _render_cluster_connection(
     request,
     cluster: ProxmoxCluster,
@@ -566,6 +591,7 @@ def _render_cluster_connection(
 ):
     credential = ClusterCredential.objects.filter(cluster=cluster).first()
     trust = ClusterTransportTrust.objects.filter(cluster=cluster).first()
+    retirement_endpoints = enabled_endpoints(cluster)
     return render(
         request,
         "core/cluster_connection.html",
@@ -577,7 +603,13 @@ def _render_cluster_connection(
             ),
             "cluster": cluster,
             "endpoints": cluster.endpoints.order_by("name"),
-            "retirement_endpoints": enabled_endpoints(cluster),
+            "retirement_endpoints": retirement_endpoints,
+            "verified_retirement_blocker": _verified_retirement_blocker(
+                cluster,
+                credential=credential,
+                trust=trust,
+                endpoints=retirement_endpoints,
+            ),
             "retirement_reason_max_length": RETIREMENT_REASON_MAX_LENGTH,
             "deletion_eligibility": unused_connection_deletion_eligibility(cluster),
             "credential": credential,

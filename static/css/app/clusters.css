@@ -458,6 +458,17 @@
   border-top: 1px solid var(--line);
 }
 
+.cluster-retirement-action .cluster-retirement-precondition {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Escalation: a verified attempt that could not reach or match the site. */
+.cluster-force-retirement[data-force-retirement-escalated="true"] > div {
+  border-left: 3px solid var(--red);
+  padding-left: 12px;
+}
+
 .cluster-force-retirement summary {
   width: fit-content;
   cursor: pointer;

@@ -66,6 +66,10 @@ services:
       DB_ENGINE: sqlite
       DB_NAME: /tmp/e2e/db.sqlite3
       APP_SECRET_KEY: e2e-not-a-secret
+      # Throwaway keyring so the seed can store a credential; the E2E stack never
+      # reaches Proxmox and its SQLite database is discarded with the container.
+      PVE_HELPER_ENCRYPTION_KEYS: "e2e:ZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWU="
+      PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID: e2e
       ALLOWED_HOSTS: "e2e-web,localhost,127.0.0.1"
     command: >
       sh -lc "mkdir -p /tmp/e2e && python manage.py migrate --noinput &&
@@ -75,6 +79,9 @@ services:
       r=ProxmoxCluster.objects.create(key='retired-e2e', display_name='Retired E2E cluster', enabled=False, discovered_name='Former E2E cluster', retired_at=timezone.now(), retirement_mode='forced', retirement_reason='The E2E site was permanently decommissioned.', retired_ca_uuid='22222222-2222-2222-2222-222222222222', retired_ca_fingerprint='AA:BB:CC');
       u=ProxmoxCluster.objects.create(key='unused-e2e', display_name='Unused E2E connection', enabled=False, discovered_ca_uuid='33333333-3333-3333-3333-333333333333');
       ProxmoxEndpoint.objects.create(cluster=u, name='pve1', url='https://pve1.unused-e2e.test:8006/');
+      from core.services.cluster_trust import approve_cluster_transport; from core.services.cluster_credentials import set_cluster_credential;
+      approve_cluster_transport(u, mode='public');
+      set_cluster_credential(u, token_id='e2e@pve!token', token_secret='e2e-not-a-secret');
       s=ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message='e2e seed');
       CurrentGuestInventory.objects.create(cluster=c, source_scan=s, node='pve1', object_type='vm', vmid=100, name='e2e-vm-running', status='running', config={'tags':'prod'}, observed_at=timezone.now(), runtime_observed_at=timezone.now());
       CurrentGuestInventory.objects.create(cluster=c, source_scan=s, node='pve1', object_type='vm', vmid=101, name='e2e-vm-stopped', status='stopped', observed_at=timezone.now(), runtime_observed_at=timezone.now());

@@ -160,7 +160,7 @@ class ClusterRetirementViewTests(TestCase):
                 response = self.client.post(reverse(name, kwargs={"cluster_key": retired.key}), payload)
                 self.assertEqual(response.status_code, 404)
 
-    def test_danger_zone_gates_verified_retirement_but_always_offers_forced_retirement(self):
+    def test_danger_zone_shows_verified_retirement_with_its_precondition_named(self):
         enabled = ProxmoxCluster.objects.create(
             key="enabled",
             display_name="Enabled cluster",
@@ -168,7 +168,15 @@ class ClusterRetirementViewTests(TestCase):
         )
         enabled_page = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": enabled.key}))
         self.assertContains(enabled_page, "Force retire")
-        self.assertNotContains(enabled_page, "Verified retirement")
+        # The recommended path stays visible and states what unlocks it; hiding it
+        # left forced retirement as the only offer on an enabled cluster.
+        self.assertContains(enabled_page, "Verified retirement")
+        self.assertContains(enabled_page, "Disable the cluster first to use the recommended path.")
+        self.assertEqual(enabled_page.context["verified_retirement_blocker"], "Disable the cluster first")
+        # Lifecycle copy states the actual split rather than claiming removal is
+        # impossible directly above the removal controls.
+        self.assertContains(enabled_page, "Permanent removal is below")
+        self.assertNotContains(enabled_page, "deliberately not hard-deleted")
 
         disabled = ProxmoxCluster.objects.create(
             key="disabled",
@@ -181,11 +189,19 @@ class ClusterRetirementViewTests(TestCase):
             name="pve1",
             url="https://pve1.disabled.test:8006/",
         )
+        with override_settings(
+            PVE_HELPER_ENCRYPTION_KEYS=f"test:{_ENCRYPTION_KEY}",
+            PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID="test",
+        ):
+            approve_cluster_transport(disabled, mode=TRUST_PUBLIC)
+            set_cluster_credential(disabled, token_id="pve-helper@pve!t", token_secret="secret")
+
         disabled_page = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": disabled.key}))
         self.assertContains(disabled_page, "Verified retirement")
         self.assertContains(disabled_page, f'value="{endpoint.pk}"')
         self.assertContains(disabled_page, "Retire cluster")
         self.assertContains(disabled_page, "Force retire")
+        self.assertEqual(disabled_page.context["verified_retirement_blocker"], "")
 
     def test_disable_refusal_offers_forced_retirement_in_the_refusal(self):
         cluster = ProxmoxCluster.objects.create(
