@@ -397,11 +397,6 @@ class ClusterRetirementViewTests(TestCase):
         )
 
 
-@override_settings(
-    APP_REQUIRE_LOGIN=False,
-    PVE_HELPER_ENCRYPTION_KEYS=f"test:{_ENCRYPTION_KEY}",
-    PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID="test",
-)
 @override_settings(APP_REQUIRE_LOGIN=False)
 class DisabledClusterSurfaceTests(TestCase):
     """A disabled connection keeps its pages, and every page says why writes refuse.
@@ -442,6 +437,11 @@ class DisabledClusterSurfaceTests(TestCase):
         self.assertNotContains(response, "cluster-degraded-notice")
 
 
+@override_settings(
+    APP_REQUIRE_LOGIN=False,
+    PVE_HELPER_ENCRYPTION_KEYS=f"test:{_ENCRYPTION_KEY}",
+    PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID="test",
+)
 class ClusterUnusedDeletionViewTests(TestCase):
     """R4 slice 3: the operator-facing hard-delete control and exact-key retry UX."""
 
