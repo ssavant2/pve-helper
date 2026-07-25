@@ -10046,6 +10046,35 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         )
         self.assertEqual(ScheduledAction.objects.filter(name="Night shutdown").count(), 1)
 
+    def test_scheduled_task_create_rejects_the_one_time_sentinel_as_a_recurrence(self):
+        """`RecurrenceKind.NONE` is a stored sentinel, not a selectable recurrence.
+
+        The POST path used to validate against the whole enum, which is how the
+        removed `advanced` kind stayed reachable by a crafted post after being dropped
+        from the form. Validating against the offered choices is what closes that, and
+        this is the test that fails if it reverts to `RecurrenceKind.values`.
+        """
+        user = get_user_model().objects.create_user(username="scheduler", password="unused")
+        self.client.force_login(user)
+
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.post(
+                reverse("core:scheduled_task_create", args=[self.cluster.key]),
+                {
+                    "name": "Crafted",
+                    "enabled": "on",
+                    "target": GuestRef(self.cluster.key, "vm", 500).serialize(),
+                    "action_type": ScheduledAction.ActionType.SHUTDOWN,
+                    "action_timeout_seconds": "900",
+                    "recurrence_kind": ScheduledAction.RecurrenceKind.NONE,
+                    "run_hour": "22",
+                    "run_minute": "0",
+                },
+            )
+
+        self.assertContains(response, "Unknown recurrence type.", status_code=400)
+        self.assertFalse(ScheduledAction.objects.filter(name="Crafted").exists())
+
     def test_scheduled_task_create_form_uses_live_targets_without_scan(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")
         self.client.force_login(user)

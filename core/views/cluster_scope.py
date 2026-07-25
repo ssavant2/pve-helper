@@ -23,13 +23,6 @@ from .common import app_login_required, browser_title
 SAFE_REDIRECT_METHODS = {"GET", "HEAD"}
 
 
-def cluster_from_path(cluster_key: str) -> ProxmoxCluster:
-    cluster = ProxmoxCluster.objects.filter(key=cluster_key).first()
-    if cluster is None:
-        raise Http404("Proxmox cluster not found")
-    return cluster
-
-
 def managed_cluster_from_path(cluster_key: str) -> ProxmoxCluster:
     """Resolve a cluster-qualified URL segment inside the managed scope.
 

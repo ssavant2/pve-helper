@@ -42,6 +42,10 @@ BARE_CLUSTER_OBJECTS_ALLOWLIST = frozenset(
         # Installation booleans and passive reads; later phases replace the
         # remaining exists()/get()/first() here with named scope decisions.
         # (context_processors.py was fully converted in R1b and struck from here.)
+        # Only the pk__in re-fetch in legacy_node_redirect: the scope decision was
+        # already made by the cluster__enabled filters that produced those ids, so the
+        # re-fetch orders rows rather than selecting them. Its unscoped sibling
+        # cluster_from_path() was deleted in Review 11.
         "core/views/cluster_scope.py",
         "core/services/runtime_bootstrap.py",
         # The lifecycle lock reloads a specific cluster under select_for_update to

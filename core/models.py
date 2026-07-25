@@ -1384,7 +1384,12 @@ class ScheduledAction(TimestampedModel):
         RECURRING = "recurring", "Recurring"
 
     class RecurrenceKind(models.TextChoices):
-        ADVANCED = "advanced", "Advanced"
+        # The sentinel for `ScheduleType.ONCE`, which has no recurrence at all. It is
+        # not offered in the form and `next_run_after()` never reaches it: a one-time
+        # schedule returns early on its `run_at`. Until Review 11 this role was played
+        # by an `ADVANCED` member that also claimed to mean "operator-supplied RRULE",
+        # a second meaning nothing implemented soundly.
+        NONE = "none", "Not recurring"
         DAILY = "daily", "Daily"
         WEEKLY = "weekly", "Weekly"
         MONTHLY_ORDINAL = "monthly_ordinal", "Monthly ordinal"
@@ -1430,7 +1435,7 @@ class ScheduledAction(TimestampedModel):
     recurrence_kind = models.CharField(
         max_length=40,
         choices=RecurrenceKind.choices,
-        default=RecurrenceKind.ADVANCED,
+        default=RecurrenceKind.NONE,
     )
     timezone = models.CharField(max_length=80, default="UTC")
     catch_up_policy = models.CharField(

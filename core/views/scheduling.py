@@ -328,6 +328,17 @@ QUESTION_ACTIONS_BY_KIND = {
     "certificate": ["certificate.expiry.attention"],
 }
 
+# The recurrence kinds an operator may choose, and the only ones a POST may store.
+# `RecurrenceKind.NONE` is deliberately absent: it is the one-time sentinel, so
+# validating against the whole enum would let a crafted post file a *recurring*
+# schedule as "not recurring", which `next_run_after()` cannot schedule.
+SELECTABLE_RECURRENCE_KINDS = (
+    (ScheduledAction.RecurrenceKind.DAILY, "Daily"),
+    (ScheduledAction.RecurrenceKind.WEEKLY, "Weekly"),
+    (ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL, "Monthly by weekday"),
+    (ScheduledAction.RecurrenceKind.MONTHLY_DAY, "Monthly by date"),
+)
+
 
 @require_POST
 @app_login_required
@@ -671,10 +682,7 @@ def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict
         "action_type_choices": ScheduledAction.ActionType.choices,
         "recurrence_kind_choices": [
             (SCHEDULED_ACTION_RECURRENCE_ONCE, "Once"),
-            (ScheduledAction.RecurrenceKind.DAILY, "Daily"),
-            (ScheduledAction.RecurrenceKind.WEEKLY, "Weekly"),
-            (ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL, "Monthly by weekday"),
-            (ScheduledAction.RecurrenceKind.MONTHLY_DAY, "Monthly by date"),
+            *SELECTABLE_RECURRENCE_KINDS,
         ],
         "weekday_choices": SCHEDULED_ACTION_WEEKDAYS,
         "ordinal_choices": SCHEDULED_ACTION_ORDINALS,
@@ -854,11 +862,11 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
             run_at = _parse_local_datetime_from_post(post)
         except ValueError as exc:
             errors.append(str(exc))
-        recurrence_kind = ScheduledAction.RecurrenceKind.ADVANCED
+        recurrence_kind = ScheduledAction.RecurrenceKind.NONE
     else:
         schedule_type = ScheduledAction.ScheduleType.RECURRING
         recurrence_kind = selected_recurrence
-        if recurrence_kind not in ScheduledAction.RecurrenceKind.values:
+        if recurrence_kind not in {value for value, _label in SELECTABLE_RECURRENCE_KINDS}:
             errors.append("Unknown recurrence type.")
         try:
             recurrence = _recurrence_from_post(post, recurrence_kind)
@@ -978,8 +986,6 @@ def _recurrence_from_post(post, recurrence_kind: str) -> dict:
             "time": time_value,
             **month_filter,
         }
-    if recurrence_kind == ScheduledAction.RecurrenceKind.ADVANCED:
-        return {"rrule": post.get("rrule", "").strip()}
     return {}
 
 

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from dateutil.rrule import DAILY, FR, MO, MONTHLY, SA, SU, TH, TU, WE, WEEKLY, rrule, rrulestr
+from dateutil.rrule import DAILY, FR, MO, MONTHLY, SA, SU, TH, TU, WE, WEEKLY, rrule
 from django.utils import timezone
 
 from core.models import ScheduledAction
@@ -66,8 +66,6 @@ def next_run_after(action: ScheduledAction, *, after: datetime | None = None) ->
         rule = _monthly_ordinal_rule(recurrence, after_local)
     elif kind == ScheduledAction.RecurrenceKind.MONTHLY_DAY:
         rule = _monthly_day_rule(recurrence, after_local)
-    elif kind == ScheduledAction.RecurrenceKind.ADVANCED:
-        rule = _advanced_rule(recurrence, after_local)
     else:
         raise RecurrenceError(f"Unsupported recurrence kind: {kind}")
 
@@ -168,16 +166,6 @@ def _list_values(value: Any) -> list[Any]:
     if isinstance(value, str) and "," in value:
         return [part.strip() for part in value.split(",") if part.strip()]
     return [value]
-
-
-def _advanced_rule(recurrence: dict[str, Any], dtstart: datetime):
-    raw_rule = str(recurrence.get("rrule", "")).strip()
-    if not raw_rule:
-        raise RecurrenceError("Advanced recurrence requires an RRULE value.")
-    try:
-        return rrulestr(raw_rule, dtstart=dtstart)
-    except (TypeError, ValueError) as exc:
-        raise RecurrenceError("Advanced recurrence RRULE is invalid.") from exc
 
 
 def _schedule_timezone(value: str) -> ZoneInfo:

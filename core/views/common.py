@@ -1016,7 +1016,10 @@ def _scheduled_action_schedule_label(action: ScheduledAction) -> str:
     if action.recurrence_kind == ScheduledAction.RecurrenceKind.MONTHLY_DAY:
         days = _display_recurrence_values(recurrence, "days_of_month", "day", "day_of_month", default="?")
         return f"Monthly on day {days} at {time_label}"
-    return "Advanced recurrence"
+    # Unreachable for data this app writes: a recurring schedule always carries one of
+    # the four kinds above. Kept as an honest label for a row written by an older
+    # version rather than a plausible-looking one that hides it.
+    return "Unknown recurrence"
 
 
 def _display_recurrence_values(recurrence: dict, name: str, *fallback_names: str, default: str = "") -> str:
