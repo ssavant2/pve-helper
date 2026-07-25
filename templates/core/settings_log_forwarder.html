@@ -35,7 +35,7 @@
     </div>
   </section>
 
-  <form method="post" class="panel settings-storage-panel settings-storage-form-panel">
+  <form method="post" class="panel settings-storage-panel settings-storage-form-panel" data-log-forwarder-form>
     {% csrf_token %}
     <div class="panel-heading">
       <div>
@@ -55,7 +55,7 @@
           <select name="transport" required>
             {% for value, label in transport_choices %}<option value="{{ value }}"{% if config.transport == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
           </select>
-          <small>TLS validates both the certificate chain and destination hostname using the system trust store.</small>
+          <small>TLS verifies the destination hostname against a certificate you approve below. Plain TCP sends the Audit stream unencrypted.</small>
         </label>
       </div>
       <div class="storage-access-form-actions">
@@ -63,6 +63,54 @@
       </div>
     </div>
   </form>
+
+  {% if trust_summary.tls %}
+    <section
+      class="panel settings-storage-panel"
+      data-log-forwarder-trust
+      data-host="{{ config.host }}"
+      data-port="{{ config.port }}"
+    >
+      <div class="panel-heading">
+        <div>
+          <h2>Destination certificate</h2>
+          <p class="panel-meta">TLS delivery is refused until the certificate this destination serves has been approved here.</p>
+        </div>
+        <button class="secondary-action" type="button" data-log-forwarder-approve>
+          {% if trust_summary.applies %}Review certificate{% else %}Inspect and approve{% endif %}
+        </button>
+      </div>
+      {% if trust_summary.required %}
+        <div class="notice notice-error" role="status">
+          This destination's certificate has not been approved, so nothing is being delivered over TLS. Inspect it and choose how it should be trusted.
+        </div>
+      {% elif trust_summary.expiring %}
+        <div class="notice notice-warning" role="status">
+          The certificate this destination serves expires on {{ trust_summary.observed_not_after }} — within {{ expiry_warning_days }} days. Renew it at the collector, then review it here.
+        </div>
+      {% endif %}
+      {% if trust_summary.applies %}
+        <div class="log-forwarder-status-grid">
+          <div><span>Trust</span><strong>{{ trust_summary.mode_label }}</strong></div>
+          <div><span>Subject</span><strong>{{ trust_summary.subject|default:"-" }}</strong></div>
+          <div><span>Issuer</span><strong>{{ trust_summary.issuer|default:"-" }}</strong></div>
+          <div>
+            <span>Approved</span>
+            <strong>{{ trust_summary.approved_at|default:"-" }}</strong>
+            {% if trust_summary.approved_by %}<small>by {{ trust_summary.approved_by }}</small>{% endif %}
+          </div>
+          <div>
+            <span>Last checked</span>
+            <strong>{{ trust_summary.last_checked_at }}</strong>
+            <small>Checked once a day; you are warned {{ expiry_warning_days }} days before expiry and whenever the certificate stops verifying.</small>
+          </div>
+        </div>
+        {% if trust_summary.fingerprint %}
+          <p class="log-forwarder-approved-fingerprint">Approved SHA-256 <code>{{ trust_summary.fingerprint }}</code></p>
+        {% endif %}
+      {% endif %}
+    </section>
+  {% endif %}
 
   <section class="panel settings-storage-panel">
     <div class="panel-heading">

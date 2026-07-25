@@ -18,6 +18,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# The certificate volume's mount point exists in the image, owned by the app user, so
+# that Docker seeds a fresh named volume with that ownership. A volume created against
+# a missing directory is root-owned and the unprivileged app cannot write to it, which
+# fails silently: publication is best-effort, so the only symptom would be an HTTPS
+# certificate that never reaches nginx.
+RUN mkdir -p /certificate-state && chown app:app /certificate-state
+
 COPY --from=ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc /uv /usr/local/bin/uv
 
 COPY requirements.txt .

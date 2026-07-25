@@ -7,6 +7,7 @@ from django.dispatch import receiver
 from .models import AuditEvent, ProxmoxCluster
 from .services.audit_events import record_audit_event
 from .services.bulk_task_reaper_schedule import ensure_bulk_task_reaper_schedule
+from .services.certificate_expiry_watch import ensure_certificate_expiry_schedule
 from .services.cluster_state_identity import invalidate_cluster_cache
 from .services.console_session_cleanup_schedule import ensure_console_session_cleanup_schedule
 from .services.guest_inventory_refresh_schedule import ensure_guest_inventory_refresh_schedule
@@ -44,6 +45,7 @@ def ensure_always_on_schedules(sender, app_config, **kwargs):
     ensure_console_session_cleanup_schedule()
     ensure_bulk_task_reaper_schedule()
     ensure_storage_catalog_refresh_schedules()
+    ensure_certificate_expiry_schedule()
 
 
 @receiver(user_logged_in)

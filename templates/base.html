@@ -279,6 +279,8 @@
         data-task-retry-url="{% url 'core:retry_recent_task' %}"
         data-vms-bulk-action-url="{% url 'core:vms_bulk_action' %}"
         data-dismiss-question-url="{% url 'core:dismiss_task_question' %}"
+        data-log-forwarder-inspect-url="{% url 'core:settings_log_forwarder_inspect' %}"
+        data-log-forwarder-approve-url="{% url 'core:settings_log_forwarder_approve' %}"
         data-task-page="0"
         data-task-poll-ms="10000"
         data-task-rendered-at="{{ app_recent_tasks_rendered_at|date:'c' }}"

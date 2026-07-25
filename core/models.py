@@ -132,6 +132,145 @@ class LogForwarderConfiguration(TimestampedModel):
         return f"log forwarding to {self.host or '-'}:{self.port}"
 
 
+class LogForwarderTransportTrust(TimestampedModel):
+    """Which syslog TLS certificate this installation has agreed to accept.
+
+    `ssl.create_default_context()` reads only the system trust store, which in the
+    environment this product targets — a home lab or small firm with an internal CA —
+    trusts nothing the operator actually runs. The result was that TLS could not be
+    used at all and the only working transport was plaintext TCP, i.e. the whole
+    Audit stream in the clear. Trust therefore lives here, decided once by a human
+    who looked at the certificate, exactly as `ClusterTransportTrust` does for
+    Proxmox endpoints.
+
+    Trust is bound to `host`/`port`: an approval is a statement about one
+    destination, so re-pointing the forwarder invalidates it rather than silently
+    carrying a decision across to a different collector.
+    """
+
+    class Mode(models.TextChoices):
+        UNSET = "unset", "Not approved yet"
+        # The exact certificate. A renewal is a change the operator must see.
+        PINNED = "pinned", "This certificate only"
+        # The chain that issued it, trusted exclusively. Renewals from the same CA
+        # verify silently; anything else does not.
+        CA = "ca", "Any certificate from this issuer"
+        # No verification at all. Named for what it is.
+        INSECURE = "insecure", "Any certificate (no verification)"
+
+    SINGLETON_PK = 1
+
+    mode = models.CharField(max_length=12, choices=Mode.choices, default=Mode.UNSET)
+    host = models.CharField(max_length=255, blank=True)
+    port = models.PositiveIntegerField(default=0)
+    # The approved anchor: the leaf for PINNED, the issuing certificate for CA.
+    certificate_pem = models.TextField(blank=True)
+    sha256_fingerprint = models.CharField(max_length=64, blank=True)
+    subject = models.CharField(max_length=500, blank=True)
+    issuer = models.CharField(max_length=500, blank=True)
+    not_after = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.CharField(max_length=150, blank=True)
+
+    # What the daily probe last saw on the wire. Kept separate from the approved
+    # anchor so "what we agreed to" and "what is being served" stay distinguishable
+    # — that difference is the entire point of the change alarm.
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    observed_sha256_fingerprint = models.CharField(max_length=64, blank=True)
+    observed_subject = models.CharField(max_length=500, blank=True)
+    observed_not_after = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"syslog TLS trust for {self.host or '-'}:{self.port} ({self.mode})"
+
+
+class ManagedCertificate(TimestampedModel):
+    """An X.509 certificate this installation stores and serves itself.
+
+    Two usages share one table because they share everything that matters: the
+    parsed identity fields, the expiry the daily watch reads, and the deletion rule
+    that nothing in use may be removed. Splitting them would duplicate the parser,
+    the watch and the panel for a distinction that is one column wide.
+
+    The private key is sealed with `core.services.secret_encryption`, the same
+    keyring that seals cluster API tokens, rather than kept as a file: a container
+    filesystem is rebuilt on every image update and would lose it, and a key that
+    survives only in a bind mount cannot be managed from the UI at all.
+    """
+
+    class Usage(models.TextChoices):
+        # Presented by nginx for HTTPS. Carries a private key and optional chain.
+        SERVER = "server", "HTTPS server certificate"
+        # Added to the outbound trust bundle. Public material only.
+        AUTHORITY = "authority", "Trusted certificate authority"
+
+    # No index of its own: the unique constraint below already leads with this
+    # column, so a second one would be the same b-tree twice.
+    usage = models.CharField(max_length=12, choices=Usage.choices)
+    label = models.CharField(max_length=150)
+    certificate_pem = models.TextField()
+    # Intermediates between the leaf and a trusted root, in chain order. Server
+    # certificates only; kept apart from the leaf so the identity fields below
+    # always describe the certificate the destination actually presents.
+    chain_pem = models.TextField(blank=True)
+    private_key_sealed = models.TextField(blank=True)
+
+    subject = models.CharField(max_length=500, blank=True)
+    issuer = models.CharField(max_length=500, blank=True)
+    serial_number = models.CharField(max_length=80, blank=True)
+    sha256_fingerprint = models.CharField(max_length=64)
+    subject_alt_names = models.JSONField(default=list, blank=True)
+    not_before = models.DateTimeField(null=True, blank=True)
+    not_after = models.DateTimeField(null=True, blank=True)
+    is_certificate_authority = models.BooleanField(default=False)
+
+    source_filename = models.CharField(max_length=255, blank=True)
+    uploaded_by = models.CharField(max_length=150, blank=True)
+
+    class Meta:
+        ordering = ["usage", "label"]
+        constraints = [
+            # The same certificate uploaded twice is one record, not two rows that
+            # disagree about which is current. Scoped to usage because a root a CA
+            # bundle trusts is a different decision from one served as a leaf.
+            models.UniqueConstraint(fields=["usage", "sha256_fingerprint"], name="managed_certificate_unique"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.label} ({self.usage})"
+
+
+class CertificateSettings(TimestampedModel):
+    """Which stored certificate terminates HTTPS, and when expiry starts warning.
+
+    `active_certificate` is `PROTECT`ed rather than `SET_NULL`: silently falling
+    back to plain HTTP because someone deleted a row is how an installation stops
+    being encrypted without anyone deciding that. The UI renders the delete button
+    disabled for the certificate in use instead.
+
+    One expiry threshold governs every certificate this installation knows about —
+    the syslog destination's, the HTTPS certificate, and each trusted authority.
+    Three separately configurable thresholds would be three ways to say the same
+    thing and three places to forget.
+    """
+
+    SINGLETON_PK = 1
+
+    https_enabled = models.BooleanField(default=False)
+    active_certificate = models.ForeignKey(
+        ManagedCertificate,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="active_for_settings",
+    )
+    expiry_warning_enabled = models.BooleanField(default=True)
+    expiry_warning_days = models.PositiveSmallIntegerField(default=7)
+
+    def __str__(self) -> str:
+        return f"certificates (https={'on' if self.https_enabled else 'off'})"
+
+
 class LogForwardingDelivery(models.Model):
     """A durable, destination-independent snapshot awaiting syslog delivery."""
 

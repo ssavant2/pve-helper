@@ -16,6 +16,7 @@ from core.services.log_forwarding import (
     deliver_pending_log_events,
     update_configuration,
 )
+from core.tests_log_forwarder_trust import approve_test_destination
 
 
 class LogForwardingServiceTests(TestCase):
@@ -177,9 +178,25 @@ class LogForwardingViewTests(TestCase):
         self.assertEqual(paused.json()["pending_label"], "1 (paused)")
         self.assertTrue(paused.json()["paused"])
 
+    def test_test_button_refuses_an_unapproved_tls_destination(self):
+        """The delivery would fail closed anyway; saying so is the whole point.
+
+        Reporting it as a queued test would let an unapproved certificate read as
+        a broken collector, which is the confusion the split error codes exist to
+        remove."""
+        update_configuration(enabled=True, host="siem.example.test", port=6514, transport="tls")
+
+        response = self.client.post(reverse("core:settings_log_forwarder_test"))
+
+        self.assertRedirects(response, reverse("core:settings_log_forwarder") + "?test=untrusted")
+        self.assertFalse(AuditEvent.objects.filter(action="log_forwarder.test_requested").exists())
+        follow_up = self.client.get(response.url)
+        self.assertContains(follow_up, "Approve the destination&#x27;s TLS certificate")
+
     @patch("core.views.log_forwarding.async_task")
     def test_test_button_creates_real_audit_delivery(self, async_task):
         update_configuration(enabled=True, host="siem.example.test", port=6514, transport="tls")
+        approve_test_destination("siem.example.test", 6514)
 
         response = self.client.post(reverse("core:settings_log_forwarder_test"))
 

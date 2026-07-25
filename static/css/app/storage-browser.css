@@ -280,9 +280,116 @@
   margin: 14px 18px 18px;
 }
 
+.log-forwarder-approved-fingerprint {
+  margin: 0;
+  padding: 0 18px 18px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.log-forwarder-approved-fingerprint code {
+  color: var(--text);
+  word-break: break-all;
+}
+
+/* The approval dialog is denser than an ordinary confirmation: it carries a
+   full certificate plus three exclusive answers, and the operator is expected
+   to read all of it before choosing. */
+.log-forwarder-trust-dialog {
+  max-width: 640px;
+}
+
+.log-forwarder-cert {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.35rem 1rem;
+  margin: 0.75rem 0;
+}
+
+.log-forwarder-cert dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.log-forwarder-cert dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.log-forwarder-cert-expiring {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+/* Pre-wrapped because the fingerprint is deliberately broken into two lines of
+   colon-separated octets — the only form in which a human actually compares it. */
+.log-forwarder-fingerprint {
+  display: block;
+  white-space: pre;
+  line-height: 1.5;
+  font-size: 0.82rem;
+}
+
+.log-forwarder-current-trust {
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+.log-forwarder-trust-modes {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.log-forwarder-trust-modes legend {
+  padding: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.log-forwarder-trust-mode {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.log-forwarder-trust-mode:has(input:checked) {
+  border-color: var(--accent);
+}
+
+.log-forwarder-trust-mode.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.log-forwarder-trust-mode span {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.log-forwarder-trust-mode small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 @media (max-width: 900px) {
   .log-forwarder-status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .log-forwarder-cert,
+  .log-forwarder-trust-mode {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -868,4 +975,14 @@
    .action-feedback inset is meant for panels that have chrome around it. */
 .datastore-file-pane > .action-feedback {
   margin: 0 0 10px;
+}
+
+/* Expiry state on the Certificates tab. Colour is the only difference between the
+   two, so both keep a word next to it rather than relying on hue alone. */
+.certificate-expiring {
+  color: var(--amber);
+}
+
+.certificate-expired {
+  color: var(--red);
 }

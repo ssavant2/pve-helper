@@ -103,6 +103,8 @@ INFLATE_TERMINAL_ACTIONS = {"file.inflated", "file.inflate_failed"}
 MOUNT_REGISTERED_ACTION = "storage.mount.registered"
 MOUNT_UNREGISTERED_ACTION = "storage.mount.unregistered"
 MOUNT_TASK_ACTIONS = [MOUNT_REGISTERED_ACTION, MOUNT_UNREGISTERED_ACTION]
+LOG_FORWARDER_CERTIFICATE_ACTION = "log_forwarder.certificate.attention"
+CERTIFICATE_EXPIRY_ACTION = "certificate.expiry.attention"
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,8 @@ def _task_index(cluster_key: str):
         _mount_index(cluster_key),
         _scheduled_index(cluster_key),
         _guest_index(cluster_key),
+        _log_forwarder_index(),
+        _certificate_index(),
         all=True,
     )
 
@@ -277,6 +281,30 @@ def _guest_index(cluster_key: str):
     )
 
 
+def _log_forwarder_index():
+    # Installation-wide, like the storage scan: there is one syslog destination and
+    # it is not a property of any cluster, so it stays visible under every scope
+    # rather than vanishing when the operator narrows to one cluster.
+    return _index_values(
+        _visible_log_forwarder_tasks(),
+        "log_forwarder",
+        F("timestamp"),
+        _log_forwarder_question_q(),
+    )
+
+
+def _certificate_index():
+    # Installation-wide for the same reason as the forwarder: a stored certificate
+    # belongs to this installation, not to any one cluster, so narrowing the scope
+    # must not hide an expiry that takes the whole UI down.
+    return _index_values(
+        _visible_certificate_tasks(),
+        "certificate",
+        F("timestamp"),
+        _certificate_question_q(),
+    )
+
+
 def _catalog_started_at():
     """`_catalog_refresh_task`'s sort key, which lives in `details`.
 
@@ -324,10 +352,12 @@ def _questions_pending(cluster_key: str) -> int:
     """
     files = _visible_file_tasks().filter(_audit_cluster_q(cluster_key)).filter(_file_question_q()).count()
     guests = _visible_guest_tasks().filter(_audit_cluster_q(cluster_key)).filter(_guest_question_q()).count()
-    return files + guests
+    forwarder = _visible_log_forwarder_tasks().filter(_log_forwarder_question_q()).count()
+    certificates = _visible_certificate_tasks().filter(_certificate_question_q()).count()
+    return files + guests + forwarder + certificates
 
 
-INDEX_KINDS = ("scan", "file", "catalog", "mount", "scheduled_action", "guest")
+INDEX_KINDS = ("scan", "file", "catalog", "mount", "scheduled_action", "guest", "log_forwarder", "certificate")
 
 
 def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
@@ -347,6 +377,8 @@ def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
         ("catalog", _catalog_refresh_task),
         ("mount", _mount_task),
         ("guest", _guest_task),
+        ("log_forwarder", _log_forwarder_certificate_task),
+        ("certificate", _certificate_expiry_task),
     ):
         if not ids_by_kind[kind]:
             continue
@@ -905,6 +937,84 @@ def _visible_mount_tasks():
     return AuditEvent.objects.filter(action__in=MOUNT_TASK_ACTIONS, timestamp__gte=cutoff)
 
 
+def _visible_log_forwarder_tasks():
+    """The syslog certificate findings, plus any still-open one however old.
+
+    Same rule as the other two question kinds: an unanswered question is not
+    history yet, so it outlives the ordinary retention window. A certificate that
+    expires in seven days is exactly the case where "we told you last week" is not
+    good enough.
+    """
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    return AuditEvent.objects.filter(action=LOG_FORWARDER_CERTIFICATE_ACTION).filter(
+        Q(timestamp__gte=cutoff) | (Q(details__question=True) & ~_dismissed_flag_q("question_dismissed"))
+    )
+
+
+def _log_forwarder_question_q() -> Q:
+    return Q(details__question=True) & ~_dismissed_flag_q("question_dismissed")
+
+
+LOG_FORWARDER_CONDITION_NAMES = {
+    "changed": "Syslog destination certificate changed",
+    "expiring": "Syslog destination certificate expiring",
+    "untrusted": "Syslog destination certificate untrusted",
+}
+
+
+def _log_forwarder_certificate_task(event: AuditEvent) -> dict[str, object]:
+    """The daily certificate watch's finding, as an answerable Recent Tasks row.
+
+    It lands here rather than only on the Settings page because that is where an
+    operator is not looking. The badge is the same pulsing "click to answer" the
+    force-stop offer uses, and answering it opens the same approval dialog the
+    Settings page does — one decision, one place it is made.
+    """
+    details = dict(event.details) if isinstance(event.details, dict) else {}
+    condition = str(details.get("condition") or "")
+    answered = bool(details.get("question_dismissed"))
+    detail = str(details.get("detail") or "")
+    host = str(details.get("host") or "")
+    port = details.get("port") or ""
+    destination = f"{host}:{port}" if host else "-"
+    return {
+        "id": f"log_forwarder:{event.id}",
+        "kind": "log_forwarder",
+        "action": event.action,
+        "name": LOG_FORWARDER_CONDITION_NAMES.get(condition, "Syslog destination certificate"),
+        "target": destination,
+        # Installation-wide: the forwarder is one destination for every cluster.
+        "cluster_key": "",
+        "cluster": "-",
+        "status": "Answered" if answered else "Needs attention",
+        "status_class": "success" if answered else "warning",
+        "details": detail or str(details.get("label") or "-"),
+        "initiator": event.username or "system",
+        "queued_for": "-",
+        "started_at": event.timestamp,
+        "finished_at": event.timestamp,
+        "server": destination,
+        "sort_at": event.timestamp,
+        "cancelable": False,
+        "question": None
+        if answered
+        else {
+            "kind": "log_forwarder_certificate",
+            "label": f"{details.get('label') or 'The syslog certificate needs attention'} — click to answer",
+            "payload": {
+                "condition": condition,
+                "detail": detail,
+                "host": host,
+                "port": port,
+                "fingerprint": str(details.get("fingerprint") or ""),
+                "subject": str(details.get("subject") or ""),
+                "issuer": str(details.get("issuer") or ""),
+                "not_after": str(details.get("not_after") or ""),
+            },
+        },
+    }
+
+
 def _mount_task(event: AuditEvent) -> dict[str, object]:
     """Registering or removing a host-mount association.
 
@@ -1157,3 +1267,79 @@ def _parent_path(path: str) -> str:
         return ""
     parent = PurePosixPath(path).parent.as_posix()
     return "" if parent == "." else parent
+
+
+def _visible_certificate_tasks():
+    """Stored-certificate expiry findings, plus any still-open one however old.
+
+    Same rule as the other question kinds: an unanswered question is not history
+    yet. An HTTPS certificate that expired last month is more urgent than one that
+    expires tomorrow, not less, so retention must not quietly retire it.
+    """
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    return AuditEvent.objects.filter(action=CERTIFICATE_EXPIRY_ACTION).filter(
+        Q(timestamp__gte=cutoff) | (Q(details__question=True) & ~_dismissed_flag_q("question_dismissed"))
+    )
+
+
+def _certificate_question_q() -> Q:
+    return Q(details__question=True) & ~_dismissed_flag_q("question_dismissed")
+
+
+CERTIFICATE_CONDITION_NAMES = {
+    "expiring": "Stored certificate expiring",
+    "expired": "Stored certificate expired",
+}
+
+
+def _certificate_expiry_task(event: AuditEvent) -> dict[str, object]:
+    """The daily expiry check's finding, as an acknowledgeable Recent Tasks row.
+
+    There is nothing to approve here — the fix is uploading a replacement — so the
+    question offers acknowledgement and a way to the Certificates tab rather than a
+    decision dialog. Acknowledging stops the badge; it does not pretend the
+    certificate was renewed, and the next daily run refiles nothing only because the
+    certificate is genuinely gone or replaced.
+    """
+    details = dict(event.details) if isinstance(event.details, dict) else {}
+    condition = str(details.get("condition") or "")
+    answered = bool(details.get("question_dismissed"))
+    label = str(details.get("certificate_label") or "-")
+    usage_label = str(details.get("usage_label") or "Certificate")
+    detail = str(details.get("detail") or "")
+    return {
+        "id": f"certificate:{event.id}",
+        "kind": "certificate",
+        "action": event.action,
+        "name": CERTIFICATE_CONDITION_NAMES.get(condition, "Stored certificate needs attention"),
+        "target": label,
+        # Installation-wide: a stored certificate is not a property of any cluster.
+        "cluster_key": "",
+        "cluster": "-",
+        "status": "Answered" if answered else "Needs attention",
+        "status_class": "success" if answered else "warning",
+        "details": f"{usage_label} — {detail}" if detail else usage_label,
+        "initiator": event.username or "system",
+        "queued_for": "-",
+        "started_at": event.timestamp,
+        "finished_at": event.timestamp,
+        "server": usage_label,
+        "sort_at": event.timestamp,
+        "cancelable": False,
+        "question": None
+        if answered
+        else {
+            "kind": "certificate_expiry",
+            "label": f"{details.get('label') or 'A stored certificate needs attention'} — click to answer",
+            "payload": {
+                "condition": condition,
+                "detail": detail,
+                "certificate_label": label,
+                "usage_label": usage_label,
+                "subject": str(details.get("subject") or ""),
+                "issuer": str(details.get("issuer") or ""),
+                "fingerprint": str(details.get("fingerprint") or ""),
+                "not_after": str(details.get("not_after") or ""),
+            },
+        },
+    }

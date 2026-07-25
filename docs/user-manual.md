@@ -222,9 +222,47 @@ to 5,000 events; narrow the filters or use CSV/JSON for larger exports.
 Open **Audit → Log forwarder**, or **PVE-helper Settings → Log forwarder**, to
 send new Audit events to one installation-wide RFC 5424 destination. Configure
 the receiver's host and port, choose **TCP with TLS** or plain **TCP**, enable
-forwarding, and select **Save configuration**. TLS verifies both the certificate
-chain and the destination hostname against the container's system trust store;
-there is no insecure skip-verification mode.
+forwarding, and select **Save configuration**. TLS delivery then waits for you to
+approve the certificate the destination serves; nothing is sent over TLS until
+you have.
+
+#### Approving the destination's certificate
+
+The system trust store contains public CAs, so a collector using an internal or
+self-signed certificate — the normal case in a home lab or small firm — cannot be
+verified by it. Rather than forcing a choice between plaintext TCP and no TLS at
+all, the forwarder asks you once, the way SSH asks about a new host key.
+
+Select **Inspect and approve** in the **Destination certificate** panel. The app
+connects far enough to read the certificate and shows its subject, issuer,
+validity and SHA-256 fingerprint, and states whether it already verifies against
+the trust store. **That first read is unverified** — compare the fingerprint
+against the collector itself before accepting it. Then choose one of:
+
+- **Always trust certificates from this issuer** — trusts the issuing CA and
+  nothing else. Renewals from the same CA are accepted silently; a certificate
+  from any other issuer is not. Recommended, and unavailable if the destination
+  sends no issuer certificate.
+- **Trust only this exact certificate** — the strictest option. Every renewal is
+  reported as a change you must approve again.
+- **Accept any certificate (no verification)** — encrypted but unauthenticated.
+  Anything answering on that address is accepted, and you get no change or expiry
+  warnings.
+
+The decision is recorded in Audit with who made it. It applies to the host and
+port it was made for: re-pointing the forwarder clears it and asks again.
+
+#### Certificate changes and expiry
+
+Once a day the app re-reads the destination's certificate. It raises an
+answerable **Recent Tasks** question — the same pulsing "click to answer" badge
+used elsewhere — when the certificate stops verifying under your approval, when a
+pinned certificate is replaced, or when the served certificate is within **seven
+days** of expiring. Answering opens the same approval dialog; approving the new
+certificate closes the question. An expiring certificate has nothing to approve
+yet, so it can also be acknowledged, which is recorded in Audit. The same finding
+is raised once, not once per day, and a check that finds everything healthy
+closes any question it had raised.
 
 Forwarding starts with Audit events created while the forwarder is enabled; it
 does not export the existing Audit history. Delivery is durable and ordered.
@@ -241,8 +279,11 @@ The **Delivery status** panel refreshes automatically:
   messages remain as **paused** until it is enabled again.
 - **Last delivery** is the most recent successful send, not merely the most
   recent attempt.
-- **Last error** reports a normalized connection failure and time. Detailed
-  socket or TLS exceptions remain in protected application logs.
+- **Last error** names which kind of failure it was — the collector was
+  unreachable, its certificate failed verification, the TLS handshake failed, or
+  its certificate has not been approved — with the time. These need opposite
+  responses from you, so they are not collapsed into one message. Detailed socket
+  or TLS exceptions remain in protected application logs.
 
 After saving an enabled destination, select **Send test event**. This creates a
 real `log_forwarder.test_requested` Audit event and sends it through the same
@@ -257,6 +298,92 @@ preallocation. Arbitrary Audit details, raw provider errors, credentials,
 certificate material and diagnostic exception text are deliberately excluded.
 Changing the configuration and requesting a test are themselves visible in
 Audit. Saving configuration has no separate confirmation popup.
+
+### Serve the UI over HTTPS, and manage trusted authorities
+
+Open **PVE-helper Settings → Certificates**. The tab owns three decisions: which
+certificate this installation presents over HTTPS, which certificate authorities it
+trusts when it connects out, and how far in advance any certificate's expiry is
+warned about.
+
+#### Uploading a certificate
+
+The upload accepts what a CA is likely to hand you rather than one canonical shape:
+a PEM certificate, a DER-encoded `.crt`/`.cer`, a `fullchain.pem`, or a PKCS#12
+`.pfx`/`.p12` export. The private key may be a separate file or inside the PKCS#12.
+Encrypted keys and password-protected PKCS#12 files both use the **Password** field.
+Certificates in a bundle need not be in any particular order — the leaf is identified
+by which certificate issued nothing else in the upload, and the chain is ordered from
+it.
+
+A server certificate is refused at upload if no private key was supplied or if the
+key does not belong to the certificate. That check happens here rather than at reload
+time, where the only symptom would be an nginx error in a container log. The private
+key is encrypted at rest under the same keyring that seals cluster API tokens, so it
+is not recoverable from a database dump alone.
+
+A trusted authority is the certificate only. An upload that also contains a private
+key is refused: that is almost always a misfired export of the CA's own signing key,
+and this feature has no use for one.
+
+#### Turning HTTPS on
+
+Select a certificate, tick **Enable HTTPS**, and apply. The certificate and its chain
+are written to a volume nginx reads, and nginx picks them up within about a minute —
+no restart and no shell access to the Docker host.
+
+The port does not change. The address you already use starts answering TLS instead of
+plain HTTP, and a browser that arrives over `http://` is redirected to the same
+address over `https://`, so bookmarks keep working.
+
+If an external reverse proxy sits in front of this installation, it is included in
+that switch: point its upstream at `https://` when you enable HTTPS, or it will keep
+speaking plain HTTP to a port that no longer answers it and be redirected back at
+itself.
+
+One setting in `.env` overrides all of this:
+
+- `APP_FORCE_HTTP=true` — serve plain HTTP, whatever is stored. **This is the way
+  back in.** A certificate that turns out to be wrong would otherwise lock you out of
+  the page that would replace it, so the recovery switch deliberately lives outside
+  the application: set it, recreate the containers, fix the certificate, remove it
+  again.
+
+The certificate currently serving HTTPS cannot be deleted. Its Remove button is
+rendered disabled and says why, rather than disappearing. Select a different
+certificate or disable HTTPS first.
+
+#### Trusted certificate authorities
+
+An authority added here is appended to the trust bundle used for every outbound TLS
+connection this installation makes — Proxmox endpoints included. It **extends** the
+deployment's own bundle rather than replacing it, so adding one internal CA does not
+stop public certificates from verifying.
+
+This is separate from a cluster connection's own transport trust, which pins one
+cluster to one chain, and separate again from the log forwarder's destination
+approval. An authority here widens what verifies; those two decide what a specific
+endpoint is allowed to present.
+
+#### Expiry warnings
+
+One threshold covers every certificate this installation knows about: the HTTPS
+certificate, each trusted authority, and the log forwarder's destination. Set whether
+warnings are on and how many days ahead they start, between 1 and 99.
+
+The check runs once a day. A certificate inside the window raises a question in
+Recent Tasks with the same pulsing "click to answer" badge used elsewhere, because
+the Certificates page is not a page anyone visits and an expiring HTTPS certificate
+takes the UI down with it. The question names the certificate and how long is left,
+and offers two answers: open the Certificates tab, or acknowledge that you have seen
+it. Acknowledging stops the badge; it does not pretend anything was renewed.
+
+Questions do not repeat. The same finding about the same certificate is filed once
+and not refiled daily. A certificate that crosses from expiring to already expired
+does raise the second, more serious question. Replacing or removing the certificate
+closes its question automatically at the next daily check, and so does turning
+warnings off.
+
 
 ## Working with VMs and containers
 

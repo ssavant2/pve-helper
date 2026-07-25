@@ -4,5 +4,8 @@ LABEL org.opencontainers.image.source="https://github.com/ssavant2/pve-helper" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
 
 COPY docker/nginx/templates/default.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/nginx/templates/pve-helper-server.include.template /etc/nginx/templates/pve-helper-server.include.template
 COPY docker/nginx/15-storage-accel-manifest.sh /docker-entrypoint.d/15-storage-accel-manifest.sh
+COPY docker/nginx/25-pve-helper-tls.sh /docker-entrypoint.d/25-pve-helper-tls.sh
+COPY docker/nginx/26-pve-helper-tls-watch.sh /docker-entrypoint.d/26-pve-helper-tls-watch.sh
 COPY LICENSE /usr/share/licenses/pve-helper/LICENSE

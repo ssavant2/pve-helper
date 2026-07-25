@@ -319,24 +319,36 @@ def retry_recent_task(request):
     return JsonResponse({"ok": True, "queued_task_id": queued_task_id}, status=202)
 
 
+# Which Audit actions a dismissal of each task kind is allowed to touch. Keyed
+# rather than branched so a fourth question kind is one entry, not a third `if`.
+QUESTION_ACTIONS_BY_KIND = {
+    "guest": ["guest.power.shutdown"],
+    "file": ["file.bulk_operation"],
+    "log_forwarder": ["log_forwarder.certificate.attention"],
+    "certificate": ["certificate.expiry.attention"],
+}
+
+
 @require_POST
 @app_login_required
 def dismiss_task_question(request):
     """Mark a task's actionable question as answered so it stops pulsing/pinning.
 
-    Two kinds exist: a timed-out shutdown's force-stop offer, and a destructive
-    file fan-out that only half happened. Either way the user acted on it or
+    Four kinds exist: a timed-out shutdown's force-stop offer, a destructive
+    file fan-out that only half happened, the syslog destination's certificate
+    changing or nearing expiry, and a stored certificate approaching its own
+    expiry. Either way the user acted on it or
     actively chose to accept it — until then the question outlives the ordinary
     Recent Tasks retention window on purpose."""
     task_id = request.POST.get("task_id", "").strip()
     kind, _separator, raw_id = task_id.partition(":")
-    if kind not in {"guest", "file"}:
+    if kind not in QUESTION_ACTIONS_BY_KIND:
         return JsonResponse({"ok": False, "error": "Unsupported task."}, status=400)
     try:
         event_id = int(raw_id)
     except ValueError:
         return JsonResponse({"ok": False, "error": "Invalid task id."}, status=400)
-    actions = ["guest.power.shutdown"] if kind == "guest" else ["file.bulk_operation"]
+    actions = QUESTION_ACTIONS_BY_KIND[kind]
     event = AuditEvent.objects.filter(pk=event_id, action__in=actions).first()
     if event is None:
         return JsonResponse({"ok": False, "error": "Task not found."}, status=404)
@@ -350,6 +362,39 @@ def dismiss_task_question(request):
     answer = request.POST.get("answer", "").strip()
     if kind == "file" and not already_answered and answer in {"retried", "accepted"}:
         _record_bulk_file_answer(request, event, details, answer)
+    if kind == "log_forwarder" and not already_answered:
+        # Acknowledging is a real answer here: an expiring certificate has nothing
+        # to approve yet, so "I have seen this and will renew it" must be
+        # recordable without pretending a new certificate was accepted.
+        record_audit_event(
+            request,
+            action="log_forwarder.certificate.answered",
+            object_type="log_forwarder",
+            object_id=event.object_id,
+            details={
+                "answer": "acknowledged",
+                "condition": details.get("condition") or "",
+                "question_event_id": event.id,
+                "fingerprint": details.get("fingerprint") or "",
+            },
+        )
+    if kind == "certificate" and not already_answered:
+        # Nothing here can be approved — the fix is uploading a replacement — so
+        # acknowledgement is the only honest answer, and it is worth its own event
+        # so "who knew, and when" survives the certificate that caused it.
+        record_audit_event(
+            request,
+            action="certificate.expiry.answered",
+            object_type="certificate",
+            object_id=event.object_id,
+            details={
+                "answer": "acknowledged",
+                "condition": details.get("condition") or "",
+                "question_event_id": event.id,
+                "fingerprint": details.get("fingerprint") or "",
+                "certificate_label": details.get("certificate_label") or "",
+            },
+        )
     return JsonResponse({"ok": True})
 
 

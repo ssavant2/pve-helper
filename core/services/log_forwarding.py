@@ -14,6 +14,15 @@ from django.utils import timezone
 from django_q.models import Schedule
 
 from core.models import AuditEvent, LogForwarderConfiguration, LogForwardingDelivery
+from core.services.log_forwarder_certificate_watch import ensure_certificate_watch_schedule
+from core.services.log_forwarder_trust import (
+    LogForwarderTrustError,
+    assert_pinned_match,
+    delivery_context,
+    reset_trust,
+    trust,
+    trust_applies_to,
+)
 from core.services.public_errors import PublicMessageError
 
 logger = logging.getLogger(__name__)
@@ -54,7 +63,23 @@ def update_configuration(*, enabled: bool, host: str, port: int, transport: str)
     config.transport = transport
     config.save(update_fields=["enabled", "host", "port", "transport", "updated_at"])
     _configure_schedule(enabled)
+    # A trust approval is a statement about one destination. Re-pointing the
+    # forwarder must not inherit it, or "yes, I recognise that certificate" silently
+    # becomes an answer about a collector the operator never saw.
+    record = trust()
+    if record.mode != record.Mode.UNSET and not trust_applies_to(record, host, port):
+        reset_trust(host, port)
+    ensure_certificate_watch_schedule(enabled and transport == LogForwarderConfiguration.Transport.TLS)
     return config
+
+
+def destination_requires_approval(config: LogForwarderConfiguration) -> bool:
+    """Whether saving this configuration leaves TLS unusable until a human answers."""
+    return (
+        config.enabled
+        and config.transport == LogForwarderConfiguration.Transport.TLS
+        and not trust_applies_to(trust(), config.host, config.port)
+    )
 
 
 def enqueue_audit_event(event: AuditEvent) -> LogForwardingDelivery | None:
@@ -99,11 +124,12 @@ def deliver_pending_log_events() -> int:
             continue
         try:
             _send(config, _rfc5424_message(config, delivery))
-        except (OSError, ssl.SSLError, ValueError):
+        except (OSError, ssl.SSLError, ValueError, LogForwarderTrustError) as exc:
             logger.exception("Log forwarding delivery failed", extra={"delivery_id": delivery.id})
-            _mark_failed(delivery.id, "syslog_connection_failed")
+            error_code = _failure_code(exc)
+            _mark_failed(delivery.id, error_code)
             LogForwarderConfiguration.objects.filter(pk=config.pk).update(
-                last_error_at=timezone.now(), last_error_code="syslog_connection_failed"
+                last_error_at=timezone.now(), last_error_code=error_code
             )
             # Preserve event order: later messages must not overtake the first
             # unavailable one and make a recovered stream misleading.
@@ -157,14 +183,37 @@ def _send(config: LogForwarderConfiguration, message: bytes) -> None:
     address = (config.host, config.port)
     with socket.create_connection(address, timeout=10) as connection:
         if config.transport == LogForwarderConfiguration.Transport.TLS:
-            context = ssl.create_default_context()
-            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            record = trust()
+            if not trust_applies_to(record, config.host, config.port):
+                raise LogForwarderTrustError(
+                    "The syslog destination's TLS certificate has not been approved for this host and port."
+                )
+            context = delivery_context(record)
             with context.wrap_socket(connection, server_hostname=config.host) as tls_connection:
                 tls_connection.settimeout(10)
+                assert_pinned_match(record, tls_connection.getpeercert(binary_form=True) or b"")
                 tls_connection.sendall(message)
         else:
             connection.settimeout(10)
             connection.sendall(message)
+
+
+def _failure_code(exc: BaseException) -> str:
+    """Name the failure the operator actually has.
+
+    Every failure used to collapse into `syslog_connection_failed`, so "the
+    collector is unreachable" and "I do not trust the collector's certificate" were
+    indistinguishable in the UI while the detail stayed correctly confined to
+    protected logs. They need opposite responses — fix the network, or approve the
+    certificate — so they get separate names.
+    """
+    if isinstance(exc, LogForwarderTrustError):
+        return "syslog_tls_not_approved"
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return "syslog_tls_verification_failed"
+    if isinstance(exc, ssl.SSLError):
+        return "syslog_tls_failed"
+    return "syslog_connection_failed"
 
 
 def _rfc5424_message(config: LogForwarderConfiguration, delivery: LogForwardingDelivery) -> bytes:

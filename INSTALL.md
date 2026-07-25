@@ -71,7 +71,27 @@ storage writes disabled.
 If the Proxmox or OIDC endpoints use a private CA, place a PEM bundle at
 `certs/ca-bundle.pem` and set `REQUESTS_CA_BUNDLE` to
 `/etc/ssl/pve-helper-ca-bundle.pem`. Otherwise leave the created file empty and
-`REQUESTS_CA_BUNDLE` blank.
+`REQUESTS_CA_BUNDLE` blank. That value becomes the *base* bundle: authorities added
+later under **PVE-helper Settings → Certificates** are appended to a copy of it, and
+the file itself is never rewritten.
+
+The application can also terminate TLS itself, so an external reverse proxy is
+optional rather than required. There is no second port: selecting a certificate under
+**PVE-helper Settings → Certificates** switches `APP_PORT` itself from HTTP to HTTPS,
+so the address stays what it was and only the scheme changes. A browser that arrives
+over plain HTTP afterwards is redirected to the same address over TLS.
+
+That switch applies to everything reaching that port, including an external reverse
+proxy in front of it. If you run one, point its upstream at `https://` when you
+enable HTTPS here; otherwise it will keep speaking plain HTTP and be redirected back
+at itself. The container's own health check is unaffected — it uses a separate
+listener on loopback inside the container that never changes protocol.
+
+**Know the way back in before you need it.** A wrong or expired certificate would
+otherwise lock you out of the page that replaces it. Setting `APP_FORCE_HTTP=true` in
+`.env` and recreating the containers (`docker compose up -d`, not `restart` — the
+value is container environment) serves plain HTTP regardless of what is stored in the
+database; remove it once the certificate is fixed.
 
 Validate the rendered deployment, then start it:
 

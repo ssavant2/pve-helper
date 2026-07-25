@@ -4,7 +4,7 @@ import { initConsolePages } from "./console.js";
 import { initContextMenu } from "./context-menus.js";
 import { initBackupRestoreForms, initGuestActionForms } from "./guest-actions.js";
 import { initHardwareEditor } from "./hardware.js";
-import { initLogForwarderStatus } from "./log-forwarder.js";
+import { initLogForwarderStatus, initLogForwarderTrust } from "./log-forwarder.js";
 import { initSoftNavigation, setPageInitializer } from "./navigation.js";
 import { initRecentTasks } from "./recent-tasks.js";
 import { initVmRegister } from "./register.js";
@@ -65,6 +65,7 @@ const initPage = (root = document) => {
   initTags(root);
   initHardwareEditor(root);
   initLogForwarderStatus(root);
+  initLogForwarderTrust(root);
   initVmRegister(root);
   initGuestActionForms(root);
   initCopyButtons(root);

@@ -1,4 +1,6 @@
+import { openCertificateExpiryQuestion } from "./certificates.js";
 import { initGuestActionForms, openForceStopDialog } from "./guest-actions.js";
+import { openLogForwarderCertificateQuestion } from "./log-forwarder.js";
 import { loadSoftNavigation } from "./navigation.js";
 import {
   activeUploads,
@@ -38,6 +40,14 @@ const initRecentTasks = () => {
     }
     if (question.dataset.taskQuestion === "bulk_file_partial") {
       openBulkFilePartialDialog(payload, taskId);
+      return;
+    }
+    if (question.dataset.taskQuestion === "log_forwarder_certificate") {
+      openLogForwarderCertificateQuestion(payload, taskId);
+      return;
+    }
+    if (question.dataset.taskQuestion === "certificate_expiry") {
+      openCertificateExpiryQuestion(payload, taskId);
     }
   });
   const rows = recentTasks.querySelector("[data-task-rows]");

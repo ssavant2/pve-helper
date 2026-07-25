@@ -40,10 +40,19 @@ services:
       NGINX_SEND_TIMEOUT: ${NGINX_SEND_TIMEOUT:-86400s}
       # Optional IP/CIDR of the external reverse proxy trusted for XFF/proto.
       NGINX_TRUSTED_PROXY: ${NGINX_TRUSTED_PROXY:-127.0.0.1}
+      # The published port below serves HTTPS instead of HTTP once a certificate is
+      # selected in Settings -> Certificates. APP_FORCE_HTTP keeps it plain HTTP
+      # whatever is stored, which is the way back in after a bad certificate.
+      APP_FORCE_HTTP: ${APP_FORCE_HTTP:-false}
+      PVE_HELPER_CERTIFICATE_WATCH_SECONDS: ${PVE_HELPER_CERTIFICATE_WATCH_SECONDS:-15}
     ports:
+      # One port, one address, either scheme. Enabling HTTPS swaps this port over
+      # in place rather than opening a second one, so bookmarks and any external
+      # reverse proxy keep pointing at the same place.
       - "${APP_PORT:-21080}:80"
     volumes:
       - storage_accel_state:/storage-accel-state
+      - certificate_state:/certificate-state:ro
       - type: bind
         source: ${PVE_HELPER_STORAGE_ROOT:?Set PVE_HELPER_STORAGE_ROOT in .env}
         target: /storages
@@ -70,7 +79,7 @@ services:
     mem_limit: 256m
     cpu_shares: 256
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/healthz/nginx || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/healthz/nginx || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -116,7 +125,13 @@ services:
       PVE_ENDPOINTS: ${PVE_ENDPOINTS:-}
       PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
       PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
-      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      # The operator-configured base bundle. Authorities added in the UI are
+      # appended to a copy of it; it is never rewritten in place. Empty means
+      # the container's own system trust store is the base.
+      PVE_HELPER_BASE_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      REQUESTS_CA_BUNDLE: /certificate-state/ca-bundle.pem
+      PVE_HELPER_CERTIFICATE_STATE_DIR: /certificate-state
+      APP_FORCE_HTTP: ${APP_FORCE_HTTP:-false}
       PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
       PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
       # Seals write-only cluster API tokens entered through the onboarding UI.
@@ -147,6 +162,7 @@ services:
       TZ: ${TZ:-Europe/Stockholm}
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
+      - certificate_state:/certificate-state
       - storage_accel_state:/storage-accel-state:ro
       - type: bind
         source: ${PVE_HELPER_STORAGE_ROOT:?Set PVE_HELPER_STORAGE_ROOT in .env}
@@ -195,7 +211,13 @@ services:
       PVE_ENDPOINTS: ${PVE_ENDPOINTS:-}
       PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
       PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
-      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      # The operator-configured base bundle. Authorities added in the UI are
+      # appended to a copy of it; it is never rewritten in place. Empty means
+      # the container's own system trust store is the base.
+      PVE_HELPER_BASE_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      REQUESTS_CA_BUNDLE: /certificate-state/ca-bundle.pem
+      PVE_HELPER_CERTIFICATE_STATE_DIR: /certificate-state
+      APP_FORCE_HTTP: ${APP_FORCE_HTTP:-false}
       PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
       PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
       PVE_HELPER_ENCRYPTION_KEYS: ${PVE_HELPER_ENCRYPTION_KEYS:?Set PVE_HELPER_ENCRYPTION_KEYS in .env}
@@ -206,6 +228,7 @@ services:
       TZ: ${TZ:-Europe/Stockholm}
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
+      - certificate_state:/certificate-state
     read_only: true
     tmpfs:
       - /tmp
@@ -263,7 +286,13 @@ services:
       PVE_ENDPOINTS: ${PVE_ENDPOINTS:-}
       PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
       PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
-      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      # The operator-configured base bundle. Authorities added in the UI are
+      # appended to a copy of it; it is never rewritten in place. Empty means
+      # the container's own system trust store is the base.
+      PVE_HELPER_BASE_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+      REQUESTS_CA_BUNDLE: /certificate-state/ca-bundle.pem
+      PVE_HELPER_CERTIFICATE_STATE_DIR: /certificate-state
+      APP_FORCE_HTTP: ${APP_FORCE_HTTP:-false}
       PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
       PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
       PVE_HELPER_ENCRYPTION_KEYS: ${PVE_HELPER_ENCRYPTION_KEYS:?Set PVE_HELPER_ENCRYPTION_KEYS in .env}
@@ -293,6 +322,7 @@ services:
       - "10001"
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
+      - certificate_state:/certificate-state
       - type: bind
         source: ${PVE_HELPER_STORAGE_ROOT:?Set PVE_HELPER_STORAGE_ROOT in .env}
         target: /storages
@@ -336,6 +366,7 @@ services:
 volumes:
   postgres_data:
   storage_accel_state:
+  certificate_state:
 
 networks:
   default:

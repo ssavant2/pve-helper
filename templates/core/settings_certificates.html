@@ -1,0 +1,197 @@
+{% extends "core/settings_base.html" %}
+
+{% block settings_content %}
+  <section class="page-header settings-page-header">
+    <div>
+      <h2>Certificates</h2>
+      <p>The certificate this installation serves over HTTPS, and the authorities it trusts when connecting out.</p>
+    </div>
+    <div class="page-actions"><a class="secondary-action" href="{% url 'core:settings_log_forwarder' %}">Log forwarder</a></div>
+  </section>
+
+  {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
+
+  {% if force_http %}
+    <section class="panel notice notice-warning" role="status">
+      <p><code>APP_FORCE_HTTP</code> is set in <code>.env</code>, so this installation serves plain HTTP no matter what is selected below. Remove it and restart nginx to use HTTPS again.</p>
+    </section>
+  {% endif %}
+
+  <section class="panel settings-storage-panel">
+    <div class="panel-heading">
+      <div>
+        <h2>HTTPS server certificate</h2>
+        <p class="panel-meta">Selecting a certificate makes nginx serve it on this installation&rsquo;s existing port within about a minute. The address does not change &mdash; only the scheme does, and plain HTTP redirects to it.</p>
+      </div>
+    </div>
+
+    <table class="data-table compact-table">
+      <thead><tr><th>Name</th><th>Subject</th><th>Issuer</th><th>Names</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {% for row in server_certificates %}
+          <tr>
+            <td>{{ row.record.label }}<span class="subline">SHA-256 {{ row.fingerprint }}</span></td>
+            <td>{{ row.record.subject|default:"-" }}</td>
+            <td>{{ row.record.issuer|default:"-" }}</td>
+            <td>{{ row.names|default:"-" }}</td>
+            <td>
+              {{ row.not_after|default:"-" }}
+              {% if row.expired %}<span class="subline certificate-expired">Expired</span>
+              {% elif row.expiring %}<span class="subline certificate-expiring">{{ row.days_remaining }} days left</span>{% endif %}
+            </td>
+            <td>{% if row.in_use %}<span class="badge success">Serving HTTPS</span>{% else %}<span class="subline">Stored</span>{% endif %}</td>
+            <td class="row-actions">
+              <form
+                method="post"
+                data-confirm="Remove {{ row.record.label }}? Its private key is deleted with it and cannot be recovered from this application."
+                data-confirm-title="Remove certificate?"
+                data-confirm-label="Remove certificate"
+                data-confirm-danger="true"
+              >
+                {% csrf_token %}
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="certificate_id" value="{{ row.record.pk }}">
+                <button
+                  class="icon-button danger"
+                  type="submit"
+                  {% if row.in_use %}disabled title="Select a different certificate or disable HTTPS first"{% else %}title="Remove certificate"{% endif %}
+                  aria-label="Remove certificate"
+                ><i data-lucide="trash-2" aria-hidden="true"></i></button>
+              </form>
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="7" class="empty-state">No server certificate has been uploaded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <form method="post" class="storage-access-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="select_https">
+      <div class="storage-access-form-grid">
+        <label><span>Serve HTTPS with</span>
+          <select name="certificate_id">
+            <option value="">No certificate</option>
+            {% for row in server_certificates %}<option value="{{ row.record.pk }}"{% if row.in_use %} selected{% endif %}{% if row.expired %} disabled{% endif %}>{{ row.record.label }}{% if row.expired %} — expired{% endif %}</option>{% endfor %}
+          </select>
+          <small>Only certificates stored with a matching private key can be selected.</small>
+        </label>
+        <label class="checkbox-control">
+          <input type="checkbox" name="https_enabled"{% if config.https_enabled %} checked{% endif %}{% if force_http %} disabled{% endif %}>
+          <span>Enable HTTPS</span>
+        </label>
+      </div>
+      <div class="storage-access-form-actions">
+        <button class="primary-action" type="submit">Apply</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel settings-storage-panel settings-storage-form-panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Add a server certificate</h2>
+        <p class="panel-meta">PEM, CRT/CER (DER), a fullchain file, or PKCS#12 (.pfx/.p12). The private key may be in its own file or inside the PKCS#12.</p>
+      </div>
+    </div>
+    <form method="post" class="storage-access-form" enctype="multipart/form-data">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="upload">
+      <input type="hidden" name="usage" value="server">
+      <div class="storage-access-form-grid">
+        <label><span>Name</span><input name="label" required maxlength="150" placeholder="pve-helper.example.net 2026"></label>
+        <label><span>Certificate or PKCS#12</span><input type="file" name="certificate" required accept=".pem,.crt,.cer,.der,.p12,.pfx"></label>
+        <label><span>Chain (optional)</span><input type="file" name="chain" accept=".pem,.crt,.cer,.der"><small>Intermediates, if they are not already in the file above.</small></label>
+        <label><span>Private key (optional)</span><input type="file" name="private_key" accept=".pem,.key,.der"><small>Not needed for a PKCS#12 file, which already contains it.</small></label>
+        <label><span>Password</span><input type="password" name="password" autocomplete="off"><small>For a PKCS#12 file or an encrypted private key. Leave empty otherwise.</small></label>
+      </div>
+      <div class="storage-access-form-actions">
+        <button class="primary-action" type="submit">Upload certificate</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel settings-storage-panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Trusted certificate authorities</h2>
+        <p class="panel-meta">Added to the trust bundle this installation uses for outbound TLS, alongside the deployment's own bundle rather than replacing it.</p>
+      </div>
+    </div>
+
+    <table class="data-table compact-table">
+      <thead><tr><th>Name</th><th>Subject</th><th>Issuer</th><th>Expires</th><th>Kind</th><th></th></tr></thead>
+      <tbody>
+        {% for row in authorities %}
+          <tr>
+            <td>{{ row.record.label }}<span class="subline">SHA-256 {{ row.fingerprint }}</span></td>
+            <td>{{ row.record.subject|default:"-" }}</td>
+            <td>{{ row.record.issuer|default:"-" }}</td>
+            <td>
+              {{ row.not_after|default:"-" }}
+              {% if row.expired %}<span class="subline certificate-expired">Expired</span>
+              {% elif row.expiring %}<span class="subline certificate-expiring">{{ row.days_remaining }} days left</span>{% endif %}
+            </td>
+            <td>{% if row.record.is_certificate_authority %}Certificate authority{% else %}Self-signed anchor{% endif %}</td>
+            <td class="row-actions">
+              <form
+                method="post"
+                data-confirm="Remove {{ row.record.label }} from the trust bundle? Connections that depend on it stop verifying."
+                data-confirm-title="Remove authority?"
+                data-confirm-label="Remove authority"
+                data-confirm-danger="true"
+              >
+                {% csrf_token %}
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="certificate_id" value="{{ row.record.pk }}">
+                <button class="icon-button danger" type="submit" title="Remove authority" aria-label="Remove authority"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+              </form>
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="empty-state">No authority has been added. Outbound TLS uses the deployment's own bundle only.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <form method="post" class="storage-access-form" enctype="multipart/form-data">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="upload">
+      <input type="hidden" name="usage" value="authority">
+      <div class="storage-access-form-grid">
+        <label><span>Name</span><input name="label" required maxlength="150" placeholder="Internal root CA"></label>
+        <label><span>Certificate</span><input type="file" name="certificate" required accept=".pem,.crt,.cer,.der"><small>PEM or DER. Export it without the private key.</small></label>
+      </div>
+      <div class="storage-access-form-actions">
+        <button class="secondary-action" type="submit">Add authority</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel settings-storage-panel settings-storage-form-panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Expiry warnings</h2>
+        <p class="panel-meta">One threshold for every certificate this installation knows about: the HTTPS certificate, each authority above, and the log forwarder's destination.</p>
+      </div>
+    </div>
+    <form method="post" class="storage-access-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="expiry_policy">
+      <div class="storage-access-form-grid">
+        <label class="checkbox-control">
+          <input type="checkbox" name="expiry_warning_enabled"{% if config.expiry_warning_enabled %} checked{% endif %}>
+          <span>Warn before a certificate expires</span>
+        </label>
+        <label><span>Days before expiry</span>
+          <input type="number" name="expiry_warning_days" min="{{ min_warning_days }}" max="{{ max_warning_days }}" value="{{ config.expiry_warning_days }}" required>
+          <small>Checked once a day. The warning appears in Recent Tasks as a question you answer by replacing the certificate.</small>
+        </label>
+      </div>
+      <div class="storage-access-form-actions">
+        <button class="secondary-action" type="submit">Save warning policy</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

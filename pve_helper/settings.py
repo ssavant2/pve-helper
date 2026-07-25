@@ -59,6 +59,32 @@ CSRF_TRUSTED_ORIGINS = env_list(
     "https://pve-helper.example.com,http://localhost:21080",
 )
 
+# The way back in. Turning on HTTPS makes the published port serve TLS, so a
+# certificate that turns out to be wrong locks the operator out of the UI that would
+# fix it. This variable lives in `.env` rather than the database on purpose: recovery
+# must not depend on reaching the application it is recovering.
+APP_FORCE_HTTP = env_bool("APP_FORCE_HTTP", False)
+
+# Django checks the Origin of an unsafe request against this list literally, and
+# enabling HTTPS changes the scheme of an address that is already in it — so every
+# POST would start failing CSRF the moment the operator turned TLS on, with no error
+# that points at the cause. The port does not change, so the twin of each accepted
+# http:// origin is exactly the origin that appears afterwards. This widens nothing:
+# the host was already trusted, and only the scheme differs.
+if not APP_FORCE_HTTP:
+    for _origin in list(CSRF_TRUSTED_ORIGINS):
+        if not _origin.startswith("http://"):
+            continue
+        _secure = "https://" + _origin[len("http://") :]
+        if _secure not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(_secure)
+
+# Where DB-held certificates are published as files for nginx and OpenSSL to read.
+PVE_HELPER_CERTIFICATE_STATE_DIR = env("PVE_HELPER_CERTIFICATE_STATE_DIR", "/certificate-state")
+# The deployment's own read-only trust bundle. Stored authorities are appended to a
+# copy of it; it is never rewritten in place.
+PVE_HELPER_BASE_CA_BUNDLE = env("PVE_HELPER_BASE_CA_BUNDLE", "")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

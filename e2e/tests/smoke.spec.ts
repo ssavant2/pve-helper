@@ -112,6 +112,7 @@ test("log forwarder uses a compact header toggle and standard save action", asyn
   await expect(page.getByRole("navigation", { name: "PVE-helper settings areas" }).getByRole("link")).toHaveText([
     "Log forwarder",
     "Storage access",
+    "Certificates",
   ]);
 
   const toggle = page.locator('input[name="enabled"]');
@@ -152,6 +153,57 @@ test("log forwarder refreshes delivery status and labels a paused backlog", asyn
 
   await expect(page.locator("[data-log-forwarder-pending]")).toHaveText("1 (paused)");
   await expect(page.locator("[data-log-forwarder-paused]")).toBeVisible();
+});
+
+test("log forwarder shows the certificate trust decision and its three honest answers", async ({ page }) => {
+  // The inspection is stubbed because there is no collector to probe here; what
+  // this asserts is the part the operator sees — that a destination with no
+  // approval says so, and that "no verification" is offered under its own name
+  // rather than hidden behind the recommended path.
+  await page.route("**/settings/log-forwarder/inspect/", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        host: "siem.example.test",
+        port: 6514,
+        expiry_warning_days: 7,
+        current: null,
+        certificate: {
+          subject: "CN=siem.example.test",
+          issuer: "CN=example internal CA",
+          sha256_fingerprint: "ab".repeat(32),
+          not_before: "2026-01-01 00:00",
+          not_after: "2027-01-01 00:00",
+          expires_in_days: 160,
+          self_signed: false,
+          system_trusted: false,
+          verification_error: "unable to get local issuer certificate",
+          ca_available: true,
+        },
+      }),
+    });
+  });
+
+  await page.goto("/settings/log-forwarder/");
+
+  const panel = page.locator("[data-log-forwarder-trust]");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole("button", { name: /Inspect and approve|Review certificate/ })).toBeVisible();
+
+  // The dialog inspects whatever is typed into the form, not only what is saved,
+  // so an operator can look at a destination before committing to it.
+  await page.fill('input[name="host"]', "siem.example.test");
+  await panel.locator("[data-log-forwarder-approve]").click();
+
+  const dialog = page.locator(".log-forwarder-trust-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("does not verify against the installation's trust store");
+  await expect(dialog.locator(".log-forwarder-fingerprint")).toContainText("AB:AB");
+  await expect(dialog.locator("input[name='trust-mode']")).toHaveCount(3);
+  // The safe default is preselected, and the unverified answer is spelled out.
+  await expect(dialog.locator("input[name='trust-mode'][value='ca']")).toBeChecked();
+  await expect(dialog).toContainText("Accept any certificate (no verification)");
 });
 
 test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {
@@ -526,4 +578,44 @@ test("the browser title follows a soft navigation", async ({ page }) => {
   await expect
     .poll(() => page.evaluate(() => (window as Window & { titleSoftNavigationMarker?: string }).titleSoftNavigationMarker))
     .toBe("preserved");
+});
+
+// The Certificates tab is where an operator turns their own installation into an
+// HTTPS one, so the two things that must never be quietly wrong are that the
+// serving certificate cannot be deleted out from under nginx, and that the upload
+// form admits every format a CA actually hands people. Both are asserted on the
+// rendered page rather than through the service, because the service already has
+// unit coverage and the failure being guarded here is a template that stops
+// disabling the button.
+test("certificates tab offers every supported format and protects the serving certificate", async ({ page }) => {
+  await page.goto("/settings/certificates/");
+
+  await expect(page.getByRole("heading", { name: "HTTPS server certificate" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Trusted certificate authorities" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Expiry warnings" })).toBeVisible();
+
+  // PKCS#12 and DER are the two an operator is most likely to be handed and least
+  // likely to be able to convert without a shell.
+  const upload = page.locator('input[name="certificate"]').first();
+  const accepted = (await upload.getAttribute("accept")) || "";
+  for (const extension of [".pem", ".crt", ".cer", ".der", ".p12", ".pfx"]) {
+    expect(accepted).toContain(extension);
+  }
+  await expect(page.locator('input[name="password"]')).toHaveAttribute("type", "password");
+
+  // The threshold is one number for every certificate in the installation.
+  const days = page.locator('input[name="expiry_warning_days"]');
+  await expect(days).toHaveAttribute("min", "1");
+  await expect(days).toHaveAttribute("max", "99");
+
+  // Nothing is stored in the E2E database, so the empty state is what proves the
+  // table renders rather than throwing.
+  await expect(page.getByText("No server certificate has been uploaded yet.")).toBeVisible();
+});
+
+test("certificates tab is reachable from the settings tab strip", async ({ page }) => {
+  await page.goto("/settings/log-forwarder/");
+  await page.getByRole("link", { name: "Certificates", exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/certificates\/$/);
+  await expect(page.getByRole("heading", { name: "Certificates", exact: true })).toBeVisible();
 });
