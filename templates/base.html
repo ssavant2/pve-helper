@@ -72,13 +72,13 @@
         </div>
         <div class="user-area">
           <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">
-            <span data-theme-label>Theme</span>
+            <span data-theme-label>Light Theme</span>
           </button>
           <button class="theme-toggle" type="button" data-guest-id-toggle aria-pressed="true" aria-label="Hide VM/CT IDs" title="Toggle VM/CT ID display">
-            <span data-guest-id-label>IDs on</span>
+            <span data-guest-id-label>VM/CT IDs On</span>
           </button>
           <button class="theme-toggle" type="button" data-ip-version-toggle aria-pressed="false" aria-label="Show IPv4 only" title="Toggle IPv6 display">
-            <span data-ip-version-label>IPv4+IPv6</span>
+            <span data-ip-version-label>Show IPv4+IPv6</span>
           </button>
           {% if request.user.is_authenticated %}
             <span>{{ request.user.get_username }}</span>

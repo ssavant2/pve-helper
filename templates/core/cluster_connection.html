@@ -2,8 +2,8 @@
 
 {% block content %}
   <div class="page-header cluster-page-header">
-    <div><a href="{% url 'core:clusters_overview' %}">Cluster connections</a><h1>{{ cluster.display_name }}</h1><p><code>{{ cluster.key }}</code> · {% if cluster.enabled %}Enabled{% else %}Disabled{% endif %}{% if cluster.ingestion_quarantined %} · Quarantined{% endif %}</p></div>
-    <a class="primary-action" href="{% url 'core:cluster_endpoint_add' cluster.key %}"><i data-lucide="plus" aria-hidden="true"></i> Add endpoint</a>
+    <div><a href="{% url 'core:clusters_overview' %}">Connections</a><h1>{{ cluster.display_name }}</h1><p><code>{{ cluster.key }}</code> · {% if cluster.enabled %}Enabled{% else %}Disabled{% endif %}{% if cluster.ingestion_quarantined %} · Quarantined{% endif %}</p></div>
+    <a class="vs-toolbar-button" href="{% url 'core:cluster_endpoint_add' cluster.key %}"><i data-lucide="plus" aria-hidden="true"></i> Add endpoint</a>
   </div>
 
   {% if operation_error %}<div class="panel cluster-operation-error"><strong>Operation refused:</strong> {{ operation_error }}{% if show_force_retire %}<button class="secondary-action danger" type="submit" form="cluster-force-retire-form">Force-retire a permanently unavailable site</button>{% endif %}</div>{% endif %}
@@ -40,8 +40,8 @@
   <section class="panel panel-spaced cluster-retirement-panel" data-cluster-retirement>
     <div class="cluster-retirement-heading">
       <div>
-        <h2>Danger zone</h2>
-        <p>Retirement permanently removes this connection from managed use while preserving its tombstone and history.</p>
+        <h2>Permanent removal</h2>
+        <p>Retirement permanently removes this connection from managed use while preserving its tombstone and history. Disable the cluster above first; verified retirement below is only available once it is disabled.</p>
       </div>
     </div>
     {% if not cluster.enabled %}

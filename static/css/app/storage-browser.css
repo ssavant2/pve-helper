@@ -403,7 +403,7 @@
   gap: 15px 20px;
 }
 
-.storage-access-form-grid label {
+.storage-access-form-grid label:not(.checkbox-control) {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -416,11 +416,11 @@
   display: none;
 }
 
-.storage-access-form-grid label > span {
+.storage-access-form-grid label:not(.checkbox-control) > span {
   font-weight: 600;
 }
 
-.storage-access-form-grid input,
+.storage-access-form-grid input:not([type="checkbox"]),
 .storage-access-form-grid select {
   width: 100%;
   min-height: 34px;

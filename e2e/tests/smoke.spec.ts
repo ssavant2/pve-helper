@@ -10,7 +10,7 @@ const PAGES = [
   { name: "Dashboard", path: "/" },
   { name: "VMs Overview", path: "/vms/overview/" },
   { name: "VMs Inventory", path: "/vms/" },
-  { name: "Cluster connections", path: "/clusters/" },
+  { name: "Connections", path: "/clusters/" },
   { name: "Add cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Retired cluster detail", path: "/clusters/retired-e2e/connection/" },
@@ -110,9 +110,9 @@ test("log forwarder uses a compact header toggle and standard save action", asyn
   await page.goto("/settings/log-forwarder/");
 
   await expect(page.getByRole("navigation", { name: "PVE-helper settings areas" }).getByRole("link")).toHaveText([
+    "Certificates",
     "Log forwarder",
     "Storage access",
-    "Certificates",
   ]);
 
   const toggle = page.locator('input[name="enabled"]');
@@ -208,7 +208,7 @@ test("log forwarder shows the certificate trust decision and its three honest an
 
 test("cluster connection UI separates immutable identity from write-only credentials", async ({ page }) => {
   await page.goto("/clusters/");
-  await expect(page.getByRole("heading", { name: "Cluster connections" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
   // Scoped to main: the sidebar now lists every managed cluster under Tags and
   // Scheduled Tasks, so the bare name matches three links.
   await expect(page.getByRole("main").getByRole("link", { name: "E2E cluster", exact: true })).toBeVisible();

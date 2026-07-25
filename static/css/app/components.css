@@ -203,6 +203,8 @@
 
 .scan-action-button.loading {
   background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--button-primary-text);
 }
 
 .scan-spinner {

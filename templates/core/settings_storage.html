@@ -102,13 +102,13 @@
       {% endif %}
       <div class="storage-access-form-actions">
         {% if confirm_backend_mismatch %}
-          <button class="primary-action" type="submit" name="confirm_backend_mismatch" value="1">Register against this export anyway</button>
+          <button class="secondary-action" type="submit" name="confirm_backend_mismatch" value="1">Register against this export anyway</button>
           <button class="secondary-action" type="submit">Re-check the mount</button>
         {% elif confirm_distinct_backend %}
-          <button class="primary-action" type="submit" name="confirm_distinct_backend" value="1">Register as a different backend</button>
+          <button class="secondary-action" type="submit" name="confirm_distinct_backend" value="1">Register as a different backend</button>
           <button class="secondary-action" type="submit">Re-check identity</button>
         {% else %}
-          <button class="primary-action" type="submit">Register mount</button>
+          <button class="secondary-action" type="submit">Register mount</button>
         {% endif %}
       </div>
     </form>

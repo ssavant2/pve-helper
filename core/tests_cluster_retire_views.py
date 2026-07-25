@@ -91,7 +91,7 @@ class ClusterRetirementViewTests(TestCase):
         self.assertNotContains(response, "Update name")
         self.assertNotContains(response, "rotate credential")
         self.assertNotContains(response, "Enable cluster")
-        self.assertNotContains(response, "Danger zone")
+        self.assertNotContains(response, "Permanent removal")
 
     def test_retired_connection_mutation_routes_fail_closed(self):
         retired = self._retired_cluster()

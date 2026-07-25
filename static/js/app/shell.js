@@ -61,7 +61,7 @@ const applyTheme = (theme) => {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
   themeLabels.forEach((label) => {
-    label.textContent = theme === "dark" ? "Dark" : "Light";
+    label.textContent = theme === "dark" ? "Dark Theme" : "Light Theme";
   });
   if (themeToggle) {
     themeToggle.setAttribute("aria-label", `Switch to ${theme === "dark" ? "light" : "dark"} theme`);
@@ -480,7 +480,7 @@ const applyGuestNameStyle = (style) => {
   document.documentElement.dataset.guestNameStyle = value;
   const showing = value === "id-name";
   document.querySelectorAll("[data-guest-id-label]").forEach((label) => {
-    label.textContent = showing ? "IDs on" : "IDs off";
+    label.textContent = showing ? "VM/CT IDs On" : "VM/CT IDs Off";
   });
   const toggle = document.querySelector("[data-guest-id-toggle]");
   if (toggle) {
@@ -517,7 +517,7 @@ const applyIpVersionStyle = (style) => {
   document.documentElement.dataset.ipVersionStyle = value;
   const ipv4Only = value === "ipv4-only";
   document.querySelectorAll("[data-ip-version-label]").forEach((label) => {
-    label.textContent = ipv4Only ? "IPv4 only" : "IPv4+IPv6";
+    label.textContent = ipv4Only ? "Show IPv4 only" : "Show IPv4+IPv6";
   });
   const toggle = document.querySelector("[data-ip-version-toggle]");
   if (toggle) {
