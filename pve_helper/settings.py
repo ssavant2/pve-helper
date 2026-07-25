@@ -377,6 +377,11 @@ Q_CLUSTER = {
     "workers": env_int("Q_CLUSTER_WORKERS", 1),
     "timeout": env_int("Q_CLUSTER_TIMEOUT", 1800),
     "retry": env_int("Q_CLUSTER_RETRY", 2100),
+    # django-q's 0.2 s default is ~10 broker scans/s per cluster on an idle
+    # installation. Nothing here needs sub-second pickup: the scheduled-action
+    # dispatcher polls at 5 s and storage refreshes at 1-5 min, so one extra
+    # second before a queued task starts is the worst case.
+    "poll": env_int("Q_CLUSTER_POLL", 1),
     "ALT_CLUSTERS": {
         # Only the default/control cluster runs Django-Q's scheduler. The
         # separate bulk cluster receives explicitly routed data-plane payloads.
@@ -385,6 +390,7 @@ Q_CLUSTER = {
             "timeout": env_int("Q_BULK_TIMEOUT", 21600),
             # Must exceed timeout: django-q retries a task once retry elapses.
             "retry": env_int("Q_BULK_RETRY", 22200),
+            "poll": env_int("Q_BULK_POLL", 1),
             "scheduler": False,
         },
     },
