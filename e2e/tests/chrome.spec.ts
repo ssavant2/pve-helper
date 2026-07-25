@@ -66,7 +66,7 @@ test("closing a question dialog defers it; answering removes it", async ({ page 
   await expect(dialog.locator("[data-confirm-yes]")).toBeHidden();
   // Still owed, still reachable.
   await page.evaluate(() =>
-    (window as Window & { pveHelperRefreshRecentTasks: () => void }).pveHelperRefreshRecentTasks(),
+    (window as unknown as { pveHelperRefreshRecentTasks: () => void }).pveHelperRefreshRecentTasks(),
   );
   await expect(badge).toBeVisible();
 
@@ -88,7 +88,7 @@ test("recent task columns can be reordered and keep their order after refresh", 
   expect(reordered.indexOf("target")).toBeGreaterThan(reordered.indexOf("cluster"));
 
   await page.evaluate(() =>
-    (window as Window & { pveHelperRefreshRecentTasks: () => void }).pveHelperRefreshRecentTasks(),
+    (window as unknown as { pveHelperRefreshRecentTasks: () => void }).pveHelperRefreshRecentTasks(),
   );
   await expect.poll(columnOrder).toEqual(reordered);
 });

@@ -77,7 +77,7 @@ def cluster_options(cluster) -> tuple[object | None, dict, str]:
     carry different colours, so a fallback to another cluster's options would merge
     two registries into one writable catalog.
     """
-    from core.services.cluster_resolver import ClusterResolutionError, cluster_wide_read
+    from core.services.cluster_resolver import ClusterResolutionError, cluster_wide_read, refusal_message
 
     cluster, error = resolve_tag_registry_cluster(cluster)
     if cluster is None:
@@ -94,7 +94,20 @@ def cluster_options(cluster) -> tuple[object | None, dict, str]:
         # membership is what disabling promises to leave readable — so refused
         # acquisition is a registry that is unavailable, not a 500. The page states
         # the cluster's state separately; this is the registry's own reason.
-        return None, {}, str(exc)
+        #
+        # It reaches an operator twice over: a banner on the Tags page, and the
+        # `registry_error` field of the refresh task's stored details. Both are
+        # caller-owned-text boundaries, so the refusal's class picks the wording and
+        # the exception's own string stays in the log.
+        return (
+            None,
+            {},
+            public_exception_message(
+                exc,
+                operation="tag_registry_read",
+                fallback=refusal_message(exc),
+            ),
+        )
     if not result.complete:
         error = "No Proxmox endpoint could read cluster tag options."
         if result.attempted:

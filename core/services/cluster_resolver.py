@@ -44,6 +44,39 @@ class ClusterRetiredError(ClusterResolutionError):
     """Acquisition was attempted against a permanently retired cluster."""
 
 
+#: Caller-owned prose for each way acquisition can be refused. The exceptions carry
+#: their own text, but that text is written for a log: it names the cluster key and,
+#: for a quarantine, repeats the stored reason verbatim. A refusal that reaches a
+#: banner or a durable task payload takes text from here instead, so what crosses
+#: that boundary is the exception's *class* and never its string.
+_REFUSAL_MESSAGES: tuple[tuple[type[ClusterResolutionError], str], ...] = (
+    (
+        ClusterRetiredError,
+        "This connection is retired, so it can never read from or write to Proxmox "
+        "again. Its retained history stays readable under Connections.",
+    ),
+    (
+        ClusterQuarantinedError,
+        "This connection is quarantined because its cluster CA no longer matches the "
+        "approved identity. Re-approve its identity before reading from it.",
+    ),
+    (
+        ClusterDisabledError,
+        "This connection is disabled. Re-enable it, which re-verifies its identity and trust, before reading from it.",
+    ),
+)
+
+REFUSAL_FALLBACK_MESSAGE = "No usable Proxmox connection could be acquired for this cluster."
+
+
+def refusal_message(exc: ClusterResolutionError) -> str:
+    """The operator-facing reason acquisition was refused, chosen by refusal kind."""
+    for kind, message in _REFUSAL_MESSAGES:
+        if isinstance(exc, kind):
+            return message
+    return REFUSAL_FALLBACK_MESSAGE
+
+
 def _require_acquirable(cluster: ProxmoxCluster) -> None:
     """Refuse live acquisition against a retired, disabled or quarantined cluster.
 

@@ -527,7 +527,11 @@ test("VM overview makes wide visible columns horizontally reachable", async ({ p
 
 test("CSS layers load in the intended cascade order", async ({ page }) => {
   await page.goto("/vms/overview/", { waitUntil: "load" });
-  const hrefs = await page.locator('link[rel="stylesheet"]').evaluateAll((links) => links.map((link) => link.href));
+  // Annotated rather than inferred: evaluateAll hands back SVGElement | HTMLElement,
+  // and neither of those has `href`. The selector already guarantees a <link>.
+  const hrefs = await page
+    .locator('link[rel="stylesheet"]')
+    .evaluateAll((links: HTMLLinkElement[]) => links.map((link) => link.href));
   const paths = hrefs.map((href) => new URL(href).pathname);
 
   expect(paths).toEqual([
