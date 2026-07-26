@@ -48,6 +48,7 @@
           <th>Action</th>
           <th>Target</th>
           <th>Schedule</th>
+          <th>End</th>
           <th>Next Run</th>
           <th>Catch-up</th>
           <th>Last Status</th>
@@ -67,6 +68,7 @@
             <td>{{ action.get_action_type_display }}</td>
             <td>{% guest_label action.guest_identity %}</td>
             <td>{{ action.display_schedule }}</td>
+            <td>{{ action.display_end }}</td>
             <td>{{ action.next_run_at|date:"Y-m-d H:i:s"|default:"-" }}</td>
             <td>
               {% if action.catch_up_policy == "run_once_late" %}
@@ -104,7 +106,7 @@
           </tr>
         {% empty %}
           <tr>
-            <td colspan="10" class="empty-state">No scheduled tasks have been created yet.</td>
+            <td colspan="11" class="empty-state">No scheduled tasks have been created yet.</td>
           </tr>
         {% endfor %}
       </tbody>

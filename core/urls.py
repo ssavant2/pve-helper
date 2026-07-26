@@ -31,6 +31,7 @@ urlpatterns = [
     path("settings/storage/", views.storage_mount_register, name="settings_storage"),
     path("settings/certificates/", views.certificate_settings, name="settings_certificates"),
     path("settings/log-forwarder/", views.log_forwarder_settings, name="settings_log_forwarder"),
+    path("settings/scheduled-tasks/", views.scheduled_task_settings, name="settings_scheduled_tasks"),
     path("settings/log-forwarder/status/", views.log_forwarder_status, name="settings_log_forwarder_status"),
     path("settings/log-forwarder/test/", views.log_forwarder_test, name="settings_log_forwarder_test"),
     path("settings/log-forwarder/inspect/", views.log_forwarder_inspect, name="settings_log_forwarder_inspect"),

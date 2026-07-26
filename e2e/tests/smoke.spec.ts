@@ -14,10 +14,12 @@ const PAGES = [
   { name: "Add host/cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Retired cluster detail", path: "/clusters/retired-e2e/connection/" },
+  { name: "New scheduled task", path: "/clusters/e2e/scheduled-tasks/new/" },
   { name: "Datastore consumer view", path: "/clusters/e2e/datastores/e2e-nfs/summary/" },
   { name: "Tags", path: "/clusters/e2e/tags/" },
   { name: "PVE-helper Settings", path: "/settings/storage/" },
   { name: "Log forwarder settings", path: "/settings/log-forwarder/" },
+  { name: "Scheduled Tasks settings", path: "/settings/scheduled-tasks/" },
   { name: "Audit log", path: "/audit/" },
 ];
 
@@ -112,6 +114,7 @@ test("log forwarder uses a compact header toggle and standard save action", asyn
   await expect(page.getByRole("navigation", { name: "PVE-helper settings areas" }).getByRole("link")).toHaveText([
     "Certificates",
     "Log forwarder",
+    "Scheduled Tasks",
     "Storage access",
   ]);
 
@@ -132,6 +135,44 @@ test("log forwarder uses a compact header toggle and standard save action", asyn
   await saveButton.click();
   await expect(page).toHaveURL(/\/settings\/log-forwarder\/$/);
   await expect(page.locator(".messages")).toHaveCount(0);
+});
+
+test("scheduled task settings expose bounded run-history retention", async ({ page }) => {
+  await page.goto("/settings/scheduled-tasks/");
+
+  await expect(page.getByRole("link", { name: "Scheduled Tasks", exact: true })).toHaveClass(/active/);
+  const retention = page.getByLabel("Retention days");
+  await expect(retention).toHaveAttribute("min", "1");
+  await expect(retention).toHaveAttribute("max", "999");
+  await expect(retention).toHaveValue("90");
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveClass(/secondary-action/);
+});
+
+test("scheduled task end conditions share the date picker and preview run limits", async ({ page }) => {
+  await page.goto("/clusters/e2e/scheduled-tasks/new/", { waitUntil: "load" });
+
+  const recurrence = page.getByLabel("Recurrence");
+  const endCondition = page.getByLabel("End Condition");
+  await expect(endCondition).toBeDisabled();
+
+  await recurrence.selectOption("daily");
+  await expect(endCondition).toBeEnabled();
+  await endCondition.selectOption("run_until");
+
+  const runUntilDate = page.locator('input[name="run_until_date"]');
+  await expect(runUntilDate).toBeEnabled();
+  await page.getByRole("button", { name: "Choose run until date" }).click();
+  const runUntilPicker = runUntilDate.locator("xpath=..").locator("[data-schedule-date-popover]");
+  await expect(runUntilPicker).toBeVisible();
+  await runUntilPicker.locator("[data-schedule-date-day].in-month").first().click();
+  await expect(runUntilDate).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
+
+  await endCondition.selectOption("run_count");
+  await expect(runUntilDate).toBeDisabled();
+  const runTimes = page.getByLabel("Run Times");
+  await expect(runTimes).toBeEnabled();
+  await runTimes.fill("5");
+  await expect(page.locator("[data-schedule-preview-time]")).toContainText("5 scheduled runs remaining");
 });
 
 test("log forwarder refreshes delivery status and labels a paused backlog", async ({ page }) => {

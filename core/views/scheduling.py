@@ -7,7 +7,12 @@ from ..services.cluster_scopes import managed_clusters
 from ..services.cluster_state_labels import cluster_degraded_context
 from ..services.public_errors import public_exception_message
 from ..services.refs import GuestRef, RefParseError
-from ..services.scheduled_actions import IN_FLIGHT_RUN_STATUSES
+from ..services.scheduled_action_settings import run_history_retention_days
+from ..services.scheduled_actions import (
+    IN_FLIGHT_RUN_STATUSES,
+    scheduled_action_next_run_allowed,
+    scheduled_action_run_limit_reached,
+)
 from ..services.storage_mounts import resolve_storage_mount
 from ..services.tag_actions import TagOperationQueueError, TagOperationRetryError, retry_tag_operation
 from . import common
@@ -105,6 +110,7 @@ def scheduled_tasks(request, cluster_key: str):
         action.display_target = _scheduled_action_target_label(action)
         action.guest_identity = guest_identity_from_scheduled_action(action)
         action.display_schedule = _scheduled_action_schedule_label(action)
+        action.display_end = _scheduled_action_end_label(action)
         action.display_status_class = _scheduled_action_status_class(action.last_status)
         action.display_creator = action.created_by.get_username() if action.created_by else "system"
 
@@ -120,7 +126,7 @@ def scheduled_tasks(request, cluster_key: str):
         "scheduled_actions": actions,
         "latest_runs": latest_runs,
         "schedule_timezone": settings.TIME_ZONE,
-        "run_retention_days": settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS,
+        "run_retention_days": run_history_retention_days(),
         "target_filter": target_filter_value,
         "target_filter_label": _scheduled_target_label(target_ref) if target_filter_value else "",
         "scheduled_task_create_query": urlencode({"target": target_filter_value}) if target_filter_value else "",
@@ -687,6 +693,7 @@ def _scheduled_action_form_context(action: ScheduledAction, *, form_values: dict
         "weekday_choices": SCHEDULED_ACTION_WEEKDAYS,
         "ordinal_choices": SCHEDULED_ACTION_ORDINALS,
         "month_choices": SCHEDULED_ACTION_MONTHS,
+        "end_condition_choices": ScheduledAction.EndCondition.choices,
         "schedule_timezone": settings.TIME_ZONE,
     }
 
@@ -704,6 +711,10 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
             "ordinals": _posted_values(post, "ordinals", fallback_names=["ordinal"], default=["first"]),
             "days_of_month": post.get("days_of_month", post.get("day_of_month", "1")),
             "months": _posted_values(post, "months", default=SCHEDULED_ACTION_DEFAULT_MONTHS),
+            "end_condition": post.get("end_condition", ScheduledAction.EndCondition.NONE),
+            **_posted_datetime_parts(post, "run_until"),
+            "max_scheduled_runs": post.get("max_scheduled_runs", "1"),
+            "scheduled_run_count": action.scheduled_run_count,
             "catch_up_enabled": post.get("catch_up_enabled") == "on",
             "max_lateness_hours": post.get("max_lateness_hours", "1"),
             "action_timeout_seconds": post.get("action_timeout_seconds", "1800"),
@@ -718,6 +729,7 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
     if action.schedule_type == ScheduledAction.ScheduleType.ONCE:
         run_at = action.run_at or action.next_run_at
     run_date, run_hour, run_minute = _datetime_parts(run_at)
+    run_until_date, run_until_hour, run_until_minute = _datetime_parts(action.run_until)
     if action.schedule_type == ScheduledAction.ScheduleType.RECURRING:
         run_hour, run_minute = _time_parts(_recurrence_time_label(recurrence) if action.pk else "22:00")
     recurrence_kind = (
@@ -738,6 +750,12 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
         "ordinals": _recurrence_values(recurrence, "ordinals", "ordinal", "week", default=["first"]),
         "days_of_month": _recurrence_days_label(recurrence),
         "months": _recurrence_values(recurrence, "months", default=SCHEDULED_ACTION_DEFAULT_MONTHS),
+        "end_condition": action.end_condition or ScheduledAction.EndCondition.NONE,
+        "run_until_date": run_until_date,
+        "run_until_hour": run_until_hour,
+        "run_until_minute": run_until_minute,
+        "max_scheduled_runs": str(action.max_scheduled_runs or 1),
+        "scheduled_run_count": action.scheduled_run_count,
         "catch_up_enabled": action.catch_up_policy == ScheduledAction.CatchUpPolicy.RUN_ONCE_LATE,
         "max_lateness_hours": str(max(1, action.max_lateness_minutes // 60) if action.max_lateness_minutes else 1),
         "action_timeout_seconds": str(action.action_timeout_seconds or 1800),
@@ -873,6 +891,26 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
         except ValueError as exc:
             errors.append(str(exc))
 
+    end_condition = (
+        post.get("end_condition", ScheduledAction.EndCondition.NONE)
+        if selected_recurrence != SCHEDULED_ACTION_RECURRENCE_ONCE
+        else ScheduledAction.EndCondition.NONE
+    )
+    run_until = None
+    max_scheduled_runs = None
+    if end_condition not in ScheduledAction.EndCondition.values:
+        errors.append("Unknown end condition.")
+    elif end_condition == ScheduledAction.EndCondition.RUN_UNTIL:
+        try:
+            run_until = _parse_local_datetime_parts_from_post(post, "run_until", "Run until")
+        except ValueError as exc:
+            errors.append(str(exc))
+    elif end_condition == ScheduledAction.EndCondition.RUN_COUNT:
+        try:
+            max_scheduled_runs = _bounded_int(post.get("max_scheduled_runs", "1"), 1, 999, "Run count")
+        except ValueError as exc:
+            errors.append(str(exc))
+
     if errors:
         return errors
 
@@ -889,6 +927,9 @@ def _apply_scheduled_action_form(action: ScheduledAction, post, user) -> list[st
     action.recurrence = recurrence
     action.recurrence_kind = recurrence_kind
     action.timezone = settings.TIME_ZONE
+    action.end_condition = end_condition
+    action.run_until = run_until
+    action.max_scheduled_runs = max_scheduled_runs
     action.catch_up_policy = (
         ScheduledAction.CatchUpPolicy.RUN_ONCE_LATE if catch_up_enabled else ScheduledAction.CatchUpPolicy.SKIP_MISSED
     )
@@ -1047,6 +1088,17 @@ def _refresh_scheduled_action_next_run(action: ScheduledAction) -> None:
         raise ValueError(str(exc)) from exc
     if action.next_run_at is None:
         raise ValueError("Could not calculate the next run time.")
+    if scheduled_action_run_limit_reached(action):
+        action.next_run_at = None
+        if action.enabled:
+            raise ValueError(
+                f"Run count must be greater than the {action.scheduled_run_count} scheduled run(s) already started."
+            )
+        return
+    if not scheduled_action_next_run_allowed(action, action.next_run_at):
+        action.next_run_at = None
+        if action.enabled:
+            raise ValueError("Run until must be on or after the next scheduled run.")
 
 
 def _parse_local_datetime(value: str):
@@ -1065,20 +1117,24 @@ def _parse_local_datetime(value: str):
 
 
 def _parse_local_datetime_from_post(post):
-    legacy_value = post.get("run_at", "").strip()
+    return _parse_local_datetime_parts_from_post(post, "run", "Run")
+
+
+def _parse_local_datetime_parts_from_post(post, prefix: str, label: str):
+    legacy_value = post.get(f"{prefix}_at", "").strip()
     if legacy_value:
         return _parse_local_datetime(legacy_value)
 
-    run_date = post.get("run_date", "").strip()
+    run_date = post.get(f"{prefix}_date", "").strip()
     if not run_date:
-        raise ValueError("Run date is required.")
+        raise ValueError(f"{label} date is required.")
     try:
         parsed_date = datetime.strptime(run_date, "%Y-%m-%d").date()
     except ValueError as exc:
-        raise ValueError("Run date must use YYYY-MM-DD format.") from exc
+        raise ValueError(f"{label} date must use YYYY-MM-DD format.") from exc
 
-    hour = _bounded_int(post.get("run_hour", "0"), 0, 23, "Run hour")
-    minute = _bounded_int(post.get("run_minute", "0"), 0, 59, "Run minute")
+    hour = _bounded_int(post.get(f"{prefix}_hour", "0"), 0, 23, f"{label} hour")
+    minute = _bounded_int(post.get(f"{prefix}_minute", "0"), 0, 59, f"{label} minute")
     return tz.make_aware(datetime.combine(parsed_date, time(hour, minute)), ZoneInfo(settings.TIME_ZONE))
 
 
@@ -1194,6 +1250,10 @@ def _audit_scheduled_action_definition(request, action: str, scheduled_action: S
             "target_node": scheduled_action.target_node,
             "schedule_type": scheduled_action.schedule_type,
             "recurrence_kind": scheduled_action.recurrence_kind,
+            "end_condition": scheduled_action.end_condition,
+            "run_until": scheduled_action.run_until.isoformat() if scheduled_action.run_until else "",
+            "max_scheduled_runs": scheduled_action.max_scheduled_runs,
+            "scheduled_run_count": scheduled_action.scheduled_run_count,
             "next_run_at": scheduled_action.next_run_at.isoformat() if scheduled_action.next_run_at else "",
         },
     )
@@ -1201,6 +1261,14 @@ def _audit_scheduled_action_definition(request, action: str, scheduled_action: S
 
 def _scheduled_action_target_label(action: ScheduledAction) -> str:
     return guest_identity_from_scheduled_action(action).full_label_with_type
+
+
+def _scheduled_action_end_label(action: ScheduledAction) -> str:
+    if action.end_condition == ScheduledAction.EndCondition.RUN_UNTIL:
+        return f"Until {_format_local_datetime(action.run_until)}"
+    if action.end_condition == ScheduledAction.EndCondition.RUN_COUNT and action.max_scheduled_runs is not None:
+        return f"{action.scheduled_run_count} of {action.max_scheduled_runs} runs"
+    return "No end"
 
 
 def _latest_scheduled_runs(

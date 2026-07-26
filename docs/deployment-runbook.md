@@ -631,7 +631,6 @@ SCHEDULED_ACTIONS_ENABLED=true
 SCHEDULED_ACTION_TIMEOUT_SECONDS=1800
 BACKUP_TASK_TIMEOUT_SECONDS=21600
 SCHEDULED_ACTION_POLL_INTERVAL_SECONDS=5
-SCHEDULED_ACTION_RUN_RETENTION_DAYS=90
 ```
 
 For UI onboarding, paste the internal CA PEM in that cluster's trust step. Do not
@@ -644,6 +643,8 @@ When enabled, `SCHEDULED_ACTION_TIMEOUT_SECONDS` is the max time pve-helper will
 wait for a submitted Proxmox task before marking it timed out.
 `BACKUP_TASK_TIMEOUT_SECONDS` applies independently to long-running vzdump
 backup and restore jobs; the default is six hours.
+Scheduled task run-history retention is configured in **PVE-helper Settings →
+Scheduled Tasks** and defaults to 90 days.
 
 ## Storage consumer safety
 

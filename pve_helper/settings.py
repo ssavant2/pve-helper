@@ -336,7 +336,6 @@ SCHEDULED_ACTION_TIMEOUT_SECONDS = env_int("SCHEDULED_ACTION_TIMEOUT_SECONDS", 1
 # Keep this independently configurable without weakening scheduled-action timeouts.
 BACKUP_TASK_TIMEOUT_SECONDS = env_int("BACKUP_TASK_TIMEOUT_SECONDS", 21600)
 SCHEDULED_ACTION_POLL_INTERVAL_SECONDS = env_int("SCHEDULED_ACTION_POLL_INTERVAL_SECONDS", 5)
-SCHEDULED_ACTION_RUN_RETENTION_DAYS = env_int("SCHEDULED_ACTION_RUN_RETENTION_DAYS", 90)
 
 # Writes are the application's normal mode, not an opt-in: this is an administrative
 # tool and every mount already carries its own `ro`/`rw` answer, which

@@ -17,6 +17,7 @@ from .models import (
     ScanRun,
     ScheduledAction,
     ScheduledActionRun,
+    ScheduledActionSettings,
     StorageCatalogState,
     StorageMount,
     TrashItem,
@@ -182,6 +183,8 @@ class ScheduledActionAdmin(admin.ModelAdmin):
         "target_type",
         "target_vmid",
         "target_node",
+        "end_condition",
+        "scheduled_run_count",
         "next_run_at",
         "last_status",
     )
@@ -191,11 +194,12 @@ class ScheduledActionAdmin(admin.ModelAdmin):
         "action_type",
         "target_type",
         "schedule_type",
+        "end_condition",
         "catch_up_policy",
         "last_status",
     )
     search_fields = ("name", "target_name_snapshot", "target_node", "=target_vmid")
-    readonly_fields = ("created_at", "updated_at", "last_run_at", "last_status")
+    readonly_fields = ("created_at", "updated_at", "last_run_at", "last_status", "scheduled_run_count")
     raw_id_fields = ("created_by",)
 
 
@@ -214,6 +218,12 @@ class ScheduledActionRunAdmin(admin.ModelAdmin):
     search_fields = ("scheduled_action__name", "occurrence_key", "proxmox_task_upid", "error")
     readonly_fields = ("created_at", "updated_at", "preflight_snapshot", "result")
     raw_id_fields = ("scheduled_action", "triggered_by")
+
+
+@admin.register(ScheduledActionSettings)
+class ScheduledActionSettingsAdmin(admin.ModelAdmin):
+    list_display = ("run_history_retention_days", "updated_at")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(TrashItem)

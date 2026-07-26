@@ -1,0 +1,41 @@
+{% extends "core/settings_base.html" %}
+
+{% block settings_content %}
+  <section class="page-header settings-page-header">
+    <div>
+      <h2>Scheduled Tasks</h2>
+      <p>Configure how long completed scheduled task runs remain available.</p>
+    </div>
+  </section>
+
+  {% if errors %}<section class="panel notice notice-error"><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
+
+  <form method="post" class="panel settings-storage-panel settings-storage-form-panel">
+    {% csrf_token %}
+    <div class="panel-heading">
+      <div>
+        <h2>Run history retention</h2>
+        <p class="panel-meta">Completed run records older than this are removed automatically. The persistent counter used by “Run X times” is not affected.</p>
+      </div>
+    </div>
+    <div class="storage-access-form">
+      <div class="storage-access-form-grid">
+        <label>
+          <span>Retention days</span>
+          <input
+            type="number"
+            name="run_history_retention_days"
+            min="{{ min_retention_days }}"
+            max="{{ max_retention_days }}"
+            value="{{ config.run_history_retention_days }}"
+            required
+          >
+          <small>Choose a value from {{ min_retention_days }} to {{ max_retention_days }} days.</small>
+        </label>
+      </div>
+      <div class="storage-access-form-actions">
+        <button class="secondary-action" type="submit">Save</button>
+      </div>
+    </div>
+  </form>
+{% endblock %}

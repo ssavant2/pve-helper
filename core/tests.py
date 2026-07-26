@@ -2850,6 +2850,31 @@ class ScheduledActionDispatchTests(TestCase):
         self.assertEqual(run.planned_for, now)
         enqueue.assert_called_once_with("core.tasks.run_scheduled_action", run.id)
 
+    def test_run_until_stops_after_the_last_allowed_occurrence(self):
+        now = datetime(2026, 7, 1, 22, 0, tzinfo=timezone.UTC)
+        action = ScheduledAction.objects.create(
+            cluster=self.cluster,
+            name="Bounded shutdown",
+            action_type=ScheduledAction.ActionType.SHUTDOWN,
+            target_type=ScheduledAction.TargetType.VM,
+            target_vmid=500,
+            schedule_type=ScheduledAction.ScheduleType.RECURRING,
+            recurrence_kind=ScheduledAction.RecurrenceKind.DAILY,
+            recurrence={"time": "22:00"},
+            timezone="UTC",
+            next_run_at=now,
+            end_condition=ScheduledAction.EndCondition.RUN_UNTIL,
+            run_until=now,
+        )
+
+        result = dispatch_due_scheduled_actions(now=now, enqueue_func=Mock(return_value="task-id"))
+
+        self.assertEqual(result.queued, 1)
+        action.refresh_from_db()
+        self.assertFalse(action.enabled)
+        self.assertIsNone(action.next_run_at)
+        self.assertEqual(action.scheduled_run_count, 0)
+
     def test_dispatch_task_returns_serializable_result(self):
         result = dispatch_scheduled_actions()
 
@@ -3026,6 +3051,45 @@ class ScheduledActionExecutionTests(TestCase):
         self.assertIn("locked", run.error)
         self.assertEqual(fake_client.power_calls, [])
         self.assertEqual(action.last_status, ScheduledAction.LastStatus.SKIPPED)
+
+    def test_automatic_failed_run_counts_and_stops_at_the_run_limit(self):
+        action, run = self._queued_run()
+        action.enabled = True
+        action.next_run_at = timezone.now() + timedelta(days=1)
+        action.end_condition = ScheduledAction.EndCondition.RUN_COUNT
+        action.max_scheduled_runs = 1
+        action.save(
+            update_fields=[
+                "enabled",
+                "next_run_at",
+                "end_condition",
+                "max_scheduled_runs",
+                "updated_at",
+            ]
+        )
+        fake_client = self.FakeProxmoxClient(status="stopped", task_success=False)
+
+        execute_scheduled_action_run(run.id, client_factory=lambda _url: fake_client)
+
+        run.refresh_from_db()
+        action.refresh_from_db()
+        self.assertEqual(run.status, ScheduledActionRun.Status.FAILED)
+        self.assertEqual(action.scheduled_run_count, 1)
+        self.assertFalse(action.enabled)
+        self.assertIsNone(action.next_run_at)
+
+    def test_manual_run_does_not_count_toward_the_scheduled_run_limit(self):
+        action, run = self._queued_run()
+        action.end_condition = ScheduledAction.EndCondition.RUN_COUNT
+        action.max_scheduled_runs = 1
+        action.save(update_fields=["end_condition", "max_scheduled_runs", "updated_at"])
+        run.occurrence_key = "manual:1:test"
+        run.save(update_fields=["occurrence_key", "updated_at"])
+
+        execute_scheduled_action_run(run.id, client_factory=lambda _url: self.FakeProxmoxClient(status="stopped"))
+
+        action.refresh_from_db()
+        self.assertEqual(action.scheduled_run_count, 0)
 
 
 @override_settings(OIDC_ISSUER_URL="https://issuer.example/application/o/pve-helper")
@@ -9810,6 +9874,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
             recurrence_kind=ScheduledAction.RecurrenceKind.MONTHLY_ORDINAL,
             recurrence={"ordinal": "first", "weekday": "sunday", "time": "22:00"},
             next_run_at=timezone.now() + timedelta(days=1),
+            end_condition=ScheduledAction.EndCondition.RUN_COUNT,
+            max_scheduled_runs=12,
             created_by=user,
             last_status=ScheduledAction.LastStatus.COMPLETED,
         )
@@ -9850,6 +9916,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, '<span class="guest-vmid">500</span>', html=True)
         self.assertContains(response, '<span class="guest-name">Lab VM</span>', html=True)
         self.assertContains(response, "Monthly on the first sunday at 22:00")
+        self.assertContains(response, "0 of 12 runs")
         self.assertContains(response, "Latest 10 Runs")
         self.assertContains(response, "Success")
 
@@ -9980,8 +10047,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Monthly by date")
         self.assertContains(response, 'type="text" name="run_date"')
         self.assertContains(response, 'placeholder="YYYY-MM-DD"')
-        self.assertContains(response, "data-schedule-run-date-open")
-        self.assertContains(response, "data-schedule-run-date-grid")
+        self.assertContains(response, "data-schedule-date-open", count=2)
+        self.assertContains(response, "data-schedule-date-grid", count=2)
         self.assertContains(response, "<span>Mon</span><span>Tue</span><span>Wed</span>")
         self.assertNotContains(response, 'type="date" name="run_date"')
         self.assertContains(response, "Run Time")
@@ -9989,6 +10056,12 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Schedule Preview")
         self.assertContains(response, "Weeks")
         self.assertContains(response, "Months")
+        self.assertContains(response, "End Condition")
+        self.assertContains(response, "Run Until Date")
+        self.assertContains(response, "Run Times")
+        body = response.content.decode()
+        self.assertLess(body.index("<h2>Months</h2>"), body.index("<h2>End</h2>"))
+        self.assertLess(body.index("<h2>End</h2>"), body.index("<h2>Retry</h2>"))
 
         with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
             response = self.client.get(
@@ -10017,6 +10090,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     "ordinals": ["second", "fourth"],
                     "months_present": "1",
                     "months": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"],
+                    "end_condition": ScheduledAction.EndCondition.RUN_COUNT,
+                    "max_scheduled_runs": "12",
                     "catch_up_enabled": "on",
                     "max_lateness_hours": "2",
                 },
@@ -10034,8 +10109,43 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(action.recurrence["ordinals"], ["second", "fourth"])
         self.assertEqual(action.recurrence["weekdays"], ["2"])
         self.assertEqual(action.max_lateness_minutes, 120)
+        self.assertEqual(action.end_condition, ScheduledAction.EndCondition.RUN_COUNT)
+        self.assertEqual(action.max_scheduled_runs, 12)
+        self.assertEqual(action.scheduled_run_count, 0)
         self.assertIsNotNone(action.next_run_at)
         self.assertTrue(AuditEvent.objects.filter(action="scheduled_action.created").exists())
+
+    def test_scheduled_task_create_saves_an_exact_run_until_datetime(self):
+        user = get_user_model().objects.create_user(username="scheduler-until", password="unused")
+        self.client.force_login(user)
+
+        with patch("core.views.common.fetch_live_guest_inventory", return_value=[self._live_guest()]):
+            response = self.client.post(
+                reverse("core:scheduled_task_create", args=[self.cluster.key]),
+                {
+                    "name": "Temporary shutdown",
+                    "enabled": "on",
+                    "target": GuestRef(self.cluster.key, "vm", 500).serialize(),
+                    "action_type": ScheduledAction.ActionType.SHUTDOWN,
+                    "action_timeout_seconds": "900",
+                    "recurrence_kind": ScheduledAction.RecurrenceKind.DAILY,
+                    "run_hour": "22",
+                    "run_minute": "0",
+                    "end_condition": ScheduledAction.EndCondition.RUN_UNTIL,
+                    "run_until_date": "2030-07-31",
+                    "run_until_hour": "23",
+                    "run_until_minute": "45",
+                    "max_lateness_hours": "1",
+                },
+            )
+
+        self.assertRedirects(
+            response, reverse("core:scheduled_tasks", args=[self.cluster.key]), fetch_redirect_response=False
+        )
+        action = ScheduledAction.objects.get(name="Temporary shutdown")
+        self.assertEqual(action.end_condition, ScheduledAction.EndCondition.RUN_UNTIL)
+        self.assertEqual(timezone.localtime(action.run_until).strftime("%Y-%m-%d %H:%M"), "2030-07-31 23:45")
+        self.assertIsNone(action.max_scheduled_runs)
 
     def test_scheduled_task_create_rejects_duplicate_name(self):
         user = get_user_model().objects.create_user(username="scheduler", password="unused")

@@ -14,6 +14,7 @@
     <nav class="vs-tabs" aria-label="PVE-helper settings areas">
       <a href="{% url 'core:settings_certificates' %}"{% if active_settings_tab == "certificates" %} class="active"{% endif %}>Certificates</a>
       <a href="{% url 'core:settings_log_forwarder' %}"{% if active_settings_tab == "log_forwarder" %} class="active"{% endif %}>Log forwarder</a>
+      <a href="{% url 'core:settings_scheduled_tasks' %}"{% if active_settings_tab == "scheduled_tasks" %} class="active"{% endif %}>Scheduled Tasks</a>
       <a href="{% url 'core:settings_storage' %}"{% if active_settings_tab == "storage" %} class="active"{% endif %}>Storage access</a>
     </nav>
   </section>

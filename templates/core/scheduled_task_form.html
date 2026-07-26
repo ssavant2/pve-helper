@@ -22,7 +22,7 @@
     </section>
   {% endif %}
 
-  <form class="panel scheduled-task-form" method="post" data-scheduled-task-form data-schedule-timezone="{{ schedule_timezone }}">
+  <form class="panel scheduled-task-form" method="post" data-scheduled-task-form data-schedule-timezone="{{ schedule_timezone }}" data-scheduled-run-count="{{ form_values.scheduled_run_count }}">
     {% csrf_token %}
     <div class="scheduled-task-layout">
       <div class="scheduled-task-editor">
@@ -86,21 +86,21 @@
           <div class="scheduled-form-grid">
             <label data-recurrence-field="date">
               <span>Run Date</span>
-              <span class="scheduled-date-control">
-                <input type="text" name="run_date" value="{{ form_values.run_date }}" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" placeholder="YYYY-MM-DD" autocomplete="off" data-schedule-run-date>
-                <button class="scheduled-date-picker-trigger" type="button" aria-label="Choose run date" data-schedule-run-date-open>
+              <span class="scheduled-date-control" data-schedule-date-picker>
+                <input type="text" name="run_date" value="{{ form_values.run_date }}" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" placeholder="YYYY-MM-DD" autocomplete="off" data-schedule-date-input>
+                <button class="scheduled-date-picker-trigger" type="button" aria-label="Choose run date" data-schedule-date-open>
                   <i data-lucide="calendar" aria-hidden="true"></i>
                 </button>
-                <div class="scheduled-date-picker-popover" data-schedule-run-date-popover hidden>
+                <div class="scheduled-date-picker-popover" data-schedule-date-popover hidden>
                   <div class="scheduled-date-picker-heading">
-                    <button type="button" aria-label="Previous month" data-schedule-run-date-prev><i data-lucide="chevron-left" aria-hidden="true"></i></button>
-                    <strong data-schedule-run-date-month>-</strong>
-                    <button type="button" aria-label="Next month" data-schedule-run-date-next><i data-lucide="chevron-right" aria-hidden="true"></i></button>
+                    <button type="button" aria-label="Previous month" data-schedule-date-prev><i data-lucide="chevron-left" aria-hidden="true"></i></button>
+                    <strong data-schedule-date-month>-</strong>
+                    <button type="button" aria-label="Next month" data-schedule-date-next><i data-lucide="chevron-right" aria-hidden="true"></i></button>
                   </div>
                   <div class="scheduled-date-picker-weekdays" aria-hidden="true">
                     <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
                   </div>
-                  <div class="scheduled-date-picker-grid" data-schedule-run-date-grid></div>
+                  <div class="scheduled-date-picker-grid" data-schedule-date-grid></div>
                 </div>
               </span>
             </label>
@@ -160,6 +160,56 @@
                 <span>{{ label }}</span>
               </label>
             {% endfor %}
+          </div>
+        </section>
+
+        <section class="scheduled-form-section" data-recurrence-field="end">
+          <h2>End</h2>
+          <div class="scheduled-form-grid">
+            <label>
+              <span>End Condition</span>
+              <select name="end_condition" data-schedule-end-condition>
+                {% for value, label in end_condition_choices %}
+                  <option value="{{ value }}" {% if form_values.end_condition == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+
+            <label data-schedule-end-field="run_until">
+              <span>Run Until Date</span>
+              <span class="scheduled-date-control" data-schedule-date-picker>
+                <input type="text" name="run_until_date" value="{{ form_values.run_until_date }}" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" placeholder="YYYY-MM-DD" autocomplete="off" data-schedule-date-input>
+                <button class="scheduled-date-picker-trigger" type="button" aria-label="Choose run until date" data-schedule-date-open>
+                  <i data-lucide="calendar" aria-hidden="true"></i>
+                </button>
+                <div class="scheduled-date-picker-popover" data-schedule-date-popover hidden>
+                  <div class="scheduled-date-picker-heading">
+                    <button type="button" aria-label="Previous month" data-schedule-date-prev><i data-lucide="chevron-left" aria-hidden="true"></i></button>
+                    <strong data-schedule-date-month>-</strong>
+                    <button type="button" aria-label="Next month" data-schedule-date-next><i data-lucide="chevron-right" aria-hidden="true"></i></button>
+                  </div>
+                  <div class="scheduled-date-picker-weekdays" aria-hidden="true">
+                    <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+                  </div>
+                  <div class="scheduled-date-picker-grid" data-schedule-date-grid></div>
+                </div>
+              </span>
+            </label>
+
+            <label data-schedule-end-field="run_until">
+              <span>Run Until Time</span>
+              <span class="time-pair">
+                <input type="number" name="run_until_hour" min="0" max="23" value="{{ form_values.run_until_hour }}" aria-label="Run until hour">
+                <span>:</span>
+                <input type="number" name="run_until_minute" min="0" max="59" value="{{ form_values.run_until_minute }}" aria-label="Run until minute">
+              </span>
+            </label>
+
+            <label data-schedule-end-field="run_count">
+              <span>Run Times</span>
+              <input type="number" name="max_scheduled_runs" min="1" max="999" value="{{ form_values.max_scheduled_runs }}">
+              {% if form_values.scheduled_run_count %}<small>{{ form_values.scheduled_run_count }} scheduled run{{ form_values.scheduled_run_count|pluralize }} already started.</small>{% endif %}
+            </label>
           </div>
         </section>
 

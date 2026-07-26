@@ -670,6 +670,8 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Scheduled task cancelled"
     if event.action == "scheduled_action.run_retention.purge":
         return "Scheduled task retention purge"
+    if event.action == "scheduled_action.run_retention.updated":
+        return "Update scheduled task run retention"
     return event.action
 
 

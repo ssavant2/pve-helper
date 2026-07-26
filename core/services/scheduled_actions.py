@@ -35,6 +35,7 @@ from core.services.public_errors import (
     public_exception_message,
     public_failure,
 )
+from core.services.scheduled_action_settings import run_history_retention_days
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 
 SCHEDULED_ACTION_DISPATCH_SCHEDULE_NAME = "pve-helper scheduled action dispatcher"
@@ -306,7 +307,7 @@ def dispatch_due_scheduled_actions(
     enqueue_func: Callable[..., Any] = async_task,
 ) -> DispatchResult:
     reap_stale_scheduled_action_runs(now=now)
-    prune_scheduled_action_runs(retention_days=settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS, now=now)
+    prune_scheduled_action_runs(retention_days=run_history_retention_days(), now=now)
 
     now = now or timezone.now()
     queued_runs: list[ScheduledActionRun] = []
@@ -452,7 +453,7 @@ def reap_stale_scheduled_action_runs(*, now=None) -> int:
 
 
 def prune_scheduled_action_runs(*, retention_days: int | None = None, now=None) -> int:
-    retention_days = retention_days if retention_days is not None else settings.SCHEDULED_ACTION_RUN_RETENTION_DAYS
+    retention_days = retention_days if retention_days is not None else run_history_retention_days()
     now = now or timezone.now()
     cutoff = now - timedelta(days=retention_days)
     deleted_count, _deleted_by_model = (
@@ -618,9 +619,30 @@ def _start_run(run_id: int) -> ScheduledActionRun | None:
         )
         if run is None or run.status != ScheduledActionRun.Status.QUEUED:
             return None
+        action = ScheduledAction.objects.select_for_update().get(pk=run.scheduled_action_id)
+        automated_run = not run.occurrence_key.startswith("manual:")
+        if automated_run and scheduled_action_run_limit_reached(action):
+            run.status = ScheduledActionRun.Status.CANCELLED
+            run.outcome = ScheduledActionRun.Outcome.CANCELLED
+            run.finished_at = now
+            run.error = "The scheduled run limit was already reached."
+            run.save(update_fields=["status", "outcome", "finished_at", "error", "updated_at"])
+            action.enabled = False
+            action.next_run_at = None
+            action.save(update_fields=["enabled", "next_run_at", "updated_at"])
+            return None
         run.status = ScheduledActionRun.Status.PREFLIGHT
         run.started_at = now
         run.save(update_fields=["status", "started_at", "updated_at"])
+        if automated_run:
+            action.scheduled_run_count += 1
+            update_fields = ["scheduled_run_count", "updated_at"]
+            if scheduled_action_run_limit_reached(action):
+                action.enabled = False
+                action.next_run_at = None
+                update_fields.extend(["enabled", "next_run_at"])
+            action.save(update_fields=update_fields)
+            run.scheduled_action = action
 
     _audit_run(run, action="scheduled_action.run_started", outcome="success")
     return run
@@ -830,7 +852,9 @@ def _advance_action_after_claim(action: ScheduledAction, now, status: str) -> st
             status = ScheduledAction.LastStatus.FAILED
             error = public_failure(exc, operation="advance_scheduled_action").message
         else:
-            action.enabled = action.next_run_at is not None
+            action.enabled = scheduled_action_next_run_allowed(action, action.next_run_at)
+            if not action.enabled:
+                action.next_run_at = None
     else:
         action.enabled = False
         action.next_run_at = None
@@ -838,6 +862,22 @@ def _advance_action_after_claim(action: ScheduledAction, now, status: str) -> st
     action.last_status = status
     action.save(update_fields=["enabled", "next_run_at", "last_run_at", "last_status", "updated_at"])
     return error
+
+
+def scheduled_action_run_limit_reached(action: ScheduledAction) -> bool:
+    return (
+        action.end_condition == ScheduledAction.EndCondition.RUN_COUNT
+        and action.max_scheduled_runs is not None
+        and action.scheduled_run_count >= action.max_scheduled_runs
+    )
+
+
+def scheduled_action_next_run_allowed(action: ScheduledAction, next_run_at) -> bool:
+    if next_run_at is None or scheduled_action_run_limit_reached(action):
+        return False
+    if action.end_condition == ScheduledAction.EndCondition.RUN_UNTIL:
+        return action.run_until is not None and next_run_at <= action.run_until
+    return True
 
 
 def _run_was_cancelled(run: ScheduledActionRun) -> bool:
@@ -906,6 +946,10 @@ def _audit_run(
             "target_vmid": scheduled_action.target_vmid,
             "target_node": scheduled_action.target_node,
             "action_type": scheduled_action.action_type,
+            "end_condition": scheduled_action.end_condition,
+            "run_until": scheduled_action.run_until.isoformat() if scheduled_action.run_until else "",
+            "max_scheduled_runs": scheduled_action.max_scheduled_runs,
+            "scheduled_run_count": scheduled_action.scheduled_run_count,
             "planned_for": run.planned_for.isoformat(),
             "proxmox_task_upid": run.proxmox_task_upid,
             **(details or {}),

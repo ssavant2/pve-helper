@@ -271,6 +271,28 @@ class CertificateSettings(TimestampedModel):
         return f"certificates (https={'on' if self.https_enabled else 'off'})"
 
 
+class ScheduledActionSettings(TimestampedModel):
+    """Installation-wide settings for scheduled task execution history."""
+
+    SINGLETON_PK = 1
+
+    run_history_retention_days = models.PositiveSmallIntegerField(default=90)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    run_history_retention_days__gte=1,
+                    run_history_retention_days__lte=999,
+                ),
+                name="scheduled_action_retention_days_range",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"scheduled tasks ({self.run_history_retention_days} days retention)"
+
+
 class LogForwardingDelivery(models.Model):
     """A durable, destination-independent snapshot awaiting syslog delivery."""
 
@@ -1399,6 +1421,11 @@ class ScheduledAction(TimestampedModel):
         SKIP_MISSED = "skip_missed", "Skip missed"
         RUN_ONCE_LATE = "run_once_late", "Run once late"
 
+    class EndCondition(models.TextChoices):
+        NONE = "none", "No end"
+        RUN_UNTIL = "run_until", "Run until"
+        RUN_COUNT = "run_count", "Run a fixed number of times"
+
     class LastStatus(models.TextChoices):
         NEVER_RUN = "never_run", "Never run"
         QUEUED = "queued", "Queued"
@@ -1444,6 +1471,14 @@ class ScheduledAction(TimestampedModel):
         default=CatchUpPolicy.SKIP_MISSED,
     )
     max_lateness_minutes = models.PositiveIntegerField(default=0)
+    end_condition = models.CharField(
+        max_length=20,
+        choices=EndCondition.choices,
+        default=EndCondition.NONE,
+    )
+    run_until = models.DateTimeField(null=True, blank=True)
+    max_scheduled_runs = models.PositiveSmallIntegerField(null=True, blank=True)
+    scheduled_run_count = models.PositiveIntegerField(default=0)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -1482,7 +1517,20 @@ class ScheduledAction(TimestampedModel):
                 fields=["cluster", "name"],
                 condition=models.Q(deleted_at__isnull=True),
                 name="uniq_active_scheduled_action_name_per_cluster",
-            )
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(end_condition="none", run_until__isnull=True, max_scheduled_runs__isnull=True)
+                    | models.Q(end_condition="run_until", run_until__isnull=False, max_scheduled_runs__isnull=True)
+                    | models.Q(
+                        end_condition="run_count",
+                        run_until__isnull=True,
+                        max_scheduled_runs__gte=1,
+                        max_scheduled_runs__lte=999,
+                    )
+                ),
+                name="scheduled_action_end_condition_fields",
+            ),
         ]
 
     def __str__(self) -> str:

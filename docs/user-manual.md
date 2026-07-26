@@ -659,13 +659,18 @@ When creating or editing a schedule:
 
 1. Confirm the cluster-qualified guest target, current node and the action's consequence.
 2. Check the timezone shown by the app/deployment and the next run preview.
-3. Decide explicitly whether a missed occurrence may catch up.
-4. Use **Run now** only when an immediate queued execution is intended.
+3. For a recurring task, choose **No end**, an exact **Run until** date and time,
+   or **Run a fixed number of times** (1–999). The count includes scheduled runs
+   that start even if they fail, but excludes missed occurrences and **Run now**.
+4. Decide explicitly whether a missed occurrence may catch up.
+5. Use **Run now** only when an immediate queued execution is intended.
 
 The control worker is the only scheduler, so a schedule fires once even while
-bulk backup/import/scan work is running. Run history is retained independently
-of the definition. Deleting a definition is a soft delete and is refused while
-one of its runs is in flight.
+bulk backup/import/scan work is running. A run that starts before its end
+condition is allowed to finish. The persistent run counter is independent of
+the run-history retention configured under **PVE-helper Settings → Scheduled
+Tasks** (90 days by default). Deleting a definition is a soft delete and is
+refused while one of its runs is in flight.
 
 ## Tags
 
