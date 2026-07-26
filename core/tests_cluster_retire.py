@@ -44,6 +44,7 @@ from core.models import (
     ScanClusterObservation,
     ScanRun,
     ScheduledAction,
+    StorageCatalogState,
     StorageMount,
 )
 from core.services.audit_events import record_audit_event
@@ -59,6 +60,7 @@ from core.services.cluster_deletion_eligibility import (
 )
 from core.services.cluster_footprint import (
     FOOTPRINT_CONSOLE_SESSION,
+    FOOTPRINT_GUEST_PROJECTION,
     FOOTPRINT_PROVIDER_OPERATION,
     FOOTPRINT_SCAN_OBSERVATION,
     stamp_operational_footprint,
@@ -977,12 +979,40 @@ class OperationalFootprintStampingTests(TestCase):
         first = _reload(cluster)
         self.assertIsNotNone(first.operational_footprint_at)
         self.assertEqual(first.operational_footprint_reason, FOOTPRINT_SCAN_OBSERVATION)
-        # A later footprint of a different kind must not move the timestamp or the
+        # A later background footprint must move neither the timestamp nor the
         # reason: the marker records that footprint was *first* acquired, not last.
-        self.assertFalse(stamp_operational_footprint(cluster.pk, reason=FOOTPRINT_CONSOLE_SESSION))
+        self.assertFalse(stamp_operational_footprint(cluster.pk, reason=FOOTPRINT_GUEST_PROJECTION))
         second = _reload(cluster)
         self.assertEqual(second.operational_footprint_at, first.operational_footprint_at)
         self.assertEqual(second.operational_footprint_reason, FOOTPRINT_SCAN_OBSERVATION)
+
+    def test_an_operator_footprint_upgrades_a_background_reason_in_place(self):
+        """Eligibility reads the reason, so first-writer-wins would lose the truth.
+
+        A console session on a connection a background refresh already stamped
+        must not hide behind ``scan_observation``: console rows are purged after
+        ``CONSOLE_SESSION_RETENTION_HOURS``, and if the reason still claimed the
+        footprint was reconstructible, the connection would become hard-deletable
+        the moment that purge ran — erasing the only record it was ever used.
+        """
+        cluster = make_cluster("c")
+        self.assertTrue(stamp_operational_footprint(cluster, reason=FOOTPRINT_SCAN_OBSERVATION))
+        first = _reload(cluster)
+
+        self.assertFalse(stamp_operational_footprint(first, reason=FOOTPRINT_CONSOLE_SESSION))
+
+        upgraded = _reload(cluster)
+        self.assertEqual(upgraded.operational_footprint_at, first.operational_footprint_at)
+        self.assertEqual(upgraded.operational_footprint_reason, FOOTPRINT_CONSOLE_SESSION)
+        self.assertFalse(unused_connection_deletion_eligibility(upgraded).eligible)
+
+    def test_an_operator_reason_is_never_downgraded_by_a_later_background_stamp(self):
+        cluster = make_cluster("c")
+        stamp_operational_footprint(cluster, reason=FOOTPRINT_PROVIDER_OPERATION)
+
+        stamp_operational_footprint(_reload(cluster), reason=FOOTPRINT_GUEST_PROJECTION)
+
+        self.assertEqual(_reload(cluster).operational_footprint_reason, FOOTPRINT_PROVIDER_OPERATION)
 
     def test_missing_cluster_id_is_a_safe_no_op(self):
         self.assertFalse(stamp_operational_footprint(None, reason=FOOTPRINT_SCAN_OBSERVATION))
@@ -1061,19 +1091,32 @@ class UnusedConnectionEligibilityTests(TestCase):
         AuditEvent.objects.create(action="cluster.unused_connection_deleted", object_type="cluster", cluster=configured)
         self.assertTrue(unused_connection_deletion_eligibility(configured).eligible)
 
+    def test_background_written_state_does_not_block(self):
+        """The rows a periodic refresh writes are not evidence anybody used the connection.
+
+        Every relation here is rebuilt from Proxmox by the next refresh, and the
+        guest/storage refreshes reach a new connection within about a minute. When
+        these blocked, ``Delete unused connection`` was reachable for roughly sixty
+        seconds after onboarding and never again — a control that cannot be used is
+        not a safety property.
+        """
+        cluster = make_cluster("machine")
+        ScanClusterObservation.objects.create(scan_run=ScanRun.objects.create(), cluster=cluster)
+        CurrentGuestInventoryState.objects.create(cluster=cluster)
+        ClusterStorage.objects.create(cluster=cluster, storage_id="local", storage_type="dir")
+        StorageCatalogState.objects.create(cluster=cluster)
+        stamp_operational_footprint(cluster, reason=FOOTPRINT_GUEST_PROJECTION)
+
+        self.assertTrue(unused_connection_deletion_eligibility(_reload(cluster)).eligible)
+
+    def test_an_unrecognised_footprint_reason_blocks(self):
+        # The reason allowlist fails closed exactly like the relation registry: a
+        # new reason code is a gap to classify, not a default-allow.
+        cluster = make_cluster("unknown-reason")
+        stamp_operational_footprint(cluster, reason="something_new")
+        self.assertIn(BLOCKER_FOOTPRINT, self._blocker_relations(_reload(cluster)))
+
     def test_each_blocking_relation_kind_fails_closed(self):
-        immutable = make_cluster("imm")
-        ScanClusterObservation.objects.create(scan_run=ScanRun.objects.create(), cluster=immutable)
-        self.assertIn("scan_observations", self._blocker_relations(immutable))
-
-        projection = make_cluster("proj")
-        CurrentGuestInventoryState.objects.create(cluster=projection)
-        self.assertIn("inventory_state", self._blocker_relations(projection))
-
-        storage_owned = make_cluster("stor")
-        ClusterStorage.objects.create(cluster=storage_owned, storage_id="local", storage_type="dir")
-        self.assertIn("storage_definitions", self._blocker_relations(storage_owned))
-
         console = make_cluster("con")
         ConsoleSession.objects.create(
             cluster=console,
@@ -1172,6 +1215,45 @@ class ClusterConnectionHardDeleteTests(TestCase):
         self.assertFalse(ProxmoxEndpoint.objects.filter(cluster_id=pk).exists())
         self.assertFalse(ClusterCredential.objects.filter(cluster_id=pk).exists())
         self.assertFalse(ClusterTransportTrust.objects.filter(cluster_id=pk).exists())
+
+    def test_background_written_state_is_deleted_with_the_connection(self):
+        """The teardown must actually clear what eligibility stopped blocking on.
+
+        Every model here is PROTECT on the cluster, so a relation left behind is
+        not a cosmetic leak: the cluster delete would fail and the postcondition
+        assertion would refuse the whole transaction.
+        """
+        cluster = _configured_unused_connection("unused")
+        pk = cluster.pk
+        scan = ScanRun.objects.create()
+        ScanClusterObservation.objects.create(scan_run=scan, cluster=cluster)
+        ProxmoxInventory.objects.create(
+            scan_run=scan,
+            cluster=cluster,
+            node="pve1",
+            object_type=ProxmoxInventory.ObjectType.VM,
+            vmid=100,
+        )
+        CurrentGuestInventoryState.objects.create(cluster=cluster)
+        StorageCatalogState.objects.create(cluster=cluster)
+        ClusterStorage.objects.create(cluster=cluster, storage_id="local", storage_type="dir")
+        stamp_operational_footprint(cluster, reason=FOOTPRINT_GUEST_PROJECTION)
+
+        result = delete_unused_cluster_connection(_reload(cluster), actor=self.actor)
+
+        self.assertEqual(result.projection_rows_deleted, 5)
+        self.assertFalse(historical_clusters().filter(pk=pk).exists())
+        self.assertFalse(ScanClusterObservation.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(ProxmoxInventory.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(CurrentGuestInventoryState.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(StorageCatalogState.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(ClusterStorage.objects.filter(cluster_id=pk).exists())
+        # The scan itself is a global orchestration job and is not the connection's
+        # to delete; only its coverage of this cluster goes.
+        self.assertTrue(ScanRun.objects.filter(pk=scan.pk).exists())
+        event = AuditEvent.objects.get(pk=result.audit_event_id)
+        self.assertEqual(event.details["reconstructible_rows_deleted_total"], 5)
+        self.assertEqual(event.details["footprint_reason"], FOOTPRINT_GUEST_PROJECTION)
 
     def test_configuration_audit_is_detached_and_preserved(self):
         cluster = _configured_unused_connection("unused")

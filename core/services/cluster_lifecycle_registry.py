@@ -36,7 +36,11 @@ class RelationClass(enum.Enum):
 
     CONFIG = "config"  # disposable connection config; snapshot to Audit, then delete
     RETAINED_HISTORY = "retained_history"  # preserved; hard delete may detach allowlisted rows
-    IMMUTABLE_HISTORY = "immutable_history"  # preserved; any row blocks hard delete
+    # Preserved; any row blocks hard delete. Currently unused, deliberately: every
+    # relation that once carried it turned out to be timed-purged (scan metadata,
+    # space samples) or rebuilt by the next refresh (scan inventory), which is not
+    # what "immutable" claims. Kept as vocabulary for a relation that earns it.
+    IMMUTABLE_HISTORY = "immutable_history"
     CURRENT_PROJECTION = "current_projection"  # removed via the inventory owner
     STORAGE_OWNED = "storage_owned"  # the storage adapter decides the transition
     OPERATOR_SAFETY_INPUT = "operator_safety_input"  # explicit resolution; never inferred
@@ -91,45 +95,56 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
     ),
     "proxmox_objects": RelationClassification(
         "proxmox_objects",
-        RelationClass.IMMUTABLE_HISTORY,
-        blocks_hard_delete=True,
-        note="Immutable scan evidence; preserved. Any row blocks hard delete.",
+        RelationClass.CURRENT_PROJECTION,
+        blocks_hard_delete=False,
+        note="Preserved by retirement, but not a series: scan retention keeps only the "
+        "latest completed scan per cluster, and the next scan rebuilds it. Hard delete "
+        "removes this cluster's rows.",
     ),
     "scan_observations": RelationClassification(
         "scan_observations",
-        RelationClass.IMMUTABLE_HISTORY,
-        blocks_hard_delete=True,
-        note="Immutable scan evidence; preserved. Any row blocks hard delete.",
+        RelationClass.OPERATIONAL,
+        blocks_hard_delete=False,
+        note="Per-scan coverage metadata; CASCADEs with its ScanRun after "
+        "SCAN_METADATA_RETENTION_DAYS, so the durable signal is operational_footprint_at. "
+        "Hard delete removes this cluster's rows.",
     ),
     "storage_space_snapshots": RelationClassification(
         "storage_space_snapshots",
-        RelationClass.IMMUTABLE_HISTORY,
-        blocks_hard_delete=True,
-        note="Historical storage-space samples; preserved. Any row blocks hard delete.",
+        RelationClass.OPERATIONAL,
+        blocks_hard_delete=False,
+        note="Storage-space samples, purged at SPACE_SNAPSHOT_RETENTION_DAYS on every "
+        "recording run, so the durable signal is operational_footprint_at. Hard delete "
+        "removes this cluster's rows.",
     ),
     "current_guests": RelationClassification(
         "current_guests",
         RelationClass.CURRENT_PROJECTION,
-        blocks_hard_delete=True,
-        note="Removed via the current-inventory owner (R2 retire_cluster_guest_inventory).",
+        blocks_hard_delete=False,
+        note="Removed via the current-inventory owner (R2 retire_cluster_guest_inventory); "
+        "hard delete removes the rows. Rebuilt by the next refresh.",
     ),
     "inventory_state": RelationClassification(
         "inventory_state",
         RelationClass.CURRENT_PROJECTION,
-        blocks_hard_delete=True,
-        note="Current-inventory state row; removed via the inventory owner.",
+        blocks_hard_delete=False,
+        note="Current-inventory state row; removed via the inventory owner. Rebuilt by "
+        "the next refresh.",
     ),
     "storage_catalog_state": RelationClassification(
         "storage_catalog_state",
         RelationClass.STORAGE_OWNED,
-        blocks_hard_delete=True,
-        note="CASCADE; the storage adapter invalidates it. Any published state blocks.",
+        blocks_hard_delete=False,
+        note="CASCADE; the storage adapter invalidates it. Publication state only, "
+        "rebuilt by the next catalog refresh.",
     ),
     "storage_definitions": RelationClassification(
         "storage_definitions",
         RelationClass.STORAGE_OWNED,
-        blocks_hard_delete=True,
-        note="Tombstoned via unmanaged_at by the storage adapter. Any defined state blocks.",
+        blocks_hard_delete=False,
+        note="Tombstoned via unmanaged_at by the storage adapter on retirement; hard "
+        "delete removes them and CASCADEs their node states, mount bindings, coverages "
+        "and observations. Rebuilt by the next catalog refresh.",
     ),
     "storage_consumers": RelationClassification(
         "storage_consumers",

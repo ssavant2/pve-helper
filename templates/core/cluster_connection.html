@@ -92,7 +92,7 @@
     <div class="cluster-unused-deletion">
       <h3>Delete unused connection</h3>
       {% if deletion_eligibility.eligible %}
-        <p>This connection has never acquired operational or inventory history. Deleting it permanently removes the cluster record and releases its permanent key <code>{{ cluster.key }}</code>, pinned identity and endpoint URLs so the same connection can be configured again. Its configuration Audit trail is detached and preserved.</p>
+        <p>Nobody has used this connection: no operation, console session or schedule ever ran against it. Deleting it permanently removes the cluster record and releases its permanent key <code>{{ cluster.key }}</code>, pinned identity and endpoint URLs so the same connection can be configured again. Inventory collected by a background refresh is discarded with it; the configuration Audit trail is detached and preserved.</p>
         <form
           method="post"
           action="{% url 'core:cluster_connection_action' cluster.key %}"

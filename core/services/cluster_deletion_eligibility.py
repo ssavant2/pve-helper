@@ -8,18 +8,29 @@ this verdict.
 
 The rule the eligibility encodes (see ``docs/cluster-retire.local.md`` →
 *No general hard delete*): a connection is deletable only when it is not
-retired, carries no durable ``operational_footprint_at`` marker, and no reverse
-relation that blocks hard deletion holds a row. Two properties matter:
+retired, carries no *operator-grade* operational footprint, and no reverse
+relation that blocks hard deletion holds a row. Three properties matter:
 
 * **It fails closed on the unknown.** The sweep iterates the model's *live*
   reverse relations and blocks on any relation absent from
   ``CLUSTER_REVERSE_RELATIONS`` — a newly added relation is a gap to classify,
   not a default-allow. The row count for a blocking relation uses the base
   manager so a future default manager cannot hide rows from the safety check.
+  The footprint reason is an allowlist on the same principle: an unrecognised or
+  blank reason blocks.
 * **It cannot be recovered by waiting.** ``operational_footprint_at`` is the
   durable memory that survives every timed-retention purge, so a connection that
-  once ran guests, opened consoles or was scanned stays ineligible even after
-  audit/scan/console retention has emptied the relations that first recorded it.
+  once ran a provider operation or opened a console stays ineligible even after
+  audit/console retention has emptied the relations that first recorded it.
+* **It draws the line at operator intent, not at machine activity.** Blocking on
+  the bare marker made this control unreachable: the periodic guest and storage
+  refreshes stamp a footprint on every new connection within about a minute, so
+  the window in which a mistyped connection could be removed was roughly sixty
+  seconds and closed with nobody having done anything. What blocks is
+  ``OPERATOR_FOOTPRINT_REASONS`` plus the relations that record operator intent —
+  provider Audit, schedules, consoles, released-consumer safety input. Projections
+  and scan snapshots are rebuilt from Proxmox by the next refresh and are deleted
+  with the connection.
 """
 
 from __future__ import annotations
@@ -28,6 +39,7 @@ from dataclasses import dataclass
 
 from core.models import ProxmoxCluster
 from core.services.audit_events import CLUSTER_CONFIGURATION_AUDIT_ACTIONS
+from core.services.cluster_footprint import RECONSTRUCTIBLE_FOOTPRINT_REASONS
 from core.services.cluster_lifecycle_registry import CLUSTER_REVERSE_RELATIONS
 
 # Synthetic relation names for the two blockers that are not reverse relations.
@@ -73,13 +85,15 @@ def _reverse_relation_fields():
 
 
 def unused_connection_deletion_eligibility(cluster: ProxmoxCluster) -> DeletionEligibility:
-    """Prove a connection carries no operational footprint, failing closed.
+    """Prove a connection was never used by an operator, failing closed.
 
-    Eligible only when every check passes: the cluster is not retired, has no
-    durable operational-footprint marker, and no reverse relation that blocks
-    hard deletion holds a row — configuration rows (credential, trust,
-    endpoints) and allowlisted configuration Audit events excepted. Any reverse
-    relation not classified by ``CLUSTER_REVERSE_RELATIONS`` blocks.
+    Eligible only when every check passes: the cluster is not retired, its
+    footprint marker is absent or names a reconstructible background reason, and
+    no reverse relation that blocks hard deletion holds a row — configuration
+    rows (credential, trust, endpoints), machine-generated projections and scan
+    snapshots, and allowlisted configuration Audit events excepted. Any reverse
+    relation not classified by ``CLUSTER_REVERSE_RELATIONS``, and any footprint
+    reason absent from ``RECONSTRUCTIBLE_FOOTPRINT_REASONS``, blocks.
     """
     blockers: list[DeletionBlocker] = []
 
@@ -93,14 +107,15 @@ def unused_connection_deletion_eligibility(cluster: ProxmoxCluster) -> DeletionE
             )
         )
 
-    if cluster.operational_footprint_at is not None:
+    footprint_reason = cluster.operational_footprint_reason or ""
+    if cluster.operational_footprint_at is not None and footprint_reason not in RECONSTRUCTIBLE_FOOTPRINT_REASONS:
         blockers.append(
             DeletionBlocker(
                 BLOCKER_FOOTPRINT,
                 "footprint_marker",
                 1,
-                "Durable operational footprint recorded "
-                f"({cluster.operational_footprint_reason or 'unspecified'}); eligibility "
+                "Durable operator footprint recorded "
+                f"({footprint_reason or 'unspecified'}); eligibility "
                 "can never be recovered by waiting for timed retention to run.",
             )
         )

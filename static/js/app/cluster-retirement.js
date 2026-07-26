@@ -224,9 +224,11 @@ const deletionConfigBody = (payload) => {
       (<code>${escapeHtml(payload.cluster?.key || "")}</code>)
     </p>
     <p>
-      This connection has no operational or inventory history. Deleting it is permanent: it
-      removes the cluster record and releases the permanent key, pinned CA identity and endpoint
-      URLs for reuse. The configuration Audit trail is detached and preserved.
+      Nobody has used this connection: no operation, console session or schedule ever ran
+      against it. Deleting it is permanent: it removes the cluster record and releases the
+      permanent key, pinned CA identity and endpoint URLs for reuse. Any inventory a
+      background refresh collected is discarded with it; the configuration Audit trail is
+      detached and preserved.
     </p>
     <dl class="cluster-retirement-impact">
       ${countRow("Endpoints removed", endpoints.length)}

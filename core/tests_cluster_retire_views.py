@@ -1,6 +1,7 @@
 """Operator-facing R3 danger-zone retirement wiring."""
 
 import base64
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -8,7 +9,14 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from core.models import AuditEvent, CurrentGuestInventory, ProxmoxCluster, ProxmoxEndpoint, ScanRun
+from core.models import (
+    AuditEvent,
+    ConsoleSession,
+    CurrentGuestInventory,
+    ProxmoxCluster,
+    ProxmoxEndpoint,
+    ScanRun,
+)
 from core.services.cluster_credentials import set_cluster_credential
 from core.services.cluster_retirement import (
     ERROR_CODE_PREFLIGHT_IDENTITY_MISMATCH,
@@ -476,10 +484,12 @@ class ClusterUnusedDeletionViewTests(TestCase):
         eligible_page = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": eligible.key}))
         self.assertContains(eligible_page, "data-cluster-unused-deletion-form")
 
-        used = self._eligible_connection(key="used")
+        # A background refresh having produced a guest projection is not "used": the
+        # control must survive it, or it is unreachable a minute after onboarding.
+        refreshed = self._eligible_connection(key="refreshed")
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
         CurrentGuestInventory.objects.create(
-            cluster=used,
+            cluster=refreshed,
             source_scan=scan,
             node="pve1",
             object_type="vm",
@@ -487,6 +497,17 @@ class ClusterUnusedDeletionViewTests(TestCase):
             name="e2e-vm",
             status="running",
             observed_at=timezone.now(),
+        )
+        refreshed_page = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": refreshed.key}))
+        self.assertContains(refreshed_page, "data-cluster-unused-deletion-form")
+
+        used = self._eligible_connection(key="used")
+        ConsoleSession.objects.create(
+            cluster=used,
+            token_hash="deadbeef",
+            target_type="vm",
+            target_vmid=100,
+            expires_at=timezone.now() + timedelta(hours=1),
         )
         used_page = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": used.key}))
         self.assertNotContains(used_page, "data-cluster-unused-deletion-form")
@@ -508,7 +529,7 @@ class ClusterUnusedDeletionViewTests(TestCase):
         cluster = self._eligible_connection(key="blocked")
         ProxmoxCluster.objects.filter(pk=cluster.pk).update(
             operational_footprint_at=timezone.now(),
-            operational_footprint_reason="scan_observation",
+            operational_footprint_reason="console_session",
         )
 
         payload = self._preflight(cluster).json()
@@ -554,7 +575,7 @@ class ClusterUnusedDeletionViewTests(TestCase):
         # service's under-lock re-check must reject with the exact key still typed.
         ProxmoxCluster.objects.filter(pk=cluster.pk).update(
             operational_footprint_at=timezone.now(),
-            operational_footprint_reason="scan_observation",
+            operational_footprint_reason="console_session",
         )
 
         response = self.client.post(

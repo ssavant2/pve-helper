@@ -25,9 +25,18 @@ Two properties make this safe (see ``docs/cluster-retire.local.md`` →
 
 Eligibility guarantees the only reverse relations that can still hold rows are the
 disposable connection configuration (``credential``, ``transport_trust``,
-``endpoints``) and configuration-allowlist Audit; every operational, projection,
-storage and schedule relation is already empty, so the deletion is a bounded,
-set-based teardown of exactly those rows.
+``endpoints``), configuration-allowlist Audit, and the machine-generated state a
+background refresh may have written before anybody used the connection: current
+guest/storage projections, catalog publication state, scan inventory and coverage,
+and storage-space samples. Every relation that records operator intent — provider
+Audit, schedules, consoles, released-consumer safety input — is already empty, so
+the deletion stays a bounded, set-based teardown of exactly those rows.
+
+The projection teardown is deliberate rather than incidental. Blocking on any
+machine-written row made this control unreachable, because the periodic refreshes
+reach a new connection within about a minute; and every row deleted here is
+rebuilt from Proxmox by the next refresh of a connection that still exists, so
+deleting them destroys no knowledge that Proxmox is not still holding.
 """
 
 from __future__ import annotations
@@ -40,9 +49,16 @@ from django.db import transaction
 from core.models import (
     AuditEvent,
     ClusterCredential,
+    ClusterStorage,
     ClusterTransportTrust,
+    CurrentGuestInventory,
+    CurrentGuestInventoryState,
     ProxmoxCluster,
     ProxmoxEndpoint,
+    ProxmoxInventory,
+    ScanClusterObservation,
+    StorageCatalogState,
+    StorageSpaceSnapshot,
 )
 from core.services.audit_events import record_audit_event
 from core.services.cluster_deletion_eligibility import DeletionEligibility, unused_connection_deletion_eligibility
@@ -96,6 +112,7 @@ class DeletionResult:
     credential_deleted: bool
     trust_deleted: bool
     audit_events_detached: int
+    projection_rows_deleted: int
 
 
 def _endpoint_snapshots(cluster_id: int) -> tuple[tuple[dict[str, object], ...], int]:
@@ -114,8 +131,44 @@ def _endpoint_snapshots(cluster_id: int) -> tuple[tuple[dict[str, object], ...],
     return snapshots, len(rows)
 
 
+# Machine-generated relations deleted with the connection, in dependency order:
+# every PROTECT child before the row it protects. Each entry is
+# (reverse accessor, model, filter keyword) and each model is one the next refresh
+# rebuilds from Proxmox — see ``CLUSTER_REVERSE_RELATIONS`` for why none of them
+# blocks eligibility. ``ClusterStorage`` CASCADEs its node states, mount bindings,
+# volume coverages and observations, so its count includes them.
+_RECONSTRUCTIBLE_RELATIONS: tuple[tuple[str, type, str], ...] = (
+    ("current_guests", CurrentGuestInventory, "cluster_id"),
+    ("inventory_state", CurrentGuestInventoryState, "cluster_id"),
+    ("storage_catalog_state", StorageCatalogState, "cluster_id"),
+    ("storage_definitions", ClusterStorage, "cluster_id"),
+    ("scan_observations", ScanClusterObservation, "cluster_id"),
+    ("proxmox_objects", ProxmoxInventory, "cluster_id"),
+    ("storage_space_snapshots", StorageSpaceSnapshot, "cluster_id"),
+)
+
+
+def _delete_reconstructible_state(cluster_pk: int) -> dict[str, int]:
+    """Remove the background-written state, returning an accountable per-relation count.
+
+    Base manager throughout, for the same reason the eligibility sweep counts with
+    it: a future default manager must not be able to hide a row from a teardown
+    whose postcondition is that none is left behind.
+    """
+    removed: dict[str, int] = {}
+    for accessor, model, filter_field in _RECONSTRUCTIBLE_RELATIONS:
+        deleted, _by_model = model._base_manager.filter(**{filter_field: cluster_pk}).delete()
+        if deleted:
+            removed[accessor] = deleted
+    return removed
+
+
 def _assert_deletion_postconditions(cluster_pk: int) -> None:
     """Prove the teardown removed the row and its config and left no dangling relation."""
+    reconstructible_left = any(
+        model._base_manager.filter(**{filter_field: cluster_pk}).exists()
+        for _accessor, model, filter_field in _RECONSTRUCTIBLE_RELATIONS
+    )
     if any(
         (
             historical_clusters().filter(pk=cluster_pk).exists(),
@@ -123,6 +176,7 @@ def _assert_deletion_postconditions(cluster_pk: int) -> None:
             ClusterTransportTrust.objects.filter(cluster_id=cluster_pk).exists(),
             ProxmoxEndpoint.objects.filter(cluster_id=cluster_pk).exists(),
             AuditEvent.objects.filter(cluster_id=cluster_pk).exists(),
+            reconstructible_left,
         )
     ):
         raise ClusterDeletionPostconditionFailed(
@@ -162,6 +216,14 @@ def _delete_unused_connection_atomic(cluster, *, actor) -> DeletionResult:
             # preserved through detachment.
             config_audit_count = AuditEvent.objects.filter(cluster_id=cluster_pk).count()
 
+            # Background-written state goes first: CurrentGuestInventory, ClusterStorage,
+            # ScanClusterObservation, ProxmoxInventory and StorageSpaceSnapshot are all
+            # PROTECT, so the cluster row cannot be removed while any of them remains.
+            # Counted per relation so the Audit event states exactly what was discarded
+            # rather than implying the connection had nothing at all.
+            reconstructible_removed = _delete_reconstructible_state(cluster_pk)
+            projection_rows_deleted = sum(reconstructible_removed.values())
+
             # Record the immutable deletion event while the relation still exists, so
             # the log-forwarding signal snapshots its top-level outbox payload in this
             # transaction. It is a configuration-allowlist action, so it never stamps
@@ -183,6 +245,9 @@ def _delete_unused_connection_atomic(cluster, *, actor) -> DeletionResult:
                     "credential_token_id": credential_token_id,
                     "trust_mode": trust_mode,
                     "configuration_audit_events_detached": config_audit_count,
+                    "footprint_reason": locked.operational_footprint_reason,
+                    "reconstructible_rows_deleted": dict(sorted(reconstructible_removed.items())),
+                    "reconstructible_rows_deleted_total": projection_rows_deleted,
                 },
             )
 
@@ -215,6 +280,7 @@ def _delete_unused_connection_atomic(cluster, *, actor) -> DeletionResult:
                 credential_deleted=credential_deleted,
                 trust_deleted=trust_deleted,
                 audit_events_detached=audit_events_detached,
+                projection_rows_deleted=projection_rows_deleted,
             )
 
 
@@ -223,8 +289,9 @@ def delete_unused_cluster_connection(cluster, *, actor) -> DeletionResult:
 
     Re-checks :func:`unused_connection_deletion_eligibility` under the shared
     lifecycle lock, preserves the configuration Audit trail by detaching it,
-    deletes the disposable configuration rows and the cluster row, and releases the
-    key, CA UUID and endpoint URLs. Makes no provider request. Raises a stable
+    deletes the background-written projections and scan snapshots, the disposable
+    configuration rows and the cluster row, and releases the key, CA UUID and
+    endpoint URLs. Makes no provider request. Raises a stable
     public error — never a provider/Python string — when the connection is not
     eligible or the teardown cannot prove its postconditions.
     """
