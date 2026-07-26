@@ -544,6 +544,19 @@ def _audit_action_label(event: AuditEvent) -> str:
         return "Update log forwarding configuration"
     if event.action == "log_forwarder.test_requested":
         return "Send log forwarding test event"
+    certificate_action_labels = {
+        "certificate.imported": "Import certificate",
+        "certificate.https.updated": "Update HTTPS certificate settings",
+        "certificate.deleted": "Delete certificate",
+        "certificate.expiry_policy.updated": "Update certificate expiry warnings",
+        "certificate.expiry.attention": "Stored certificate expiry warning",
+        "certificate.expiry.answered": "Acknowledge certificate expiry warning",
+        "log_forwarder.certificate.approved": "Approve log forwarding certificate",
+        "log_forwarder.certificate.attention": "Log forwarding certificate warning",
+        "log_forwarder.certificate.answered": "Respond to log forwarding certificate warning",
+    }
+    if event.action in certificate_action_labels:
+        return certificate_action_labels[event.action]
     if event.action == "task.cancelled":
         return "Cancel task"
     tag_action_labels = {

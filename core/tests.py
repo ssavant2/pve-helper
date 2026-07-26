@@ -5686,6 +5686,30 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(payload["rows"][0]["Raw Action"], "guest.power.start")
         self.assertIn("Lab VM", payload["rows"][0]["Object"])
 
+    def test_audit_log_uses_readable_certificate_action_labels(self):
+        user = get_user_model().objects.create_user(username="certificate-viewer", password="unused")
+        self.client.force_login(user)
+        AuditEvent.objects.all().delete()
+        expected_labels = {
+            "certificate.imported": "Import certificate",
+            "certificate.https.updated": "Update HTTPS certificate settings",
+            "certificate.deleted": "Delete certificate",
+            "certificate.expiry_policy.updated": "Update certificate expiry warnings",
+            "certificate.expiry.attention": "Stored certificate expiry warning",
+            "certificate.expiry.answered": "Acknowledge certificate expiry warning",
+            "log_forwarder.certificate.approved": "Approve log forwarding certificate",
+            "log_forwarder.certificate.attention": "Log forwarding certificate warning",
+            "log_forwarder.certificate.answered": "Respond to log forwarding certificate warning",
+        }
+        for action in expected_labels:
+            AuditEvent.objects.create(username=user.username, action=action, object_type="certificate")
+
+        response = self.client.get(reverse("core:audit_log"))
+
+        self.assertEqual(response.status_code, 200)
+        presented = {event.action: event.display_action for event in response.context["events"]}
+        self.assertEqual(presented, expected_labels)
+
     def test_audit_export_xlsx_returns_workbook(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)
