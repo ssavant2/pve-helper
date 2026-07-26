@@ -17,8 +17,10 @@ retire button or contacts a provider; that is R3.
 
 from __future__ import annotations
 
+import ast
 import threading
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -47,7 +49,14 @@ from core.models import (
     StorageCatalogState,
     StorageMount,
 )
-from core.services.audit_events import record_audit_event
+from core.services.audit_events import (
+    CLUSTER_CONFIGURATION_AUDIT_ACTIONS,
+    CLUSTER_MACHINE_INITIATED_AUDIT_ACTIONS,
+    CLUSTER_OPERATOR_INITIATED_AUDIT_ACTIONS,
+    CLUSTER_PROVIDER_AUDIT_ACTIONS,
+    MACHINE_INITIATED_FOOTPRINT_REASONS,
+    record_audit_event,
+)
 from core.services.cluster_deletion import (
     ClusterDeletionBlocked,
     ClusterDeletionNotAllowed,
@@ -63,6 +72,7 @@ from core.services.cluster_footprint import (
     FOOTPRINT_GUEST_PROJECTION,
     FOOTPRINT_PROVIDER_OPERATION,
     FOOTPRINT_SCAN_OBSERVATION,
+    RECONSTRUCTIBLE_FOOTPRINT_REASONS,
     stamp_operational_footprint,
 )
 from core.services.cluster_lifecycle_lock import (
@@ -445,6 +455,136 @@ class LifecycleParticipantContractTests(TestCase):
         # them against the model silently skips the mislabelled rows.
         for accessor, classification in CLUSTER_REVERSE_RELATIONS.items():
             self.assertEqual(accessor, classification.accessor)
+
+
+class ProviderAuditActionIntentCoverageTests(TestCase):
+    """Every provider action must declare whether an operator or the app caused it.
+
+    The sibling of the relation-registry coverage above, and it exists because the
+    failure it guards is silent. A background job classified as operator work stamps
+    ``provider_operation`` on its cluster, and since the periodic refreshes touch a
+    connection within about a minute of it being added, ``Delete unused connection``
+    dies for every connection in the installation while nothing looks broken. That is
+    exactly what happened before ``cluster.inventory.bootstrap`` was given its own
+    reconstructible reason, and prose in the retirement plan is not what should stand
+    between the next background job and a repeat.
+    """
+
+    # Service modules that enqueue durable background work. Each one owns a module
+    # level ``*_ACTION`` constant naming the audit action it records, and this list
+    # is the ratchet: a new such module fails here until somebody adds it and, with
+    # it, classifies its action.
+    _BACKGROUND_OPERATION_SERVICES = {
+        "cluster_inventory_bootstrap.py",
+        "storage_catalog_refresh.py",
+        "tag_actions.py",
+        "tag_inventory_refresh.py",
+    }
+    # Predates the ``*_ACTION`` constant convention and spells "tag.bulk_operation"
+    # as a literal in seven modules. Classified (operator-initiated) and covered by
+    # the registry assertions below; exempt only from the constant-shape check.
+    _WITHOUT_ACTION_CONSTANT = {"tag_actions.py"}
+
+    def _service_root(self):
+        return Path(__file__).resolve().parent / "services"
+
+    def test_a_provider_action_is_operator_initiated_or_machine_initiated(self):
+        overlap = CLUSTER_OPERATOR_INITIATED_AUDIT_ACTIONS & CLUSTER_MACHINE_INITIATED_AUDIT_ACTIONS
+        self.assertEqual(
+            sorted(overlap),
+            [],
+            "An action cannot be both operator- and machine-initiated; the footprint reason would depend on "
+            "iteration order.",
+        )
+        self.assertEqual(
+            CLUSTER_PROVIDER_AUDIT_ACTIONS,
+            CLUSTER_OPERATOR_INITIATED_AUDIT_ACTIONS | CLUSTER_MACHINE_INITIATED_AUDIT_ACTIONS,
+            "CLUSTER_PROVIDER_AUDIT_ACTIONS is derived from the two intents and must not be assigned directly.",
+        )
+        both = CLUSTER_PROVIDER_AUDIT_ACTIONS & CLUSTER_CONFIGURATION_AUDIT_ACTIONS
+        self.assertEqual(
+            sorted(both),
+            [],
+            "A provider action in the configuration allowlist stamps no footprint at all and blocks nothing.",
+        )
+
+    def test_a_machine_initiated_action_stamps_a_reconstructible_reason(self):
+        """Otherwise the exception list is decorative: the reason still blocks."""
+        for action, reason in sorted(MACHINE_INITIATED_FOOTPRINT_REASONS.items()):
+            with self.subTest(action=action):
+                self.assertIn(reason, RECONSTRUCTIBLE_FOOTPRINT_REASONS)
+
+    def test_the_declared_intent_is_the_reason_actually_stamped(self):
+        """The registries and `record_audit_event` must not be able to disagree."""
+        for action in sorted(CLUSTER_OPERATOR_INITIATED_AUDIT_ACTIONS):
+            with self.subTest(action=action, intent="operator"):
+                cluster = make_cluster(f"op-{abs(hash(action)) % 100000}")
+                record_audit_event(action=action, cluster=cluster, username="operator")
+                cluster.refresh_from_db()
+                self.assertEqual(cluster.operational_footprint_reason, FOOTPRINT_PROVIDER_OPERATION)
+                self.assertFalse(unused_connection_deletion_eligibility(cluster).eligible)
+
+        for action, reason in sorted(MACHINE_INITIATED_FOOTPRINT_REASONS.items()):
+            with self.subTest(action=action, intent="machine"):
+                cluster = make_cluster(f"machine-{abs(hash(action)) % 100000}")
+                record_audit_event(action=action, cluster=cluster, username="system")
+                cluster.refresh_from_db()
+                self.assertEqual(cluster.operational_footprint_reason, reason)
+                self.assertTrue(
+                    unused_connection_deletion_eligibility(cluster).eligible,
+                    "Machine-initiated provider work must not block deleting a connection nobody used.",
+                )
+
+    def test_every_background_operation_service_is_accounted_for(self):
+        found = {
+            path.name
+            for path in sorted(self._service_root().glob("*.py"))
+            if "async_task(" in path.read_text(encoding="utf-8")
+        }
+        self.assertEqual(
+            sorted(found - self._BACKGROUND_OPERATION_SERVICES),
+            [],
+            "A service enqueues background work without declaring its audit action's intent. Add it to "
+            "_BACKGROUND_OPERATION_SERVICES and classify its action as operator- or machine-initiated.",
+        )
+        self.assertEqual(
+            sorted(self._BACKGROUND_OPERATION_SERVICES - found),
+            [],
+            "_BACKGROUND_OPERATION_SERVICES names a service that no longer enqueues anything.",
+        )
+
+    def test_every_background_operation_action_constant_is_classified(self):
+        classified = CLUSTER_PROVIDER_AUDIT_ACTIONS | CLUSTER_CONFIGURATION_AUDIT_ACTIONS
+        unclassified = []
+        missing_constant = []
+        for name in sorted(self._BACKGROUND_OPERATION_SERVICES):
+            path = self._service_root() / name
+            module = ast.parse(path.read_text(encoding="utf-8"))
+            constants = {
+                target.id: node.value.value
+                for node in module.body
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                for target in node.targets
+                if isinstance(target, ast.Name) and target.id.endswith("_ACTION")
+            }
+            if not constants and name not in self._WITHOUT_ACTION_CONSTANT:
+                missing_constant.append(name)
+            unclassified.extend(
+                f"{name}:{constant} = {value!r}" for constant, value in constants.items() if value not in classified
+            )
+
+        self.assertEqual(
+            missing_constant,
+            [],
+            "A background-operation service must name its audit action in a module-level *_ACTION constant, "
+            "so the classification registries have something to be checked against.",
+        )
+        self.assertEqual(
+            unclassified,
+            [],
+            "Background-operation actions absent from every classification registry. Retirement preflight would "
+            "not see them and unused-connection deletion would treat them as an unknown operator footprint.",
+        )
 
 
 class ClusterScopeResolverTests(TestCase):

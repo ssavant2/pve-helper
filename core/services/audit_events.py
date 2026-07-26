@@ -62,9 +62,11 @@ CLUSTER_CONFIGURATION_AUDIT_ACTIONS = frozenset(
         "cluster.updated",
     }
 )
-CLUSTER_PROVIDER_AUDIT_ACTIONS = frozenset(
+# Provider work an operator asked for. Somebody pressed something, so the event is
+# evidence the connection was *used*: it stamps ``provider_operation``, and its rows
+# block unused-connection hard deletion for good.
+CLUSTER_OPERATOR_INITIATED_AUDIT_ACTIONS = frozenset(
     {
-        "cluster.inventory.bootstrap",
         "storage.catalog.refresh",
         "tag.bulk_operation",
         "tag.inventory.refresh",
@@ -73,7 +75,7 @@ CLUSTER_PROVIDER_AUDIT_ACTIONS = frozenset(
 
 # Provider work the app starts by itself, and the reconstructible footprint reason
 # it stamps instead of ``provider_operation``. It is still provider work — a
-# running one participates in retirement above — but it is not evidence that
+# running one participates in retirement below — but it is not evidence that
 # anybody *used* the connection, and every row it writes is a projection the next
 # refresh rebuilds. Stamping it operator-grade would make the first inventory of a
 # newly added connection permanently block ``Delete unused connection``, which is
@@ -89,6 +91,16 @@ MACHINE_INITIATED_FOOTPRINT_REASONS = {
 # preserved rather than deleted, so the Audit trail still records that the app
 # collected an inventory before the connection went away.
 CLUSTER_MACHINE_INITIATED_AUDIT_ACTIONS = frozenset(MACHINE_INITIATED_FOOTPRINT_REASONS)
+
+# Derived, deliberately: the two intents above are the only way into this set, so a
+# new provider action cannot be registered without someone deciding which one it is.
+# Getting that wrong in the silent direction — a background job classified as
+# operator work — kills ``Delete unused connection`` for every connection within
+# seconds of it being added, and nothing about the app looks broken afterwards.
+# ``ProviderAuditActionIntentCoverageTests`` is what makes the choice unavoidable.
+CLUSTER_PROVIDER_AUDIT_ACTIONS = CLUSTER_OPERATOR_INITIATED_AUDIT_ACTIONS | CLUSTER_MACHINE_INITIATED_AUDIT_ACTIONS
+# Guest actions are operator-initiated by construction: every one of them is a
+# mutation somebody requested against a named guest.
 CLUSTER_PROVIDER_AUDIT_ACTION_PREFIXES = ("guest.",)
 _RETIREMENT_ACTIVE_OUTCOMES = {"queued", "running"}
 _RETIREMENT_TERMINAL_OUTCOMES = {
