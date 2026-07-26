@@ -106,6 +106,14 @@ the same connection. The steps are:
 3. Enter an `Administrator` API token and explicitly bind the chosen key to the
    Proxmox CA UUID/fingerprint returned by the verified endpoint.
 
+Adding the connection starts its first inventory immediately, as an **Add
+host/cluster to inventory** row in Recent Tasks. It reads the cluster's guests,
+storage catalog and tag registry in that order, so the new connection's
+datastores, tags and guests appear shortly after the connection itself rather
+than at the next periodic refresh. It finishes as *Completed with warnings* if a
+node did not answer, and the row names that node; the periodic refreshes and the
+per-datastore **Refresh** button pick up whatever it missed.
+
 The token secret is write-only: it is encrypted in the database and is never
 shown again or written to Audit. Rotate it by entering a complete replacement on
 the connection detail page. To revoke it from pve-helper, disable the cluster

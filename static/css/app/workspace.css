@@ -22,7 +22,7 @@
 .sidebar-toggle {
   position: absolute;
   top: 11px;
-  right: calc(10px + var(--nav-scrollbar-gutter, 0px));
+  right: calc(10px + var(--nav-scrollbar-gutter));
   z-index: 25;
   display: inline-grid;
   place-items: center;
@@ -73,7 +73,7 @@
 .sidebar-top-divider {
   position: absolute;
   top: 22px;
-  right: calc(48px + var(--nav-scrollbar-gutter, 0px));
+  right: calc(48px + var(--nav-scrollbar-gutter));
   left: 12px;
   height: 1px;
   background: var(--line);

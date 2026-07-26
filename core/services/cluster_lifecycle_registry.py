@@ -128,8 +128,7 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "inventory_state",
         RelationClass.CURRENT_PROJECTION,
         blocks_hard_delete=False,
-        note="Current-inventory state row; removed via the inventory owner. Rebuilt by "
-        "the next refresh.",
+        note="Current-inventory state row; removed via the inventory owner. Rebuilt by the next refresh.",
     ),
     "storage_catalog_state": RelationClassification(
         "storage_catalog_state",

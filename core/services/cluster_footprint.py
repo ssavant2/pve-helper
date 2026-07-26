@@ -39,6 +39,10 @@ FOOTPRINT_SCAN_OBSERVATION = "scan_observation"
 FOOTPRINT_GUEST_PROJECTION = "guest_projection"
 FOOTPRINT_STORAGE_PROJECTION = "storage_projection"
 FOOTPRINT_CONSOLE_SESSION = "console_session"
+# The inventory the app collects by itself the moment a connection is added. It
+# is provider work, but nobody asked for it as an operation: it is the add
+# finishing its own job, and everything it writes is a projection.
+FOOTPRINT_INVENTORY_BOOTSTRAP = "inventory_bootstrap"
 
 # Footprint an operator caused. Durable and irreversible for eligibility: it is
 # the record that somebody used this connection, and nothing reconstructs it.
@@ -59,6 +63,7 @@ RECONSTRUCTIBLE_FOOTPRINT_REASONS = frozenset(
         FOOTPRINT_SCAN_OBSERVATION,
         FOOTPRINT_GUEST_PROJECTION,
         FOOTPRINT_STORAGE_PROJECTION,
+        FOOTPRINT_INVENTORY_BOOTSTRAP,
     }
 )
 

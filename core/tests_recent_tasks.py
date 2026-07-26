@@ -43,6 +43,7 @@ from core.models import (
     ScheduledActionRun,
     StorageMount,
 )
+from core.services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from core.services.recent_tasks import (
     BULK_FILE_ACTION,
     FILE_TASK_ACTIONS,
@@ -55,6 +56,7 @@ from core.services.recent_tasks import (
     STORAGE_CATALOG_REFRESH_ACTION,
     TAG_TASK_ACTIONS,
     _catalog_refresh_task,
+    _cluster_inventory_task,
     _file_task,
     _guest_task,
     _mount_task,
@@ -93,6 +95,12 @@ def _reference_page(page: int = 0, limit: int = 5, *, cluster_key: str = ""):
     )
     for event in catalog:
         entries.append(_entry(_catalog_refresh_task(event), event.id))
+
+    bootstraps = AuditEvent.objects.filter(action=CLUSTER_INVENTORY_BOOTSTRAP_ACTION).filter(
+        Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running"))
+    )
+    for event in bootstraps:
+        entries.append(_entry(_cluster_inventory_task(event), event.id))
 
     for event in AuditEvent.objects.filter(action__in=MOUNT_TASK_ACTIONS, timestamp__gte=cutoff):
         entries.append(_entry(_mount_task(event), event.id))
@@ -217,6 +225,7 @@ class RecentTaskIndexParityTests(TestCase):
         self._build_scans()
         self._build_scheduled_runs()
         self._build_catalog_refreshes()
+        self._build_inventory_bootstraps()
         self._build_mount_events()
         self._build_file_events()
         self._build_guest_events()
@@ -336,6 +345,31 @@ class RecentTaskIndexParityTests(TestCase):
             outcome="success",
             cluster=self.cluster_b,
             details={"cluster_key": "beta", "stage": "completed"},
+        )
+
+    def _build_inventory_bootstraps(self):
+        # Queued long ago and still queued: kept alive past retention by its
+        # non-terminal outcome, exactly like a catalog refresh.
+        self._audit(
+            action=CLUSTER_INVENTORY_BOOTSTRAP_ACTION,
+            minutes_ago=300,
+            outcome="queued",
+            cluster=self.cluster_b,
+            details={"cluster_key": "beta", "display_name": "Beta", "stage": "queued"},
+        )
+        # Same `started_at`-in-details sort key as the catalog refresh.
+        self._audit(
+            action=CLUSTER_INVENTORY_BOOTSTRAP_ACTION,
+            minutes_ago=45,
+            outcome="warning",
+            cluster=self.cluster_a,
+            details={
+                "cluster_key": "alpha",
+                "display_name": "Alpha",
+                "started_at": self._ago(6).isoformat(),
+                "stage": "completed with incomplete coverage",
+                "incomplete_nodes": ["pve2"],
+            },
         )
 
     def _build_mount_events(self):

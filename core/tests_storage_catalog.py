@@ -223,6 +223,8 @@ class StorageReadModelSourceInvariantTests(SimpleTestCase):
             # Reads it to label the refresh task "completed" or "completed with
             # incomplete coverage". Nothing is authorized by that label.
             root / "services" / "storage_catalog_refresh.py",
+            # Same reason, for the first inventory of a newly added connection.
+            root / "services" / "cluster_inventory_bootstrap.py",
         }
         offenders = []
         for path in root.rglob("*.py"):

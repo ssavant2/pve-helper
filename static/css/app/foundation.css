@@ -44,6 +44,10 @@
      enough slack for a thin scrollbar, so a scrollable rail eats the slack
      instead of squeezing the icons out of their column. */
   --sidebar-collapsed-width: 60px;
+  /* Overwritten on the root element by shell.js with the platform's measured
+     scrollbar track width. Declared here so the sidebar still lays out before
+     that first measurement, and on platforms with overlay scrollbars. */
+  --nav-scrollbar-gutter: 0px;
   --font-sans: "Metropolis", "Avenir Next", "Helvetica Neue", Arial, system-ui, sans-serif;
   --bg: #eef1f4;
   --surface: #ffffff;

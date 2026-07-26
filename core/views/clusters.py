@@ -36,6 +36,11 @@ from core.services.cluster_deletion import (
     delete_unused_cluster_connection,
 )
 from core.services.cluster_deletion_eligibility import unused_connection_deletion_eligibility
+from core.services.cluster_inventory_bootstrap import (
+    ClusterInventoryBootstrapAlreadyActive,
+    ClusterInventoryBootstrapQueueError,
+    queue_cluster_inventory_bootstrap,
+)
 from core.services.cluster_onboarding import (
     ClusterCandidate,
     ClusterOnboardingError,
@@ -533,10 +538,27 @@ def cluster_add(request):
             except CLUSTER_OPERATION_ERRORS as exc:
                 form.add_error(None, str(exc))
             else:
+                _queue_first_inventory(request, cluster)
                 return redirect("core:cluster_connection", cluster_key=cluster.key)
         return render(request, "core/cluster_add.html", context)
 
     raise Http404("Unknown onboarding step")
+
+
+def _queue_first_inventory(request, cluster) -> None:
+    """Start the new connection's first inventory, without risking the add.
+
+    Strictly after the onboarding transaction has committed: the bootstrap's own
+    audit row must not be able to roll the connection back, and a queue that is
+    down must not turn a verified, persisted connection into an error page. The
+    failure is already durable either way — `queue_cluster_inventory_bootstrap`
+    finalizes its row as failed before raising — so the operator can see it in
+    Recent Tasks and refresh manually.
+    """
+    try:
+        queue_cluster_inventory_bootstrap(cluster=cluster, request=request)
+    except (ClusterInventoryBootstrapAlreadyActive, ClusterInventoryBootstrapQueueError):
+        logger.warning("First inventory could not be queued for cluster=%s", cluster.key, exc_info=True)
 
 
 @app_login_required

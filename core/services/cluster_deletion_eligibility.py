@@ -38,7 +38,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.models import ProxmoxCluster
-from core.services.audit_events import CLUSTER_CONFIGURATION_AUDIT_ACTIONS
+from core.services.audit_events import (
+    CLUSTER_CONFIGURATION_AUDIT_ACTIONS,
+    CLUSTER_MACHINE_INITIATED_AUDIT_ACTIONS,
+)
 from core.services.cluster_footprint import RECONSTRUCTIBLE_FOOTPRINT_REASONS
 from core.services.cluster_lifecycle_registry import CLUSTER_REVERSE_RELATIONS
 
@@ -91,7 +94,8 @@ def unused_connection_deletion_eligibility(cluster: ProxmoxCluster) -> DeletionE
     footprint marker is absent or names a reconstructible background reason, and
     no reverse relation that blocks hard deletion holds a row — configuration
     rows (credential, trust, endpoints), machine-generated projections and scan
-    snapshots, and allowlisted configuration Audit events excepted. Any reverse
+    snapshots, and Audit events that are either allowlisted configuration or
+    machine-initiated provider work excepted. Any reverse
     relation not classified by ``CLUSTER_REVERSE_RELATIONS``, and any footprint
     reason absent from ``RECONSTRUCTIBLE_FOOTPRINT_REASONS``, blocks.
     """
@@ -142,9 +146,12 @@ def unused_connection_deletion_eligibility(cluster: ProxmoxCluster) -> DeletionE
         # Base manager: a future default manager must not hide a blocking row.
         queryset = related_model._base_manager.filter(**{fk_name: cluster})
         if accessor == "audit_events":
-            # Configuration-only lifecycle events are detached and preserved on
-            # hard delete; only operational-provider events block.
-            queryset = queryset.exclude(action__in=CLUSTER_CONFIGURATION_AUDIT_ACTIONS)
+            # Configuration-only lifecycle events, and provider work the app started
+            # by itself, are detached and preserved on hard delete; only events an
+            # operator caused block.
+            queryset = queryset.exclude(
+                action__in=CLUSTER_CONFIGURATION_AUDIT_ACTIONS | CLUSTER_MACHINE_INITIATED_AUDIT_ACTIONS
+            )
         count = queryset.count()
         if count:
             blockers.append(

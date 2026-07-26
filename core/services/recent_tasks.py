@@ -22,6 +22,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
+from core.services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
 from core.services.public_errors import SHUTDOWN_INCOMPLETE_CODES
 from core.services.scan_warnings import scan_warning_summary
@@ -201,6 +202,7 @@ def _task_index(cluster_key: str):
     return _scan_index(cluster_key).union(
         _file_index(cluster_key),
         _catalog_index(cluster_key),
+        _cluster_inventory_index(cluster_key),
         _mount_index(cluster_key),
         _scheduled_index(cluster_key),
         _guest_index(cluster_key),
@@ -252,7 +254,15 @@ def _catalog_index(cluster_key: str):
     return _index_values(
         _visible_catalog_refresh_tasks().filter(_audit_cluster_q(cluster_key)),
         "catalog",
-        _catalog_started_at(),
+        _worker_started_at(),
+    )
+
+
+def _cluster_inventory_index(cluster_key: str):
+    return _index_values(
+        _visible_cluster_inventory_tasks().filter(_audit_cluster_q(cluster_key)),
+        "cluster_inventory",
+        _worker_started_at(),
     )
 
 
@@ -305,13 +315,13 @@ def _certificate_index():
     )
 
 
-def _catalog_started_at():
-    """`_catalog_refresh_task`'s sort key, which lives in `details`.
+def _worker_started_at():
+    """Sort key for the bulk operations that record their own start, from `details`.
 
     The worker writes `details["started_at"]` when it picks the job up, so it is
-    genuinely later than `timestamp` (the moment the button was pressed) by however
-    long the row sat in the bulk queue. Only `storage_catalog_refresh` writes that
-    key and it always writes an ISO timestamp, so the cast is safe; a hand-edited
+    genuinely later than `timestamp` (the moment the work was asked for) by however
+    long the row sat in the bulk queue. Only the bulk-operation services write that
+    key and they always write an ISO timestamp, so the cast is safe; a hand-edited
     row with something else in there would raise rather than sort oddly, which is
     the better failure of the two.
     """
@@ -357,7 +367,17 @@ def _questions_pending(cluster_key: str) -> int:
     return files + guests + forwarder + certificates
 
 
-INDEX_KINDS = ("scan", "file", "catalog", "mount", "scheduled_action", "guest", "log_forwarder", "certificate")
+INDEX_KINDS = (
+    "scan",
+    "file",
+    "catalog",
+    "cluster_inventory",
+    "mount",
+    "scheduled_action",
+    "guest",
+    "log_forwarder",
+    "certificate",
+)
 
 
 def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
@@ -375,6 +395,7 @@ def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
     for kind, builder in (
         ("file", _file_task),
         ("catalog", _catalog_refresh_task),
+        ("cluster_inventory", _cluster_inventory_task),
         ("mount", _mount_task),
         ("guest", _guest_task),
         ("log_forwarder", _log_forwarder_certificate_task),
@@ -925,6 +946,58 @@ def _catalog_refresh_task(event: AuditEvent) -> dict[str, object]:
         "started_at": _parsed_detail_time(details, "started_at") or event.timestamp,
         "finished_at": _parsed_detail_time(details, "finished_at") if terminal else None,
         "server": str(details.get("cluster_key") or ""),
+        "sort_at": event.timestamp,
+        "cancelable": False,
+    }
+
+
+def _visible_cluster_inventory_tasks():
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    return AuditEvent.objects.filter(action=CLUSTER_INVENTORY_BOOTSTRAP_ACTION).filter(
+        Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running"))
+    )
+
+
+def _cluster_inventory_task(event: AuditEvent) -> dict[str, object]:
+    """The first inventory of a newly added host or cluster.
+
+    Nobody pressed a button for this one — the add did — so the row is the only
+    thing that explains why datastores, tags and guests appear a little after the
+    connection does.
+    """
+    details = event.details if isinstance(event.details, dict) else {}
+    status, status_class = {
+        "queued": ("Queued", "queued"),
+        "running": ("Running", "running"),
+        "success": ("Completed", "completed"),
+        "warning": ("Completed with warnings", "warning"),
+        "cancelled": ("Cancelled", "failed"),
+    }.get(event.outcome, ("Failed", "failed"))
+    terminal = status_class in {"completed", "warning", "failed"}
+    incomplete_nodes = details.get("incomplete_nodes") if isinstance(details.get("incomplete_nodes"), list) else []
+    summary = str(details.get("error") or details.get("registry_error") or "")
+    if not summary and incomplete_nodes:
+        summary = f"No answer from {', '.join(str(node) for node in incomplete_nodes)}"
+    if not summary:
+        summary = str(details.get("stage") or "-")
+    cluster_key = event.cluster.key if event.cluster_id else event.cluster_key_snapshot or ""
+    return {
+        "id": f"cluster-inventory:{event.id}",
+        "kind": "cluster_inventory",
+        "action": CLUSTER_INVENTORY_BOOTSTRAP_ACTION,
+        "name": "Add host/cluster to inventory",
+        "target": str(details.get("display_name") or "")
+        or (event.cluster.display_name if event.cluster_id else cluster_key),
+        "cluster_key": cluster_key,
+        "cluster": event.cluster.display_name if event.cluster_id else cluster_key or "-",
+        "status": status,
+        "status_class": status_class,
+        "details": summary,
+        "initiator": event.username or (event.user.get_username() if event.user else "system"),
+        "queued_for": "-",
+        "started_at": _parsed_detail_time(details, "started_at") or event.timestamp,
+        "finished_at": _parsed_detail_time(details, "finished_at") if terminal else None,
+        "server": cluster_key,
         "sort_at": event.timestamp,
         "cancelable": False,
     }

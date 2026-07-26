@@ -29,6 +29,7 @@ from .models import (
 )
 from .services.audit_events import record_audit_event
 from .services.cluster_footprint import FOOTPRINT_SCAN_OBSERVATION, stamp_operational_footprint
+from .services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from .services.cluster_lifecycle_lock import scan_admission_lock
 from .services.cluster_resolver import client_for_endpoint, cluster_clients
 from .services.cluster_scopes import managed_clusters
@@ -495,6 +496,11 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         error="The storage catalog refresh worker stopped reporting progress; start a new refresh.",
         now=timezone.now(),
     )
+    interrupted_inventory_bootstraps = _reap_stale_heartbeat_operations(
+        action=CLUSTER_INVENTORY_BOOTSTRAP_ACTION,
+        error="The first inventory worker stopped reporting progress; refresh the connection manually.",
+        now=timezone.now(),
+    )
     interrupted_orphaned_operations = _reap_orphaned_cluster_operations(now=timezone.now())
     return {
         "resolved_from_proxmox": resolved,
@@ -503,6 +509,7 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         "interrupted_tag_operations": interrupted_tag_operations,
         "interrupted_tag_inventory_refreshes": interrupted_tag_inventory_refreshes,
         "interrupted_storage_catalog_refreshes": interrupted_storage_catalog_refreshes,
+        "interrupted_inventory_bootstraps": interrupted_inventory_bootstraps,
         "interrupted_orphaned_operations": interrupted_orphaned_operations,
     }
 
@@ -518,6 +525,7 @@ _REAPER_OWNED_ACTIONS = frozenset(
         "tag.bulk_operation",
         TAG_INVENTORY_REFRESH_ACTION,
         STORAGE_CATALOG_REFRESH_ACTION,
+        CLUSTER_INVENTORY_BOOTSTRAP_ACTION,
     }
 )
 _REAPER_OWNED_ACTION_PREFIXES = ("guest.",)

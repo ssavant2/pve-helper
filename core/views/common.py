@@ -563,6 +563,7 @@ def _audit_action_label(event: AuditEvent) -> str:
         "cluster.add": "Add cluster",
         "cluster.added": "Add cluster",
         "cluster.initial_key.set": "Set initial cluster key",
+        "cluster.inventory.bootstrap": "Add host/cluster to inventory",
         "cluster.transport.approve": "Approve cluster transport",
         "cluster.trust.cutover": "Import legacy cluster trust",
         "cluster.display_name_changed": "Change cluster display name",
