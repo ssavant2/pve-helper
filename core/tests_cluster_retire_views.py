@@ -55,7 +55,7 @@ class ClusterRetirementViewTests(TestCase):
         response = self.client.get(reverse("core:clusters_overview"))
 
         self.assertContains(response, "1 managed")
-        self.assertContains(response, "Retired clusters")
+        self.assertContains(response, "Retired hosts &amp; clusters")
         self.assertContains(response, "1 retired")
         self.assertContains(response, managed.display_name)
         self.assertContains(response, retired.display_name)
@@ -69,9 +69,9 @@ class ClusterRetirementViewTests(TestCase):
 
         response = self.client.get(reverse("core:clusters_overview"))
 
-        self.assertContains(response, "No Proxmox cluster is configured")
+        self.assertContains(response, "No Proxmox host or cluster is configured")
         self.assertContains(response, reverse("core:cluster_add"))
-        self.assertContains(response, "Retired clusters")
+        self.assertContains(response, "Retired hosts &amp; clusters")
         self.assertContains(response, retired.display_name)
 
     def test_retired_detail_is_read_only_and_uses_tombstone_identity(self):

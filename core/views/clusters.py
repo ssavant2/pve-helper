@@ -413,7 +413,7 @@ def clusters_overview(request):
 
 @app_login_required
 def cluster_add(request):
-    context = {**navigation_context("clusters", page_title="Add cluster"), "step": "identity"}
+    context = {**navigation_context("clusters", page_title="Add host/cluster"), "step": "identity"}
     if request.method == "GET":
         context["inspect_form"] = ClusterInspectForm()
         return render(request, "core/cluster_add.html", context)

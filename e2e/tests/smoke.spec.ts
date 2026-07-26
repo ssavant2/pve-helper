@@ -11,7 +11,7 @@ const PAGES = [
   { name: "VMs Overview", path: "/vms/overview/" },
   { name: "VMs Inventory", path: "/vms/" },
   { name: "Connections", path: "/clusters/" },
-  { name: "Add cluster", path: "/clusters/add/" },
+  { name: "Add host/cluster", path: "/clusters/add/" },
   { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
   { name: "Retired cluster detail", path: "/clusters/retired-e2e/connection/" },
   { name: "Datastore consumer view", path: "/clusters/e2e/datastores/e2e-nfs/summary/" },
@@ -212,9 +212,9 @@ test("cluster connection UI separates immutable identity from write-only credent
   // Scoped to main: the sidebar now lists every managed cluster under Tags and
   // Scheduled Tasks, so the bare name matches three links.
   await expect(page.getByRole("main").getByRole("link", { name: "E2E cluster", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "Add cluster", exact: true }).click();
+  await page.getByRole("link", { name: "Add host/cluster", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "Add Proxmox cluster" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Add Proxmox host or cluster" })).toBeVisible();
   await expect(page.getByLabel("Cluster key")).toBeVisible();
   await expect(page.getByText("cannot be renamed later")).toBeVisible();
   await expect(page.locator('input[name="token_secret"]')).toHaveCount(0);
@@ -282,8 +282,8 @@ test("an unobserved guest is published as unknown, not as stopped and healthy", 
 test("retired connection archive opens its read-only tombstone and filtered Audit history", async ({ page }) => {
   await page.goto("/clusters/");
 
-  await expect(page.getByRole("heading", { name: "Configured clusters" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Retired clusters" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Configured hosts & clusters" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Retired hosts & clusters" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Retired E2E cluster", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Retired E2E cluster", exact: true }).click();
 

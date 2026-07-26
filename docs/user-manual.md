@@ -95,7 +95,10 @@ as one pve-helper cluster. A cluster has one permanent lowercase key and one or
 more replaceable API endpoints. The key is durable identity used in URLs, tasks
 and Audit; it cannot be renamed. The display name can be changed.
 
-To add a cluster, open **Clusters → Connections → Add cluster**:
+To add a standalone host or a cluster, open **Clusters → Connections →
+Add host/cluster**. A multi-node cluster is registered through one of its nodes;
+its remaining nodes are added afterwards, one at a time, as extra endpoints of
+the same connection. The steps are:
 
 1. Enter its display name, permanent key and first HTTPS Proxmox endpoint.
 2. Review the certificate shown before entering credentials. Choose public trust
@@ -141,7 +144,7 @@ cluster's state.
   identity, removes the stored credential, trust record and endpoints, stops future
   schedules and clears current inventory — while preserving the permanent key, all
   Audit history, scan evidence and past run history. The retired connection moves to
-  the **Retired clusters** archive with a `Verified` badge and a read-only detail
+  the **Retired hosts & clusters** archive with a `Verified` badge and a read-only detail
   page linking to its filtered Audit history.
 - **Force retire** is for a cluster that is permanently gone and will never answer
   again. It makes no provider call, disables and retires in one step even when an

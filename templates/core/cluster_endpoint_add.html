@@ -2,7 +2,7 @@
 
 {% block content %}
   <div class="page-header cluster-page-header">
-    <div><a href="{% url 'core:cluster_connection' cluster.key %}">{{ cluster.display_name }}</a><h1>Add endpoint</h1><p>Add a redundant transport to the same verified Proxmox cluster.</p></div>
+    <div><a href="{% url 'core:cluster_connection' cluster.key %}">{{ cluster.display_name }}</a><h1>Add endpoint</h1><p>Add another node of the same verified Proxmox cluster as a redundant transport.</p></div>
     <a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a>
   </div>
 

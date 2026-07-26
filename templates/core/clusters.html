@@ -4,13 +4,13 @@
   <div class="page-header cluster-page-header">
     <div>
       <h1>Connections</h1>
-      <p>Verified Proxmox control-plane connections. A standalone node is one cluster with one endpoint.</p>
+      <p>Verified Proxmox control-plane connections. Add a standalone host, a single-node cluster or a multi-node cluster. A cluster is registered through one of its nodes; its remaining nodes are added afterwards, one at a time, as extra endpoints for the same connection.</p>
     </div>
-    <div class="page-header-actions"><a class="vs-toolbar-button" href="{% url 'core:cluster_add' %}"><i data-lucide="plus" aria-hidden="true"></i> Add cluster</a></div>
+    <div class="page-header-actions"><a class="vs-toolbar-button" href="{% url 'core:cluster_add' %}"><i data-lucide="plus" aria-hidden="true"></i> Add host/cluster</a></div>
   </div>
 
   <section class="panel cluster-list-panel">
-    <div class="panel-heading cluster-list-heading"><h2>Configured clusters</h2><span class="panel-meta">{{ clusters|length }} managed</span></div>
+    <div class="panel-heading cluster-list-heading"><h2>Configured hosts &amp; clusters</h2><span class="panel-meta">{{ clusters|length }} managed</span></div>
     {% if clusters %}
       <div class="cluster-table-scroll">
         <table class="data-table compact" data-sortable-table>
@@ -35,9 +35,9 @@
     {% else %}
       <div class="cluster-zero-state">
         <span class="cluster-zero-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
-        <h2>No Proxmox cluster is configured</h2>
+        <h2>No Proxmox host or cluster is configured</h2>
         <p>Add one endpoint, approve its TLS transport, and verify an Administrator API token. Nothing is saved until every check passes.</p>
-        <a class="primary-action" href="{% url 'core:cluster_add' %}">Add first cluster</a>
+        <a class="primary-action" href="{% url 'core:cluster_add' %}">Add first host/cluster</a>
       </div>
     {% endif %}
   </section>
@@ -46,7 +46,7 @@
     <section class="panel panel-spaced cluster-list-panel cluster-retired-list">
       <div class="panel-heading cluster-list-heading">
         <div>
-          <h2>Retired clusters</h2>
+          <h2>Retired hosts &amp; clusters</h2>
           <p class="panel-meta">Historical connection tombstones. They cannot be enabled or edited.</p>
         </div>
         <span class="panel-meta">{{ retired_clusters|length }} retired</span>

@@ -109,7 +109,7 @@ class ClusterConnectionViewTests(TestCase):
 
     def test_zero_cluster_state_has_onboarding_and_unscoped_tags_redirects_to_it(self):
         response = self.client.get(reverse("core:clusters_overview"))
-        self.assertContains(response, "No Proxmox cluster is configured")
+        self.assertContains(response, "No Proxmox host or cluster is configured")
         self.assertContains(response, reverse("core:cluster_add"))
 
         response = self.client.get(reverse("core:legacy_tags_overview"))
@@ -136,7 +136,7 @@ class ClusterConnectionViewTests(TestCase):
 
         overview = self.client.get(reverse("core:clusters_overview"))
         self.assertContains(overview, "cluster-list-heading")
-        self.assertContains(overview, "Configured clusters")
+        self.assertContains(overview, "Configured hosts &amp; clusters")
         self.assertContains(overview, "2 managed")
 
         detail = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))

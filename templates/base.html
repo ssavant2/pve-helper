@@ -257,8 +257,8 @@
       <main class="content" data-soft-nav-content tabindex="-1">
         {% if not app_has_clusters and active_nav != 'clusters' %}
           <section class="panel onboarding-empty-banner">
-            <div><strong>No Proxmox cluster is configured.</strong><span> Add and verify a cluster connection to begin.</span></div>
-            <a class="primary-action" href="{% url 'core:cluster_add' %}">Add cluster</a>
+            <div><strong>No Proxmox host or cluster is configured.</strong><span> Add and verify a connection to begin.</span></div>
+            <a class="primary-action" href="{% url 'core:cluster_add' %}">Add host/cluster</a>
           </section>
         {% endif %}
         {% if messages %}

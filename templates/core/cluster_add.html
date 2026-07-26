@@ -2,7 +2,7 @@
 
 {% block content %}
   <div class="page-header cluster-page-header">
-    <div><a href="{% url 'core:clusters_overview' %}">Connections</a><h1>Add Proxmox cluster</h1><p>Credentials are sent only after you inspect and approve the endpoint certificate.</p></div>
+    <div><a href="{% url 'core:clusters_overview' %}">Connections</a><h1>Add Proxmox host or cluster</h1><p>Register a standalone host through itself, or a cluster through one of its nodes. Credentials are sent only after you inspect and approve the endpoint certificate.</p></div>
     <a class="secondary-action" href="{% url 'core:clusters_overview' %}">Cancel</a>
   </div>
 
@@ -55,7 +55,7 @@
         {% csrf_token %}<input type="hidden" name="action" value="confirm">{{ confirm_form.candidate }}
         {% include "core/partials/cluster_form_errors.html" with form=confirm_form %}
         <label class="cluster-check">{{ confirm_form.confirm_identity }}<span>{{ confirm_form.confirm_identity.label }}</span></label>
-        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_add' %}">Cancel</a><button class="primary-action" type="submit">Add and enable cluster</button></div>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_add' %}">Cancel</a><button class="primary-action" type="submit">Add and enable connection</button></div>
       </form>
     </section>
   {% endif %}
