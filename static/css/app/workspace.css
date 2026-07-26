@@ -12,13 +12,17 @@
   display: block;
   height: 100%;
   overflow: auto;
-  padding: 40px 7px 10px;
+  /* Reserve the scrollbar track permanently: the tree must not shift sideways
+     the moment it becomes scrollable, and the toggle button offsets itself by
+     the same gutter so its gap to the tree stays constant. */
+  scrollbar-gutter: stable;
+  padding: 40px 7px 10px 4px;
 }
 
 .sidebar-toggle {
   position: absolute;
   top: 11px;
-  right: 10px;
+  right: calc(10px + var(--nav-scrollbar-gutter, 0px));
   z-index: 25;
   display: inline-grid;
   place-items: center;
@@ -43,12 +47,13 @@
   height: 17px;
 }
 
+/* Sits directly above the icon column rather than centred in the rail, so the
+   button keeps the same width and the same visual column in both states. */
 .app-shell.sidebar-collapsed .sidebar-toggle {
   right: auto;
-  left: 50%;
+  left: 24px;
   width: 24px;
   height: 22px;
-  transform: translateX(-50%);
 }
 
 .app-shell.sidebar-collapsed .sidebar-toggle svg {
@@ -68,7 +73,7 @@
 .sidebar-top-divider {
   position: absolute;
   top: 22px;
-  right: 48px;
+  right: calc(48px + var(--nav-scrollbar-gutter, 0px));
   left: 12px;
   height: 1px;
   background: var(--line);
@@ -112,10 +117,15 @@
   display: none;
 }
 
+/* The rail is too narrow to spend 15px on a permanently reserved track, and it
+   only ever scrolls on a very short window: take the platform's thin scrollbar
+   on demand and let it sit in the slack right of the icons. */
 .app-shell.sidebar-collapsed .nav-tree {
+  scrollbar-gutter: auto;
+  scrollbar-width: thin;
   padding-top: 40px;
-  padding-right: 6px;
-  padding-left: 6px;
+  padding-right: 7px;
+  padding-left: 4px;
 }
 
 .sidebar-measure-probe {
@@ -149,9 +159,9 @@
 .tree-node {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-height: 34px;
-  padding: 5px 9px;
+  padding: 5px 9px 5px 2px;
   border-radius: 4px;
   color: var(--tree-text);
 }
@@ -248,7 +258,7 @@ button.tree-node {
 
 .storage-leaf {
   min-height: 29px;
-  padding-left: 7px;
+  padding-left: 0;
 }
 
 /* Nested datastore groups (Local / Shared, and per-node hosts) */
@@ -311,6 +321,8 @@ button.tree-node {
 }
 
 .tree-caret {
+  /* Never shrink: the caret track is what holds the icon column in place. */
+  flex: 0 0 12px;
   width: 12px;
   text-align: center;
   color: var(--muted);
@@ -367,28 +379,28 @@ button.tree-node {
   color: var(--tree-icon-disabled-text);
 }
 
+/* Collapsing hides text and carets; it does not re-lay-out the icon buttons.
+   The node keeps its expanded left padding and gap, and the caret keeps its
+   track (hidden, not removed), so every icon stays on the same x. */
 .app-shell.sidebar-collapsed .tree-root,
 .app-shell.sidebar-collapsed .tree-node {
-  justify-content: center;
-  gap: 0;
   padding-right: 5px;
-  padding-left: 5px;
+  padding-left: 2px;
+}
+
+.app-shell.sidebar-collapsed .tree-caret {
+  visibility: hidden;
 }
 
 .app-shell.sidebar-collapsed .tree-root::after,
-.app-shell.sidebar-collapsed .tree-caret,
 .app-shell.sidebar-collapsed .tree-label,
 .app-shell.sidebar-collapsed .tree-children {
   display: none;
 }
 
-.app-shell.sidebar-collapsed .tree-module {
-  margin: 4px 0;
-}
-
-.app-shell.sidebar-collapsed .nav-tree > .tree-node.module-node {
-  margin: 4px 0;
-}
+/* The collapsed rail deliberately does NOT get its own vertical rhythm: an
+   extra 3px per row is invisible on its own and adds up to a two-row drift by
+   the bottom of the tree, which reads as the icons moving when you collapse. */
 
 .content {
   grid-area: content;

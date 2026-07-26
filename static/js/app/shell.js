@@ -82,6 +82,25 @@ const applyTaskbarState = (collapsed) => {
 
 const sidebarMaxWidth = () => Math.max(280, Math.min(720, Math.floor(window.innerWidth * 0.5)));
 
+// The nav tree reserves its scrollbar track permanently (scrollbar-gutter), so
+// the toggle button, the top divider and the collapsed rail all have to offset
+// themselves by whatever the platform's track actually measures. Overlay
+// scrollbars measure 0 and everything falls back to the plain layout.
+const measureNavScrollbarGutter = () => {
+  const navTree = document.querySelector("[data-sidebar] .nav-tree");
+  if (!navTree) {
+    return 0;
+  }
+  return Math.max(0, Math.round(navTree.offsetWidth - navTree.clientWidth));
+};
+
+// Set on the root, not on .app-shell: --sidebar-collapsed-width resolves its
+// var() references where it is declared (:root), so a gutter parked on the shell
+// would read as 0 there.
+const refreshNavScrollbarGutter = () => {
+  document.documentElement.style.setProperty("--nav-scrollbar-gutter", `${measureNavScrollbarGutter()}px`);
+};
+
 const measureSidebarMinimumWidth = () => {
   const sidebar = document.querySelector("[data-sidebar]");
   const navTree = sidebar?.querySelector(".nav-tree");
@@ -110,7 +129,7 @@ const measureSidebarMinimumWidth = () => {
   // Nav padding + caret + icon + gaps + row padding. This is intentionally
   // top-level only; deeper labels can overflow until the user expands width
   // or double-clicks the handle for full-tree auto-fit.
-  return Math.ceil(Math.max(190, widestLabel + 78));
+  return Math.ceil(Math.max(190, widestLabel + 66) + measureNavScrollbarGutter());
 };
 
 const measureSidebarExpandedWidth = () => {
@@ -133,7 +152,7 @@ const measureSidebarExpandedWidth = () => {
     }
   });
   sidebar.appendChild(clone);
-  const width = Math.ceil(clone.scrollWidth + 8);
+  const width = Math.ceil(clone.scrollWidth + 8 + measureNavScrollbarGutter());
   clone.remove();
   return Math.max(measureSidebarMinimumWidth(), width);
 };
@@ -623,6 +642,7 @@ const initSidebarControls = () => {
   }
 
   sidebar.dataset.controlsInitialized = "true";
+  refreshNavScrollbarGutter();
 
   toggle.addEventListener("click", () => {
     const collapsed = !appShell.classList.contains("sidebar-collapsed");
@@ -669,7 +689,10 @@ const initSidebarControls = () => {
     window.addEventListener("pointercancel", stop);
   });
 
-  window.addEventListener("resize", refreshSidebarWidth);
+  window.addEventListener("resize", () => {
+    refreshNavScrollbarGutter();
+    refreshSidebarWidth();
+  });
 };
 
 const initGlobalSearch = () => {

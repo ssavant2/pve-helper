@@ -39,7 +39,11 @@
 :root {
   --taskbar-height: 242px;
   --sidebar-width: 248px;
-  --sidebar-collapsed-width: 58px;
+  /* The collapsed rail keeps the icon column at the same x as the expanded tree
+     (4 nav + 2 node + 12 caret track + 6 gap = 24) and adds the 24px icon plus
+     enough slack for a thin scrollbar, so a scrollable rail eats the slack
+     instead of squeezing the icons out of their column. */
+  --sidebar-collapsed-width: 60px;
   --font-sans: "Metropolis", "Avenir Next", "Helvetica Neue", Arial, system-ui, sans-serif;
   --bg: #eef1f4;
   --surface: #ffffff;

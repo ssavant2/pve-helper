@@ -837,13 +837,15 @@ code {
   .nav-tree {
     display: block;
     height: auto;
+    /* The sidebar itself scrolls here, so the tree needs no reserved gutter. */
+    scrollbar-gutter: auto;
   }
 
   .app-shell.sidebar-collapsed .tree-root,
   .app-shell.sidebar-collapsed .tree-node {
     justify-content: flex-start;
-    gap: 8px;
-    padding: 5px 9px;
+    gap: 6px;
+    padding: 5px 9px 5px 2px;
   }
 
   .app-shell.sidebar-collapsed .tree-root::after {
@@ -857,6 +859,7 @@ code {
   .app-shell.sidebar-collapsed .tree-caret,
   .app-shell.sidebar-collapsed .tree-label {
     display: inline;
+    visibility: visible;
   }
 
   .app-shell.sidebar-collapsed .tree-children {
