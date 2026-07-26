@@ -13,7 +13,7 @@
           <label class="form-field"><span>Notifications</span><select name="notification_mode"><option value="auto">Use global settings</option><option value="notification-system">Proxmox notification system</option><option value="legacy-sendmail">Legacy sendmail</option></select></label>
           <label class="form-field"><span>Notes</span><input name="notes_template" value="{% templatetag openvariable %}guestname{% templatetag closevariable %}" maxlength="1024"></label>
           <label class="form-field-inline"><input type="checkbox" name="protected"><span>Protect archive from automatic pruning</span></label>
-          <button class="primary-action" type="submit">Back up now</button>
+          <button class="secondary-action" type="submit">Back up now</button>
         </form>
       </div>
 

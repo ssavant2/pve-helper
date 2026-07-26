@@ -317,6 +317,10 @@ test("two chained fields dialogs validate and own separate elements", async ({ p
   await expect(dialog().getByRole("heading", { name: "Are you really sure?" })).toBeVisible();
   expect(await dialog().evaluate((current, previous) => current === previous, firstElement)).toBe(false);
   await expect(dialog().locator(".form-actions button")).toHaveText(["Go back", "Retire permanently"]);
+  await expect(dialog().getByRole("button", { name: "Go back", exact: true })).toHaveClass(/secondary-action/);
+  await expect(dialog().getByRole("button", { name: "Retire permanently", exact: true })).toHaveClass(
+    /primary-action/
+  );
   await dialog().getByLabel("Permanent key again").fill("e2e");
   await dialog().getByRole("button", { name: "Retire permanently", exact: true }).click();
 
@@ -462,6 +466,7 @@ test("forced cluster retirement uses impact fields and a separate swapped final 
     )
   ).toBe(true);
   await expect(second.locator(".form-actions button")).toHaveText(["Go back", "Force-retire permanently"]);
+  await expect(second.getByRole("button", { name: "Go back", exact: true })).toHaveClass(/secondary-action/);
   await second.getByRole("button", { name: "Force-retire permanently" }).click();
 
   await expect(page).toHaveURL(/\/clusters\/$/);
@@ -531,6 +536,7 @@ test("delete unused connection types the exact key and confirms in a separate sw
     )
   ).toBe(true);
   await expect(second.locator(".form-actions button")).toHaveText(["Go back", "Delete permanently"]);
+  await expect(second.getByRole("button", { name: "Go back", exact: true })).toHaveClass(/secondary-action/);
   await second.getByRole("button", { name: "Delete permanently" }).click();
 
   await expect(page).toHaveURL(/\/clusters\/$/);

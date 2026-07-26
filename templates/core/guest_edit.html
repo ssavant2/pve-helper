@@ -87,7 +87,7 @@
 
       {% if form_error %}<p class="form-error guest-edit-error">{{ form_error }}</p>{% endif %}
       <div class="form-actions">
-        <button class="primary-action" type="submit">Save changes</button>
+        <button class="secondary-action" type="submit">Save changes</button>
         <a class="secondary-action" href="{% url 'core:guest_summary' guest.cluster_key guest.object_type guest.vmid %}">Cancel</a>
       </div>
     </form>

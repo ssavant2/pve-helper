@@ -12,7 +12,7 @@
         {% include "core/partials/cluster_form_errors.html" with form=inspect_form %}
         <label class="cluster-field-wide"><span>Endpoint URL</span>{{ inspect_form.endpoint_url }}{% for error in inspect_form.endpoint_url.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
         <label><span>Endpoint name</span>{{ inspect_form.endpoint_name }}{% for error in inspect_form.endpoint_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
-        <div class="cluster-form-actions cluster-field-wide"><button class="primary-action" type="submit">Inspect certificate</button></div>
+        <div class="cluster-form-actions cluster-field-wide"><button class="secondary-action" type="submit">Inspect certificate</button></div>
       </form>
     </section>
   {% elif step == "trust" %}
@@ -22,7 +22,7 @@
       <form method="post" class="cluster-confirm-form">{% csrf_token %}<input type="hidden" name="action" value="verify">{{ trust_form.inspection }}
         {% include "core/partials/cluster_form_errors.html" with form=trust_form %}
         <label class="cluster-check">{{ trust_form.confirm_certificate }}<span>{{ trust_form.confirm_certificate.label }}</span></label>
-        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_endpoint_add' cluster.key %}">Start over</a><button class="primary-action" type="submit">Verify endpoint identity</button></div>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_endpoint_add' cluster.key %}">Start over</a><button class="secondary-action" type="submit">Verify endpoint identity</button></div>
       </form>
     </section>
   {% else %}
@@ -31,7 +31,7 @@
       <form method="post" class="cluster-confirm-form">{% csrf_token %}<input type="hidden" name="action" value="confirm">{{ confirm_form.endpoint }}
         {% include "core/partials/cluster_form_errors.html" with form=confirm_form %}
         <label class="cluster-check">{{ confirm_form.confirm_identity }}<span>{{ confirm_form.confirm_identity.label }}</span></label>
-        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a><button class="primary-action" type="submit">Add endpoint</button></div>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a><button class="secondary-action" type="submit">Add endpoint</button></div>
       </form>
     </section>
   {% endif %}

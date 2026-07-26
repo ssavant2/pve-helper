@@ -36,7 +36,7 @@
             </div>
           </div>
           {% if restore_error %}<p class="form-error">{{ restore_error }}</p>{% endif %}
-          <div class="form-actions"><button type="submit" class="primary-action">Restore Backup</button><a class="primary-action" href="{% url 'core:vms' %}">Cancel</a></div>
+          <div class="form-actions"><button type="submit" class="secondary-action">Restore Backup</button><a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a></div>
         </form>
       {% endif %}
     </div>

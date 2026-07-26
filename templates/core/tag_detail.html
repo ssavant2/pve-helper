@@ -17,7 +17,7 @@
     <form method="post" action="{% url 'core:tag_operation' cluster_key %}" data-confirm="This tag is used by {{ tag.guest_count }} object{{ tag.guest_count|pluralize }}. Removing it will update all of them and unregister the tag. Are you sure?" data-confirm-title="Delete tag" data-confirm-label="Delete" data-confirm-danger="true">
       {% csrf_token %}<input type="hidden" name="operation" value="delete"><input type="hidden" name="tag" value="{{ tag.name }}"><input type="hidden" name="confirmation" value="{{ tag_delete_confirmation }}"><button class="secondary-action danger" type="submit">Delete tag</button>
     </form>
-    {% if assignable_guests %}<button class="primary-action" type="button" data-tag-assign-open>Assign objects</button>{% endif %}
+    {% if assignable_guests %}<button class="secondary-action" type="button" data-tag-assign-open>Assign objects</button>{% endif %}
   </section>
 
   <section class="panel panel-spaced">
@@ -53,7 +53,7 @@
           {% endfor %}
         </div>
         <p class="form-error" data-tag-assign-error hidden></p>
-        <div class="form-actions"><button class="primary-action" type="submit">Assign selected</button><button class="secondary-action" type="button" data-tag-assign-cancel>Cancel</button></div>
+        <div class="form-actions"><button class="secondary-action" type="submit">Assign selected</button><button class="secondary-action" type="button" data-tag-assign-cancel>Cancel</button></div>
       </form>
     </dialog>
   {% endif %}

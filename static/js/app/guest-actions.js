@@ -477,7 +477,7 @@ const openVmFormDialog = ({
   summary,
   bodyHtml,
   submitLabel,
-  submitClass = "primary-action",
+  submitClass = "secondary-action",
   cancelLabel = "Cancel",
   onSubmit,
   onDecline = null,

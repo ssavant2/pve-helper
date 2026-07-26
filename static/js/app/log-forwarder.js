@@ -160,7 +160,7 @@ const openCertificateTrustDialog = ({ host, port, condition = "", detail = "" })
         </div>
         <p class="form-error" data-trust-error role="alert" hidden></p>
         <div class="form-actions">
-          <button class="primary-action" type="button" data-trust-confirm disabled>Trust this destination</button>
+          <button class="secondary-action" type="button" data-trust-confirm disabled>Trust this destination</button>
           <button class="secondary-action" type="button" data-trust-cancel>Cancel</button>
         </div>
       </div>

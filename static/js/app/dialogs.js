@@ -69,9 +69,9 @@ const openConfirmDialog = ({
         <div class="form-actions">
           ${
             swapActions
-              ? `<button class="primary-action" type="button" data-confirm-no>${escapeHtml(cancelLabel)}</button>
-          <button class="secondary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>`
-              : `<button class="primary-action${danger ? " danger-action" : ""}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>
+              ? `<button class="secondary-action" type="button" data-confirm-no>${escapeHtml(cancelLabel)}</button>
+          <button class="${danger ? "primary-action danger-action" : "secondary-action"}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>`
+              : `<button class="${danger ? "primary-action danger-action" : "secondary-action"}" type="button" data-confirm-yes>${escapeHtml(confirmLabel)}</button>
           <button class="secondary-action" type="button" data-confirm-no>${escapeHtml(cancelLabel)}</button>`
           }
         </div>
@@ -109,7 +109,7 @@ const openInputDialog = ({ title = "Enter a value", label = "", value = "", conf
         </label>
         <p class="form-error" data-input-error role="alert" hidden></p>
         <div class="form-actions">
-          <button class="primary-action" type="submit">${escapeHtml(confirmLabel)}</button>
+          <button class="secondary-action" type="submit">${escapeHtml(confirmLabel)}</button>
           <button class="secondary-action" type="button" data-input-cancel>Cancel</button>
         </div>
       </form>
@@ -232,9 +232,9 @@ const openFieldsDialog = ({
         <div class="form-actions">
           ${
             swapActions
-              ? `<button class="primary-action" type="button" data-fields-no>${escapeHtml(cancelLabel)}</button>
-          <button class="secondary-action${danger ? " danger-action" : ""}" type="submit" data-fields-yes>${escapeHtml(confirmLabel)}</button>`
-              : `<button class="primary-action${danger ? " danger-action" : ""}" type="submit" data-fields-yes>${escapeHtml(confirmLabel)}</button>
+              ? `<button class="secondary-action" type="button" data-fields-no>${escapeHtml(cancelLabel)}</button>
+          <button class="${danger ? "primary-action danger-action" : "secondary-action"}" type="submit" data-fields-yes>${escapeHtml(confirmLabel)}</button>`
+              : `<button class="${danger ? "primary-action danger-action" : "secondary-action"}" type="submit" data-fields-yes>${escapeHtml(confirmLabel)}</button>
           <button class="secondary-action" type="button" data-fields-no>${escapeHtml(cancelLabel)}</button>`
           }
         </div>
@@ -341,7 +341,7 @@ const openNoticeDialog = ({ title = "Action failed", body = "", closeLabel = "Cl
         </div>
         <div class="vm-action-dialog-body">${body}</div>
         <div class="form-actions">
-          <button class="primary-action" type="button" data-notice-close>${escapeHtml(closeLabel)}</button>
+          <button class="secondary-action" type="button" data-notice-close>${escapeHtml(closeLabel)}</button>
         </div>
       </div>
     `;

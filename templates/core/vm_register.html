@@ -245,7 +245,7 @@
       </template>
 
       <div class="hardware-editor-actions">
-        <button class="primary-action" type="submit">{% if mode == "adopt" %}Register VM{% elif mode == "ovf" %}Import Package &amp; Create{% else %}Import &amp; Create{% endif %}</button>
+        <button class="secondary-action" type="submit">{% if mode == "adopt" %}Register VM{% elif mode == "ovf" %}Import Package &amp; Create{% else %}Import &amp; Create{% endif %}</button>
         <a class="secondary-action" href="{% url 'core:vms' %}">Cancel</a>
       </div>
     </form>
