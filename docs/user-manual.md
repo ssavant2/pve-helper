@@ -106,6 +106,14 @@ the same connection. The steps are:
 3. Enter an `Administrator` API token and explicitly bind the chosen key to the
    Proxmox CA UUID/fingerprint returned by the verified endpoint.
 
+Prepare the Proxmox side first: a dedicated user and a privilege-separated API
+token, both holding `Administrator` on `/` with propagation enabled. The
+step-by-step is in [Proxmox API token setup](proxmox-api-token.md). Nothing is
+stored until the endpoint proves it runs **Proxmox VE 9.2 or later**, that the
+token's effective privileges at `/` cover the whole `Administrator` role, and
+that the cluster's root CA carries the UUID the connection is pinned to. A
+failure names which of those it was.
+
 Adding the connection starts its first inventory immediately, as an **Add
 host/cluster to inventory** row in Recent Tasks. It reads the cluster's guests,
 storage catalog and tag registry in that order, so the new connection's

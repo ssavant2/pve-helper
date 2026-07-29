@@ -549,15 +549,7 @@ Follow `docs/oidc-setup.md` for the provider-neutral contract. Operators using
 Authentik can instead follow the more detailed, tested walkthrough in
 `docs/authentik-oidc-setup.md`; Authentik is not an application requirement.
 
-For a new installation, leave the legacy `PVE_ENDPOINTS`,
-`PVE_API_TOKEN_ID`, `PVE_API_TOKEN_SECRET` and `PVE_CA_BUNDLE` fields empty.
-Start the application and add each independent cluster through **Clusters →
-Connections**. The wizard stores transport trust and an encrypted, write-only
-credential per cluster and verifies effective `Administrator` permissions at
-`/` before persisting anything.
-
-The following environment block is retained only for a one-time import by an
-older/single-cluster deployment:
+Set:
 
 ```env
 APP_REQUIRE_LOGIN=true
@@ -599,42 +591,52 @@ committed.
 
 ## Proxmox
 
-Create a dedicated Proxmox user and API token for pve-helper. The normal
-deployment grants the built-in `Administrator` role on `/`, with propagation
-enabled, to both:
+A new installation starts with no clusters and stays usable that way. Start the
+application, then add each independent host or cluster through **Clusters →
+Connections**; the wizard stores transport trust and an encrypted, write-only
+credential per connection.
+
+Each Proxmox host or cluster needs a dedicated user and privilege-separated API
+token holding the built-in `Administrator` role on `/`, with propagation enabled,
+granted to **both** the user and the token:
 
 - user: `pve-helper@pve`
 - privilege-separated token: `pve-helper@pve!pve-helper`
 
-The broader role is intentional. pve-helper is becoming an admin tool rather
-than a read-only scanner: scheduled power actions, VM/CT creation/deletion,
-snapshots, configuration edits, migration, and tag writes should not require
-chasing individual Proxmox privileges one by one. Keep destructive app features
-behind pve-helper confirmation/audit flows instead of trying to model them as
-tiny Proxmox roles.
+`docs/proxmox-api-token.md` is the full procedure — the `pveum` commands, the UI
+equivalent, and the five checks onboarding performs. Two of those decide whether
+a host can be added at all and are worth knowing before you start: **Proxmox VE
+9.2 or later** is required, and the cluster's **root CA subject must contain a
+UUID** (a Proxmox-generated CA always does; a replaced corporate CA may not).
+
+The broad role is intentional. pve-helper is an admin tool rather than a
+read-only scanner: scheduled power actions, VM/CT creation/deletion, snapshots,
+configuration edits, migration, and tag writes should not require chasing
+individual Proxmox privileges one by one. Keep destructive app features behind
+pve-helper confirmation/audit flows instead of trying to model them as tiny
+Proxmox roles.
 
 For a read-only scanner-only deployment, `PVEAuditor` on `/` is still enough for
 inventory, storage visibility, and orphan classification. Older `HelperPower`
 grants on `/vms` can be removed once the dedicated user and token have
 `Administrator` on `/`.
 
-For the full UI walkthrough, see `docs/proxmox-api-token.md`.
+The token is entered in **Clusters → Connections → Add host/cluster** in the
+running app, not in the environment. Paste the internal CA PEM in that
+connection's trust step; do not put a new cluster's CA in the legacy global
+`PVE_CA_BUNDLE`. The legacy `PVE_ENDPOINTS`, `PVE_VERIFY_TLS`,
+`PVE_API_TOKEN_ID` and `PVE_API_TOKEN_SECRET` fields stay empty on a new
+installation and are read only by the one-time import described under
+*Credential cutover* above.
 
-Set:
+Scheduling behaviour is configured in the environment:
 
 ```env
-PVE_ENDPOINTS=https://pve1.example.com:8006
-PVE_VERIFY_TLS=true
-PVE_API_TOKEN_ID=<token-id>
-PVE_API_TOKEN_SECRET=<token-secret>
 SCHEDULED_ACTIONS_ENABLED=true
 SCHEDULED_ACTION_TIMEOUT_SECONDS=1800
 BACKUP_TASK_TIMEOUT_SECONDS=21600
 SCHEDULED_ACTION_POLL_INTERVAL_SECONDS=5
 ```
-
-For UI onboarding, paste the internal CA PEM in that cluster's trust step. Do not
-put a new cluster's CA in the legacy global `PVE_CA_BUNDLE`.
 
 Set `SCHEDULED_ACTIONS_ENABLED=false` if you want to disable scheduled VM/CT
 power actions at runtime even when the pve-helper token has administrator

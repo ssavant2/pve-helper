@@ -1,17 +1,18 @@
 # Proxmox API token setup
 
-`pve-helper` started as a read-mostly inventory/storage helper, but the planned
-VM module needs normal administrator operations: snapshots, VM/CT creation,
-configuration changes, deletion, migration, guest-agent reads, and scheduled
-power actions.
+Every pve-helper connection authenticates to Proxmox as a dedicated user's
+privilege-separated API token. This page is the provider-side half: what to
+create on the Proxmox host, and what the app checks before it will store
+anything.
 
-Use a dedicated Proxmox user and API token with the built-in `Administrator`
-role on `/`. Keep token privilege separation enabled and grant the same role to
-both the user and the token.
+The pve-helper side is **Clusters → Connections → Add host/cluster** in the
+running app. Nothing here goes into `.env`: the wizard stores transport trust and
+an encrypted, write-only credential per connection. (An older single-cluster
+deployment may still carry `PVE_API_TOKEN_ID`/`PVE_API_TOKEN_SECRET` in its
+environment — see *Credential cutover* in the deployment runbook. New
+installations leave those empty.)
 
 ## Values
-
-Suggested values:
 
 | Field | Value |
 | --- | --- |
@@ -21,120 +22,119 @@ Suggested values:
 | Role | `Administrator` |
 | Path | `/` |
 | Propagate | enabled |
+| Privilege separation | enabled |
 
-For a single-node install, create this on that node. If the nodes are later
-clustered, the user/token and permissions live in the cluster configuration. If
-the nodes are separate, repeat the setup on every node that `pve-helper` will
-inventory.
+In a cluster, users, tokens and ACLs live in the replicated cluster
+configuration, so this is created **once** for the whole cluster, on any node.
+Standalone hosts each need their own.
 
-## Steps
+## Create it
 
-1. Log in to the Proxmox web UI as an administrator.
+From a shell on the node:
 
-2. Create a dedicated user:
+```bash
+pveum user add pve-helper@pve --comment "pve-helper integration"
+pveum acl modify / --users pve-helper@pve --roles Administrator --propagate 1
+pveum user token add pve-helper@pve pve-helper --privsep 1
+pveum acl modify / --tokens 'pve-helper@pve!pve-helper' --roles Administrator --propagate 1
+```
 
-   - Go to `Datacenter` -> `Permissions` -> `Users`.
-   - Click `Add`.
-   - User name: `pve-helper`
-   - Realm: `Proxmox VE authentication server`
-   - Enabled: yes.
-   - Expire: never, unless you intentionally want a rotation date.
-   - Set a long random password if Proxmox asks for one. The app will not use
-     the password.
+`pveum user token add` prints the secret **once**. If it is not captured, delete
+the token and create it again; there is no way to read it back.
 
-3. Grant the user administrator permissions:
+Three details decide whether this works:
 
-   - Go to `Datacenter` -> `Permissions`.
-   - Click `Add` -> `User Permission`.
-   - Path: `/`
-   - User: `pve-helper@pve`
-   - Role: `Administrator`
-   - Propagate: enabled.
+- **Privilege separation means the token needs its own ACL entry.** That is the
+  fourth command. Without it the token inherits nothing, and the failure appears
+  as a permissions error during verification even though the *user* is an
+  administrator.
+- **Propagate on `/`.** The app reads `/nodes/...`, `/storage/...` and more; a
+  non-propagating grant on the root gives it the root and nothing beneath it.
+- **A token can never exceed its owning user's permissions.** That is why both
+  ACL commands grant the same role — raising only the token achieves nothing.
 
-4. Create the API token:
+The same thing through the web UI: `Datacenter → Permissions → Users → Add`, then
+`Datacenter → Permissions → Add → User Permission` (path `/`, role
+`Administrator`, propagate on), then `Datacenter → Permissions → API Tokens →
+Add` (privilege separation on, copy the secret immediately), then `Datacenter →
+Permissions → Add → API Token Permission` with the same path, role and
+propagation.
 
-   - Go to `Datacenter` -> `Permissions` -> `API Tokens`.
-   - Click `Add`.
-   - User: `pve-helper@pve`
-   - Token ID: `pve-helper`
-   - Expire: never, unless you intentionally want a rotation date.
-   - Privilege Separation: enabled.
-   - Click `Add`.
-   - Copy the token secret immediately. Proxmox only shows it once.
+Confirm before leaving the node:
 
-5. Grant the token administrator permissions:
+```bash
+pveum user permissions pve-helper@pve --path /
+pveum user token permissions pve-helper@pve pve-helper --path /
+```
 
-   With privilege separation enabled, the token needs its own ACL entry. The
-   token cannot exceed the owning user's permissions, so grant both the user and
-   the token the same role.
+## What pve-helper verifies
 
-   - Go to `Datacenter` -> `Permissions`.
-   - Click `Add` -> `API Token Permission`.
-   - Path: `/`
-   - API Token: `pve-helper@pve!pve-helper`
-   - Role: `Administrator`
-   - Propagate: enabled.
+Onboarding persists nothing until all of the following pass, so a failure message
+points at exactly one of them:
 
-6. Verify effective permissions:
+| Read | Requirement |
+| --- | --- |
+| `version` | **Proxmox VE 9.2 or later.** Older releases are refused outright. |
+| `nodes` | At least one visible node. |
+| `access/permissions` and `access/roles/Administrator` | Effective privileges at `/` must cover *every* privilege the `Administrator` role holds. |
+| `nodes/{node}/certificates/info` | The root CA's subject must contain a UUID. |
+| `cluster/status` | Read for the cluster name. Empty for a standalone host, which is fine. |
 
-   ```bash
-   pveum user permissions pve-helper@pve --path /
-   pveum user token permissions pve-helper@pve pve-helper --path /
-   ```
+Two of these surprise people:
 
-7. Add the values to `.env`:
+- **The permission check compares privilege sets, not role names.** A custom role
+  containing everything `Administrator` contains passes; a role that merely looks
+  administrative does not, and the error names the missing privileges.
+- **The CA UUID is a hard requirement.** A Proxmox-generated cluster CA always
+  carries it in the subject's `OU=`. If the root CA has been replaced with a
+  corporate one that has no UUID, onboarding fails even when everything else is
+  correct — that UUID is the identity pve-helper pins the connection to, and
+  changing it later requires an explicit operator re-approval.
 
-   ```env
-   PVE_API_TOKEN_ID=pve-helper@pve!pve-helper
-   PVE_API_TOKEN_SECRET=<secret-shown-once-by-proxmox>
-   PVE_ENDPOINTS=https://pve-node-1.example.com:8006
-   PVE_VERIFY_TLS=true
-   ```
+Certificate inspection happens **before** credentials are sent: the wizard shows
+the endpoint certificate for approval, and only the following step transmits the
+token. Trust is per connection — approve public trust or paste that cluster's CA
+PEM. Do not put a new cluster's CA in the legacy global `PVE_CA_BUNDLE`.
 
-8. Restart the app containers:
+## After it is added
 
-   ```bash
-   docker compose up -d
-   ```
+The connection collects its first inventory immediately, visible in Recent Tasks
+as **Add host/cluster to inventory**. Datastores, tags and guests appear when it
+finishes.
 
-9. Test from the Docker host:
+Add the cluster's remaining nodes afterwards, one at a time, with **Add endpoint**
+on the connection page. They are redundant transports to the same control plane
+and share the one credential; each is verified against the pinned identity before
+it joins failover.
 
-   ```bash
-   curl -fsS \
-     -H "Authorization: PVEAPIToken=pve-helper@pve!pve-helper=<secret>" \
-     https://pve-node-1.example.com:8006/api2/json/nodes
-   ```
+## Rotation and revocation
 
-   If Proxmox uses an internal CA that the host does not trust yet, fix CA trust
-   instead of setting `PVE_VERIFY_TLS=false` for normal use.
+Rotate by entering a complete replacement token on the connection detail page; it
+is verified before the stored credential is replaced. To withdraw pve-helper's
+access, disable the cluster and then remove the stored credential — deleting the
+token in Proxmox is a separate provider-side action and is what actually revokes
+it.
 
-## Required Access
+Retiring or deleting a connection does not touch Proxmox either. The token
+outlives it and must be revoked on the Proxmox side.
 
-The current read-only scanner uses these API areas:
+## Why `Administrator`
 
-- `/api2/json/nodes`
-- `/api2/json/nodes/{node}/qemu`
-- `/api2/json/nodes/{node}/qemu/{vmid}/config`
-- `/api2/json/nodes/{node}/lxc`
-- `/api2/json/nodes/{node}/lxc/{vmid}/config`
-- `/api2/json/nodes/{node}/storage`
+pve-helper is an administration tool rather than a read-only scanner: scheduled
+power actions, VM/CT creation and deletion, snapshots, configuration edits,
+migration, backup/restore and tag writes are all normal use. Modelling those as a
+handful of narrow Proxmox roles means revisiting the ACL every time a feature
+lands, so the destructive operations are gated by pve-helper's own confirmation
+and audit flows instead.
 
-For a deliberately read-only scanner deployment, `PVEAuditor` on `/` is enough
-because it includes the audit-style read permissions needed for VM, node, and
-datastore inventory.
-
-The normal pve-helper deployment should use `Administrator` on `/` for both the
-dedicated user and the privilege-separated token. This avoids chasing individual
-permissions as the app adds admin workflows such as snapshots, VM creation,
-VM/CT deletion, configuration edits, migration, and tag writes.
-
-Older deployments may still have a custom `HelperPower` role on `/vms` plus
-`PVEAuditor` on `/`. That was sufficient for scheduled power actions only. Once
-`Administrator` is assigned on `/`, those piecemeal grants can be removed to
-keep the ACL list readable.
+A deliberately read-only deployment can use `PVEAuditor` on `/` — enough for
+inventory, storage visibility and orphan classification, and nothing else. Older
+installations may still carry a custom `HelperPower` role on `/vms` alongside
+`PVEAuditor`; once `Administrator` is granted on `/`, those piecemeal grants can
+be removed.
 
 ## References
 
-- Proxmox API token docs: https://pve.proxmox.com/pve-docs/pveum-plain.html
+- Proxmox user management: https://pve.proxmox.com/pve-docs/pveum-plain.html
 - Proxmox API overview: https://pve.proxmox.com/wiki/Proxmox_VE_API
 - Proxmox API viewer: https://pve.proxmox.com/pve-docs/api-viewer/
