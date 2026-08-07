@@ -214,6 +214,112 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
         )
 
 
+# 5a0A / node enrollment: "which nodes exist" is about to stop being the same
+# question as "which nodes may pve-helper publish". Every raw membership read is
+# therefore a future consumer of the enrollment filter, and the plan's prose
+# inventory of them was already incomplete when it was written -- it named the
+# node_names() callers and missed the guest HA card's direct cluster/status read.
+# Freeze the set so the next one cannot be added silently. A module that migrates
+# onto the filtered read service is struck from the list.
+RAW_MEMBERSHIP_READ_NAMES = ("node_names(", '"cluster/status"')
+MEMBERSHIP_READ_OWNER = "core/services/proxmox.py"
+RAW_MEMBERSHIP_READ_ALLOWLIST = frozenset(
+    {
+        # The owner of both primitives.
+        MEMBERSHIP_READ_OWNER,
+        # Onboarding must read membership before any enrollment exists, by
+        # definition: it is proving what the candidate transport is attached to.
+        # This one stays raw after the filter lands.
+        "core/services/cluster_onboarding.py",
+        # Scan pass-2 gap fill. Becomes the *safety* read set (managed +
+        # safety_only), not the published one -- it stays a raw caller on purpose.
+        "core/tasks.py",
+        # Node target lists offered to an operator. All four must move onto the
+        # filtered read in N4: a hidden node must never appear as a placement,
+        # migration, clone or replication target.
+        "core/services/guest_create.py",
+        "core/services/scheduled_actions.py",
+        "core/views/guests/_core.py",
+        "core/views/guests/replication.py",
+        # Known debt, found by this invariant rather than by review: the guest
+        # Summary HA card reads cluster/status live from a request-rendering path
+        # and derives its node count from raw provider truth. That already breaks
+        # the Module 5 rule that no rendering path performs a broad provider read,
+        # and after enrollment it would report three nodes while the workspace
+        # shows two. Owned by 5d1 (HA cluster-manager read); struck from here when
+        # it moves onto a projection.
+        "core/views/guests/read_model_support.py",
+    }
+)
+
+
+class MembershipReadInvariantTests(SimpleTestCase):
+    """Raw cluster-membership reads are a closed, named set.
+
+    The node-enrollment plan turns membership into a two-part question -- provider
+    coverage versus publication scope -- and every caller below has to pick a side.
+    The risk is not the callers that exist; it is the one added next quarter that
+    quietly reintroduces "the provider returned it, so show it".
+    """
+
+    def _python_sources(self) -> list[Path]:
+        root = Path(settings.BASE_DIR)
+        return [
+            path
+            for path in sorted((root / "core").rglob("*.py"))
+            if "migrations" not in path.parts and not path.name.startswith("tests")
+        ]
+
+    def _modules_reading_membership(self) -> set[str]:
+        root = Path(settings.BASE_DIR)
+        found = set()
+        for path in self._python_sources():
+            text = path.read_text()
+            if any(needle in text for needle in RAW_MEMBERSHIP_READ_NAMES):
+                found.add(str(path.relative_to(root)))
+        return found
+
+    def test_raw_membership_reads_stay_on_their_allowlist(self):
+        offenders = sorted(self._modules_reading_membership() - RAW_MEMBERSHIP_READ_ALLOWLIST)
+
+        self.assertEqual(
+            offenders,
+            [],
+            "A raw cluster-membership read (node_names() or cluster/status) may only "
+            "appear in modules that have declared how they treat an unpublished node. "
+            "Add the module to RAW_MEMBERSHIP_READ_ALLOWLIST with that reason, or "
+            f"consume the filtered read service instead: {', '.join(offenders)}",
+        )
+
+    def test_the_allowlist_does_not_outlive_its_call_sites(self):
+        stale = sorted(RAW_MEMBERSHIP_READ_ALLOWLIST - self._modules_reading_membership())
+
+        self.assertEqual(
+            stale,
+            [],
+            "These modules no longer read raw membership, so their allowlist entries "
+            "are stale and would silently re-permit a future one. Strike them: "
+            f"{', '.join(stale)}",
+        )
+
+    def test_membership_is_read_through_one_primitive(self):
+        root = Path(settings.BASE_DIR)
+        owner = root / MEMBERSHIP_READ_OWNER
+        definitions = [
+            node.name
+            for node in ast.walk(ast.parse(owner.read_text()))
+            if isinstance(node, ast.FunctionDef) and node.name == "node_names"
+        ]
+
+        self.assertEqual(
+            definitions,
+            ["node_names"],
+            "node_names() is the single membership primitive and lives on "
+            f"{MEMBERSHIP_READ_OWNER}. A second implementation would let one caller "
+            "swallow provider failures while another fails closed.",
+        )
+
+
 class FrontendSourceInvariantTests(SimpleTestCase):
     def _frontend_sources(self) -> list[Path]:
         root = Path(settings.BASE_DIR)
