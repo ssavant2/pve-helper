@@ -4123,7 +4123,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertEqual(overview.context["total_items"], 1)
         self.assertContains(overview, "One recoverable area per registered storage mount")
         self.assertContains(overview, "TrueNAS-VM")
-        self.assertContains(overview, f'href="{recycle_bin_url}">Open Recycle Bin</a>')
+        self.assertContains(overview, f'class="recycle-bin-mount-row" href="{recycle_bin_url}"')
+        self.assertContains(overview, "restorable item", count=1)
 
     def test_orphan_register_actions_use_one_cluster_menu_instead_of_overflowing_icon_labels(self):
         ProxmoxCluster.objects.create(key="second", display_name="Second cluster", enabled=True)

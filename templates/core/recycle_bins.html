@@ -13,27 +13,22 @@
     <div class="panel-heading">
       <h2>Registered storage mounts</h2>
     </div>
-    <table class="data-table compact">
-      <thead>
-        <tr>
-          <th>Storage</th>
-          <th>Storage ID</th>
-          <th>Restorable items</th>
-          <th><span class="sr-only">Actions</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for mount in mounts %}
-          <tr>
-            <td>{{ mount.display_name }}</td>
-            <td><code>{{ mount.storage_id }}</code></td>
-            <td>{{ mount.recycle_bin_item_count }}</td>
-            <td class="row-actions"><a class="page-button" href="{{ mount.recycle_bin_url }}">Open Recycle Bin</a></td>
-          </tr>
-        {% empty %}
-          <tr><td colspan="4" class="empty-state">No registered storage mounts.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="recycle-bin-mount-list">
+      {% for mount in mounts %}
+        <a class="recycle-bin-mount-row" href="{{ mount.recycle_bin_url }}">
+          <span class="recycle-bin-mount-identity">
+            <strong>{{ mount.display_name }}</strong>
+            {% if mount.display_name != mount.storage_id %}<code>{{ mount.storage_id }}</code>{% endif %}
+          </span>
+          <span class="recycle-bin-mount-count">
+            <strong>{{ mount.recycle_bin_item_count }}</strong>
+            restorable item{{ mount.recycle_bin_item_count|pluralize }}
+          </span>
+          <i data-lucide="chevron-right" aria-hidden="true"></i>
+        </a>
+      {% empty %}
+        <div class="empty-state">No registered storage mounts.</div>
+      {% endfor %}
+    </div>
   </section>
 {% endblock %}
