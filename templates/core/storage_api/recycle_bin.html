@@ -1,0 +1,19 @@
+{% extends "core/storage_api/base.html" %}
+
+{% block api_storage_content %}
+  <section class="storage-tab-content">
+    <div class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Recycle Bin</h2>
+          <p class="panel-meta">Restorable files moved from this datastore by pve-helper.</p>
+        </div>
+      </div>
+      {% if unavailable_reason %}
+        <p class="muted panel-empty-note">{{ unavailable_reason }}</p>
+      {% else %}
+        {% include "core/partials/recycle_bin_table.html" %}
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

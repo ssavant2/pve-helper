@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <h1>Recycle Bins</h1>
+      <p>One recoverable area per registered storage mount · {{ total_items }} item{{ total_items|pluralize }}</p>
+    </div>
+    <a class="secondary-action" href="{% url 'core:dashboard' %}#storage-catalog">Back to Storage Overview</a>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading">
+      <h2>Registered storage mounts</h2>
+    </div>
+    <table class="data-table compact">
+      <thead>
+        <tr>
+          <th>Storage</th>
+          <th>Storage ID</th>
+          <th>Restorable items</th>
+          <th><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for mount in mounts %}
+          <tr>
+            <td>{{ mount.display_name }}</td>
+            <td><code>{{ mount.storage_id }}</code></td>
+            <td>{{ mount.recycle_bin_item_count }}</td>
+            <td class="row-actions"><a class="page-button" href="{{ mount.recycle_bin_url }}">Open Recycle Bin</a></td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4" class="empty-state">No registered storage mounts.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

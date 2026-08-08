@@ -9,7 +9,9 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 from django.db.models import Count
+from django.template.defaultfilters import filesizeformat
 
+from core.models import CurrentGuestInventory, TrashItem
 from core.services.cluster_scopes import managed_clusters
 from core.services.datastore_nav import datastore_url
 from core.services.storage_mounts import (
@@ -28,9 +30,13 @@ from ..common import (
     HttpResponseForbidden,
     Q,
     ScanRun,
+    StorageActionError,
     StorageMount,
+    adopt_discovered_trash_items,
+    cleanup_empty_app_trash_directories,
     file_action_risk,
     full_inflate_already_recorded,
+    is_nfs_silly_rename_path,
     record_audit_event,
     refresh_storage_directory,
     reverse,
@@ -175,6 +181,111 @@ def _storage_browser_url(storage: StorageMount, path: str = "", **params: object
     if query:
         return f"{url}?{urlencode(query)}"
     return url
+
+
+def _storage_recycle_bin_url(storage: StorageMount) -> str:
+    """Open a mount's bin through its datastore when it still has a binding.
+
+    An unbound mount can briefly remain while an operator is changing storage
+    access. Its mount-scoped Recycle Bin is still the only route from which its
+    files can be recovered, so that route is the deliberate fallback.
+    """
+    scope = mount_datastore_scope(storage)
+    if scope is None:
+        return reverse("core:storage_trash", args=[storage.mount_ref])
+    return datastore_url("core:api_storage_recycle_bin", *scope)
+
+
+def _recycle_bin_rows(storage: StorageMount) -> list[dict[str, object]]:
+    """Current recoverable items for a mount, including existing reconciliation.
+
+    Both the legacy mount route and the datastore tab use this function so opening
+    the bin has exactly the same adoption and cleanup behaviour through either
+    navigation path. The global overview deliberately does not call it; listing
+    bins must remain a passive database read.
+    """
+    _decorate_storage_with_space_info(storage)
+    latest_scan = _latest_storage_result_scan(storage)
+    if common.settings.STORAGE_WRITE_ENABLED and storage.storage_actions_enabled:
+        try:
+            cleanup_empty_app_trash_directories(storage=storage)
+        except StorageActionError:
+            pass
+    if latest_scan:
+        try:
+            adopt_discovered_trash_items(storage=storage, scan=latest_scan)
+        except StorageActionError:
+            pass
+    items = list(
+        TrashItem.objects.filter(
+            mount=storage,
+            restore_status=TrashItem.RestoreStatus.TRASHED,
+        )
+        .select_related("moved_by")
+        .order_by("-moved_at", "-created_at")[:200]
+    )
+    visible = [
+        item
+        for item in items
+        if not is_nfs_silly_rename_path(item.original_path) and not is_nfs_silly_rename_path(item.trash_path)
+    ]
+    return _trash_rows(storage, visible)
+
+
+def _trash_rows(storage: StorageMount, items: list[TrashItem]) -> list[dict[str, object]]:
+    """Trash entries with the facts a permanent delete has to state."""
+    bindings = list(
+        storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
+            cluster_storage__cluster__retired_at__isnull=True,
+            cluster_storage__unmanaged_at__isnull=True,
+        )
+    )
+    references: dict[str, list[str]] = {}
+    if bindings:
+        clusters = {binding.cluster_storage.cluster_id: binding.cluster_storage.cluster for binding in bindings}
+        guests = list(
+            CurrentGuestInventory.objects.filter(cluster_id__in=clusters).only(
+                "object_type", "vmid", "status", "disk_references", "cluster_id"
+            )
+        )
+        for item in items:
+            relative = str(item.original_path).lstrip("/").removeprefix("images/")
+            volids = {f"{binding.cluster_storage.storage_id}:{relative}" for binding in bindings}
+            references[item.trash_path] = sorted(
+                f"{guest.object_type}:{guest.vmid} ({guest.status or 'unknown'})"
+                for guest in guests
+                if any(str(ref) in volids for ref in guest.disk_references or [])
+            )
+
+    now = common.tz.now()
+    rows = []
+    for item in items:
+        size = (item.metadata or {}).get("original_size_bytes")
+        facts = [f"original path {item.original_path}"]
+        if isinstance(size, int):
+            facts.append(f"{filesizeformat(size)}")
+        if item.moved_at:
+            days = max(0, (now - item.moved_at).days)
+            facts.append(f"recoverable here for {days} day(s)")
+        referencing = references.get(item.trash_path) or []
+        if referencing:
+            shown = ", ".join(referencing[:_GUESTS_SHOWN_IN_CONFIRM])
+            hidden = len(referencing) - _GUESTS_SHOWN_IN_CONFIRM
+            if hidden > 0:
+                shown += f", and {hidden} more"
+            facts.append(f"still referenced by {len(referencing)} guest config(s): {shown}")
+        summary = "; ".join(facts)
+        rows.append(
+            {
+                "item": item,
+                "confirm": (
+                    f"Permanently delete this file? {summary}. "
+                    "This deletes it from disk immediately and cannot be undone."
+                ),
+                "confirm_second": f"Are you really sure? This cannot be undone. {summary}.",
+            }
+        )
+    return rows
 
 
 def _audit_file_action(

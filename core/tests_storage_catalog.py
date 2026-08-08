@@ -26,6 +26,7 @@ from core.models import (
     StorageCatalogState,
     StorageMount,
     StorageSpaceSnapshot,
+    TrashItem,
 )
 from core.services.filesystem import mountinfo_mounts
 from core.services.proxmox import _fetch_live_guest_lineage_uncached
@@ -1546,7 +1547,18 @@ class DatastoreTabsAreUniformTests(TestCase):
     and both used to mean a different set of tabs — or a different page entirely.
     """
 
-    TABS = ("summary", "monitor", "configure", "content", "permissions", "files", "volumes", "nodes", "vms")
+    TABS = (
+        "summary",
+        "monitor",
+        "configure",
+        "content",
+        "permissions",
+        "files",
+        "recycle-bin",
+        "volumes",
+        "nodes",
+        "vms",
+    )
 
     def setUp(self):
         self.cluster = ProxmoxCluster.objects.create(key="tabs", display_name="Tabs", enabled=True)
@@ -1582,6 +1594,36 @@ class DatastoreTabsAreUniformTests(TestCase):
 
         self.assertContains(response, "Files are unavailable")
         self.assertContains(response, "not a browsable file-tree backend")
+
+    def test_the_recycle_bin_tab_lists_items_from_the_bound_mount(self):
+        definition = self._definition("TrueNAS-VM", "nfs")
+        mount = StorageMount.objects.create(
+            storage_id="truenas-vm-mount",
+            display_name="TrueNAS-VM",
+            path="/storages/truenas-vm",
+        )
+        bind_storage_mount(cluster_storage=definition, mount=mount)
+        TrashItem.objects.create(
+            mount=mount,
+            storage_id=mount.storage_id,
+            original_path="images/100/vm-100-disk-0.qcow2",
+            trash_path=".trash/pve-helper/stamp/images/100/vm-100-disk-0.qcow2",
+            restore_status=TrashItem.RestoreStatus.TRASHED,
+        )
+
+        response = self.client.get("/clusters/tabs/datastores/TrueNAS-VM/recycle-bin/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "images/100/vm-100-disk-0.qcow2")
+        self.assertContains(response, 'class="active">Recycle Bin</a>')
+
+    def test_the_recycle_bin_tab_explains_when_no_mount_is_registered(self):
+        self._definition("TrueNAS-VM", "nfs")
+
+        response = self.client.get("/clusters/tabs/datastores/TrueNAS-VM/recycle-bin/")
+
+        self.assertContains(response, "Recycle Bin contents are unavailable")
+        self.assertContains(response, "No host mount is registered")
 
     def test_the_permissions_tab_states_that_no_mount_is_registered(self):
         self._definition("TrueNAS-VM", "nfs")

@@ -4071,6 +4071,85 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "Disk image")
         self.assertContains(response, "Container template")
 
+    def test_recycle_bin_navigation_uses_active_items_per_mount(self):
+        definition = ClusterStorage.objects.create(
+            cluster=self.cluster,
+            storage_id="shared-nfs",
+            storage_type="nfs",
+            shared=True,
+            present=True,
+        )
+        ClusterStorageNodeState.objects.create(
+            cluster_storage=definition,
+            node="pve1",
+            active=True,
+            enabled=True,
+            present=True,
+        )
+        mount = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="TrueNAS-VM",
+            path="/storages/truenas-vm",
+        )
+        bind_storage_mount(cluster_storage=definition, mount=mount)
+        TrashItem.objects.create(
+            mount=mount,
+            storage_id=mount.storage_id,
+            original_path="images/100/active.qcow2",
+            trash_path=".trash/pve-helper/stamp/images/100/active.qcow2",
+            restore_status=TrashItem.RestoreStatus.TRASHED,
+        )
+        TrashItem.objects.create(
+            mount=mount,
+            storage_id=mount.storage_id,
+            original_path="images/100/restored.qcow2",
+            trash_path=".trash/pve-helper/stamp/images/100/restored.qcow2",
+            restore_status=TrashItem.RestoreStatus.RESTORED,
+        )
+
+        recycle_bin_url = reverse(
+            "core:api_storage_recycle_bin",
+            kwargs={"cluster_key": self.cluster.key, "storage": definition.storage_id},
+        )
+        dashboard = self.client.get(reverse("core:dashboard"))
+
+        self.assertContains(dashboard, f'href="{reverse("core:recycle_bins")}">1</a>')
+        self.assertContains(dashboard, f'href="{recycle_bin_url}">1 item</a>')
+
+        overview = self.client.get(reverse("core:recycle_bins"))
+
+        self.assertEqual(overview.status_code, 200)
+        self.assertEqual(overview.context["total_items"], 1)
+        self.assertContains(overview, "One recoverable area per registered storage mount")
+        self.assertContains(overview, "TrueNAS-VM")
+        self.assertContains(overview, f'href="{recycle_bin_url}">Open Recycle Bin</a>')
+
+    def test_orphan_register_actions_use_one_cluster_menu_instead_of_overflowing_icon_labels(self):
+        ProxmoxCluster.objects.create(key="second", display_name="Second cluster", enabled=True)
+        storage = StorageMount.objects.create(
+            storage_id="nfs-vm",
+            display_name="TrueNAS-VM",
+            path="/storages/truenas-vm",
+        )
+        scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED)
+        FileInventory.objects.create(
+            scan_run=scan,
+            storage=storage,
+            path="images/212/vm-212-disk-0.qcow2",
+            derived_volid="nfs-vm:212/vm-212-disk-0.qcow2",
+            entry_type=FileInventory.EntryType.FILE,
+            classification=FileInventory.Classification.LIKELY_ORPHAN,
+            classification_reason="Complete coverage found no guest reference.",
+        )
+
+        response = self.client.get(reverse("core:orphan_finder"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<th class="orphan-actions-heading">Actions</th>', html=True)
+        self.assertContains(response, "<summary>Register as VM</summary>", count=1, html=True)
+        self.assertContains(response, "Register in Default cluster")
+        self.assertContains(response, "Register in Second cluster")
+
     def test_classified_files_lists_and_links_to_folder(self):
         user = get_user_model().objects.create_user(username="viewer", password="unused")
         self.client.force_login(user)

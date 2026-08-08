@@ -6,11 +6,15 @@ does not live in the storage package.
 
 from __future__ import annotations
 
+from django.db.models import Count, Q
+
 from core.models import (
     ClusterStorage,
     ProxmoxCluster,
+    TrashItem,
 )
 from core.services.cluster_scopes import managed_clusters
+from core.services.datastore_nav import datastore_url
 from core.services.storage_catalog import (
     storage_view,
 )
@@ -44,8 +48,18 @@ from .storage._shared import (
 def dashboard(request):
     latest_scan = ScanRun.objects.order_by("-created_at").first()
     result_scan = _latest_result_scan()
-    storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
-    catalog_rows = _storage_catalog_rows()
+    storages = list(
+        StorageMount.objects.filter(enabled=True)
+        .annotate(
+            recycle_bin_item_count=Count(
+                "trash_items",
+                filter=Q(trash_items__restore_status=TrashItem.RestoreStatus.TRASHED),
+            )
+        )
+        .order_by("display_name")
+    )
+    recycle_bin_counts = {storage.pk: storage.recycle_bin_item_count for storage in storages}
+    catalog_rows = _storage_catalog_rows(recycle_bin_counts)
     _decorate_storages_with_scan_state(storages, result_scan)
     classification_counts = _current_classification_counts(storages)
     context = {
@@ -57,6 +71,7 @@ def dashboard(request):
         "scan_count": ScanRun.objects.count(),
         "audit_count": AuditEvent.objects.count(),
         "classification_counts": classification_counts,
+        "recycle_bin_item_count": sum(recycle_bin_counts.values()),
         "catalog_rows": catalog_rows,
         "clusters_without_storage": _clusters_without_storage(),
         "storage_gate_rows": _storage_gate_rows(storages, result_scan),
@@ -79,7 +94,8 @@ def _clusters_without_storage() -> list[ProxmoxCluster]:
     return list(managed_clusters().filter(enabled=True).exclude(pk__in=represented).order_by("key"))
 
 
-def _storage_catalog_rows() -> list[dict]:
+def _storage_catalog_rows(recycle_bin_counts: dict[int, int] | None = None) -> list[dict]:
+    recycle_bin_counts = recycle_bin_counts or {}
     catalog_rows = []
     definitions = (
         ClusterStorage.objects.select_related("cluster__storage_catalog_state")
@@ -105,6 +121,17 @@ def _storage_catalog_rows() -> list[dict]:
                 "view": view,
                 "node": selected_node,
                 "nodes": nodes,
+                "recycle_bin_count": recycle_bin_counts.get(view.mount.pk, 0) if view.mount is not None else 0,
+                "recycle_bin_url": (
+                    datastore_url(
+                        "core:api_storage_recycle_bin",
+                        definition.cluster.key,
+                        definition.storage_id,
+                        "" if definition.shared else selected_node,
+                    )
+                    if view.mount is not None
+                    else ""
+                ),
             }
         )
 

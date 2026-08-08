@@ -565,6 +565,23 @@ code {
   margin-left: 0;
 }
 
+.orphan-actions-heading {
+  width: 190px;
+  text-align: right !important;
+}
+
+.orphan-action-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 170px;
+}
+
+.orphan-register-menu .actions-menu-panel {
+  min-width: 220px;
+}
+
 .inline-action-form {
   display: inline-flex;
   margin: 0;

@@ -70,6 +70,7 @@ from ._shared import (
     _int_request_param,
     _latest_storage_result_scan,
     _ordered_storage_content,
+    _recycle_bin_rows,
     _storage_write_disabled_response,
 )
 from .browser_context import (
@@ -83,6 +84,7 @@ _API_STORAGE_TABS = [
     ("content", "Content Types", "core:api_storage_content"),
     ("permissions", "Permissions", "core:api_storage_permissions"),
     ("files", "Files", "core:api_storage_files"),
+    ("recycle-bin", "Recycle Bin", "core:api_storage_recycle_bin"),
     ("volumes", "Volumes", "core:api_storage_volumes"),
     ("nodes", "Nodes", "core:api_storage_nodes"),
     ("vms", "VMs/CTs", "core:api_storage_vms"),
@@ -854,6 +856,34 @@ def api_storage_files(request, cluster_key: str, storage: str, node: str = ""):
         return result
     context.update({**result, "unavailable_reason": ""})
     return render(request, "core/storage_api/files.html", context)
+
+
+@app_login_required
+def api_storage_recycle_bin(request, cluster_key: str, storage: str, node: str = ""):
+    cluster = managed_cluster_from_path(cluster_key)
+    definition, node, moved = _resolve_datastore_scope(cluster, storage, node)
+    if moved:
+        return _datastore_redirect(request, "core:api_storage_recycle_bin", cluster, storage, node)
+    context = _api_storage_context(cluster, definition, storage, node, "recycle-bin")
+    view = context["catalog_view"]
+    mount = view.mount if view is not None else None
+    if mount is None:
+        context.update(
+            {
+                "trash_mount": None,
+                "items": [],
+                "unavailable_reason": _no_mount_reason(view, "Recycle Bin contents"),
+            }
+        )
+    else:
+        context.update(
+            {
+                "trash_mount": mount,
+                "items": _recycle_bin_rows(mount),
+                "unavailable_reason": "",
+            }
+        )
+    return render(request, "core/storage_api/recycle_bin.html", context)
 
 
 def _storage_space_chart_data(storage: StorageMount, now) -> list[dict[str, object]]:

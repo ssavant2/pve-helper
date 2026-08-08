@@ -32,7 +32,7 @@
           <th>Path</th>
           <th>Size</th>
           <th>Evidence</th>
-          <th aria-label="Actions"></th>
+          <th class="orphan-actions-heading">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -43,32 +43,41 @@
             <td>{% if file.size_bytes != None %}{{ file.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
             <td>{{ file.classification_reason|default:"-" }}</td>
             <td class="row-actions">
-              {% if file.derived_volid and "-disk-" in file.derived_volid %}
-                {% for cluster in app_enabled_clusters %}<a class="icon-button" href="{% url 'core:register_vm' cluster.key %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}" title="Register as a new VM in {{ cluster.display_name }}" aria-label="Register {{ file.path }} as a new VM in {{ cluster.display_name }}">{% if app_multiple_clusters %}{{ cluster.display_name }}{% endif %}
-                  <i data-lucide="package-plus" aria-hidden="true"></i>
-                </a>{% endfor %}
-              {% endif %}
-              {% if file.storage.storage_actions_enabled and file.can_trash %}
-                <form
-                  class="inline-action-form"
-                  method="post"
-                  action="{% url 'core:storage_trash_file' file.storage.mount_ref %}"
-                  data-confirm-file-action
-                  data-action-kind="trash"
-                  data-file-name="{{ file.path }}"
-                  data-risk-message="{{ file.action_warning_message }}"
-                  data-requires-risk-confirmation="{% if file.action_requires_extra_confirmation %}true{% else %}false{% endif %}"
-                >
-                  {% csrf_token %}
-                  <input type="hidden" name="path" value="{{ file.path }}">
-                  <input type="hidden" name="confirm_basic" value="">
-                  <input type="hidden" name="confirm_risk" value="">
-                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
-                  <button class="icon-button danger" type="submit" aria-label="Move {{ file.path }} to trash" title="Move to trash">
-                    <i data-lucide="trash-2" aria-hidden="true"></i>
-                  </button>
-                </form>
-              {% endif %}
+              <div class="orphan-action-controls">
+                {% if file.derived_volid and "-disk-" in file.derived_volid and app_enabled_clusters %}
+                  <details class="actions-menu orphan-register-menu">
+                    <summary>Register as VM</summary>
+                    <div class="actions-menu-panel">
+                      {% for cluster in app_enabled_clusters %}
+                        <a href="{% url 'core:register_vm' cluster.key %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}">
+                          Register in {{ cluster.display_name }}
+                        </a>
+                      {% endfor %}
+                    </div>
+                  </details>
+                {% endif %}
+                {% if file.storage.storage_actions_enabled and file.can_trash %}
+                  <form
+                    class="inline-action-form"
+                    method="post"
+                    action="{% url 'core:storage_trash_file' file.storage.mount_ref %}"
+                    data-confirm-file-action
+                    data-action-kind="trash"
+                    data-file-name="{{ file.path }}"
+                    data-risk-message="{{ file.action_warning_message }}"
+                    data-requires-risk-confirmation="{% if file.action_requires_extra_confirmation %}true{% else %}false{% endif %}"
+                  >
+                    {% csrf_token %}
+                    <input type="hidden" name="path" value="{{ file.path }}">
+                    <input type="hidden" name="confirm_basic" value="">
+                    <input type="hidden" name="confirm_risk" value="">
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <button class="icon-button danger" type="submit" aria-label="Move {{ file.path }} to trash" title="Move to trash">
+                      <i data-lucide="trash-2" aria-hidden="true"></i>
+                    </button>
+                  </form>
+                {% endif %}
+              </div>
             </td>
           </tr>
         {% empty %}

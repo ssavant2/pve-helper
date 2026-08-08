@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from django.template.defaultfilters import filesizeformat
-
-from core.models import (
-    CurrentGuestInventory,
-)
+from django.db.models import Count, Q
 
 from ..common import (
     FileInventory,
@@ -15,11 +11,8 @@ from ..common import (
     StorageMount,
     TrashItem,
     _safe_next_url,
-    adopt_discovered_trash_items,
     app_login_required,
-    cleanup_empty_app_trash_directories,
     get_object_or_404,
-    is_nfs_silly_rename_path,
     messages,
     navigation_context,
     purge_trash_item_action,
@@ -29,19 +22,17 @@ from ..common import (
     require_POST,
     restore_trash_item,
     settings,
-    tz,
     update_trash_purge_schedule,
 )
 from ._shared import (
-    _GUESTS_SHOWN_IN_CONFIRM,
     _audit_file_action,
     _audit_file_action_failure,
-    _decorate_storage_with_space_info,
-    _latest_storage_result_scan,
     _mount_or_404,
     _parent_path,
+    _recycle_bin_rows,
     _refresh_latest_storage_directory,
     _storage_browser_url,
+    _storage_recycle_bin_url,
     _storage_write_disabled_response,
 )
 
@@ -49,101 +40,37 @@ from ._shared import (
 @app_login_required
 def storage_trash(request, storage_id: str):
     storage = _mount_or_404(storage_id)
-    _decorate_storage_with_space_info(storage)
-    latest_scan = _latest_storage_result_scan(storage)
-    if settings.STORAGE_WRITE_ENABLED and storage.storage_actions_enabled:
-        try:
-            cleanup_empty_app_trash_directories(storage=storage)
-        except StorageActionError:
-            pass
-    if latest_scan:
-        try:
-            adopt_discovered_trash_items(storage=storage, scan=latest_scan)
-        except StorageActionError:
-            pass
-    items = list(
-        TrashItem.objects.filter(
-            mount=storage,
-            restore_status=TrashItem.RestoreStatus.TRASHED,
-        )
-        .select_related("moved_by")
-        .order_by("-moved_at", "-created_at")[:200]
-    )
-    items = [
-        item
-        for item in items
-        if not is_nfs_silly_rename_path(item.original_path) and not is_nfs_silly_rename_path(item.trash_path)
-    ]
     context = {
         **navigation_context("datastore", page_title=(storage.display_name, "Trash")),
         "storage": storage,
+        "trash_mount": storage,
         "files_base_url": _storage_browser_url(storage),
-        "items": _trash_rows(storage, items),
+        "items": _recycle_bin_rows(storage),
     }
     return render(request, "core/storage_trash.html", context)
 
 
-def _trash_rows(storage: StorageMount, items: list[TrashItem]) -> list[dict[str, object]]:
-    """Trash entries with the facts a permanent delete has to state.
-
-    Purging is the only genuinely irreversible file operation in the app, and it
-    had the weakest guard of any of them. What matters at that moment is what the
-    file was, how long it has been recoverable, and whether a guest configuration
-    still points at it — a still-referenced disk means restoring is the only way
-    back for that guest.
-    """
-    bindings = list(
-        storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
-            cluster_storage__cluster__retired_at__isnull=True,
-            cluster_storage__unmanaged_at__isnull=True,
+@app_login_required
+def recycle_bins(request):
+    """Passive landing page for the mount-scoped Recycle Bins."""
+    mounts = list(
+        StorageMount.objects.filter(enabled=True)
+        .annotate(
+            recycle_bin_item_count=Count(
+                "trash_items",
+                filter=Q(trash_items__restore_status=TrashItem.RestoreStatus.TRASHED),
+            )
         )
+        .order_by("display_name", "mount_key")
     )
-    references: dict[str, list[str]] = {}
-    if bindings:
-        clusters = {binding.cluster_storage.cluster_id: binding.cluster_storage.cluster for binding in bindings}
-        guests = list(
-            CurrentGuestInventory.objects.filter(cluster_id__in=clusters).only(
-                "object_type", "vmid", "status", "disk_references", "cluster_id"
-            )
-        )
-        for item in items:
-            relative = str(item.original_path).lstrip("/").removeprefix("images/")
-            volids = {f"{binding.cluster_storage.storage_id}:{relative}" for binding in bindings}
-            references[item.trash_path] = sorted(
-                f"{guest.object_type}:{guest.vmid} ({guest.status or 'unknown'})"
-                for guest in guests
-                if any(str(ref) in volids for ref in guest.disk_references or [])
-            )
-
-    now = tz.now()
-    rows = []
-    for item in items:
-        size = (item.metadata or {}).get("original_size_bytes")
-        facts = [f"original path {item.original_path}"]
-        if isinstance(size, int):
-            facts.append(f"{filesizeformat(size)}")
-        if item.moved_at:
-            days = max(0, (now - item.moved_at).days)
-            facts.append(f"recoverable here for {days} day(s)")
-        referencing = references.get(item.trash_path) or []
-        if referencing:
-            shown = ", ".join(referencing[:_GUESTS_SHOWN_IN_CONFIRM])
-            hidden = len(referencing) - _GUESTS_SHOWN_IN_CONFIRM
-            if hidden > 0:
-                shown += f", and {hidden} more"
-            facts.append(f"still referenced by {len(referencing)} guest config(s): {shown}")
-        summary = "; ".join(facts)
-        rows.append(
-            {
-                "item": item,
-                "confirm": (
-                    f"Permanently delete this file? {summary}. "
-                    "This deletes it from disk immediately and cannot be undone."
-                ),
-                "confirm_second": f"Are you really sure? This cannot be undone. {summary}.",
-            }
-        )
-    return rows
+    for mount in mounts:
+        mount.recycle_bin_url = _storage_recycle_bin_url(mount)
+    context = {
+        **navigation_context("dashboard", page_title="Recycle Bins"),
+        "mounts": mounts,
+        "total_items": sum(mount.recycle_bin_item_count for mount in mounts),
+    }
+    return render(request, "core/recycle_bins.html", context)
 
 
 @require_POST

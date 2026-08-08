@@ -401,6 +401,7 @@ urlpatterns = [
     *datastore_routes("configure/", views.api_storage_configure, "api_storage_configure"),
     *datastore_routes("permissions/", views.api_storage_permissions, "api_storage_permissions"),
     *datastore_routes("files/", views.api_storage_files, "api_storage_files"),
+    *datastore_routes("recycle-bin/", views.api_storage_recycle_bin, "api_storage_recycle_bin"),
     *datastore_routes("nodes/", views.api_storage_nodes, "api_storage_nodes"),
     path(
         "clusters/<str:cluster_key>/datastores/<str:storage>/refresh/",
@@ -458,6 +459,7 @@ urlpatterns = [
     path("storage/<str:storage_id>/upload/", views.upload_storage_file, name="storage_upload"),
     path("storage/<str:storage_id>/upload-folder/", views.upload_storage_folder, name="storage_upload_folder"),
     path("storage/<str:storage_id>/trash/", views.storage_trash, name="storage_trash"),
+    path("storage/recycle-bins/", views.recycle_bins, name="recycle_bins"),
     path("storage/<str:storage_id>/trash-file/", views.trash_storage_file, name="storage_trash_file"),
     path("storage/<str:storage_id>/move-file/", views.move_storage_file_view, name="storage_move_file"),
     path("storage/<str:storage_id>/copy-file/", views.copy_storage_file_view, name="storage_copy_file"),
