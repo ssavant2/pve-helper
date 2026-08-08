@@ -271,7 +271,7 @@
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  grid-template-columns: repeat(6, minmax(140px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -364,4 +364,9 @@
 .metric strong {
   font-size: 26px;
   line-height: 1;
+}
+
+.dashboard-recycle-bin-action {
+  display: grid;
+  place-items: center;
 }

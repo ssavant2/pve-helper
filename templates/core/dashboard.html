@@ -65,6 +65,12 @@
       <span class="metric-label">Likely orphans</span>
       <strong>{{ classification_counts.likely_orphan|default:0 }}</strong>
     </div>
+    <div class="metric dashboard-recycle-bin-action">
+      <a class="secondary-action" href="{% url 'core:recycle_bins' %}">
+        <i data-lucide="trash-2" aria-hidden="true"></i>
+        View Recycle Bins
+      </a>
+    </div>
   </section>
 
   <section class="split-view dashboard-summary-grid">

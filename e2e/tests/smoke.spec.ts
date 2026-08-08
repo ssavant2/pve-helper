@@ -74,6 +74,10 @@ test("storage overview contains the catalog and links to application storage set
 
   await expect(page.locator("#storage-catalog")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Storage catalog", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "View Recycle Bins", exact: true })).toHaveAttribute(
+    "href",
+    "/storage/recycle-bins/",
+  );
 
   await page.getByRole("link", { name: "Configure PVE-helper access", exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/storage\/$/);

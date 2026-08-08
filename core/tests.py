@@ -4114,6 +4114,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         dashboard = self.client.get(reverse("core:dashboard"))
 
         self.assertContains(dashboard, f'href="{reverse("core:recycle_bins")}">1</a>')
+        self.assertContains(dashboard, "View Recycle Bins", count=1)
         self.assertContains(dashboard, f'href="{recycle_bin_url}">1 item</a>')
 
         overview = self.client.get(reverse("core:recycle_bins"))
