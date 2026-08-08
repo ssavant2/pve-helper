@@ -367,6 +367,28 @@
 }
 
 .dashboard-recycle-bin-action {
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.dashboard-recycle-bin-action:hover {
+  border-color: var(--line-strong);
+  background: var(--blue-soft);
+  color: var(--accent-strong);
+}
+
+.dashboard-recycle-bin-action:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.dashboard-recycle-bin-action svg {
+  width: 20px;
+  height: 20px;
 }
