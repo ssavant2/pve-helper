@@ -253,6 +253,85 @@ RAW_MEMBERSHIP_READ_ALLOWLIST = frozenset(
 )
 
 
+# 5a0A: the narrow rule Module 5 actually needs from the `nodes/` axis is not
+# "freeze every nodes/ path" -- that would allowlist ~40 legitimate guest- and
+# UPID-scoped call sites and enforce nothing. It is: **a view may address a guest
+# through its node, but may not read node state.** Node state belongs to the 5a1
+# projection, and a view that reads it live is a request-path fan-out that scales
+# with cluster size.
+#
+# The ledger first deferred this ratchet to 5a1F on the grounds that it could not
+# be written before the projection existed. Re-review falsified that: the rule is
+# writable now, the known offenders are few, and deferring it leaves the door open
+# for every phase in between. 5a1F strikes entries; it does not author the rule.
+#
+# Guest-scoped means a vmid follows: `nodes/<node>/qemu/{vmid}/...`. A *vmid-less*
+# `nodes/<node>/qemu` is a per-node listing and is deliberately caught.
+NODE_SCOPED_VIEW_READ = re.compile(
+    r"nodes/\{[^}]*\}/"  # nodes/<node>/
+    r"(?!(?:qemu|lxc)/\{)"  # ...not addressing one guest by vmid
+    r"[a-z][a-z0-9_-]*"  # ...a literal next segment: status, network, storage, qemu
+)
+NODE_SCOPED_VIEW_READ_ALLOWLIST = frozenset(
+    {
+        # The migrate dialog's CPU/bridge helpers (`capabilities/qemu/cpu`,
+        # `status`, `network`) plus the vzdump write. The three read helpers are
+        # the uncached 3N + 2 fan-out recorded in the ledger; 5a4B/5a4E replace
+        # them with projection reads and strike this entry.
+        "core/views/guests/_core.py",
+        # Volume delete addresses a storage on a node. A write owned by the
+        # storage domain, not node state.
+        "core/views/guests/mutations.py",
+    }
+)
+
+
+class NodeScopedViewReadInvariantTests(SimpleTestCase):
+    """A view addresses guests through a node; it does not read the node itself."""
+
+    def _view_sources(self) -> list[Path]:
+        root = Path(settings.BASE_DIR)
+        return [path for path in sorted((root / "core" / "views").rglob("*.py")) if not path.name.startswith("tests")]
+
+    def _offending_modules(self) -> set[str]:
+        root = Path(settings.BASE_DIR)
+        return {
+            str(path.relative_to(root))
+            for path in self._view_sources()
+            if NODE_SCOPED_VIEW_READ.search(path.read_text())
+        }
+
+    def test_views_do_not_read_node_state_directly(self):
+        offenders = sorted(self._offending_modules() - NODE_SCOPED_VIEW_READ_ALLOWLIST)
+
+        self.assertEqual(
+            offenders,
+            [],
+            "A view may address a guest through its node but must not read node "
+            "state live -- that is a request-path fan-out that grows with cluster "
+            "size. Consume the node projection, or add the module to "
+            f"NODE_SCOPED_VIEW_READ_ALLOWLIST with the phase that removes it: {', '.join(offenders)}",
+        )
+
+    def test_the_allowlist_does_not_outlive_its_call_sites(self):
+        stale = sorted(NODE_SCOPED_VIEW_READ_ALLOWLIST - self._offending_modules())
+
+        self.assertEqual(
+            stale,
+            [],
+            "These view modules no longer read node state, so their allowlist "
+            f"entries would silently re-permit a future one. Strike them: {', '.join(stale)}",
+        )
+
+    def test_guest_scoped_paths_are_not_caught(self):
+        # The ratchet is only useful if it ignores Module 3's ordinary addressing.
+        self.assertIsNone(NODE_SCOPED_VIEW_READ.search('f"nodes/{node}/qemu/{vmid}/status/current"'))
+        self.assertIsNone(NODE_SCOPED_VIEW_READ.search('f"nodes/{node}/lxc/{vmid}/config"'))
+        # ...and only useful if it does catch node state and vmid-less listings.
+        self.assertIsNotNone(NODE_SCOPED_VIEW_READ.search('f"nodes/{node}/status"'))
+        self.assertIsNotNone(NODE_SCOPED_VIEW_READ.search('f"nodes/{node}/qemu"'))
+
+
 class MembershipReadInvariantTests(SimpleTestCase):
     """Raw cluster-membership reads are a closed, named set.
 

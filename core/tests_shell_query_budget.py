@@ -18,43 +18,62 @@ cluster, so cluster count is an accepted linear axis; nodes are not.
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
+from django.core.cache import cache
 from django.db import connection
-from django.test import Client, TestCase, override_settings
+from django.test import Client, RequestFactory, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
+from core.context_processors import app_settings
 from core.models import ClusterStorage, ClusterStorageNodeState, ProxmoxCluster
 
 # Measured 2026-08-07, warm caches, one cluster of three nodes.
 #
-# The first version of this file measured only "/" and reported its 24 queries as
-# "the shared shell". Independent review falsified that: "/" is the dashboard, and
-# roughly half of those queries are the dashboard *view's* own reads. Measuring
-# three real pages separates the two costs:
+# This number has been wrong twice, in the same direction both times: attributing a
+# page's own reads to the shell. Version one measured only "/" and called its 24
+# queries "the shared shell" -- "/" is the dashboard. Version two used `/vms/`'s 12
+# as "the shell's own cost" -- `/vms/` still adds its own guest and cluster-scope
+# reads. Three separate figures, measured, not inferred:
 #
-#   /           24   dashboard  (shell + its own scan/audit/storage reads)
-#   /clusters/  14   Connections
-#   /vms/       12   guest overview -- the floor, and the closest thing to the
-#                    shell's own cost on a page that adds little of its own
+#   app_settings + task bar     8   what EVERY HTML response pays
+#   /vms/                      12   cheapest observed page; an upper bound on 8
+#   /clusters/                 14   Connections
+#   /                          24   dashboard
 #
-# So the shared shell is ~12, not 24, and the lesson drawn from the bad number
-# ("navigation is the smaller half") described the dashboard, not the shell.
-# Module 5 hangs its tree off `app_settings`, which every one of these pays --
-# including the ones the original test never looked at.
+# 8 is the shell. 12 is a page. Module 5's allowances are deltas measured on the
+# page named in each row, not over the floor -- the floor drifts with whatever the
+# cheapest page happens to read.
+#
+# The lesson version one drew, "navigation is the smaller half of the shell",
+# described the dashboard and is withdrawn.
 #
 # Raise these only with a recorded reason; a silent increase is the regression this
 # file exists to catch.
-SHELL_FLOOR_BUDGET = 12
+SHELL_CONTEXT_PROCESSOR_QUERIES = 8
+SHELL_FLOOR_BUDGET = 12  # cheapest observed page; an upper bound on the shell
 PAGE_QUERY_BUDGETS = {"/": 24, "/clusters/": 14, "/vms/": 12}
 SHELL_QUERY_BUDGET_PER_EXTRA_CLUSTER = 4
 
-# Allowances for the surfaces Module 5 has not built yet, expressed as a delta over
-# the shell floor so the budget is a number rather than "bounded" (U0 item 4). Each
-# is the phase's entry gate; exceeding it is a review reject, not a tuning task.
+# Allowances for the surfaces Module 5 has not built yet (U0 item 4 requires
+# numbers, not "bounded"). Each is an entry gate: exceeding it is a review reject,
+# not a tuning task -- which only works if the number is *derived*, so each row
+# carries the query plan it was costed from. A phase that needs a different plan
+# argues the plan, not the number.
+#
+# Measurement protocol, so a phase and its reviewer cannot reach different figures
+# in good faith: measure the page total warm, on the page named in the row, and
+# subtract that page's pre-phase total. Not "delta over the floor" -- the floor
+# contains `/vms/`'s own reads and would drift the gate.
 MODULE5_QUERY_ALLOWANCES = {
-    "navigation tree (5a2B)": 4,
-    "cluster Summary (5a2C)": 6,
-    "node Summary (5a2D)": 6,
-    "first diagnostics read (5a1F)": 4,
+    # 1 clusters + 1 membership rows + 1 node states + 1 guest counts, all bulk.
+    # Paid on every page, so this is the row to defend hardest.
+    "navigation tree (5a2B)": (4, "/vms/"),
+    # tree cost + 1 cluster row + 1 coverage/generation + 1 guest aggregate.
+    "cluster Summary (5a2C)": (6, "/clusters/<key>/"),
+    # tree cost + 1 node row + 1 coverage + 1 guest-by-node aggregate.
+    "node Summary (5a2D)": (6, "/clusters/<key>/nodes/<node>/"),
+    # 1 projection + 1 coverage + 1 generation, no provider I/O.
+    "first diagnostics read (5a1F)": (4, "service-level, no page"),
 }
 
 
@@ -92,6 +111,13 @@ class SharedShellQueryBudgetTests(TestCase):
     """The shell's cost is flat in nodes and linear in clusters, by measurement."""
 
     def setUp(self):
+        # The LocMem cache is process-wide and Django does not reset it between
+        # tests, while `datastore_nav` entries live 60s and the suite runs ~165s.
+        # These tests both seed and warm cache entries, so they clear on the way in
+        # and out rather than leaving keys for whatever runs next. This does not fix
+        # the suite-wide isolation gap -- it just declines to widen it.
+        cache.clear()
+        self.addCleanup(cache.clear)
         user = get_user_model().objects.create_user(username="budget", password="budget-pw")
         self.client = Client()
         self.client.force_login(user)
@@ -153,7 +179,7 @@ class SharedShellQueryBudgetTests(TestCase):
             "there is paid by every page in this table.",
         )
 
-    def test_the_shared_shell_floor_holds(self):
+    def test_the_cheapest_page_bounds_the_shell(self):
         _seed_cluster("solo", nodes=3)
 
         floor = min(self._shell_queries(path) for path in PAGE_QUERY_BUDGETS)
@@ -161,9 +187,33 @@ class SharedShellQueryBudgetTests(TestCase):
         self.assertLessEqual(
             floor,
             SHELL_FLOOR_BUDGET,
-            f"The cheapest page now costs {floor} queries against a shell floor of "
-            f"{SHELL_FLOOR_BUDGET}. The floor is the shell's own cost: every page "
-            "pays it, so it is the number Module 5's allowances are measured from.",
+            f"The cheapest page now costs {floor} queries against {SHELL_FLOOR_BUDGET}. "
+            "This bounds the shell from above; it is not the shell's own cost, which "
+            f"is {SHELL_CONTEXT_PROCESSOR_QUERIES} and is pinned separately below.",
+        )
+
+    def test_the_context_processor_is_the_real_shell_cost(self):
+        """8, not the cheapest page -- every HTML response pays exactly this.
+
+        Pinned on its own because the page figure has twice been mistaken for it,
+        and because Module 5's tree lands here: growth in `app_settings` is paid by
+        responses that render no page at all, including dialog fragments.
+        """
+        _seed_cluster("solo", nodes=3)
+        request = RequestFactory().get("/")
+        request.user = AnonymousUser()
+        app_settings(request)  # warm the per-cluster datastore_nav cache
+
+        with CaptureQueriesContext(connection) as captured:
+            context = app_settings(request)
+            list(context["app_recent_tasks"])  # the task bar is lazy; force it
+
+        self.assertLessEqual(
+            len(captured),
+            SHELL_CONTEXT_PROCESSOR_QUERIES,
+            f"`app_settings` now costs {len(captured)} queries against "
+            f"{SHELL_CONTEXT_PROCESSOR_QUERIES}. This is the number every HTML "
+            "response in the app pays, so it is the one Module 5 spends from.",
         )
 
     def test_extra_clusters_cost_a_bounded_amount_each(self):
