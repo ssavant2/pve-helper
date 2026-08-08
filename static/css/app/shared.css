@@ -565,8 +565,35 @@ code {
   margin-left: 0;
 }
 
+.orphan-table {
+  table-layout: fixed;
+  min-width: 1120px;
+}
+
+.orphan-storage-column {
+  width: 200px;
+}
+
+.orphan-path-column {
+  width: 420px;
+}
+
+.orphan-size-column {
+  width: 130px;
+}
+
+.orphan-actions-column {
+  width: 96px;
+}
+
+.orphan-table td:nth-child(2),
+.orphan-table td:nth-child(4) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .orphan-actions-heading {
-  width: 190px;
   text-align: right !important;
 }
 
@@ -574,12 +601,39 @@ code {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  min-width: 170px;
+  gap: 8px;
 }
 
 .orphan-register-menu .actions-menu-panel {
+  top: auto;
+  bottom: calc(100% + 6px);
   min-width: 220px;
+}
+
+.orphan-register-menu > summary {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.orphan-register-menu > summary::after {
+  content: none;
+}
+
+.orphan-register-menu > summary:hover,
+.orphan-register-menu[open] > summary {
+  border-color: var(--line-strong);
+  background: var(--blue-soft);
+  color: var(--accent-strong);
+}
+
+.orphan-register-menu > summary svg {
+  width: 16px;
+  height: 16px;
 }
 
 .inline-action-form {

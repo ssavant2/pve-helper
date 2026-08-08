@@ -4146,7 +4146,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '<th class="orphan-actions-heading">Actions</th>', html=True)
-        self.assertContains(response, "<summary>Register as VM</summary>", count=1, html=True)
+        self.assertContains(response, 'aria-label="Register as VM"', count=1)
+        self.assertContains(response, 'data-lucide="package-plus"', count=1)
         self.assertContains(response, "Register in Default cluster")
         self.assertContains(response, "Register in Second cluster")
 

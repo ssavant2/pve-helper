@@ -25,7 +25,14 @@
         </span>
       {% endif %}
     </div>
-    <table class="data-table">
+    <table class="data-table orphan-table">
+      <colgroup>
+        <col class="orphan-storage-column">
+        <col class="orphan-path-column">
+        <col class="orphan-size-column">
+        <col class="orphan-evidence-column">
+        <col class="orphan-actions-column">
+      </colgroup>
       <thead>
         <tr>
           <th>Storage</th>
@@ -39,14 +46,17 @@
         {% for file in files %}
           <tr data-context-label="{{ file.path }}">
             <td>{{ file.storage.display_name }}</td>
-            <td><code>{{ file.path }}</code></td>
+            <td title="{{ file.path }}"><code>{{ file.path }}</code></td>
             <td>{% if file.size_bytes != None %}{{ file.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
-            <td>{{ file.classification_reason|default:"-" }}</td>
+            <td title="{{ file.classification_reason|default:'-' }}">{{ file.classification_reason|default:"-" }}</td>
             <td class="row-actions">
               <div class="orphan-action-controls">
                 {% if file.derived_volid and "-disk-" in file.derived_volid and app_enabled_clusters %}
                   <details class="actions-menu orphan-register-menu">
-                    <summary>Register as VM</summary>
+                    <summary title="Register as VM" aria-label="Register as VM">
+                      <i data-lucide="package-plus" aria-hidden="true"></i>
+                      <span class="sr-only">Register as VM</span>
+                    </summary>
                     <div class="actions-menu-panel">
                       {% for cluster in app_enabled_clusters %}
                         <a href="{% url 'core:register_vm' cluster.key %}?mode=adopt&amp;volid={{ file.derived_volid|urlencode }}">
