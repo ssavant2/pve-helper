@@ -287,7 +287,33 @@ NODE_SCOPED_VIEW_READ_ALLOWLIST = frozenset(
 
 
 class NodeScopedViewReadInvariantTests(SimpleTestCase):
-    """A view addresses guests through a node; it does not read the node itself."""
+    """A view addresses guests through a node; it does not read the node itself.
+
+    **What this does not catch**, established by probing rather than assumed — the
+    sibling membership ratchet declares its blind spots and so must this one, or the
+    ledger citing it overstates what is enforced:
+
+    * a literal node name, ``"nodes/pve1/status"``;
+    * concatenation, ``"nodes/" + node + "/status"``, including the
+      ``base = f"nodes/{node}"`` then ``base + "/network"`` shape that already
+      appears in this codebase (``views/guests/operation_lifecycle.py``);
+    * ``%``-formatting, ``"nodes/%s/status" % node``;
+    * a variable second segment, ``f"nodes/{node}/{segment}"``;
+    * request-path reads that live in a **service** rather than a view --
+      ``services/guest_create.py`` issues a per-create-form-render ``network`` read
+      that this rule is morally aimed at and structurally does not reach;
+    * **fan-out itself.** This flags path-string authorship. ``views/guests/dialogs.py``
+      contains the O(N) loop but no node path, so relocating that loop to a new view
+      module trips nothing.
+
+    It also false-positives on a literal vmid (``f"nodes/{node}/qemu/100/config"``),
+    which is the safe direction: a spurious failure is argued, a missed one is not.
+
+    So this is a ratchet against the naive reintroduction -- the common case, and the
+    one that actually recurs -- not a proof of absence. The behavioral rule ("no
+    request-rendering path performs a broad provider read") still needs 5a1F, which
+    can assert it against the projection's consumers instead of against strings.
+    """
 
     def _view_sources(self) -> list[Path]:
         root = Path(settings.BASE_DIR)
