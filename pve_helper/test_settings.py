@@ -6,6 +6,12 @@ settings; they never belong in the default unit/view test command.
 
 from .settings import *  # noqa: F403
 
+# Django rolls the database back between tests but leaves the process-wide cache
+# alone, and this app's cache entries outlive individual tests (3-60s TTLs against
+# a ~165s suite). That made the suite intermittently red on unchanged code. See
+# `pve_helper/test_runner.py`.
+TEST_RUNNER = "pve_helper.test_runner.IsolatedCacheTestRunner"
+
 PVE_ENDPOINTS = ["https://pve.test.invalid:8006"]
 PVE_API_TOKEN_ID = ""
 PVE_API_TOKEN_SECRET = ""
