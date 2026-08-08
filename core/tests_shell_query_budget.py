@@ -24,25 +24,38 @@ from django.test.utils import CaptureQueriesContext
 
 from core.models import ClusterStorage, ClusterStorageNodeState, ProxmoxCluster
 
-# Measured 2026-08-07, warm `datastore_nav` cache, one cluster of three nodes:
-# **24 queries**, composed as
+# Measured 2026-08-07, warm caches, one cluster of three nodes.
 #
-#   6  core_scanrun          \ Recent Tasks taskbar: 11 of 24, the dominant cost
-#   5  core_auditevent       /
-#   3  core_proxmoxcluster   \
-#   2  core_clusterstorage    | navigation: 6
-#   1  each of node-state, storage mount, cluster-storage mount, volume coverage
-#   2  django_q_schedule
-#   1  each of django_session, auth_user
+# The first version of this file measured only "/" and reported its 24 queries as
+# "the shared shell". Independent review falsified that: "/" is the dashboard, and
+# roughly half of those queries are the dashboard *view's* own reads. Measuring
+# three real pages separates the two costs:
 #
-# The number to notice is that navigation is the *smaller* half. Module 5 hangs its
-# tree off the same context processor, so its budget is the headroom between 24 and
-# whatever a page can afford -- not "one more query per node".
+#   /           24   dashboard  (shell + its own scan/audit/storage reads)
+#   /clusters/  14   Connections
+#   /vms/       12   guest overview -- the floor, and the closest thing to the
+#                    shell's own cost on a page that adds little of its own
+#
+# So the shared shell is ~12, not 24, and the lesson drawn from the bad number
+# ("navigation is the smaller half") described the dashboard, not the shell.
+# Module 5 hangs its tree off `app_settings`, which every one of these pays --
+# including the ones the original test never looked at.
 #
 # Raise these only with a recorded reason; a silent increase is the regression this
 # file exists to catch.
-SHELL_QUERY_BUDGET = 24
+SHELL_FLOOR_BUDGET = 12
+PAGE_QUERY_BUDGETS = {"/": 24, "/clusters/": 14, "/vms/": 12}
 SHELL_QUERY_BUDGET_PER_EXTRA_CLUSTER = 4
+
+# Allowances for the surfaces Module 5 has not built yet, expressed as a delta over
+# the shell floor so the budget is a number rather than "bounded" (U0 item 4). Each
+# is the phase's entry gate; exceeding it is a review reject, not a tuning task.
+MODULE5_QUERY_ALLOWANCES = {
+    "navigation tree (5a2B)": 4,
+    "cluster Summary (5a2C)": 6,
+    "node Summary (5a2D)": 6,
+    "first diagnostics read (5a1F)": 4,
+}
 
 
 def _seed_cluster(key: str, *, nodes: int, storages_per_node: int = 2) -> ProxmoxCluster:
@@ -83,7 +96,7 @@ class SharedShellQueryBudgetTests(TestCase):
         self.client = Client()
         self.client.force_login(user)
 
-    def _shell_queries(self, path: str = "/") -> int:
+    def _shell_queries(self, path: str) -> int:
         # Warm first: `datastore_nav` caches per cluster for 60s, so a cold render
         # measures cache population rather than the steady state an operator sees.
         self.client.get(path)
@@ -100,16 +113,18 @@ class SharedShellQueryBudgetTests(TestCase):
         ProxmoxCluster.objects.all().delete()
 
     def test_the_shell_does_not_query_per_node(self):
+        # Checked on the floor page, so a per-node query in `app_settings` cannot
+        # hide behind the dashboard's own reads.
         _seed_cluster("one", nodes=1)
-        one_node = self._shell_queries()
+        one_node = self._shell_queries("/vms/")
 
         self._reset()
         _seed_cluster("three", nodes=3)
-        three_nodes = self._shell_queries()
+        three_nodes = self._shell_queries("/vms/")
 
         self._reset()
         _seed_cluster("twenty", nodes=20)
-        twenty_nodes = self._shell_queries()
+        twenty_nodes = self._shell_queries("/vms/")
 
         self.assertEqual(
             (one_node, three_nodes, twenty_nodes),
@@ -120,25 +135,43 @@ class SharedShellQueryBudgetTests(TestCase):
             "HTML response in the app.",
         )
 
-    def test_the_shell_stays_inside_its_measured_budget(self):
+    def test_every_measured_page_stays_inside_its_budget(self):
         _seed_cluster("solo", nodes=3)
 
-        queries = self._shell_queries()
+        measured = {path: self._shell_queries(path) for path in PAGE_QUERY_BUDGETS}
+        over = {
+            path: (count, PAGE_QUERY_BUDGETS[path])
+            for path, count in measured.items()
+            if count > PAGE_QUERY_BUDGETS[path]
+        }
+
+        self.assertEqual(
+            over,
+            {},
+            f"Page query budgets exceeded (measured/allowed): {over}. Module 5 hangs "
+            "its tree and Summary panels off the shared context processor, so growth "
+            "there is paid by every page in this table.",
+        )
+
+    def test_the_shared_shell_floor_holds(self):
+        _seed_cluster("solo", nodes=3)
+
+        floor = min(self._shell_queries(path) for path in PAGE_QUERY_BUDGETS)
 
         self.assertLessEqual(
-            queries,
-            SHELL_QUERY_BUDGET,
-            f"The shared shell now costs {queries} queries against a budget of "
-            f"{SHELL_QUERY_BUDGET}. Module 5 hangs its tree and Summary panels off "
-            "this same context processor, so growth here is paid on every page.",
+            floor,
+            SHELL_FLOOR_BUDGET,
+            f"The cheapest page now costs {floor} queries against a shell floor of "
+            f"{SHELL_FLOOR_BUDGET}. The floor is the shell's own cost: every page "
+            "pays it, so it is the number Module 5's allowances are measured from.",
         )
 
     def test_extra_clusters_cost_a_bounded_amount_each(self):
         _seed_cluster("alpha", nodes=3)
-        one_cluster = self._shell_queries()
+        one_cluster = self._shell_queries("/vms/")
 
         _seed_cluster("beta", nodes=3)
-        two_clusters = self._shell_queries()
+        two_clusters = self._shell_queries("/vms/")
 
         delta = two_clusters - one_cluster
         self.assertLessEqual(
