@@ -1,4 +1,14 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page, type Response } from "@playwright/test";
+
+import {
+  openConnectionFromTree,
+  openDatastoreFromTree,
+  openDatastoreTabFromTree,
+  openGuestFromTree,
+  openScheduledTaskFormFromTree,
+  openTagFromTree,
+  openTagInventoryFromTree,
+} from "./helpers/navigation";
 
 // Smoke net for the JS split (A2): every main page must load AND app.js must
 // initialise, with no uncaught JS errors. A broken ES module stops app.js from
@@ -6,24 +16,38 @@ import { test, expect } from "@playwright/test";
 // taskbar init runs) disappears — the strongest cheap signal that a bundle
 // failed to load. This is the automated replacement for manual click-through.
 
-const PAGES = [
-  { name: "Dashboard", path: "/" },
-  { name: "VMs Overview", path: "/vms/overview/" },
-  { name: "VMs Inventory", path: "/vms/" },
-  { name: "Connections", path: "/clusters/" },
-  { name: "Add host/cluster", path: "/clusters/add/" },
-  { name: "Cluster connection detail", path: "/clusters/e2e/connection/" },
-  { name: "Retired cluster detail", path: "/clusters/retired-e2e/connection/" },
-  { name: "New scheduled task", path: "/clusters/e2e/scheduled-tasks/new/" },
-  { name: "Datastore consumer view", path: "/clusters/e2e/datastores/e2e-nfs/summary/" },
-  { name: "Datastore Recycle Bin", path: "/clusters/e2e/datastores/e2e-nfs/recycle-bin/" },
-  { name: "Recycle Bins overview", path: "/storage/recycle-bins/" },
-  { name: "Orphan Finder", path: "/orphans/" },
-  { name: "Tags", path: "/clusters/e2e/tags/" },
-  { name: "PVE-helper Settings", path: "/settings/storage/" },
-  { name: "Log forwarder settings", path: "/settings/log-forwarder/" },
-  { name: "Scheduled Tasks settings", path: "/settings/scheduled-tasks/" },
-  { name: "Audit log", path: "/audit/" },
+type SmokeDestination = {
+  name: string;
+  open: (page: Page) => Promise<Response | null>;
+};
+
+const PAGES: SmokeDestination[] = [
+  { name: "Dashboard", open: (page) => page.goto("/") },
+  { name: "VMs Overview", open: (page) => page.goto("/vms/overview/") },
+  { name: "VMs Inventory", open: (page) => page.goto("/vms/") },
+  { name: "Connections", open: (page) => page.goto("/clusters/") },
+  { name: "Add host/cluster", open: (page) => page.goto("/clusters/add/") },
+  { name: "Cluster connection detail", open: (page) => openConnectionFromTree(page, "e2e") },
+  {
+    name: "Retired cluster detail",
+    open: (page) => openConnectionFromTree(page, "retired-e2e"),
+  },
+  {
+    name: "New scheduled task",
+    open: (page) => openScheduledTaskFormFromTree(page, "E2E cluster"),
+  },
+  { name: "Datastore consumer view", open: (page) => openDatastoreFromTree(page, "e2e", "e2e-nfs") },
+  {
+    name: "Datastore Recycle Bin",
+    open: (page) => openDatastoreTabFromTree(page, "e2e", "e2e-nfs", "Recycle Bin"),
+  },
+  { name: "Recycle Bins overview", open: (page) => page.goto("/storage/recycle-bins/") },
+  { name: "Orphan Finder", open: (page) => page.goto("/orphans/") },
+  { name: "Tags", open: (page) => openTagInventoryFromTree(page, "E2E cluster") },
+  { name: "PVE-helper Settings", open: (page) => page.goto("/settings/storage/") },
+  { name: "Log forwarder settings", open: (page) => page.goto("/settings/log-forwarder/") },
+  { name: "Scheduled Tasks settings", open: (page) => page.goto("/settings/scheduled-tasks/") },
+  { name: "Audit log", open: (page) => page.goto("/audit/") },
 ];
 
 for (const p of PAGES) {
@@ -37,10 +61,10 @@ for (const p of PAGES) {
       }
     });
 
-    const resp = await page.goto(p.path, { waitUntil: "load" });
-    expect(resp?.status(), `${p.path} HTTP status`).toBeLessThan(400);
+    const resp = await p.open(page);
+    expect(resp?.status(), `${p.name} HTTP status`).toBeLessThan(400);
     const csp = resp?.headers()["content-security-policy"] ?? "";
-    expect(csp, `${p.path} enforced Content-Security-Policy`).toContain("script-src 'self'");
+    expect(csp, `${p.name} enforced Content-Security-Policy`).toContain("script-src 'self'");
     // Django's json_script helper emits inert application/json data blocks;
     // executable scripts must always come from same-origin static assets.
     await expect(page.locator('script:not([src]):not([type="application/json"])')).toHaveCount(0);
@@ -52,8 +76,8 @@ for (const p of PAGES) {
       })
       .toBe("function");
 
-    expect(jsErrors, `uncaught JS errors on ${p.path}`).toEqual([]);
-    expect(cspErrors, `CSP violations on ${p.path}`).toEqual([]);
+    expect(jsErrors, `uncaught JS errors on ${p.name}`).toEqual([]);
+    expect(cspErrors, `CSP violations on ${p.name}`).toEqual([]);
   });
 }
 
@@ -156,7 +180,7 @@ test("scheduled task settings expose bounded run-history retention", async ({ pa
 });
 
 test("scheduled task end conditions share the date picker and preview run limits", async ({ page }) => {
-  await page.goto("/clusters/e2e/scheduled-tasks/new/", { waitUntil: "load" });
+  await openScheduledTaskFormFromTree(page, "E2E cluster");
 
   const recurrence = page.getByLabel("Recurrence");
   const endCondition = page.getByLabel("End Condition");
@@ -267,7 +291,7 @@ test("cluster connection UI separates immutable identity from write-only credent
   await expect(page.getByText("cannot be renamed later")).toBeVisible();
   await expect(page.locator('input[name="token_secret"]')).toHaveCount(0);
 
-  await page.goto("/clusters/e2e/connection/");
+  await openConnectionFromTree(page, "e2e");
   await expect(page.getByText("Permanent key")).toBeVisible();
   const secret = page.locator('input[name="token_secret"]');
   await expect(secret).toHaveValue("");
@@ -312,7 +336,7 @@ test("an unobserved guest is published as unknown, not as stopped and healthy", 
   // Name the thing that is actually down, not the guests downstream of it.
   await expect(heading).toContainText("node pve2");
 
-  await page.goto("/vms/e2e/vm/102/summary/");
+  await openGuestFromTree(page, { clusterKey: "e2e", objectType: "vm", vmid: 102 });
 
   const health = page.locator('[data-card-key="health"]');
   await expect(health).toContainText("Unknown");
@@ -353,7 +377,7 @@ test("retired connection archive opens its read-only tombstone and filtered Audi
 });
 
 test("tag links use soft navigation", async ({ page }) => {
-  await page.goto("/clusters/e2e/tags/");
+  await openTagInventoryFromTree(page, "E2E cluster");
   await page.evaluate(() => {
     (window as Window & { tagSoftNavigationMarker?: string }).tagSoftNavigationMarker = "preserved";
   });
@@ -365,7 +389,7 @@ test("tag links use soft navigation", async ({ page }) => {
 });
 
 test("tag administration uses aligned controls and the guest editor separates new tags", async ({ page }) => {
-  await page.goto("/clusters/e2e/tags/");
+  await openTagInventoryFromTree(page, "E2E cluster");
   const createWidth = await page.locator('.tag-create-form input[name="tag"]').evaluate((element) => element.getBoundingClientRect().width);
   const filterWidth = await page.locator('input[placeholder="Filter tags"]').evaluate((element) => element.getBoundingClientRect().width);
   expect(Math.abs(createWidth - filterWidth)).toBeLessThan(1);
@@ -386,14 +410,15 @@ test("tag administration uses aligned controls and the guest editor separates ne
   const objectCounts = await page.locator("#tags-table tbody tr td:last-child").allTextContents();
   expect(objectCounts.map(Number)).toEqual([...objectCounts.map(Number)].sort((left, right) => left - right));
 
-  await page.goto("/vms/e2e/vm/100/edit/?section=tags");
+  await openGuestFromTree(page, { clusterKey: "e2e", objectType: "vm", vmid: 100 });
+  await page.locator('[data-card-key="tags"]').getByRole("link", { name: "Edit", exact: true }).click();
   await expect(page.getByLabel("Existing tags")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Create new tag" })).toBeVisible();
   await expect(page.getByText("The new cluster tag will be assigned to this object.")).toBeVisible();
 });
 
 test("partial tag inventory is labelled without hiding known membership", async ({ page }) => {
-  await page.goto("/clusters/e2e/tags/", { waitUntil: "load" });
+  await openTagInventoryFromTree(page, "E2E cluster");
 
   const warning = page.locator(".tag-warning", { hasText: "Membership inventory is partial" });
   await expect(warning).toBeVisible();
@@ -453,7 +478,7 @@ test("tag inventory refresh queues work and soft-refreshes after completion", as
       }),
     });
   });
-  await page.goto("/clusters/e2e/tags/", { waitUntil: "load" });
+  await openTagInventoryFromTree(page, "E2E cluster");
   await page.evaluate(() => {
     (window as Window & { tagRefreshMarker?: string }).tagRefreshMarker = "preserved";
   });

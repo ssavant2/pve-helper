@@ -70,32 +70,11 @@ services:
       # reaches Proxmox and its SQLite database is discarded with the container.
       PVE_HELPER_ENCRYPTION_KEYS: "e2e:ZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWU="
       PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID: e2e
+      E2E_SEED_SCENARIO: "${E2E_SEED_SCENARIO:-representative}"
       ALLOWED_HOSTS: "e2e-web,localhost,127.0.0.1"
     command: >
       sh -lc "mkdir -p /tmp/e2e && python manage.py migrate --noinput &&
-      python manage.py shell -c \"from django.utils import timezone; from core.models import StorageMount, ScanRun, ProxmoxCluster, ProxmoxEndpoint, CurrentGuestInventory, CurrentGuestInventoryState, AuditEvent, ClusterStorage, ClusterStorageMount, ClusterStorageNodeState, ProxmoxStorageConsumer;
-      StorageMount.objects.get_or_create(storage_id='e2e-store', defaults={'display_name':'E2E Store','path':'/tmp/e2e-store'});
-      c=ProxmoxCluster.objects.create(key='e2e', display_name='E2E cluster', enabled=True);
-      r=ProxmoxCluster.objects.create(key='retired-e2e', display_name='Retired E2E cluster', enabled=False, discovered_name='Former E2E cluster', retired_at=timezone.now(), retirement_mode='forced', retirement_reason='The E2E site was permanently decommissioned.', retired_ca_uuid='22222222-2222-2222-2222-222222222222', retired_ca_fingerprint='AA:BB:CC');
-      u=ProxmoxCluster.objects.create(key='unused-e2e', display_name='Unused E2E connection', enabled=False, discovered_ca_uuid='33333333-3333-3333-3333-333333333333');
-      ProxmoxEndpoint.objects.create(cluster=u, name='pve1', url='https://pve1.unused-e2e.test:8006/');
-      from core.services.cluster_trust import approve_cluster_transport; from core.services.cluster_credentials import set_cluster_credential;
-      approve_cluster_transport(u, mode='public');
-      set_cluster_credential(u, token_id='e2e@pve!token', token_secret='e2e-not-a-secret');
-      s=ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message='e2e seed');
-      CurrentGuestInventory.objects.create(cluster=c, source_scan=s, node='pve1', object_type='vm', vmid=100, name='e2e-vm-running', status='running', config={'tags':'prod'}, observed_at=timezone.now(), runtime_observed_at=timezone.now());
-      CurrentGuestInventory.objects.create(cluster=c, source_scan=s, node='pve1', object_type='vm', vmid=101, name='e2e-vm-stopped', status='stopped', observed_at=timezone.now(), runtime_observed_at=timezone.now());
-      CurrentGuestInventory.objects.create(cluster=c, source_scan=s, node='pve2', object_type='vm', vmid=102, name='e2e-vm-unobserved', status='unknown', observed_at=timezone.now(), runtime_observed_at=timezone.now());
-      CurrentGuestInventoryState.objects.create(cluster=c, refreshed_at=timezone.now(), complete=False, endpoints_attempted=['pve1','pve2'], endpoints_succeeded=['pve1'], errors={'live_inventory':['pve2 unavailable']}, source_scan=s);
-      ns=ClusterStorage.objects.create(cluster=c, storage_id='e2e-nfs', storage_type='nfs', shared=True, present=True, config={'server':'nas.e2e.local','export':'/mnt/tank/vm'});
-      ls=ClusterStorage.objects.create(cluster=c, storage_id='e2e-dir', storage_type='dir', shared=False, present=True, config={'path':'/var/lib/vz'});
-      cm=StorageMount.objects.create(storage_id='e2e-nfs', display_name='E2E shared storage', path='/tmp/e2e-nfs');
-      ClusterStorageMount.objects.create(cluster_storage=ns, mount=cm, scope='shared');
-      ProxmoxStorageConsumer.objects.create(storage=cm, cluster=c, expected_node_name='pve1', last_successful_inventory_scan=timezone.now(), last_gate_status='ok');
-      ClusterStorageNodeState.objects.create(cluster_storage=ls, node='pve1', present=True, active=True, enabled=True);
-      AuditEvent.objects.create(username='e2e', action='tag.bulk_operation', object_type='tag', object_id='old-tag', outcome='failed', details={'cluster_key':'e2e','operation':'delete','source_tag':'old-tag','targets':[{'cluster_key':'e2e','node':'pve1','object_type':'vm','vmid':100}],'failed':[{'vmid':100,'reason':'locked'}],'retryable':True});
-      AuditEvent.objects.create(username='e2e', action='cluster.force_retired', object_type='cluster', object_id='retired-e2e', outcome='success', cluster=r, cluster_key_snapshot='retired-e2e', details={'display_name':'Retired E2E cluster','cluster_key':'retired-e2e','retirement_mode':'forced','retirement_reason':'The E2E site was permanently decommissioned.','identity_verification':'skipped','endpoint_count':2,'cleanup':{'schedules_deleted':1,'current_guests_deleted':2}});
-      AuditEvent.objects.create(username='e2e', action='file.bulk_operation', object_type='storage', object_id='e2e-store', outcome='warning', module='storage', cluster=c, cluster_key_snapshot='e2e', storage_id='e2e-store', details={'verb':'moved to trash','operation':'trash','storage_id':'e2e-store','storage_name':'E2E Store','summary':'1 of 2 files moved to trash','total':2,'question':True,'succeeded':['dump/ok.vma.zst'],'failed':[{'path':'images/100/vm-100-disk-0.qcow2','error':'Permission denied.'}],'skipped':[],'retry':{'url':'/storage/e2e-store/trash-file/','paths':['images/100/vm-100-disk-0.qcow2']}})\" &&
+      python scripts/e2e_seed.py --scenario $${E2E_SEED_SCENARIO:-representative} &&
       python manage.py runserver 0.0.0.0:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/vms/overview/')"]

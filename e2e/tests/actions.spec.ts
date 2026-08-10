@@ -1,5 +1,13 @@
 import { test, expect } from "@playwright/test";
 
+import {
+  guestRow,
+  openConnectionFromTree,
+  openDatastoreFromTree,
+  openGuestFromTree,
+  openTagFromTree,
+} from "./helpers/navigation";
+
 // Data-dependent flows against the two seeded guests (100 running, 101 stopped).
 // These cover the highest split-risk JS: row selection, the right-click context
 // menu, and — most important — the shared openConfirmDialog that all destructive
@@ -26,7 +34,7 @@ test("right-click opens the context menu", async ({ page }) => {
 });
 
 test("Tags menu offers existing tags for add and assigned tags for remove", async ({ page }) => {
-  const taggedRow = page.locator('[data-vm-overview-row][data-guest-vmid="100"]');
+  const taggedRow = guestRow(page, { clusterKey: "e2e", objectType: "vm", vmid: 100 });
   await page.route("**/vms/e2e/vm/100/tag-options/**", async (route) => {
     await route.fulfill({
       status: 200,
@@ -62,7 +70,7 @@ test("Tags menu offers existing tags for add and assigned tags for remove", asyn
   await expect(dialog.getByText(/Replace all/i)).toHaveCount(0);
   await dialog.locator("[data-vm-dialog-close]").click();
 
-  const untaggedRow = page.locator('[data-vm-overview-row][data-guest-vmid="101"]');
+  const untaggedRow = guestRow(page, { clusterKey: "e2e", objectType: "vm", vmid: 101 });
   await untaggedRow.click({ button: "right" });
   await page.locator("#context-menu .context-menu-parent", { hasText: "Tags" }).hover();
   await expect(page.locator('#context-menu [data-vm-action="remove-tags"]')).toBeEnabled();
@@ -85,7 +93,7 @@ test("Tags menu receives registry and membership data in the VM workspace", asyn
   await tagOptions.evaluate((script) => {
     script.textContent = '["prod","qa"]';
   });
-  const taggedGuest = page.locator('.guest-list-item[data-guest-vmid="100"]');
+  const taggedGuest = guestRow(page, { clusterKey: "e2e", objectType: "vm", vmid: 100 });
   await taggedGuest.click({ button: "right" });
   await page.locator("#context-menu .context-menu-parent", { hasText: "Tags" }).hover();
   await expect(page.locator('#context-menu [data-vm-action="remove-tags"]')).toBeEnabled();
@@ -94,7 +102,7 @@ test("Tags menu receives registry and membership data in the VM workspace", asyn
 });
 
 test("successful destroy navigates away from the deleted guest summary", async ({ page }) => {
-  await page.goto("/vms/e2e/vm/101/summary/", { waitUntil: "load" });
+  await openGuestFromTree(page, { clusterKey: "e2e", objectType: "vm", vmid: 101 });
   await page.route("**/vms/bulk-action/", async (route) => {
     if (route.request().method() === "POST") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, errors: [] }) });
@@ -103,7 +111,7 @@ test("successful destroy navigates away from the deleted guest summary", async (
     await route.continue();
   });
 
-  const stoppedGuest = page.locator('.guest-list-item[data-guest-vmid="101"]');
+  const stoppedGuest = guestRow(page, { clusterKey: "e2e", objectType: "vm", vmid: 101 });
   await stoppedGuest.click({ button: "right" });
   await page.locator('#context-menu [data-vm-action="destroy"]').click();
   const dialog = page.locator("[data-vm-action-dialog]");
@@ -133,7 +141,7 @@ test("tag detail can remove the tag from one assigned object", async ({ page }) 
     }
     await route.continue();
   });
-  await page.goto("/clusters/e2e/tags/detail/?tag=prod", { waitUntil: "load" });
+  await openTagFromTree(page, "E2E cluster", "prod");
 
   await page.getByRole("button", { name: "Remove prod from e2e-vm-running" }).click();
   const dialog = page.locator("[data-vm-action-dialog]");
@@ -169,7 +177,7 @@ test("generic confirm forms use the shared dialog without native popups", async 
     nativeDialogs.push(dialog.type());
     await dialog.dismiss();
   });
-  await page.goto("/clusters/e2e/tags/detail/?tag=prod", { waitUntil: "load" });
+  await openTagFromTree(page, "E2E cluster", "prod");
 
   await page.getByRole("button", { name: "Delete tag", exact: true }).click();
 
@@ -200,7 +208,7 @@ test("request failures render locally and never open native alerts", async ({ pa
     });
   });
 
-  const row = page.locator('[data-vm-overview-row][data-guest-vmid="101"]');
+  const row = guestRow(page, { clusterKey: "e2e", objectType: "vm", vmid: 101 });
   await row.click({ button: "right" });
   await page.locator("#context-menu .context-menu-parent", { hasText: "Tags" }).hover();
   await page.locator('#context-menu [data-vm-action="add-tags"]').click();
@@ -365,7 +373,7 @@ test("fields dialogs distinguish declining from dismissing", async ({ page }) =>
 });
 
 test("storage consumer release lists its exact impact before submitting acknowledgement", async ({ page }) => {
-  await page.goto("/clusters/e2e/datastores/e2e-nfs/summary/", { waitUntil: "load" });
+  await openDatastoreFromTree(page, "e2e", "e2e-nfs");
 
   let submitted = "";
   await page.route("**/clusters/e2e/storage-consumers/release/", async (route) => {
@@ -385,7 +393,7 @@ test("storage consumer release lists its exact impact before submitting acknowle
 });
 
 test("forced cluster retirement uses impact fields and a separate swapped final dialog", async ({ page }) => {
-  await page.goto("/clusters/e2e/connection/", { waitUntil: "load" });
+  await openConnectionFromTree(page, "e2e");
 
   let finalSubmission = "";
   await page.route("**/clusters/e2e/connection/action/", async (route) => {
@@ -477,7 +485,7 @@ test("forced cluster retirement uses impact fields and a separate swapped final 
 });
 
 test("delete unused connection types the exact key and confirms in a separate swapped dialog", async ({ page }) => {
-  await page.goto("/clusters/unused-e2e/connection/", { waitUntil: "load" });
+  await openConnectionFromTree(page, "unused-e2e");
 
   // The eligible connection renders the real control; only the mutation endpoint is mocked.
   await expect(page.getByRole("button", { name: "Delete unused connection", exact: true })).toBeVisible();
@@ -548,7 +556,7 @@ test("verified retirement states its precondition and reveals the forced path on
   page,
 }) => {
   // An enabled cluster must still show the recommended path, disabled and explained.
-  await page.goto("/clusters/e2e/connection/", { waitUntil: "load" });
+  await openConnectionFromTree(page, "e2e");
   const enabledRetire = page.getByRole("button", { name: "Retire cluster", exact: true });
   await expect(enabledRetire).toBeVisible();
   await expect(enabledRetire).toBeDisabled();
@@ -560,7 +568,7 @@ test("verified retirement states its precondition and reveals the forced path on
   );
 
   // A disabled, fully configured connection offers it for real.
-  await page.goto("/clusters/unused-e2e/connection/", { waitUntil: "load" });
+  await openConnectionFromTree(page, "unused-e2e");
   const retire = page.getByRole("button", { name: "Retire cluster", exact: true });
   await expect(retire).toBeEnabled();
 
