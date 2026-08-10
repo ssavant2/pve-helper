@@ -270,6 +270,70 @@ class PendingTransitionTests(SimpleTestCase):
         self.assertNotEqual(withdrawn, ordinary)
         self.assertIs(ordinary.transition, RoleTransition.STABLE)
 
+    def test_no_path_lets_an_unreadable_target_delete_the_block(self):
+        """The readability of a persisted target must not decide whether a block
+        exists -- on **any** return path.
+
+        Written as a matrix rather than one case on purpose: this defect was
+        found, fixed on the one path under the author's nose, and reproduced on
+        the other two in the next review round. Every path that can see a pending
+        state is enumerated here so the next one added has to join the table.
+        """
+        evicted = MembershipObservation(
+            complete=True,
+            has_cluster_row=False,
+            observed_from="pve3",
+            accepted_members=frozenset({"pve1", "pve2"}),
+        )
+        paths = {
+            "incomplete read": failed_observation(),
+            "reader is not a member": evicted,
+            "complete, role disagrees": corosync_observation(),
+            "complete, role agrees": standalone_observation(),
+        }
+        for label, observation in paths.items():
+            with self.subTest(path=label):
+                readable = evaluate_role_transition(
+                    TopologyRole.STANDALONE, observation, pending_role=TopologyRole.COROSYNC
+                )
+                unreadable = evaluate_role_transition(TopologyRole.STANDALONE, observation, pending_role="corosync-v2")
+                self.assertEqual(
+                    readable.blocks_provider_work,
+                    unreadable.blocks_provider_work,
+                    f"on '{label}' the block appears or disappears purely because the "
+                    "persisted target could not be read",
+                )
+                self.assertIs(readable.transition, unreadable.transition)
+
+    def test_an_unnameable_block_is_representable_rather_than_dropped(self):
+        # The root cause of the above: pendingness used to be derived from the
+        # role alone, so "pending toward something this build cannot name" did
+        # not exist as a state -- and the paths with no nameable role to
+        # substitute silently dropped the block instead of holding it.
+        decision = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
+        self.assertTrue(decision.pending_unreadable)
+        self.assertIs(decision.pending_role, TopologyRole.UNKNOWN)
+        self.assertTrue(decision.blocks_provider_work)
+        self.assertIn("could not be read", decision.reason)
+
+    def test_an_unnameable_block_cannot_be_handed_off_until_it_is_nameable(self):
+        # Not a strand: a degraded read is transient, and the next complete
+        # observation from a member of record retargets the block to a role
+        # resolve_transition can name.
+        unnameable = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
+        with self.assertRaises(ValueError):
+            resolve_transition(unnameable, confirmed_role=TopologyRole.COROSYNC)
+
+        recovered = evaluate_role_transition(
+            TopologyRole.STANDALONE, corosync_observation(), pending_role="corosync-v2"
+        )
+        self.assertIs(recovered.pending_role, TopologyRole.COROSYNC)
+        self.assertTrue(recovered.pending_role_substituted)
+        self.assertIs(
+            resolve_transition(recovered, confirmed_role=TopologyRole.COROSYNC).role,
+            TopologyRole.COROSYNC,
+        )
+
     def test_an_unreadable_pending_target_does_not_silently_delete_the_block(self):
         # The asymmetry this closes: an unrecognized *stored* role only mislabels
         # a group, and got its own verdict. An unrecognized *pending* role

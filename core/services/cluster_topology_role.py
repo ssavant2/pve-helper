@@ -139,17 +139,29 @@ class RoleDecision:
     role: TopologyRole
     previous_role: TopologyRole
     #: The role this scope is pending *toward*, or ``UNKNOWN`` when nothing is
-    #: pending. This is the field 5a1A persists: without it a pending state
-    #: reconstructed in a later generation could not say which way it points, and
-    #: the operator prompt would have to be parsed out of ``reason``.
+    #: pending -- or when a block is open whose target this build cannot name,
+    #: which :attr:`pending_unreadable` distinguishes. This is the field 5a1A
+    #: persists: without it a pending state reconstructed in a later generation
+    #: could not say which way it points, and the operator prompt would have to
+    #: be parsed out of ``reason``.
     pending_role: TopologyRole = TopologyRole.UNKNOWN
+    #: A block is open whose persisted target this build cannot read. Separate
+    #: from ``pending_role`` because "pending toward something unnameable" is a
+    #: real state and deriving pendingness from the role alone made it
+    #: unrepresentable -- which silently *dropped* the block on any path with no
+    #: nameable role to substitute.
+    pending_unreadable: bool = False
+    #: ``pending_role`` was substituted from the current observation because the
+    #: persisted target was unreadable. Machine-readable so a confirmation
+    #: surface never has to string-match ``reason``.
+    pending_role_substituted: bool = False
     #: A stable, operator-facing reason, or "" when nothing needs explaining.
     reason: str = ""
 
     @property
     def transition_pending(self) -> bool:
         """Whether the scope waits for the explicit two-identity hand-off."""
-        return self.pending_role is not TopologyRole.UNKNOWN
+        return self.pending_role is not TopologyRole.UNKNOWN or self.pending_unreadable
 
     @property
     def blocks_provider_work(self) -> bool:
@@ -203,11 +215,14 @@ def _coerce_role(value: object) -> tuple[TopologyRole, bool]:
     -- the exact move the module forbids elsewhere. Today ``TopologyRole`` has two
     concrete members so only a hand-edited row reaches it; **widening this enum
     makes it live**, because a rolling deploy has one binary writing values the
-    other cannot read. Anyone adding a member must revisit **both** consumers of
-    the flag in :func:`evaluate_role_transition`: the stored role, where the worst
-    case is a group-label flip, and the *pending* role, where reading an
-    unrecognized value as "not pending" would delete a provider-work block with
-    no verdict and no record.
+    other cannot read. Anyone adding a member must revisit **every** consumer of
+    the flag in :func:`evaluate_role_transition` -- there are four, one per return
+    path that can see a pending state, and fixing the one you are looking at is
+    how this defect survived a review round. The stored role's worst case is a
+    group-label flip; the *pending* role's is that reading an unrecognized value
+    as "not pending" deletes a provider-work block with no verdict and no record.
+    :attr:`RoleDecision.pending_unreadable` exists so that state is
+    representable on the paths that have no nameable role to substitute.
     """
     try:
         return TopologyRole(value), True
@@ -232,22 +247,30 @@ def evaluate_role_transition(
     stored_role, stored_recognized = _coerce_role(stored_role)
     pending_role, pending_recognized = _coerce_role(pending_role)
     observed = classify_role(observation)
+    unreadable_target = "" if pending_recognized else " Its pending target could not be read by this build."
 
     if observed is TopologyRole.UNKNOWN:
         # Two different things produce UNKNOWN and they need different repairs.
         # Reporting both as "coverage is incomplete" tells an operator to go
         # looking for an unreachable cluster when the actual fix is to delete a
         # stale endpoint for a node that was evicted.
+        # A degraded read never changes whether a block is open. There is no
+        # nameable role to substitute here -- ``observed`` *is* ``UNKNOWN`` -- so
+        # an unreadable target is carried as its own state rather than collapsing
+        # to "not pending", which is how these two paths used to delete the block
+        # exactly when it was load-bearing: reads failing, or the only answering
+        # endpoint being the evicted node.
         if not observation.speaks_for_the_scope:
             return RoleDecision(
                 transition=RoleTransition.OBSERVER_NOT_A_MEMBER,
                 role=stored_role,
                 previous_role=stored_role,
                 pending_role=pending_role,
+                pending_unreadable=not pending_recognized,
                 reason=(
                     f"The node that answered ({observation.observed_from}) is not a member this "
                     "scope accepts, so its complete response is not evidence about this scope. "
-                    "Its endpoint is probably stale."
+                    f"Its endpoint is probably stale.{unreadable_target}"
                 ),
             )
         return RoleDecision(
@@ -255,7 +278,8 @@ def evaluate_role_transition(
             role=stored_role,
             previous_role=stored_role,
             pending_role=pending_role,
-            reason="Membership coverage is incomplete; the previous role is preserved as stale.",
+            pending_unreadable=not pending_recognized,
+            reason=(f"Membership coverage is incomplete; the previous role is preserved as stale.{unreadable_target}"),
         )
 
     # An unrecognized pending value is still an open block. Reading it as "not
@@ -264,7 +288,6 @@ def evaluate_role_transition(
     # this module rejects one branch away, and the more dangerous direction of
     # the two, since the stored-role case only mislabels a group.
     if pending_role is not TopologyRole.UNKNOWN or not pending_recognized:
-        unreadable = " Its previous target could not be read by this build." if not pending_recognized else ""
         if observed is stored_role:
             # The scope came back to the role it is registered as: the host
             # rejoined, or the change was reverted in Proxmox. There is no longer
@@ -283,7 +306,7 @@ def evaluate_role_transition(
                 reason=(
                     f"The pending transition toward {target} was withdrawn: this scope is "
                     f"observed as {stored_role.value} again, which is what it is registered "
-                    f"as. Provider work is no longer blocked.{unreadable}"
+                    f"as. Provider work is no longer blocked.{unreadable_target}"
                 ),
             )
         # A pending hand-off outranks a fresh reading. Publishing the new role
@@ -301,10 +324,11 @@ def evaluate_role_transition(
             role=stored_role,
             previous_role=stored_role,
             pending_role=pending_role if pending_recognized else observed,
+            pending_role_substituted=not pending_recognized,
             reason=(
                 f"This scope is registered as {stored_role.value} but is observed as "
                 f"{observed.value}. Provider work is blocked until the identity hand-off "
-                f"is confirmed.{unreadable}"
+                f"is confirmed.{unreadable_target}"
             ),
         )
 
@@ -378,6 +402,12 @@ def resolve_transition(decision: RoleDecision, *, confirmed_role: TopologyRole) 
     confirmed_role, _ = _coerce_role(confirmed_role)
     if confirmed_role is TopologyRole.UNKNOWN:
         raise ValueError("A hand-off must confirm a concrete role.")
+    if decision.pending_unreadable and decision.pending_role is TopologyRole.UNKNOWN:
+        raise ValueError(
+            "This scope holds a block whose target this build cannot read. It is nameable "
+            "again from the next complete observation from a member of record; until then "
+            "there is no question for a hand-off to answer."
+        )
     if confirmed_role is not decision.pending_role:
         raise ValueError(
             f"This scope is pending toward {decision.pending_role.value}; a hand-off cannot "
