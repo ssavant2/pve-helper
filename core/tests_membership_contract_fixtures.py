@@ -10,14 +10,20 @@ membership contract rests on and it had never been observed:
 * a **one-node corosync cluster**, which looks superficially identical and is
   not. Captured the same day from `clusterc`/`pve201`.
 
-The shapes are sanitized: `id` and `ip` are placeholders, and no full response is
-stored. What matters here is the key set, the types and the presence or absence of
-the cluster row.
+`pve301` ran **PVE 9.2.10**, `clusterc` **9.2.5**. "9.2" is a family, not a
+version, and an evidence row is per host.
 
-These fixtures are the reason 5a1B's adapter can be written against something
-other than an assumption. They are asserted through the shipped 5a0B state machine
-rather than compared to themselves, so a change in either the fixtures or the
-classification rule fails.
+The shapes are sanitized: `id`, `ip` and `ssl_fingerprint` are placeholders, and
+no full response is stored. What matters here is the key set, the types and the
+presence or absence of the cluster row.
+
+**What is and is not asserted through the state machine.** The two `cluster/status`
+shapes are: they go through `classify_role` and `evaluate_role_transition`, so a
+changed fixture and a changed rule both fail. The permission-denied constants are
+*recorded observations* — a message string and a key set have no behaviour to run
+them through, and pretending otherwise was an overstatement in the first version
+of this file. The one place the refusal does reach behaviour is
+`observation_from_failure`, which is the mapping 5a1B inherits.
 """
 
 from __future__ import annotations
@@ -67,12 +73,29 @@ ONE_NODE_COROSYNC_CLUSTER_STATUS = [
 ]
 
 
-def observation_from(rows: list[dict], *, complete: bool = True) -> MembershipObservation:
+def observation_from(
+    rows: list[dict],
+    *,
+    complete: bool,
+    accepted_members: frozenset[str] = frozenset(),
+) -> MembershipObservation:
     """Normalize a `cluster/status` payload the way 5a1B's adapter must.
 
     Deliberately written here rather than imported: 5a1B does not exist yet, and
     this is the shape its adapter inherits. When it lands, this function is what
     it must agree with.
+
+    **`complete` has no default, on purpose.** A default of `True` makes
+    `observation_from([])` — an empty payload, which is what a stripped or
+    truncated response looks like — classify as STANDALONE, because
+    `classify_role` deliberately excludes member count as an input. That is the
+    silent Hosts/Clusters flip the whole contract exists to prevent, reachable
+    through a keyword nobody typed. Every caller states its completeness.
+
+    `accepted_members` is passed through rather than dropped: it is what makes
+    `complete` answerable at all (see `MembershipObservation`), and 5a1B is
+    required to supply it. A normalizer that omitted it would hand 5a1B a
+    reference implementation with the guard disabled.
     """
     nodes = [row for row in rows if row.get("type") == "node"]
     cluster_rows = [row for row in rows if row.get("type") == "cluster"]
@@ -83,6 +106,27 @@ def observation_from(rows: list[dict], *, complete: bool = True) -> MembershipOb
         member_count=len(nodes),
         quorate=bool(cluster_rows and cluster_rows[0].get("quorate")),
         observed_from=local[0] if local else "",
+        accepted_members=accepted_members,
+    )
+
+
+def observation_from_failure(accepted_members: frozenset[str] = frozenset()) -> MembershipObservation:
+    """The mapping from *any* failed read to an observation. 5a1B inherits this.
+
+    A refusal, a timeout, a transport error and an unparseable body all mean the
+    same thing to the state machine: **this read proved nothing**. They do not
+    mean "no cluster row was present", which is what a naive `except: return
+    []` would produce and what would flip a corosync scope to standalone on a
+    permissions regression.
+
+    This exists because U1 measured the 403 and then asserted it only as a
+    string. The measurement is worthless to 5a1B without the mapping.
+    """
+    return MembershipObservation(
+        complete=False,
+        has_cluster_row=False,
+        member_count=0,
+        accepted_members=accepted_members,
     )
 
 
@@ -91,24 +135,28 @@ class StandaloneShapeTests(SimpleTestCase):
         self.assertEqual([row["type"] for row in STANDALONE_CLUSTER_STATUS], ["node"])
 
     def test_the_standalone_shape_classifies_as_standalone(self):
-        self.assertIs(classify_role(observation_from(STANDALONE_CLUSTER_STATUS)), TopologyRole.STANDALONE)
+        self.assertIs(
+            classify_role(observation_from(STANDALONE_CLUSTER_STATUS, complete=True)), TopologyRole.STANDALONE
+        )
 
     def test_a_standalone_node_still_identifies_itself(self):
         # `local=1` is how a candidate endpoint proves which node it is. It was
         # verified on clustered hosts during 5a0A; this confirms the same proof
         # survives with no cluster to be a member of.
-        observation = observation_from(STANDALONE_CLUSTER_STATUS)
+        observation = observation_from(STANDALONE_CLUSTER_STATUS, complete=True)
         self.assertEqual(observation.observed_from, "pve301")
 
     def test_the_one_node_cluster_shape_classifies_as_corosync(self):
-        self.assertIs(classify_role(observation_from(ONE_NODE_COROSYNC_CLUSTER_STATUS)), TopologyRole.COROSYNC)
+        self.assertIs(
+            classify_role(observation_from(ONE_NODE_COROSYNC_CLUSTER_STATUS, complete=True)), TopologyRole.COROSYNC
+        )
 
     def test_the_two_shapes_differ_only_by_the_cluster_row(self):
         # Both have exactly one node, both quorum-irrelevant, both `local=1`.
         # Member count cannot tell them apart, which is why the rule reads the
         # cluster row and nothing else.
-        standalone = observation_from(STANDALONE_CLUSTER_STATUS)
-        one_node = observation_from(ONE_NODE_COROSYNC_CLUSTER_STATUS)
+        standalone = observation_from(STANDALONE_CLUSTER_STATUS, complete=True)
+        one_node = observation_from(ONE_NODE_COROSYNC_CLUSTER_STATUS, complete=True)
         self.assertEqual(standalone.member_count, one_node.member_count)
         self.assertIsNot(classify_role(standalone), classify_role(one_node))
 
@@ -118,8 +166,17 @@ class StandaloneShapeTests(SimpleTestCase):
 #:
 #: It returned **HTTP 200**, not 403, and the node is present. What is missing is
 #: the metric fields: `cpu`, `mem`, `maxcpu`, `maxmem`, `disk`, `maxdisk` and
-#: `uptime` are **absent keys**, not nulls. Proxmox permission-filters this
-#: endpoint per field rather than refusing the request.
+#: `uptime` are **absent keys**, not nulls.
+#:
+#: **Scope of this observation, stated because the conclusion drawn from it is
+#: broader than the measurement:** one call, one zero-privilege token, one node,
+#: one standalone host at 9.2.10. Field-level filtering is what was seen *here*.
+#: Row-level filtering under a *partial* privilege on a *clustered* host is not
+#: observed and would be worse -- a member omitted entirely rather than thinned.
+#: Both mitigations point the same way: `/nodes` still cannot report a permission
+#: failure, and an absent metric is still unknown rather than zero. The rule
+#: 5a1C inherits holds under either mechanism; the mechanism itself is not
+#: `verified` beyond this case.
 PERMISSION_REDUCED_NODES = [
     {
         "id": "node/pve301",
@@ -156,7 +213,7 @@ class PermissionDeniedShapeTests(SimpleTestCase):
 
     def test_cluster_status_refuses_and_names_the_required_privilege(self):
         path, privilege = CLUSTER_STATUS_MIN_PRIVILEGE
-        self.assertIn("403", PERMISSION_DENIED_MESSAGE)
+        self.assertTrue(PERMISSION_DENIED_MESSAGE.startswith("403"), PERMISSION_DENIED_MESSAGE)
         self.assertIn(privilege, PERMISSION_DENIED_MESSAGE)
         self.assertIn(path, PERMISSION_DENIED_MESSAGE)
 
@@ -196,16 +253,16 @@ class PermissionDeniedShapeTests(SimpleTestCase):
         # consumer that collapses both into "provider error" tells the operator
         # to do the wrong thing. Both strings were captured live minutes apart
         # against the same endpoint.
-        self.assertIn("401", CREDENTIAL_REVOKED_MESSAGE)
-        self.assertIn("403", PERMISSION_DENIED_MESSAGE)
-        self.assertNotIn("401", PERMISSION_DENIED_MESSAGE)
+        self.assertTrue(CREDENTIAL_REVOKED_MESSAGE.startswith("401"), CREDENTIAL_REVOKED_MESSAGE)
+        self.assertTrue(PERMISSION_DENIED_MESSAGE.startswith("403"), PERMISSION_DENIED_MESSAGE)
+        self.assertFalse(PERMISSION_DENIED_MESSAGE.startswith("401"))
 
     def test_nodes_refuses_an_unauthenticated_read_though_not_an_unprivileged_one(self):
         # The asymmetry worth remembering: `nodes` answers 200 to a token with no
         # permissions and 401 to no valid token. Its silence is about
         # authorization only, so "it returned rows" proves authentication and
         # nothing else.
-        self.assertIn("401", CREDENTIAL_REVOKED_MESSAGE)
+        self.assertTrue(CREDENTIAL_REVOKED_MESSAGE.startswith("401"), CREDENTIAL_REVOKED_MESSAGE)
 
     def test_the_reduced_row_still_identifies_the_node(self):
         # Identity survives the permission filter even when every metric is gone,
@@ -216,7 +273,46 @@ class PermissionDeniedShapeTests(SimpleTestCase):
 
 
 class DegradedReadTests(SimpleTestCase):
-    """A failed read must never flip a host between the Hosts and Clusters groups."""
+    """A failed read must never flip a host between the Hosts and Clusters groups.
+
+    U1 step 5 requires this proven for **timeout and 403**. The 403 half was
+    measured and then asserted only as a string, which proves the provider's
+    behaviour and nothing about ours. What 5a1B actually inherits is the
+    *mapping*, and these tests are it.
+    """
+
+    def test_a_403_preserves_a_registered_corosync_role_as_stale(self):
+        # The live refusal, carried into the state machine rather than left as a
+        # recorded fact. The dangerous alternative is an adapter that catches
+        # ProxmoxAPIError and returns [] -- an empty payload reads as "no cluster
+        # row", which is standalone, which flips the group on a permissions
+        # regression.
+        decision = evaluate_role_transition(TopologyRole.COROSYNC, observation_from_failure())
+        self.assertIs(decision.transition, RoleTransition.INDETERMINATE)
+        self.assertIs(decision.role, TopologyRole.COROSYNC)
+        self.assertFalse(decision.blocks_provider_work)
+
+    def test_a_403_preserves_a_registered_standalone_role_too(self):
+        decision = evaluate_role_transition(TopologyRole.STANDALONE, observation_from_failure())
+        self.assertIs(decision.transition, RoleTransition.INDETERMINATE)
+        self.assertIs(decision.role, TopologyRole.STANDALONE)
+
+    def test_an_empty_payload_read_as_complete_would_flip_the_group(self):
+        # Why `observation_from` has no `complete` default, stated as a test so
+        # the reasoning cannot be edited away with the keyword. An empty response
+        # believed complete classifies as standalone -- member count is
+        # deliberately not an input to the rule.
+        wrongly_trusted = observation_from([], complete=True)
+        self.assertIs(classify_role(wrongly_trusted), TopologyRole.STANDALONE)
+        # ...and the same payload, honestly reported, changes nothing.
+        self.assertIs(classify_role(observation_from([], complete=False)), TopologyRole.UNKNOWN)
+
+    def test_a_failed_read_does_not_disturb_a_pending_transition(self):
+        decision = evaluate_role_transition(
+            TopologyRole.STANDALONE, observation_from_failure(), pending_role=TopologyRole.COROSYNC
+        )
+        self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
+        self.assertTrue(decision.blocks_provider_work)
 
     def test_a_timeout_preserves_a_registered_corosync_role_as_stale(self):
         # An incomplete read carries no classification, whatever it happens to
