@@ -82,13 +82,26 @@ class RoleTransitionTests(SimpleTestCase):
         # The recorded role does not flip on observation alone -- that is what
         # makes this a two-identity hand-off rather than an in-place flag.
         self.assertIs(decision.role, TopologyRole.STANDALONE)
+        # ...but the direction is machine-readable, not only in the message. A
+        # caller must be able to ask "pending toward what?" without parsing prose.
+        self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
         self.assertIn("corosync", decision.reason)
 
     def test_a_cluster_reverting_to_standalone_also_blocks(self):
         decision = evaluate_role_transition(TopologyRole.COROSYNC, standalone_observation())
         self.assertIs(decision.transition, RoleTransition.TRANSITION_PENDING)
         self.assertIs(decision.role, TopologyRole.COROSYNC)
+        self.assertIs(decision.pending_role, TopologyRole.STANDALONE)
         self.assertTrue(decision.blocks_provider_work)
+
+    def test_an_unrecognized_stored_role_is_unknown_rather_than_an_exception(self):
+        # An older binary's value or a hand-edited row must not raise out of a
+        # periodic reconciler. "Unclassified" is what UNKNOWN means, and the next
+        # complete observation re-adopts from it.
+        decision = evaluate_role_transition("cluster-ish", corosync_observation())
+        self.assertIs(decision.transition, RoleTransition.ADOPTED)
+        self.assertIs(decision.role, TopologyRole.COROSYNC)
+        self.assertFalse(decision.blocks_provider_work)
 
 
 class DegradedObservationTests(SimpleTestCase):
@@ -107,9 +120,10 @@ class DegradedObservationTests(SimpleTestCase):
 
     def test_a_failed_read_cannot_clear_a_pending_transition(self):
         decision = evaluate_role_transition(
-            TopologyRole.STANDALONE, failed_observation(), transition_already_pending=True
+            TopologyRole.STANDALONE, failed_observation(), pending_role=TopologyRole.COROSYNC
         )
         self.assertTrue(decision.transition_pending)
+        self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
         self.assertTrue(decision.blocks_provider_work)
 
 
@@ -118,11 +132,26 @@ class PendingTransitionTests(SimpleTestCase):
         # The trap: the host is now genuinely corosync, so every later read says
         # corosync. Publishing it would complete a hand-off nobody confirmed.
         decision = evaluate_role_transition(
-            TopologyRole.STANDALONE, corosync_observation(), transition_already_pending=True
+            TopologyRole.STANDALONE, corosync_observation(), pending_role=TopologyRole.COROSYNC
         )
         self.assertIs(decision.transition, RoleTransition.TRANSITION_PENDING)
         self.assertIs(decision.role, TopologyRole.STANDALONE)
+        self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
         self.assertTrue(decision.blocks_provider_work)
+
+    def test_a_reverted_change_clears_the_block_without_a_handoff(self):
+        # The exit that keeps stickiness from stranding a working cluster: the
+        # host left the cluster again, or the change was reverted in Proxmox, so
+        # the scope is once more the role it is registered as. There is nothing
+        # left to hand off, and asking the operator to confirm a transition that
+        # no longer exists would be a gate with nowhere to go.
+        decision = evaluate_role_transition(
+            TopologyRole.STANDALONE, standalone_observation(), pending_role=TopologyRole.COROSYNC
+        )
+        self.assertIs(decision.transition, RoleTransition.STABLE)
+        self.assertIs(decision.role, TopologyRole.STANDALONE)
+        self.assertFalse(decision.transition_pending)
+        self.assertFalse(decision.blocks_provider_work)
 
     def test_an_explicit_handoff_adopts_the_confirmed_role_and_unblocks(self):
         pending = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation())
@@ -141,3 +170,14 @@ class PendingTransitionTests(SimpleTestCase):
         pending = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation())
         with self.assertRaises(ValueError):
             resolve_transition(pending, confirmed_role=TopologyRole.UNKNOWN)
+
+    def test_a_handoff_must_confirm_the_role_the_scope_is_pending_toward(self):
+        # Without this guard the seam is a back door: a scope pending toward
+        # corosync could be "confirmed" as standalone, unblocking provider work
+        # against an identity nobody observed. The next complete observation
+        # re-trips the block, so the old shape was a transient unblock rather
+        # than a durable forgery -- still not a guarantee worth claiming.
+        pending = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation())
+        self.assertIs(pending.pending_role, TopologyRole.COROSYNC)
+        with self.assertRaises(ValueError):
+            resolve_transition(pending, confirmed_role=TopologyRole.STANDALONE)

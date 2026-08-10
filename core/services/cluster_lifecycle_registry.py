@@ -30,13 +30,22 @@ for a relation that will not be added is not a safety net — it is a promise a
 reader has to check against source before trusting, which is precisely the failure
 mode Module 5's review passes kept finding.
 
-What the reservation was meant to protect is already enforced without it: the
-exhaustiveness assertion in ``core.tests_cluster_retire`` fails on any new reverse
-relation to ``ProxmoxCluster`` that has no row in
-:data:`CLUSTER_REVERSE_RELATIONS`. Module 5's own relations (node enrollment and
-the membership projection, ``docs/node-enrollment.local.md`` N1) are classified in
-the migration that adds them, because that test demands it — not because a slot
-was held open here.
+The obligation that actually has teeth is unaffected: the exhaustiveness assertion
+in ``core.tests_cluster_retire`` fails on any new reverse relation to
+``ProxmoxCluster`` that has no row in :data:`CLUSTER_REVERSE_RELATIONS`. Module 5's
+own relations (node enrollment and the membership projection,
+``docs/node-enrollment.local.md`` N1) are classified in the migration that adds
+them, because that test demands it — not because a slot was held open here.
+
+**Be precise about what that does not cover**, because the deleted reservation's
+docstring was not. It tied itself to :data:`LIFECYCLE_PARTICIPANTS` — "naming it
+here is what keeps *a status not listed blocks both modes* honest" — and
+:data:`LIFECYCLE_PARTICIPANTS` has no consumers and no completeness test at all.
+Relation classification and participant-status completeness are two different
+obligations, and only the first is enforced. The reservation enforced neither, so
+deleting it regresses nothing; the point is that "already enforced" is true of the
+relation registry and false of the participant table. R2/R3 read the participant
+table when they land, and the completeness rule is prose until then.
 """
 
 from __future__ import annotations
@@ -210,8 +219,13 @@ class ParticipantStatus:
 
 # The R0 executable contract's lifecycle-participant table, as data. A status a
 # retirement can meet that is not represented here blocks both modes by the
-# contract's completeness rule; the reverse-relation coverage test is what keeps
-# this list honest as models grow.
+# contract's completeness rule.
+#
+# That rule is currently prose, not coverage. The previous comment here credited
+# "the reverse-relation coverage test" with keeping this list honest; it does not
+# -- it asserts that every *relation* is classified, which is a different
+# obligation, and this table has no consumers and no completeness test yet. R2/R3
+# read it when they land and own making the rule executable.
 LIFECYCLE_PARTICIPANTS: tuple[ParticipantStatus, ...] = (
     ParticipantStatus(
         "audit_events (provider op)", "queued", ParticipantLifecycleClass.NOT_STARTED, CODE_RETIRED_BEFORE_START

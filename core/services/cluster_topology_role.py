@@ -88,10 +88,18 @@ class RoleDecision:
     #: unchanged -- including ``UNKNOWN``.
     role: TopologyRole
     previous_role: TopologyRole
-    #: True only while the scope waits for the explicit two-identity hand-off.
-    transition_pending: bool
+    #: The role this scope is pending *toward*, or ``UNKNOWN`` when nothing is
+    #: pending. This is the field 5a1A persists: without it a pending state
+    #: reconstructed in a later generation could not say which way it points, and
+    #: the operator prompt would have to be parsed out of ``reason``.
+    pending_role: TopologyRole = TopologyRole.UNKNOWN
     #: A stable, operator-facing reason, or "" when nothing needs explaining.
     reason: str = ""
+
+    @property
+    def transition_pending(self) -> bool:
+        """Whether the scope waits for the explicit two-identity hand-off."""
+        return self.pending_role is not TopologyRole.UNKNOWN
 
     @property
     def blocks_provider_work(self) -> bool:
@@ -101,6 +109,15 @@ class RoleDecision:
         not: unreachability is an ordinary degraded state that the projection
         already renders as stale, and blocking on it would make a flapping
         network indistinguishable from a changed identity.
+
+        **This block may not be persisted ahead of its operator exit.** A gate
+        escalates; it never strands. The shipped precedent is CA-identity
+        quarantine, which landed its block together with the panel that explains
+        it and the *Re-approve current identity* action that clears it
+        (``core/services/cluster_identity.py``, ``cluster_connection.html``). The
+        phase that first writes this state to a row must ship the confirmation
+        surface in the same slice, or a functioning cluster is blocked with
+        nowhere for the operator to go.
         """
         return self.transition_pending
 
@@ -118,20 +135,37 @@ def classify_role(observation: MembershipObservation) -> TopologyRole:
     return TopologyRole.COROSYNC if observation.has_cluster_row else TopologyRole.STANDALONE
 
 
+def _coerce_role(value: object) -> TopologyRole:
+    """Return a known role, mapping anything unrecognized to ``UNKNOWN``.
+
+    A persisted role that is not a member of the enum -- an older binary's value,
+    a hand-edited row -- must not raise out of a periodic reconciler. The module's
+    own rule is that a bad read never flips a host between the Hosts and Clusters
+    groups, and "unclassified" is precisely what ``UNKNOWN`` means. It re-adopts
+    from the next complete observation.
+    """
+    try:
+        return TopologyRole(value)
+    except ValueError:
+        return TopologyRole.UNKNOWN
+
+
 def evaluate_role_transition(
     stored_role: TopologyRole,
     observation: MembershipObservation,
     *,
-    transition_already_pending: bool = False,
+    pending_role: TopologyRole = TopologyRole.UNKNOWN,
 ) -> RoleDecision:
     """Decide what one observation means for a scope's recorded role.
 
-    ``transition_already_pending`` carries a hand-off that a previous generation
-    opened. It is sticky on purpose: only the explicit operator hand-off clears
-    it (see :func:`resolve_transition`), never a later observation that happens
-    to agree with the new role, and never one that cannot be completed.
+    ``pending_role`` carries a hand-off a previous generation opened, and says
+    which role it points *toward*. It is sticky on purpose: an observation that
+    merely agrees with the new role does not complete it, and neither does a
+    failed read. Only :func:`resolve_transition` clears it -- with one exception
+    that is an exit rather than a bypass, below.
     """
-    stored_role = TopologyRole(stored_role)
+    stored_role = _coerce_role(stored_role)
+    pending_role = _coerce_role(pending_role)
     observed = classify_role(observation)
 
     if observed is TopologyRole.UNKNOWN:
@@ -139,11 +173,23 @@ def evaluate_role_transition(
             transition=RoleTransition.INDETERMINATE,
             role=stored_role,
             previous_role=stored_role,
-            transition_pending=transition_already_pending,
+            pending_role=pending_role,
             reason="Membership coverage is incomplete; the previous role is preserved as stale.",
         )
 
-    if transition_already_pending:
+    if pending_role is not TopologyRole.UNKNOWN:
+        if observed is stored_role:
+            # The scope came back to the role it is registered as: the host
+            # rejoined, or the change was reverted in Proxmox. There is no longer
+            # anything to hand off, so the block clears itself. This is the exit
+            # that keeps stickiness from being a strand -- the operator is not
+            # asked to confirm a transition that no longer exists.
+            return RoleDecision(
+                transition=RoleTransition.STABLE,
+                role=stored_role,
+                previous_role=stored_role,
+                reason="",
+            )
         # A pending hand-off outranks a fresh reading. Publishing the new role
         # here would silently complete the transition the operator has not yet
         # confirmed, which is the whole thing this state blocks.
@@ -151,8 +197,11 @@ def evaluate_role_transition(
             transition=RoleTransition.TRANSITION_PENDING,
             role=stored_role,
             previous_role=stored_role,
-            transition_pending=True,
-            reason="A topology role transition is awaiting an explicit operator hand-off.",
+            pending_role=observed,
+            reason=(
+                f"This scope is registered as {stored_role.value} but is observed as "
+                f"{observed.value}. Provider work is blocked until the identity hand-off is confirmed."
+            ),
         )
 
     if stored_role is TopologyRole.UNKNOWN:
@@ -160,7 +209,6 @@ def evaluate_role_transition(
             transition=RoleTransition.ADOPTED,
             role=observed,
             previous_role=stored_role,
-            transition_pending=False,
         )
 
     if observed is stored_role:
@@ -168,17 +216,16 @@ def evaluate_role_transition(
             transition=RoleTransition.STABLE,
             role=observed,
             previous_role=stored_role,
-            transition_pending=False,
         )
 
     return RoleDecision(
         transition=RoleTransition.TRANSITION_PENDING,
         role=stored_role,
         previous_role=stored_role,
-        transition_pending=True,
+        pending_role=observed,
         reason=(
-            f"This scope was observed as {observed.value} but is registered as "
-            f"{stored_role.value}. Provider work is blocked until the identity hand-off is confirmed."
+            f"This scope is registered as {stored_role.value} but is observed as "
+            f"{observed.value}. Provider work is blocked until the identity hand-off is confirmed."
         ),
     )
 
@@ -186,22 +233,33 @@ def evaluate_role_transition(
 def resolve_transition(decision: RoleDecision, *, confirmed_role: TopologyRole) -> RoleDecision:
     """Apply an operator-confirmed hand-off to a pending decision.
 
-    The caller has already performed the two-identity transaction that
-    ``docs/cluster-retire.local.md`` assigns to 5a0B -- verify the candidate,
-    lock both identities, revalidate digests, transfer or release the endpoint,
-    retire the old scope, rebind storage from an explicit list. This only moves
-    the role, and only for a decision that was actually pending: calling it on a
-    stable decision is a programming error, not a shortcut for editing the role.
+    The caller has already performed the two-identity transaction specified in
+    ``docs/hosts&clusters.local.md`` (*The standalone↔corosync hand-off*) and
+    owned by phase 5a1G, which needs 5a1A's schema before it can be written.
+    This function is that transaction's seam, not its implementation: it moves
+    only the role.
+
+    Three guards, each of which exists because its absence would make this a way
+    to edit a role rather than to conclude a hand-off:
+
+    * the decision must actually be pending;
+    * the confirmed role must be concrete;
+    * **the confirmed role must be the role the scope is pending toward.** An
+      operator confirming a hand-off is answering the question the state machine
+      asked, not choosing a role freely.
     """
     if not decision.transition_pending:
         raise ValueError("Only a transition-pending decision can be resolved by a hand-off.")
-    confirmed_role = TopologyRole(confirmed_role)
+    confirmed_role = _coerce_role(confirmed_role)
     if confirmed_role is TopologyRole.UNKNOWN:
         raise ValueError("A hand-off must confirm a concrete role.")
+    if confirmed_role is not decision.pending_role:
+        raise ValueError(
+            f"This scope is pending toward {decision.pending_role.value}; a hand-off cannot "
+            f"confirm {confirmed_role.value} instead."
+        )
     return RoleDecision(
         transition=RoleTransition.ADOPTED,
         role=confirmed_role,
         previous_role=decision.previous_role,
-        transition_pending=False,
-        reason="",
     )

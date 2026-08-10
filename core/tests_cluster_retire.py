@@ -675,12 +675,23 @@ class RetirementSchemaFixturesTests(TestCase):
         """
         from core.services import cluster_lifecycle_registry
 
-        self.assertFalse(
-            hasattr(cluster_lifecycle_registry, "FUTURE_PARTICIPANTS"),
-            "the future-participant reservation is closed; new relations are caught by "
-            "the reverse-relation exhaustiveness test instead",
+        # Checked by shape, not by one attribute name: re-adding the mechanism as
+        # RESERVED_PARTICIPANTS, or restoring the dataclass alone, is the same
+        # promise under a different spelling and must fail here too.
+        reservations = [
+            name
+            for name in dir(cluster_lifecycle_registry)
+            if not name.startswith("_") and ("FUTURE" in name.upper() or "RESERV" in name.upper())
+        ]
+        self.assertEqual(
+            reservations,
+            [],
+            "The future-participant reservation is closed. A new relation is caught by "
+            "the reverse-relation exhaustiveness test below, not by holding a name open.",
         )
         self.assertNotIn("standalone_host", CLUSTER_REVERSE_RELATIONS)
+        source = Path(cluster_lifecycle_registry.__file__).read_text()
+        self.assertNotIn("class FutureParticipant", source)
 
 
 class ScanRetentionRetiredClusterTests(TestCase):

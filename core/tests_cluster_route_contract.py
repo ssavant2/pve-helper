@@ -17,10 +17,15 @@ Forbidden: a bare-node route (a node identified without its cluster) and any
 ``hosts/`` namespace. ``Hosts`` is a visual grouping in the tree, never an
 identity or a URL.
 
-The pre-existing ``legacy_*`` shims are the deliberate exception: they take a
-bare node *in order to refuse it*, answering 409 with the qualified candidates
+The pre-existing bare-node shims are the deliberate exception: they take a bare
+node *in order to refuse it*, answering 409 with the qualified candidates
 (``MulticlusterUrlTests.test_legacy_node_url_is_ambiguous_across_same_named_nodes``).
-They are allowlisted by name so a new bare-node route cannot hide among them.
+They are allowlisted by **exact name** in :data:`BARE_NODE_REFUSAL_ROUTES`, and a
+second assertion strikes stale entries, so the allowlist cannot outlive its call
+sites. A ``legacy_`` *prefix* predicate would not do: there are 57 ``legacy_*``
+route names, so a genuine bare-node identity route named ``legacy_node_summary``
+would pass unnoticed. This is the construction
+``MembershipReadInvariantTests`` already uses for the same problem.
 """
 
 from __future__ import annotations
@@ -28,29 +33,75 @@ from __future__ import annotations
 from django.test import SimpleTestCase
 from django.urls import NoReverseMatch, resolve, reverse
 
+#: The eight shipped shims that accept a bare node in order to refuse it. Every
+#: one is a ``legacy_node_redirect`` returning 409 with the cluster-qualified
+#: candidates; none renders a node.
+BARE_NODE_REFUSAL_ROUTES = frozenset(
+    {
+        "legacy_storage_api_inventory",
+        "legacy_api_storage_summary",
+        "legacy_api_storage_monitor",
+        "legacy_api_storage_volumes",
+        "legacy_api_storage_vms",
+        "legacy_api_storage_content",
+        "legacy_update_api_storage_content",
+        "legacy_api_storage_configure",
+    }
+)
+
 
 def _routes() -> list[tuple[str, str]]:
-    """Return ``(pattern, name)`` for every route in the core URLconf."""
-    from core.urls import urlpatterns
+    """Return ``(pattern, name)`` for every route reachable from the root URLconf.
 
-    return [(str(pattern.pattern), getattr(pattern, "name", "") or "") for pattern in urlpatterns]
+    Walks includes rather than reading ``core.urls.urlpatterns`` directly: a
+    ``hosts/`` or bare-node route added to ``pve_helper/urls.py``, or behind an
+    ``include()``, is exactly as much a second host identity as one added to
+    ``core/urls.py``, and reading one module would not see it.
+    """
+    from django.urls import get_resolver
+
+    def walk(patterns, prefix=""):
+        for entry in patterns:
+            pattern = prefix + str(entry.pattern)
+            nested = getattr(entry, "url_patterns", None)
+            if nested is None:
+                yield pattern, getattr(entry, "name", "") or ""
+            else:
+                yield from walk(nested, pattern)
+
+    return list(walk(get_resolver().url_patterns))
 
 
 class NodeRouteQualificationTests(SimpleTestCase):
-    def test_every_node_route_is_cluster_qualified_or_a_legacy_refusal(self):
-        offenders = [
-            (pattern, name)
+    def _bare_node_routes(self) -> set[str]:
+        """Names of routes that take a node without its cluster."""
+        return {
+            name
             for pattern, name in _routes()
-            if "<str:node>" in pattern
-            and not pattern.startswith("clusters/<str:cluster_key>/")
-            and not name.startswith("legacy_")
-        ]
+            if "<str:node>" in pattern and not pattern.startswith("clusters/<str:cluster_key>/")
+        }
+
+    def test_every_node_route_is_cluster_qualified_or_a_declared_refusal(self):
+        offenders = sorted(self._bare_node_routes() - BARE_NODE_REFUSAL_ROUTES)
+
         self.assertEqual(
             offenders,
             [],
             "A node is identified by NodeRef(cluster_key, node). A route that takes a bare "
-            "node name either belongs under clusters/<cluster_key>/ or must be a legacy_* "
-            "shim that refuses it with the qualified candidates.",
+            "node name either belongs under clusters/<cluster_key>/ or must be a shim that "
+            "refuses it with the qualified candidates -- and then be named in "
+            f"BARE_NODE_REFUSAL_ROUTES with that reason: {', '.join(offenders)}",
+        )
+
+    def test_the_refusal_allowlist_does_not_outlive_its_call_sites(self):
+        stale = sorted(BARE_NODE_REFUSAL_ROUTES - self._bare_node_routes())
+
+        self.assertEqual(
+            stale,
+            [],
+            "These routes no longer take a bare node, so their allowlist entries are "
+            "stale and would silently permit a future bare-node route to reuse the "
+            f"name. Strike them: {', '.join(stale)}",
         )
 
     def test_no_hosts_namespace_exists(self):
@@ -65,7 +116,7 @@ class NodeRouteQualificationTests(SimpleTestCase):
 
     def test_the_node_tab_family_lives_under_the_cluster_prefix(self):
         node_routes = [
-            pattern for pattern, name in _routes() if "<str:node>" in pattern and not name.startswith("legacy_")
+            pattern for pattern, name in _routes() if "<str:node>" in pattern and name not in BARE_NODE_REFUSAL_ROUTES
         ]
         self.assertTrue(node_routes, "the node tab family must exist to be pinned")
         for pattern in node_routes:
@@ -108,6 +159,25 @@ class ClusterQualifiedReversalTests(SimpleTestCase):
             kwargs={"cluster_key": "a", "object_type": "qemu", "vmid": 100},
         )
         self.assertTrue(url.startswith("/vms/a/qemu/100/"), url)
+
+    def test_no_route_lets_a_scope_component_span_path_segments(self):
+        # The reversal tests below prove the property for one route. This proves
+        # it for every route at once: ``path``/``slug``-style converters that
+        # accept "/" must never carry an identity component. Both are needed --
+        # a per-route reversal test cannot see a converter swapped on a route it
+        # does not name.
+        offenders = [
+            pattern
+            for pattern, _ in _routes()
+            for component in ("cluster_key", "node", "object_type")
+            if f"<path:{component}>" in pattern
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "A cluster key, node or object type that can contain '/' lets one identity "
+            "component forge a deeper route. Keep the str converter.",
+        )
 
     def test_a_cluster_key_cannot_smuggle_a_path_separator(self):
         # ``str`` refuses "/", so a key like "a/nodes/pve1" cannot be reversed
