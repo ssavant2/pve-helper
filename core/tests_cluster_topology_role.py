@@ -11,6 +11,8 @@ implementation's current shape.
 
 from __future__ import annotations
 
+import dataclasses
+
 from django.test import SimpleTestCase
 
 from core.services.cluster_topology_role import (
@@ -112,6 +114,40 @@ class RoleTransitionTests(SimpleTestCase):
         decision = evaluate_role_transition(TopologyRole.UNKNOWN, corosync_observation())
         self.assertIs(decision.transition, RoleTransition.ADOPTED)
         self.assertEqual(decision.reason, "")
+
+
+class TransitionVocabularyRatchetTests(SimpleTestCase):
+    """A new verdict must be considered against the block matrix, not merely added.
+
+    Modelled on `test_reverse_relation_count_matches_the_contract`: pinning a
+    count is what turns "remember to update the table" into a failing build.
+    """
+
+    def test_the_transition_vocabulary_is_ratcheted(self):
+        self.assertEqual(
+            sorted(member.value for member in RoleTransition),
+            [
+                "adopted",
+                "adopted_over_unrecognized",
+                "indeterminate",
+                "observer_not_a_member",
+                "stable",
+                "transition_pending",
+                "transition_withdrawn",
+            ],
+            "A new RoleTransition means a new return path. Add it to "
+            "test_no_path_lets_an_unreadable_target_delete_the_block's matrix and to "
+            "the 5a0B rule table before updating this list.",
+        )
+
+    def test_only_pendingness_decides_a_block(self):
+        # The property that makes a missed verdict non-catastrophic: no caller
+        # can unblock provider work by failing to handle a new transition,
+        # because the block never derives from `transition`.
+        blocking = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation())
+        for member in RoleTransition:
+            with self.subTest(transition=member):
+                self.assertTrue(dataclasses.replace(blocking, transition=member).blocks_provider_work)
 
 
 class ObservationProvenanceTests(SimpleTestCase):
@@ -276,8 +312,12 @@ class PendingTransitionTests(SimpleTestCase):
 
         Written as a matrix rather than one case on purpose: this defect was
         found, fixed on the one path under the author's nose, and reproduced on
-        the other two in the next review round. Every path that can see a pending
-        state is enumerated here so the next one added has to join the table.
+        the other two in the next review round.
+
+        The docstring used to claim the table forced a new path to join it. It
+        did not -- it is a hand-written dict, and a fifth path would have slipped
+        in silently. `test_the_transition_vocabulary_is_ratcheted` is what
+        actually makes that true.
         """
         evicted = MembershipObservation(
             complete=True,
@@ -305,6 +345,29 @@ class PendingTransitionTests(SimpleTestCase):
                 )
                 self.assertIs(readable.transition, unreadable.transition)
 
+    def test_both_persistence_shapes_round_trip_an_unnameable_block(self):
+        """5a1A can persist either shape, and neither may drop the block.
+
+        The trap this closes: `pending_role` is `UNKNOWN` in exactly this state,
+        so a caller that persists that field alone and feeds it back reads it as
+        "not pending" one cycle later. Either persist the raw stored target, or
+        persist the pair -- both are contractual, the field alone is not.
+        """
+        first = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
+        self.assertTrue(first.blocks_provider_work)
+
+        raw_shape = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
+        pair_shape = evaluate_role_transition(
+            TopologyRole.STANDALONE,
+            failed_observation(),
+            pending_role=first.pending_role,
+            pending_unreadable=first.pending_unreadable,
+        )
+        for label, decision in (("raw target", raw_shape), ("role + flag", pair_shape)):
+            with self.subTest(persisted=label):
+                self.assertTrue(decision.blocks_provider_work)
+                self.assertTrue(decision.pending_unreadable)
+
     def test_an_unnameable_block_is_representable_rather_than_dropped(self):
         # The root cause of the above: pendingness used to be derived from the
         # role alone, so "pending toward something this build cannot name" did
@@ -316,14 +379,51 @@ class PendingTransitionTests(SimpleTestCase):
         self.assertTrue(decision.blocks_provider_work)
         self.assertIn("could not be read", decision.reason)
 
-    def test_an_unnameable_block_cannot_be_handed_off_until_it_is_nameable(self):
-        # Not a strand: a degraded read is transient, and the next complete
-        # observation from a member of record retargets the block to a role
-        # resolve_transition can name.
-        unnameable = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
-        with self.assertRaises(ValueError):
-            resolve_transition(unnameable, confirmed_role=TopologyRole.COROSYNC)
+    def test_an_unnameable_block_escalates_rather_than_stranding(self):
+        """The gate rule, applied to identity: unknown state escalates.
 
+        This refused once, on the reasoning that the target becomes nameable
+        again from the next complete member read. That is false whenever no
+        accepted member can answer -- every accepted node removed from the
+        cluster, or none of them holding a registered endpoint. Then provider
+        work is blocked, the hand-off is refused, and there is nowhere for the
+        operator to go, forever. A refusal that waits on a machine which cannot
+        answer is a permanent lockout, not a safeguard.
+        """
+        stuck = evaluate_role_transition(
+            TopologyRole.STANDALONE, self.no_member_can_answer(), pending_role="corosync-v2"
+        )
+        self.assertTrue(stuck.blocks_provider_work)
+        self.assertTrue(stuck.pending_unreadable)
+
+        resolved = resolve_transition(stuck, confirmed_role=TopologyRole.COROSYNC)
+        self.assertIs(resolved.role, TopologyRole.COROSYNC)
+        self.assertFalse(resolved.blocks_provider_work)
+        # ...and it is recorded as acknowledged, not derived: no observation
+        # backed this role, and 5a1G must audit it that way.
+        self.assertTrue(resolved.confirmed_without_target)
+        self.assertIn("no observation backs", resolved.reason)
+
+    @staticmethod
+    def no_member_can_answer() -> MembershipObservation:
+        """No accepted member is reachable or registered, so no read can ever
+        speak for the scope. The premise the removed refusal assumed away."""
+        return MembershipObservation(
+            complete=True,
+            has_cluster_row=True,
+            observed_from="pve9",
+            accepted_members=frozenset({"removed-a", "removed-b"}),
+        )
+
+    def test_the_lockout_state_does_not_resolve_itself(self):
+        for _ in range(3):
+            decision = evaluate_role_transition(
+                TopologyRole.STANDALONE, self.no_member_can_answer(), pending_role="corosync-v2"
+            )
+            self.assertIs(decision.transition, RoleTransition.OBSERVER_NOT_A_MEMBER)
+            self.assertTrue(decision.blocks_provider_work)
+
+    def test_an_unnameable_block_is_renameable_from_a_member_read(self):
         recovered = evaluate_role_transition(
             TopologyRole.STANDALONE, corosync_observation(), pending_role="corosync-v2"
         )

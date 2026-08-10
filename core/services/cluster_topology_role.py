@@ -140,10 +140,17 @@ class RoleDecision:
     previous_role: TopologyRole
     #: The role this scope is pending *toward*, or ``UNKNOWN`` when nothing is
     #: pending -- or when a block is open whose target this build cannot name,
-    #: which :attr:`pending_unreadable` distinguishes. This is the field 5a1A
-    #: persists: without it a pending state reconstructed in a later generation
-    #: could not say which way it points, and the operator prompt would have to
-    #: be parsed out of ``reason``.
+    #: which :attr:`pending_unreadable` distinguishes. Without it a pending state
+    #: reconstructed in a later generation could not say which way it points, and
+    #: the operator prompt would have to be parsed out of ``reason``.
+    #:
+    #: **What 5a1A persists is the pair, not this field alone.** Writing only
+    #: this value back over an unreadable target erases the block one cycle
+    #: later: it is ``UNKNOWN`` here precisely when the state is "pending toward
+    #: something unnameable", so feeding it back reads as "not pending". Persist
+    #: the raw stored target unchanged on a degraded decision, or persist this
+    #: field together with :attr:`pending_unreadable` and feed both back. Both
+    #: round-trip; this field on its own does not.
     pending_role: TopologyRole = TopologyRole.UNKNOWN
     #: A block is open whose persisted target this build cannot read. Separate
     #: from ``pending_role`` because "pending toward something unnameable" is a
@@ -155,6 +162,11 @@ class RoleDecision:
     #: persisted target was unreadable. Machine-readable so a confirmation
     #: surface never has to string-match ``reason``.
     pending_role_substituted: bool = False
+    #: The operator confirmed a role that no observation backed, because the
+    #: pending target was unreadable and no accepted member was answering. The
+    #: escalation that keeps that state from being a permanent lockout; 5a1G
+    #: records it in Audit as acknowledged rather than derived.
+    confirmed_without_target: bool = False
     #: A stable, operator-facing reason, or "" when nothing needs explaining.
     reason: str = ""
 
@@ -235,6 +247,7 @@ def evaluate_role_transition(
     observation: MembershipObservation,
     *,
     pending_role: TopologyRole = TopologyRole.UNKNOWN,
+    pending_unreadable: bool = False,
 ) -> RoleDecision:
     """Decide what one observation means for a scope's recorded role.
 
@@ -243,9 +256,19 @@ def evaluate_role_transition(
     merely agrees with the new role does not complete it, and neither does a
     failed read. Only :func:`resolve_transition` clears it -- with one exception
     that is an exit rather than a bypass, below.
+
+    ``pending_unreadable`` is the way back in for a state this function can emit
+    but could not previously be told: *a block is open whose target could not be
+    read*. A caller that persists the raw stored target round-trips without it,
+    because coercion re-detects the unreadable value. A caller that persists
+    :attr:`RoleDecision.pending_role` needs it, since that field is ``UNKNOWN``
+    in exactly this state and feeding it back alone would read as "not pending"
+    and drop the block. An output with no matching input is a trap for the phase
+    that persists it.
     """
     stored_role, stored_recognized = _coerce_role(stored_role)
-    pending_role, pending_recognized = _coerce_role(pending_role)
+    pending_role, pending_coercion_recognized = _coerce_role(pending_role)
+    pending_recognized = pending_coercion_recognized and not pending_unreadable
     observed = classify_role(observation)
     unreadable_target = "" if pending_recognized else " Its pending target could not be read by this build."
 
@@ -403,10 +426,30 @@ def resolve_transition(decision: RoleDecision, *, confirmed_role: TopologyRole) 
     if confirmed_role is TopologyRole.UNKNOWN:
         raise ValueError("A hand-off must confirm a concrete role.")
     if decision.pending_unreadable and decision.pending_role is TopologyRole.UNKNOWN:
-        raise ValueError(
-            "This scope holds a block whose target this build cannot read. It is nameable "
-            "again from the next complete observation from a member of record; until then "
-            "there is no question for a hand-off to answer."
+        # **This branch used to refuse, and refusing was a permanent lockout.**
+        # The rationale was that the target becomes nameable again from the next
+        # complete observation by a member of record -- which is false whenever
+        # no accepted member can answer: every accepted node removed from the
+        # cluster, or none of them holding a registered endpoint. Then provider
+        # work is blocked, the hand-off is refused, and there is nowhere for the
+        # operator to go, forever.
+        #
+        # So it escalates instead. The operator names the role themselves, the
+        # decision records that no machine-derived target backed it, and 5a1G
+        # audits it as an acknowledged escalation. This is the shipped
+        # storage-gate rule applied to identity: unknown coverage produces a
+        # confirmation that states the consequence, never a refusal; only live
+        # breakage a reachable node reports blocks outright.
+        return RoleDecision(
+            transition=RoleTransition.ADOPTED,
+            role=confirmed_role,
+            previous_role=decision.previous_role,
+            confirmed_without_target=True,
+            reason=(
+                f"Confirmed as {confirmed_role.value} by an operator. This scope's pending "
+                "target could not be read by this build and no accepted member was answering, "
+                "so no observation backs this role."
+            ),
         )
     if confirmed_role is not decision.pending_role:
         raise ValueError(
