@@ -96,6 +96,22 @@ the endpoint certificate for approval, and only the following step transmits the
 token. Trust is per connection — approve public trust or paste that cluster's CA
 PEM. Do not put a new cluster's CA in the legacy global `PVE_CA_BUNDLE`.
 
+**Public trust only works if `pveproxy` presents a publicly signed certificate.**
+A default Proxmox install signs it with the cluster's own CA, so the verification
+step fails with `unable to get local issuer certificate` — a transport failure,
+raised before the token is ever checked, so it is not a permissions problem no
+matter how much it looks like one. Paste the CA instead. On any node of that
+cluster:
+
+```bash
+cat /etc/pve/pve-root-ca.pem
+```
+
+Copy the whole block including the `-----BEGIN CERTIFICATE-----` and
+`-----END CERTIFICATE-----` lines into the wizard's CA field. A standalone host
+has its own CA and needs its own paste; it is not the same certificate as any
+cluster already added.
+
 ## After it is added
 
 The connection collects its first inventory immediately, visible in Recent Tasks
