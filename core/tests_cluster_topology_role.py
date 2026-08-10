@@ -96,31 +96,41 @@ class RoleTransitionTests(SimpleTestCase):
         self.assertIs(decision.pending_role, TopologyRole.STANDALONE)
         self.assertTrue(decision.blocks_provider_work)
 
-    def test_an_unrecognized_stored_role_is_readopted_but_says_so(self):
-        # An older binary's value or a hand-edited row must not raise out of a
-        # periodic reconciler, and it must self-heal rather than strand. But
-        # adopting over a value this build merely could not read is a flip
-        # between the Hosts and Clusters groups, so it gets its own verdict
-        # instead of passing as an ordinary first classification.
-        decision = evaluate_role_transition("cluster-ish", corosync_observation())
-        self.assertIs(decision.transition, RoleTransition.ADOPTED_OVER_UNRECOGNIZED)
-        self.assertIs(decision.role, TopologyRole.COROSYNC)
-        self.assertFalse(decision.blocks_provider_work)
-        self.assertIn("not recognized", decision.reason)
 
-    def test_a_never_classified_scope_adopts_quietly(self):
-        # The contrast that gives the previous test its meaning: UNKNOWN means
-        # never classified, and adopting over it is ordinary and silent.
-        decision = evaluate_role_transition(TopologyRole.UNKNOWN, corosync_observation())
-        self.assertIs(decision.transition, RoleTransition.ADOPTED)
-        self.assertEqual(decision.reason, "")
+class TypedRoleBoundaryTests(SimpleTestCase):
+    """This module takes typed roles and refuses anything else.
+
+    Tolerating a persisted value this build cannot read was attempted here and
+    produced, in successive review rounds, a silent Hosts↔Clusters flip, a
+    silently deleted provider-work block, and a permanent lockout in the exit
+    built to fix that. The fault was altitude, not any one branch: only a
+    persisted column can hold an unreadable value, so **5a1A owns that
+    tolerance** and hands this module a real ``TopologyRole``.
+    """
+
+    def test_an_untyped_stored_role_is_a_caller_error_not_a_guess(self):
+        with self.assertRaises(TypeError) as raised:
+            evaluate_role_transition("cluster-ish", corosync_observation())
+        self.assertIn("5a1A", str(raised.exception))
+
+    def test_an_untyped_pending_role_is_a_caller_error_too(self):
+        # The asymmetry that mattered when this module tried to be tolerant:
+        # a bad stored role mislabels a group, a bad pending role decides
+        # whether provider work is blocked. Both refuse here.
+        with self.assertRaises(TypeError):
+            evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation(), pending_role="corosync-v2")
+
+    def test_an_untyped_confirmation_is_a_caller_error(self):
+        pending = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation())
+        with self.assertRaises(TypeError):
+            resolve_transition(pending, confirmed_role="corosync-v2")
 
 
 class TransitionVocabularyRatchetTests(SimpleTestCase):
-    """A new verdict must be considered against the block matrix, not merely added.
+    """A new verdict must be considered against the contract, not merely added.
 
-    Modelled on `test_reverse_relation_count_matches_the_contract`: pinning a
-    count is what turns "remember to update the table" into a failing build.
+    Modelled on `test_reverse_relation_count_matches_the_contract`: pinning the
+    set is what turns "remember to update the table" into a failing build.
     """
 
     def test_the_transition_vocabulary_is_ratcheted(self):
@@ -128,16 +138,15 @@ class TransitionVocabularyRatchetTests(SimpleTestCase):
             sorted(member.value for member in RoleTransition),
             [
                 "adopted",
-                "adopted_over_unrecognized",
                 "indeterminate",
                 "observer_not_a_member",
                 "stable",
                 "transition_pending",
                 "transition_withdrawn",
             ],
-            "A new RoleTransition means a new return path. Add it to "
-            "test_no_path_lets_an_unreadable_target_delete_the_block's matrix and to "
-            "the 5a0B rule table before updating this list.",
+            "A new RoleTransition means a new return path. Add it to the 5a0B rule "
+            "table, and check it against the pending-block rules, before updating "
+            "this list.",
         )
 
     def test_only_pendingness_decides_a_block(self):
@@ -278,6 +287,22 @@ class PendingTransitionTests(SimpleTestCase):
         self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
         self.assertTrue(decision.blocks_provider_work)
 
+    def test_a_degraded_read_never_opens_or_closes_a_block(self):
+        # A degraded read is not evidence, and evidence is the only thing that
+        # moves a block. Both degraded verdicts, both directions.
+        evicted = MembershipObservation(
+            complete=True,
+            has_cluster_row=True,
+            observed_from="pve3",
+            accepted_members=frozenset({"pve1", "pve2"}),
+        )
+        for label, observation in (("incomplete", failed_observation()), ("not a member", evicted)):
+            for pending in (TopologyRole.UNKNOWN, TopologyRole.COROSYNC):
+                with self.subTest(path=label, pending=pending):
+                    decision = evaluate_role_transition(TopologyRole.STANDALONE, observation, pending_role=pending)
+                    self.assertIs(decision.pending_role, pending)
+                    self.assertEqual(decision.blocks_provider_work, pending is not TopologyRole.UNKNOWN)
+
     def test_a_reverted_change_withdraws_the_block_and_says_so(self):
         # The exit that keeps stickiness from stranding a working cluster: the
         # host left the cluster again, or the change was reverted in Proxmox, so
@@ -305,156 +330,6 @@ class PendingTransitionTests(SimpleTestCase):
         ordinary = evaluate_role_transition(TopologyRole.STANDALONE, standalone_observation())
         self.assertNotEqual(withdrawn, ordinary)
         self.assertIs(ordinary.transition, RoleTransition.STABLE)
-
-    def test_no_path_lets_an_unreadable_target_delete_the_block(self):
-        """The readability of a persisted target must not decide whether a block
-        exists -- on **any** return path.
-
-        Written as a matrix rather than one case on purpose: this defect was
-        found, fixed on the one path under the author's nose, and reproduced on
-        the other two in the next review round.
-
-        The docstring used to claim the table forced a new path to join it. It
-        did not -- it is a hand-written dict, and a fifth path would have slipped
-        in silently. `test_the_transition_vocabulary_is_ratcheted` is what
-        actually makes that true.
-        """
-        evicted = MembershipObservation(
-            complete=True,
-            has_cluster_row=False,
-            observed_from="pve3",
-            accepted_members=frozenset({"pve1", "pve2"}),
-        )
-        paths = {
-            "incomplete read": failed_observation(),
-            "reader is not a member": evicted,
-            "complete, role disagrees": corosync_observation(),
-            "complete, role agrees": standalone_observation(),
-        }
-        for label, observation in paths.items():
-            with self.subTest(path=label):
-                readable = evaluate_role_transition(
-                    TopologyRole.STANDALONE, observation, pending_role=TopologyRole.COROSYNC
-                )
-                unreadable = evaluate_role_transition(TopologyRole.STANDALONE, observation, pending_role="corosync-v2")
-                self.assertEqual(
-                    readable.blocks_provider_work,
-                    unreadable.blocks_provider_work,
-                    f"on '{label}' the block appears or disappears purely because the "
-                    "persisted target could not be read",
-                )
-                self.assertIs(readable.transition, unreadable.transition)
-
-    def test_both_persistence_shapes_round_trip_an_unnameable_block(self):
-        """5a1A can persist either shape, and neither may drop the block.
-
-        The trap this closes: `pending_role` is `UNKNOWN` in exactly this state,
-        so a caller that persists that field alone and feeds it back reads it as
-        "not pending" one cycle later. Either persist the raw stored target, or
-        persist the pair -- both are contractual, the field alone is not.
-        """
-        first = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
-        self.assertTrue(first.blocks_provider_work)
-
-        raw_shape = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
-        pair_shape = evaluate_role_transition(
-            TopologyRole.STANDALONE,
-            failed_observation(),
-            pending_role=first.pending_role,
-            pending_unreadable=first.pending_unreadable,
-        )
-        for label, decision in (("raw target", raw_shape), ("role + flag", pair_shape)):
-            with self.subTest(persisted=label):
-                self.assertTrue(decision.blocks_provider_work)
-                self.assertTrue(decision.pending_unreadable)
-
-    def test_an_unnameable_block_is_representable_rather_than_dropped(self):
-        # The root cause of the above: pendingness used to be derived from the
-        # role alone, so "pending toward something this build cannot name" did
-        # not exist as a state -- and the paths with no nameable role to
-        # substitute silently dropped the block instead of holding it.
-        decision = evaluate_role_transition(TopologyRole.STANDALONE, failed_observation(), pending_role="corosync-v2")
-        self.assertTrue(decision.pending_unreadable)
-        self.assertIs(decision.pending_role, TopologyRole.UNKNOWN)
-        self.assertTrue(decision.blocks_provider_work)
-        self.assertIn("could not be read", decision.reason)
-
-    def test_an_unnameable_block_escalates_rather_than_stranding(self):
-        """The gate rule, applied to identity: unknown state escalates.
-
-        This refused once, on the reasoning that the target becomes nameable
-        again from the next complete member read. That is false whenever no
-        accepted member can answer -- every accepted node removed from the
-        cluster, or none of them holding a registered endpoint. Then provider
-        work is blocked, the hand-off is refused, and there is nowhere for the
-        operator to go, forever. A refusal that waits on a machine which cannot
-        answer is a permanent lockout, not a safeguard.
-        """
-        stuck = evaluate_role_transition(
-            TopologyRole.STANDALONE, self.no_member_can_answer(), pending_role="corosync-v2"
-        )
-        self.assertTrue(stuck.blocks_provider_work)
-        self.assertTrue(stuck.pending_unreadable)
-
-        resolved = resolve_transition(stuck, confirmed_role=TopologyRole.COROSYNC)
-        self.assertIs(resolved.role, TopologyRole.COROSYNC)
-        self.assertFalse(resolved.blocks_provider_work)
-        # ...and it is recorded as acknowledged, not derived: no observation
-        # backed this role, and 5a1G must audit it that way.
-        self.assertTrue(resolved.confirmed_without_target)
-        self.assertIn("no observation backs", resolved.reason)
-
-    @staticmethod
-    def no_member_can_answer() -> MembershipObservation:
-        """No accepted member is reachable or registered, so no read can ever
-        speak for the scope. The premise the removed refusal assumed away."""
-        return MembershipObservation(
-            complete=True,
-            has_cluster_row=True,
-            observed_from="pve9",
-            accepted_members=frozenset({"removed-a", "removed-b"}),
-        )
-
-    def test_the_lockout_state_does_not_resolve_itself(self):
-        for _ in range(3):
-            decision = evaluate_role_transition(
-                TopologyRole.STANDALONE, self.no_member_can_answer(), pending_role="corosync-v2"
-            )
-            self.assertIs(decision.transition, RoleTransition.OBSERVER_NOT_A_MEMBER)
-            self.assertTrue(decision.blocks_provider_work)
-
-    def test_an_unnameable_block_is_renameable_from_a_member_read(self):
-        recovered = evaluate_role_transition(
-            TopologyRole.STANDALONE, corosync_observation(), pending_role="corosync-v2"
-        )
-        self.assertIs(recovered.pending_role, TopologyRole.COROSYNC)
-        self.assertTrue(recovered.pending_role_substituted)
-        self.assertIs(
-            resolve_transition(recovered, confirmed_role=TopologyRole.COROSYNC).role,
-            TopologyRole.COROSYNC,
-        )
-
-    def test_an_unreadable_pending_target_does_not_silently_delete_the_block(self):
-        # The asymmetry this closes: an unrecognized *stored* role only mislabels
-        # a group, and got its own verdict. An unrecognized *pending* role
-        # deletes a provider-work block, and was reading as "not pending" --
-        # STABLE, no verdict, no record. That is the silent unblock this module
-        # rejects one branch away.
-        withdrawn = evaluate_role_transition(
-            TopologyRole.STANDALONE, standalone_observation(), pending_role="corosync-v2"
-        )
-        self.assertIs(withdrawn.transition, RoleTransition.TRANSITION_WITHDRAWN)
-        self.assertIn("unreadable", withdrawn.reason)
-
-    def test_an_unreadable_pending_target_is_retargeted_rather_than_stranded(self):
-        # Keeping a target this build cannot name would strand the scope:
-        # resolve_transition can only confirm a role it can name. So the block
-        # survives, retargeted to what is actually observed, and says why.
-        decision = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation(), pending_role="corosync-v2")
-        self.assertIs(decision.transition, RoleTransition.TRANSITION_PENDING)
-        self.assertTrue(decision.blocks_provider_work)
-        self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
-        self.assertIn("could not be read", decision.reason)
 
     def test_the_pending_target_is_not_re_derived_each_cycle(self):
         # With two roles the observed and the already-pending target coincide,
