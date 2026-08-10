@@ -392,11 +392,18 @@ class LifecycleParticipantContractTests(TestCase):
         }
 
     def test_reverse_relation_count_matches_the_contract(self):
-        # The relation matrix in the plan is stated over exactly these fourteen
-        # reverse relations. If a model adds a fifteenth, the coverage test below
-        # is where it must be classified -- this assertion is the early warning
-        # that the count the plan was written against has moved.
+        # The relation matrix in the plan is stated over exactly these reverse
+        # relations. If a model adds another, the coverage test below is where it
+        # must be classified -- this assertion is the early warning that the count
+        # the plan was written against has moved.
+        #
+        # Module 5 phase 5a1A added the last three: the membership/node projection
+        # and its coverage. They are current projections, so they classify like
+        # the guest projection rather than like configuration.
         expected = {
+            "membership_state",
+            "node_states",
+            "projection_coverage",
             "audit_events",
             "credential",
             "transport_trust",

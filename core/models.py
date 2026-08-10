@@ -1744,3 +1744,192 @@ class StorageSpaceSnapshot(TimestampedModel):
     def __str__(self) -> str:
         label = self.storage.storage_id if self.storage_id else f"{self.node}/{self.api_storage_id}"
         return f"{label} @ {self.recorded_at:%Y-%m-%d %H:%M}"
+
+
+class ClusterMembershipState(TimestampedModel):
+    """One cluster's current membership and topology role. Module 5 phase 5a1A.
+
+    Cluster-grain: node-grain facts live in :class:`ClusterNodeState`. Published
+    transactionally by the 5a1B reconciler; web processes only read it.
+
+    **The topology role is stored as two columns, not one, and that is the point
+    of this table existing before the reconciler.** `cluster_topology_role`
+    decides transitions from typed roles and refuses anything else, because
+    tolerating an unreadable value was tried inside that module and produced a
+    silent group flip, then a silently deleted provider-work block, then a
+    permanent lockout in the exit built to fix it (5a0B rounds 3-5). The fault
+    was that a phase with no column cannot decide what a bad column value means.
+    Here it can:
+
+    * :attr:`topology_role` unreadable -> read as ``UNKNOWN``. Nothing blocks,
+      nothing flips: it is re-adopted from the next complete observation, which
+      is what ``UNKNOWN`` already means;
+    * :attr:`transition_pending` is **its own boolean**, so an unreadable
+      :attr:`pending_topology_role` can never delete a provider-work block by
+      collapsing to "not pending". The block survives with an unnamed direction,
+      and the operator confirmation names the role instead of a refusal waiting
+      for a machine that may never answer.
+    """
+
+    cluster = models.OneToOneField(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="membership_state",
+    )
+    #: Free text on purpose: a value this build does not recognize must be
+    #: readable and re-adoptable, not a database error in a periodic reconciler.
+    topology_role = models.CharField(max_length=32, default="unknown")
+    #: Whether an identity hand-off is awaiting operator confirmation. Stored
+    #: rather than derived from `pending_topology_role`, so an unreadable
+    #: direction cannot silently unblock provider work.
+    transition_pending = models.BooleanField(default=False)
+    pending_topology_role = models.CharField(max_length=32, blank=True, default="")
+    member_count = models.PositiveIntegerField(default=0)
+    quorate = models.BooleanField(default=False)
+    #: The node that answered the read, from `cluster/status`'s `local=1` row.
+    #: Provenance, not identity: a read from a node this scope does not accept as
+    #: a member is not evidence about this scope.
+    observed_from = models.CharField(max_length=120, blank=True, default="")
+
+    class Meta:
+        verbose_name = "cluster membership state"
+        verbose_name_plural = "cluster membership states"
+
+    def __str__(self) -> str:
+        return f"{self.cluster.key}: {self.topology_role}"
+
+    def role(self):
+        """Return :attr:`topology_role` as a `TopologyRole`, or ``UNKNOWN``."""
+        from core.services.cluster_topology_role import TopologyRole
+
+        try:
+            return TopologyRole(self.topology_role)
+        except ValueError:
+            return TopologyRole.UNKNOWN
+
+    def pending_role(self):
+        """Return the pending direction, or ``UNKNOWN`` when there is none or it
+        cannot be read. Never consult this to decide *whether* something is
+        pending -- :attr:`transition_pending` owns that."""
+        from core.services.cluster_topology_role import TopologyRole
+
+        try:
+            return TopologyRole(self.pending_topology_role)
+        except ValueError:
+            return TopologyRole.UNKNOWN
+
+    @property
+    def role_is_readable(self) -> bool:
+        """False when the stored role came from a build this one cannot read.
+
+        Surfaced rather than swallowed: adopting over it is correct, but it is a
+        Hosts/Clusters group change nobody asked for and the operator should see
+        that it happened.
+        """
+        from core.services.cluster_topology_role import TopologyRole
+
+        return self.topology_role in {member.value for member in TopologyRole}
+
+
+class ClusterNodeState(TimestampedModel):
+    """One `NodeRef`'s current membership facts. Module 5 phase 5a1A.
+
+    This is the discovery projection `docs/node-enrollment.local.md` requires and
+    the membership half of the Hosts table. Runtime facts (CPU, memory, uptime,
+    versions) are a separate domain published by 5a1C into its own columns; none
+    are stubbed here, because a deferred capability does not get a placeholder.
+
+    Rows are a **current projection, not history**. A node absent from a complete
+    generation becomes ``present=False`` rather than being deleted, because
+    Connections must tell "disappeared" apart from "never enrolled".
+    """
+
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="node_states",
+        # Covered by both `core_cluster_node_state_uniq` and
+        # `core_node_state_present_idx`, which lead with this column. A separate
+        # single-column index would be a strict prefix of both.
+        db_index=False,
+    )
+    node = models.CharField(max_length=120)
+    #: Corosync node id. **Evidence only, never identity** -- it is reassignable.
+    nodeid = models.IntegerField(null=True, blank=True)
+    #: False only under a complete membership generation. A failed read leaves
+    #: the previous value untouched.
+    present = models.BooleanField(default=True)
+    online = models.BooleanField(default=False)
+    #: The corosync ring address from `cluster/status`'s `ip`. **A suggestion for
+    #: prefilling an Add-node form, never proven reachability**: it may be a
+    #: cluster-internal network, and it carries no port or scheme.
+    reported_ring_address = models.CharField(max_length=255, blank=True, default="")
+    membership_generation = models.BigIntegerField(default=0)
+    first_seen_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["cluster", "node"], name="core_cluster_node_state_uniq"),
+        ]
+        indexes = [
+            models.Index(fields=["cluster", "present"], name="core_node_state_present_idx"),
+        ]
+        verbose_name = "cluster node state"
+        verbose_name_plural = "cluster node states"
+
+    def __str__(self) -> str:
+        return f"{self.cluster.key}/{self.node}"
+
+
+class ClusterProjectionCoverage(TimestampedModel):
+    """What one refresh of one scope actually proved. Module 5 phase 5a1A.
+
+    Keyed by ``(cluster, domain, node)`` where a null node means the scope is
+    cluster-grain. **The uniqueness is `NULLS NOT DISTINCT`**: without it
+    PostgreSQL treats every cluster-grain row as distinct from every other, so a
+    domain would silently accumulate one coverage row per refresh and "the
+    current coverage" would stop being a single answerable question.
+
+    ``complete`` is the only authority for absence. ``based_on_generation``
+    records which membership generation a composed scope was derived from, so a
+    node-grain refresh cannot be read as current against a newer membership.
+    """
+
+    DOMAIN_MEMBERSHIP = "membership"
+    DOMAIN_NODE_RUNTIME = "node_runtime"
+
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="projection_coverage",
+        # Covered by `core_projection_coverage_uniq`, which leads with it.
+        db_index=False,
+    )
+    domain = models.CharField(max_length=64)
+    #: Null for a cluster-grain scope. Part of the identity, see the class note.
+    node = models.CharField(max_length=120, null=True, blank=True)
+    generation = models.BigIntegerField(default=0)
+    #: The membership generation this scope was composed against, when composed.
+    based_on_generation = models.BigIntegerField(null=True, blank=True)
+    complete = models.BooleanField(default=False)
+    attempted_at = models.DateTimeField(null=True, blank=True)
+    observed_at = models.DateTimeField(null=True, blank=True)
+    #: A stable domain code, never a provider or Python exception string. Raw
+    #: detail belongs in protected logs.
+    error_code = models.CharField(max_length=64, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cluster", "domain", "node"],
+                name="core_projection_coverage_uniq",
+                nulls_distinct=False,
+            ),
+        ]
+        verbose_name = "cluster projection coverage"
+        verbose_name_plural = "cluster projection coverage"
+
+    def __str__(self) -> str:
+        scope = f"{self.domain}/{self.node}" if self.node else self.domain
+        return f"{self.cluster.key}: {scope}"

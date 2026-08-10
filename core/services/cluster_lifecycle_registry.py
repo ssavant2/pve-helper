@@ -87,9 +87,8 @@ class RelationClassification:
 
 # One row per current reverse relation to ProxmoxCluster. The set is asserted
 # exhaustive against Django model metadata by
-# ``core.tests_cluster_retire.LifecycleParticipantContractTests``; a fifteenth
-# relation added without a row here fails that test rather than slipping past a
-# finalizer.
+# ``core.tests_cluster_retire.LifecycleParticipantContractTests``; a relation
+# added without a row here fails that test rather than slipping past a finalizer.
 CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
     "credential": RelationClassification(
         "credential",
@@ -179,6 +178,29 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         RelationClass.DURABLE_OPERATION,
         blocks_hard_delete=True,
         note="Stop future dispatch (soft-delete), preserve run history. Any row blocks.",
+    ),
+    "membership_state": RelationClassification(
+        "membership_state",
+        RelationClass.CURRENT_PROJECTION,
+        blocks_hard_delete=False,
+        note="Module 5 5a1A. CASCADE; one row per cluster, rebuilt by the next membership "
+        "refresh. Hard delete removes it. Holds no operator decision -- enrollment does, and "
+        "that is a different table.",
+    ),
+    "node_states": RelationClassification(
+        "node_states",
+        RelationClass.CURRENT_PROJECTION,
+        blocks_hard_delete=False,
+        note="Module 5 5a1A. CASCADE; the discovery/membership projection per NodeRef. "
+        "Current state, not history: an absent node is marked present=False rather than "
+        "deleted, but the whole set is rebuilt by the next complete generation.",
+    ),
+    "projection_coverage": RelationClassification(
+        "projection_coverage",
+        RelationClass.CURRENT_PROJECTION,
+        blocks_hard_delete=False,
+        note="Module 5 5a1A. CASCADE; what the last refresh of each scope proved. Rebuilt "
+        "by the next refresh and meaningless without the projections it describes.",
     ),
     "console_sessions": RelationClassification(
         "console_sessions",
