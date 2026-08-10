@@ -319,7 +319,7 @@ class ConnectionsOverviewQueryBudgetTests(TestCase):
 
         request = self.factory.get("/clusters/")
         request.user = self.user
-        with patch("core.views.clusters.render", return_value=HttpResponse("")):
+        with patch("core.views.clusters.connections.render", return_value=HttpResponse("")):
             with CaptureQueriesContext(connection) as ctx:
                 clusters_overview(request)
         return len(ctx)
@@ -364,14 +364,14 @@ class ConnectionsOverviewQueryBudgetTests(TestCase):
         make_cluster("c1", enabled=False)
         request = self.factory.get("/clusters/")
         request.user = self.user
-        with patch("core.views.clusters.render", return_value=HttpResponse("")):
+        with patch("core.views.clusters.connections.render", return_value=HttpResponse("")):
             captured = {}
 
             def _capture(_request, _template, context):
                 captured.update(context)
                 return HttpResponse("")
 
-            with patch("core.views.clusters.render", side_effect=_capture):
+            with patch("core.views.clusters.connections.render", side_effect=_capture):
                 clusters_overview(request)
         # Passive rendering must not reach a provider; the default test settings
         # block unmocked Proxmox HTTP, so a provider call would raise here.

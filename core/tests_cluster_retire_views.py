@@ -288,7 +288,7 @@ class ClusterRetirementViewTests(TestCase):
         observed_uuid = "99999999-9999-9999-9999-999999999999"
 
         with patch(
-            "core.views.clusters.cluster_retirement_preflight",
+            "core.views.clusters.connections.cluster_retirement_preflight",
             side_effect=RetirementPreflightIdentityMismatch(
                 observed_uuid=observed_uuid,
                 pinned_uuid=CA_UUID,

@@ -70,7 +70,7 @@ class ClusterConnectionViewTests(TestCase):
         )
 
     def _inspection_token(self):
-        with patch("core.views.clusters.inspect_transport", return_value=self.certificate):
+        with patch("core.views.clusters.connections.inspect_transport", return_value=self.certificate):
             response = self.client.post(
                 reverse("core:cluster_add"),
                 {
@@ -87,7 +87,7 @@ class ClusterConnectionViewTests(TestCase):
     def _candidate_token(self):
         inspection = self._inspection_token()
         with patch(
-            "core.views.clusters.verify_new_cluster",
+            "core.views.clusters.connections.verify_new_cluster",
             return_value=(self.candidate, self.verified),
         ):
             response = self.client.post(
@@ -147,7 +147,7 @@ class ClusterConnectionViewTests(TestCase):
         self.assertLess(body.index("Verify and rotate credential"), body.index("Remove stored credential"))
 
     def _inspect_key(self, cluster_key):
-        with patch("core.views.clusters.inspect_transport", return_value=self.certificate):
+        with patch("core.views.clusters.connections.inspect_transport", return_value=self.certificate):
             return self.client.post(
                 reverse("core:cluster_add"),
                 {
@@ -213,7 +213,7 @@ class ClusterConnectionViewTests(TestCase):
         self.assertFalse(ProxmoxCluster.objects.exists())
 
         with patch(
-            "core.views.clusters.verify_new_cluster",
+            "core.views.clusters.connections.verify_new_cluster",
             return_value=(self.candidate, self.verified),
         ):
             response = self.client.post(
@@ -296,7 +296,7 @@ class ClusterConnectionViewTests(TestCase):
             token_secret=self.candidate.token_secret,
         )
         add_url = reverse("core:cluster_endpoint_add", kwargs={"cluster_key": cluster.key})
-        with patch("core.views.clusters.inspect_transport", return_value=self.certificate):
+        with patch("core.views.clusters.connections.inspect_transport", return_value=self.certificate):
             inspected = self.client.post(
                 add_url,
                 {
@@ -307,7 +307,7 @@ class ClusterConnectionViewTests(TestCase):
             )
         inspection = inspected.context["trust_form"]["inspection"].value()
 
-        with patch("core.views.clusters.verify_endpoint_for_cluster", return_value=self.verified):
+        with patch("core.views.clusters.connections.verify_endpoint_for_cluster", return_value=self.verified):
             verified = self.client.post(
                 add_url,
                 {"action": "verify", "inspection": inspection, "confirm_certificate": "on"},
@@ -315,7 +315,7 @@ class ClusterConnectionViewTests(TestCase):
         endpoint_token = verified.context["confirm_form"]["endpoint"].value()
         self.assertFalse(ProxmoxEndpoint.objects.filter(name="pve202").exists())
 
-        with patch("core.views.clusters.verify_endpoint_for_cluster", return_value=self.verified):
+        with patch("core.views.clusters.connections.verify_endpoint_for_cluster", return_value=self.verified):
             response = self.client.post(
                 add_url,
                 {"action": "confirm", "endpoint": endpoint_token, "confirm_identity": "on"},
@@ -338,7 +338,7 @@ class ClusterConnectionViewTests(TestCase):
         )
 
         with patch(
-            "core.views.clusters.verify_registered_endpoint",
+            "core.views.clusters.connections.verify_registered_endpoint",
             return_value=self.verified,
         ) as verify:
             response = self.client.post(
@@ -362,7 +362,7 @@ class ClusterConnectionViewTests(TestCase):
         )
 
         with patch(
-            "core.views.clusters.verify_cluster_connection",
+            "core.views.clusters.connections.verify_cluster_connection",
             return_value=self.verified,
         ) as verify:
             response = self.client.post(
@@ -390,7 +390,7 @@ class ClusterConnectionViewTests(TestCase):
         replacement_secret = "replacement-secret-never-audit"
 
         with patch(
-            "core.views.clusters.verify_replacement_credential",
+            "core.views.clusters.connections.verify_replacement_credential",
             return_value=self.verified,
         ) as verify:
             response = self.client.post(

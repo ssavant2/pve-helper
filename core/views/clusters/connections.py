@@ -78,7 +78,7 @@ from core.services.secret_encryption import (
     encrypt_secret,
 )
 
-from .common import app_login_required, navigation_context
+from ..common import app_login_required, navigation_context
 
 # Curated, secret-free domain errors surfaced to the operator. Catching this
 # explicit set — rather than the RuntimeError base they all share — keeps an

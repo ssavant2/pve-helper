@@ -227,7 +227,7 @@ class ClusterAddQueuesFirstInventoryTests(TestCase):
         )
 
     def _confirm(self):
-        with patch("core.views.clusters.inspect_transport", return_value=self.certificate):
+        with patch("core.views.clusters.connections.inspect_transport", return_value=self.certificate):
             inspection = (
                 self.client.post(
                     reverse("core:cluster_add"),
@@ -243,7 +243,7 @@ class ClusterAddQueuesFirstInventoryTests(TestCase):
                 .value()
             )
         with patch(
-            "core.views.clusters.verify_new_cluster",
+            "core.views.clusters.connections.verify_new_cluster",
             return_value=(self.candidate, self.verified),
         ):
             token = (
