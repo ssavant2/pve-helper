@@ -60,6 +60,18 @@ class RoleTransition(enum.StrEnum):
     #: Complete observation, role changed. The scope is transition-pending and
     #: new provider work is blocked until the explicit operator hand-off.
     TRANSITION_PENDING = "transition_pending"
+    #: A pending transition ended without a hand-off because the scope came back
+    #: to its registered role. Distinct from :attr:`STABLE` on purpose: it clears
+    #: a provider-work block, and a block that clears itself must still be
+    #: recorded. The shipped precedent -- CA-identity quarantine -- is only ever
+    #: cleared by an explicit, audited operator action, so an automatic clear
+    #: that renders as an ordinary steady state is the wrong default.
+    TRANSITION_WITHDRAWN = "transition_withdrawn"
+    #: A complete observation was adopted over a stored value this binary does
+    #: not recognize. Adoption is right -- a garbage row must self-heal rather
+    #: than strand -- but it is a silent flip between the Hosts and Clusters
+    #: groups unless it says so.
+    ADOPTED_OVER_UNRECOGNIZED = "adopted_over_unrecognized"
     #: Incomplete observation. Previous-good role is preserved and stale; no
     #: conclusion is drawn in either direction.
     INDETERMINATE = "indeterminate"
@@ -71,12 +83,45 @@ class MembershipObservation:
 
     ``complete`` is the coverage verdict the 5a1B reader supplies, not something
     inferred here. ``has_cluster_row`` is meaningful only when ``complete``.
+
+    **``observed_from`` is not bookkeeping — it is what makes ``complete``
+    answerable.** A read is complete *of what the answering node can see*, and
+    that is not the same as complete *for this scope*. Run ``pvecm delnode`` on a
+    member and leave its endpoint registered — the shipped model keeps endpoints
+    and enrollment separate on purpose — and that host now returns a perfectly
+    honest, complete ``cluster/status`` with no ``type=cluster`` row. Believing it
+    would say the whole cluster became standalone, on the word of a machine that
+    was evicted from it.
+
+    So an observation names the node it came from (the ``local=1`` row of
+    ``cluster/status``, the same one-call proof the endpoint→node identity read
+    uses) and the caller supplies ``accepted_members``: the membership this scope
+    has already accepted. A read from outside that set is **not evidence about
+    this scope's topology** and classifies as ``UNKNOWN`` rather than standalone.
+
+    ``accepted_members`` empty means "nothing accepted yet" and disables the
+    check -- first onboarding has no prior membership to check against, and a
+    check that refuses the first read would deadlock adoption.
     """
 
     complete: bool
     has_cluster_row: bool
     member_count: int = 0
     quorate: bool = False
+    #: The node that answered, from ``cluster/status``'s ``local=1`` row. Empty
+    #: means the reader could not identify it, which disables the check below --
+    #: 5a1B is expected to supply it, and a missing value degrades to today's
+    #: behavior rather than to a refusal.
+    observed_from: str = ""
+    #: The membership this scope has already accepted. Empty disables the check.
+    accepted_members: frozenset[str] = frozenset()
+
+    @property
+    def speaks_for_the_scope(self) -> bool:
+        """Whether the answering node is one this scope accepts as a member."""
+        if not self.accepted_members or not self.observed_from:
+            return True
+        return self.observed_from in self.accepted_members
 
 
 @dataclass(frozen=True)
@@ -129,25 +174,36 @@ def classify_role(observation: MembershipObservation) -> TopologyRole:
     standalone, with one is corosync. Member count and quorum are deliberately
     not inputs -- a one-node corosync cluster is a cluster, and a non-quorate
     multi-node cluster has not become a standalone host.
+
+    A read from a node this scope does not accept as a member proves nothing
+    about the scope, however complete it is of itself. See
+    :attr:`MembershipObservation.speaks_for_the_scope`.
     """
-    if not observation.complete:
+    if not observation.complete or not observation.speaks_for_the_scope:
         return TopologyRole.UNKNOWN
     return TopologyRole.COROSYNC if observation.has_cluster_row else TopologyRole.STANDALONE
 
 
-def _coerce_role(value: object) -> TopologyRole:
-    """Return a known role, mapping anything unrecognized to ``UNKNOWN``.
+def _coerce_role(value: object) -> tuple[TopologyRole, bool]:
+    """Return ``(role, was_recognized)``.
 
     A persisted role that is not a member of the enum -- an older binary's value,
-    a hand-edited row -- must not raise out of a periodic reconciler. The module's
-    own rule is that a bad read never flips a host between the Hosts and Clusters
-    groups, and "unclassified" is precisely what ``UNKNOWN`` means. It re-adopts
-    from the next complete observation.
+    a hand-edited row -- must not raise out of a periodic reconciler, so it maps
+    to ``UNKNOWN`` and the next complete observation re-adopts.
+
+    **But ``UNKNOWN`` and "unrecognized" are not the same thing**, which is why
+    this returns the second value. ``UNKNOWN`` means never classified, and
+    adopting over it is correct and quiet. Adopting over a value this binary
+    merely could not read is a silent flip between the Hosts and Clusters groups
+    -- the exact move the module forbids elsewhere. Today ``TopologyRole`` has two
+    concrete members so only a hand-edited row reaches it; **widening this enum
+    makes it live**, because a rolling deploy has one binary writing values the
+    other cannot read. Anyone adding a member must revisit this branch.
     """
     try:
-        return TopologyRole(value)
+        return TopologyRole(value), True
     except ValueError:
-        return TopologyRole.UNKNOWN
+        return TopologyRole.UNKNOWN, False
 
 
 def evaluate_role_transition(
@@ -164,8 +220,8 @@ def evaluate_role_transition(
     failed read. Only :func:`resolve_transition` clears it -- with one exception
     that is an exit rather than a bypass, below.
     """
-    stored_role = _coerce_role(stored_role)
-    pending_role = _coerce_role(pending_role)
+    stored_role, stored_recognized = _coerce_role(stored_role)
+    pending_role, _ = _coerce_role(pending_role)
     observed = classify_role(observation)
 
     if observed is TopologyRole.UNKNOWN:
@@ -184,23 +240,49 @@ def evaluate_role_transition(
             # anything to hand off, so the block clears itself. This is the exit
             # that keeps stickiness from being a strand -- the operator is not
             # asked to confirm a transition that no longer exists.
+            #
+            # It gets its own verdict rather than reporting an ordinary STABLE:
+            # this clears a provider-work block, and a block that clears itself
+            # without saying so is worse to diagnose than one that persists.
             return RoleDecision(
-                transition=RoleTransition.STABLE,
+                transition=RoleTransition.TRANSITION_WITHDRAWN,
                 role=stored_role,
                 previous_role=stored_role,
-                reason="",
+                reason=(
+                    f"The pending transition toward {pending_role.value} was withdrawn: this "
+                    f"scope is observed as {stored_role.value} again, which is what it is "
+                    "registered as. Provider work is no longer blocked."
+                ),
             )
         # A pending hand-off outranks a fresh reading. Publishing the new role
         # here would silently complete the transition the operator has not yet
         # confirmed, which is the whole thing this state blocks.
+        #
+        # The pending target is the one already opened, not the freshly observed
+        # role. With two roles they coincide; under a widened enum, re-deriving
+        # it would silently retarget the question the operator was asked, each
+        # cycle, with no one told.
         return RoleDecision(
             transition=RoleTransition.TRANSITION_PENDING,
             role=stored_role,
             previous_role=stored_role,
-            pending_role=observed,
+            pending_role=pending_role,
             reason=(
                 f"This scope is registered as {stored_role.value} but is observed as "
                 f"{observed.value}. Provider work is blocked until the identity hand-off is confirmed."
+            ),
+        )
+
+    if not stored_recognized:
+        # Adopt, because a garbage row must self-heal rather than strand -- but
+        # say so, because this is a role flip nobody asked for.
+        return RoleDecision(
+            transition=RoleTransition.ADOPTED_OVER_UNRECOGNIZED,
+            role=observed,
+            previous_role=TopologyRole.UNKNOWN,
+            reason=(
+                f"The stored topology role was not recognized by this build and has been "
+                f"re-adopted as {observed.value} from a complete observation."
             ),
         )
 
@@ -247,10 +329,18 @@ def resolve_transition(decision: RoleDecision, *, confirmed_role: TopologyRole) 
     * **the confirmed role must be the role the scope is pending toward.** An
       operator confirming a hand-off is answering the question the state machine
       asked, not choosing a role freely.
+
+    **A decision is a value, not a lock.** It can outlive the state it describes:
+    a pending decision handed to an operator stays internally consistent even
+    after a later cycle withdrew the transition, so these guards cannot detect
+    that the question is stale. 5a1G re-derives the decision from current state
+    under the cluster lifecycle lock before committing the hand-off (its
+    acceptance criterion 7); that is a transaction property, not one a pure
+    function can enforce.
     """
     if not decision.transition_pending:
         raise ValueError("Only a transition-pending decision can be resolved by a hand-off.")
-    confirmed_role = _coerce_role(confirmed_role)
+    confirmed_role, _ = _coerce_role(confirmed_role)
     if confirmed_role is TopologyRole.UNKNOWN:
         raise ValueError("A hand-off must confirm a concrete role.")
     if confirmed_role is not decision.pending_role:

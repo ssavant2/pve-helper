@@ -26,6 +26,18 @@ sites. A ``legacy_`` *prefix* predicate would not do: there are 57 ``legacy_*``
 route names, so a genuine bare-node identity route named ``legacy_node_summary``
 would pass unnoticed. This is the construction
 ``MembershipReadInvariantTests`` already uses for the same problem.
+
+**Declared limits**, in the style the view ratchet already uses — this catches the
+naive reintroduction, not every form:
+
+* a bare-node route that *reuses* one of the eight allowlisted names passes. Route
+  names are deliberately shared here (``datastore_routes`` gives one name two
+  shapes), so it is reachable in principle, though not plausibly by accident.
+  ``MembershipReadInvariantTests`` has the identical property;
+* ``re_path`` escapes both predicates: they match the ``<str:node>`` and
+  ``<path:…>`` spellings that ``path()`` produces;
+* a custom converter that accepts ``/`` escapes the structural test, which names
+  only the ``path`` converter.
 """
 
 from __future__ import annotations

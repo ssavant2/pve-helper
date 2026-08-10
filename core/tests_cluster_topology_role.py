@@ -94,14 +94,84 @@ class RoleTransitionTests(SimpleTestCase):
         self.assertIs(decision.pending_role, TopologyRole.STANDALONE)
         self.assertTrue(decision.blocks_provider_work)
 
-    def test_an_unrecognized_stored_role_is_unknown_rather_than_an_exception(self):
+    def test_an_unrecognized_stored_role_is_readopted_but_says_so(self):
         # An older binary's value or a hand-edited row must not raise out of a
-        # periodic reconciler. "Unclassified" is what UNKNOWN means, and the next
-        # complete observation re-adopts from it.
+        # periodic reconciler, and it must self-heal rather than strand. But
+        # adopting over a value this build merely could not read is a flip
+        # between the Hosts and Clusters groups, so it gets its own verdict
+        # instead of passing as an ordinary first classification.
         decision = evaluate_role_transition("cluster-ish", corosync_observation())
-        self.assertIs(decision.transition, RoleTransition.ADOPTED)
+        self.assertIs(decision.transition, RoleTransition.ADOPTED_OVER_UNRECOGNIZED)
         self.assertIs(decision.role, TopologyRole.COROSYNC)
         self.assertFalse(decision.blocks_provider_work)
+        self.assertIn("not recognized", decision.reason)
+
+    def test_a_never_classified_scope_adopts_quietly(self):
+        # The contrast that gives the previous test its meaning: UNKNOWN means
+        # never classified, and adopting over it is ordinary and silent.
+        decision = evaluate_role_transition(TopologyRole.UNKNOWN, corosync_observation())
+        self.assertIs(decision.transition, RoleTransition.ADOPTED)
+        self.assertEqual(decision.reason, "")
+
+
+class ObservationProvenanceTests(SimpleTestCase):
+    """A read is complete *of what the answering node can see*. That is not the
+    same as complete *for this scope*, and conflating them is how an evicted
+    member gets to declare the cluster standalone."""
+
+    def test_a_departed_member_does_not_speak_for_the_scope(self):
+        # `pvecm delnode pve3` leaves pve3 a standalone host whose endpoint this
+        # installation may still have registered -- endpoints and membership are
+        # separate by design. Its cluster/status is honest and complete, and says
+        # nothing about clusterhq.
+        evicted = MembershipObservation(
+            complete=True,
+            has_cluster_row=False,
+            member_count=1,
+            observed_from="pve3",
+            accepted_members=frozenset({"pve1", "pve2"}),
+        )
+        self.assertFalse(evicted.speaks_for_the_scope)
+        self.assertIs(classify_role(evicted), TopologyRole.UNKNOWN)
+
+    def test_an_evicted_member_cannot_block_a_healthy_cluster(self):
+        # The defect this rule exists for: without it the scope alternates
+        # between blocked and unblocked depending on which endpoint answered,
+        # with no operator ever asked and no durable trace.
+        evicted = MembershipObservation(
+            complete=True,
+            has_cluster_row=False,
+            observed_from="pve3",
+            accepted_members=frozenset({"pve1", "pve2"}),
+        )
+        decision = evaluate_role_transition(TopologyRole.COROSYNC, evicted)
+        self.assertIs(decision.transition, RoleTransition.INDETERMINATE)
+        self.assertFalse(decision.blocks_provider_work)
+        self.assertIs(decision.role, TopologyRole.COROSYNC)
+
+    def test_a_member_of_record_still_speaks_for_the_scope(self):
+        genuine = MembershipObservation(
+            complete=True,
+            has_cluster_row=False,
+            observed_from="pve1",
+            accepted_members=frozenset({"pve1", "pve2"}),
+        )
+        self.assertTrue(genuine.speaks_for_the_scope)
+        self.assertIs(classify_role(genuine), TopologyRole.STANDALONE)
+
+    def test_the_check_is_disabled_before_any_membership_is_accepted(self):
+        # First onboarding has no prior membership. A check that refused the
+        # first read would deadlock adoption, which is a strand of its own.
+        first = MembershipObservation(complete=True, has_cluster_row=True, observed_from="pve1")
+        self.assertTrue(first.speaks_for_the_scope)
+        self.assertIs(classify_role(first), TopologyRole.COROSYNC)
+
+    def test_an_unidentified_reader_degrades_rather_than_refuses(self):
+        # 5a1B supplies observed_from from cluster/status's local=1 row. If it
+        # cannot, the check is skipped rather than turning every read into a
+        # refusal -- degrade to the old behavior, never to a lockout.
+        anonymous = MembershipObservation(complete=True, has_cluster_row=True, accepted_members=frozenset({"pve1"}))
+        self.assertTrue(anonymous.speaks_for_the_scope)
 
 
 class DegradedObservationTests(SimpleTestCase):
@@ -139,7 +209,7 @@ class PendingTransitionTests(SimpleTestCase):
         self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
         self.assertTrue(decision.blocks_provider_work)
 
-    def test_a_reverted_change_clears_the_block_without_a_handoff(self):
+    def test_a_reverted_change_withdraws_the_block_and_says_so(self):
         # The exit that keeps stickiness from stranding a working cluster: the
         # host left the cluster again, or the change was reverted in Proxmox, so
         # the scope is once more the role it is registered as. There is nothing
@@ -148,10 +218,33 @@ class PendingTransitionTests(SimpleTestCase):
         decision = evaluate_role_transition(
             TopologyRole.STANDALONE, standalone_observation(), pending_role=TopologyRole.COROSYNC
         )
-        self.assertIs(decision.transition, RoleTransition.STABLE)
+        self.assertIs(decision.transition, RoleTransition.TRANSITION_WITHDRAWN)
         self.assertIs(decision.role, TopologyRole.STANDALONE)
         self.assertFalse(decision.transition_pending)
         self.assertFalse(decision.blocks_provider_work)
+        self.assertIn("withdrawn", decision.reason)
+
+    def test_a_withdrawal_is_distinguishable_from_an_ordinary_steady_state(self):
+        # It clears a provider-work block. A block that clears itself while
+        # rendering as an ordinary STABLE is harder to diagnose than one that
+        # persists, and the shipped precedent -- CA-identity quarantine -- is
+        # only ever cleared by an explicit audited action. 5a1B must be able to
+        # tell these apart in order to record the clear.
+        withdrawn = evaluate_role_transition(
+            TopologyRole.STANDALONE, standalone_observation(), pending_role=TopologyRole.COROSYNC
+        )
+        ordinary = evaluate_role_transition(TopologyRole.STANDALONE, standalone_observation())
+        self.assertNotEqual(withdrawn, ordinary)
+        self.assertIs(ordinary.transition, RoleTransition.STABLE)
+
+    def test_the_pending_target_is_not_re_derived_each_cycle(self):
+        # With two roles the observed and the already-pending target coincide,
+        # so this is a guard for the widened enum: re-deriving would silently
+        # retarget the question the operator was asked, cycle after cycle.
+        decision = evaluate_role_transition(
+            TopologyRole.STANDALONE, corosync_observation(), pending_role=TopologyRole.COROSYNC
+        )
+        self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
 
     def test_an_explicit_handoff_adopts_the_confirmed_role_and_unblocks(self):
         pending = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation())
