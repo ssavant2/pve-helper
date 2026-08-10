@@ -20,9 +20,23 @@ phases:
   takes elapsed time as an input** — a queued row is not-started whether it was
   queued a second or a month ago.
 
-:data:`FUTURE_PARTICIPANTS` reserves the Module 5 standalone-host participant
-slot. It has no model yet, so it cannot be a reverse relation; naming it here is
-what keeps "a status not listed blocks both modes" honest once Module 5 lands.
+There is deliberately **no third table reserving future participants.** R1a shipped
+one, holding a single ``standalone_host`` slot, on the assumption that Module 5
+would give a standalone installation its own cluster relation. Module 5 phase 5a0B
+settled the opposite: a standalone installation *is* a :class:`~core.models.ProxmoxCluster`
+domain and its node is an ordinary ``NodeRef``, so no standalone-host model will
+ever exist and the slot could only ever be closed, never filled. Reserving a name
+for a relation that will not be added is not a safety net — it is a promise a
+reader has to check against source before trusting, which is precisely the failure
+mode Module 5's review passes kept finding.
+
+What the reservation was meant to protect is already enforced without it: the
+exhaustiveness assertion in ``core.tests_cluster_retire`` fails on any new reverse
+relation to ``ProxmoxCluster`` that has no row in
+:data:`CLUSTER_REVERSE_RELATIONS`. Module 5's own relations (node enrollment and
+the membership projection, ``docs/node-enrollment.local.md`` N1) are classified in
+the migration that adds them, because that test demands it — not because a slot
+was held open here.
 """
 
 from __future__ import annotations
@@ -265,30 +279,5 @@ LIFECYCLE_PARTICIPANTS: tuple[ParticipantStatus, ...] = (
         ParticipantLifecycleClass.ACTIVE,
         CODE_FORCE_RETIRED_UNRESOLVABLE,
         "verified blocks until each consumer resolved",
-    ),
-)
-
-
-@dataclass(frozen=True)
-class FutureParticipant:
-    """A lifecycle participant whose model does not exist yet.
-
-    It cannot appear in :data:`CLUSTER_REVERSE_RELATIONS` (no relation to
-    introspect), so it is reserved here. When Module 5 lands, its relation must
-    move into the reverse-relation registry and the coverage test will demand a
-    classification for it.
-    """
-
-    name: str
-    owning_module: str
-    note: str
-
-
-FUTURE_PARTICIPANTS: tuple[FutureParticipant, ...] = (
-    FutureParticipant(
-        name="standalone_host",
-        owning_module="module5",
-        note="Standalone-host identity (Module 5 phase 5a0) will add a cluster "
-        "relation; until then it is a reserved participant, not a live row.",
     ),
 )

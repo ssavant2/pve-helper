@@ -5,10 +5,11 @@ R1a..R4. R0 pinned the evidence later phases build against: representative
 fixtures against the *then-current* schema, and the executed Connections-overview
 query budget.
 
-R1a adds the retirement schema itself, so the three fixtures R0 could only name --
-an *only retired* installation, a *stale signed preflight*, and a *Module 5
-participant stub* -- are now real (``only_retired_installation``,
-``stale_signed_preflight``, ``module5_participant_stub``). R1a also adds coverage
+R1a adds the retirement schema itself, so the fixtures R0 could only name -- an
+*only retired* installation and a *stale signed preflight* -- are now real
+(``only_retired_installation``, ``stale_signed_preflight``). R1a's third fixture,
+a *Module 5 participant stub*, is gone: Module 5 phase 5a0B closed the reserved
+``standalone_host`` slot it stood for. R1a also adds coverage
 for the read scopes (``core.services.cluster_scopes``), the lifecycle-constraint
 guarantees, the reverse-relation classification registry, and the scan-retention
 landmine (a retired cluster's inventory must survive pruning). None of it wires a
@@ -81,10 +82,7 @@ from core.services.cluster_lifecycle_lock import (
     acquire_operable_cluster,
     cluster_lifecycle_lock,
 )
-from core.services.cluster_lifecycle_registry import (
-    CLUSTER_REVERSE_RELATIONS,
-    FUTURE_PARTICIPANTS,
-)
+from core.services.cluster_lifecycle_registry import CLUSTER_REVERSE_RELATIONS
 from core.services.cluster_onboarding import disable_cluster
 from core.services.cluster_scopes import (
     has_historical_clusters,
@@ -289,16 +287,6 @@ def stale_signed_preflight(cluster: ProxmoxCluster) -> tuple[str, dict]:
     cluster.lifecycle_generation += 1
     cluster.save(update_fields=["lifecycle_generation", "updated_at"])
     return token, payload
-
-
-def module5_participant_stub():
-    """The reserved future lifecycle participant Module 5 will introduce.
-
-    It has no model yet, so it cannot be a reverse relation to introspect; the
-    registry reserves it so "a status not listed blocks both modes" stays honest
-    the day Module 5's standalone-host relation lands.
-    """
-    return FUTURE_PARTICIPANTS[0]
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)
@@ -674,12 +662,25 @@ class RetirementSchemaFixturesTests(TestCase):
         self.assertEqual(recovered["lifecycle_generation"], payload["lifecycle_generation"])
         self.assertNotEqual(recovered["lifecycle_generation"], cluster.lifecycle_generation)
 
-    def test_module5_participant_stub_is_a_reserved_future_participant(self):
-        stub = module5_participant_stub()
-        self.assertEqual(stub.owning_module, "module5")
-        # It is deliberately absent from the reverse-relation registry: no model, no
-        # relation to introspect yet.
-        self.assertNotIn(stub.name, CLUSTER_REVERSE_RELATIONS)
+    def test_no_standalone_host_participant_is_reserved(self):
+        """5a0B closes R1a's reserved ``standalone_host`` slot.
+
+        The reservation assumed a standalone installation would get its own
+        cluster relation. Module 5 settled that it does not: standalone is a
+        ``ProxmoxCluster`` domain whose node is an ordinary ``NodeRef``, so the
+        slot could only ever be closed, never filled. This asserts the promise is
+        gone rather than merely unused -- a reserved name a reader must verify
+        against source is exactly the stale-evidence shape Module 5's reviews kept
+        catching.
+        """
+        from core.services import cluster_lifecycle_registry
+
+        self.assertFalse(
+            hasattr(cluster_lifecycle_registry, "FUTURE_PARTICIPANTS"),
+            "the future-participant reservation is closed; new relations are caught by "
+            "the reverse-relation exhaustiveness test instead",
+        )
+        self.assertNotIn("standalone_host", CLUSTER_REVERSE_RELATIONS)
 
 
 class ScanRetentionRetiredClusterTests(TestCase):
