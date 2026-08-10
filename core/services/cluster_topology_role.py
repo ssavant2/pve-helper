@@ -75,6 +75,11 @@ class RoleTransition(enum.StrEnum):
     #: Incomplete observation. Previous-good role is preserved and stale; no
     #: conclusion is drawn in either direction.
     INDETERMINATE = "indeterminate"
+    #: The read was complete, but came from a node this scope does not accept as
+    #: a member, so it is not evidence about this scope. Distinct from
+    #: :attr:`INDETERMINATE` because the repair is different and the operator is
+    #: otherwise told the wrong thing: coverage is fine, the *endpoint* is stale.
+    OBSERVER_NOT_A_MEMBER = "observer_not_a_member"
 
 
 @dataclass(frozen=True)
@@ -198,7 +203,11 @@ def _coerce_role(value: object) -> tuple[TopologyRole, bool]:
     -- the exact move the module forbids elsewhere. Today ``TopologyRole`` has two
     concrete members so only a hand-edited row reaches it; **widening this enum
     makes it live**, because a rolling deploy has one binary writing values the
-    other cannot read. Anyone adding a member must revisit this branch.
+    other cannot read. Anyone adding a member must revisit **both** consumers of
+    the flag in :func:`evaluate_role_transition`: the stored role, where the worst
+    case is a group-label flip, and the *pending* role, where reading an
+    unrecognized value as "not pending" would delete a provider-work block with
+    no verdict and no record.
     """
     try:
         return TopologyRole(value), True
@@ -221,10 +230,26 @@ def evaluate_role_transition(
     that is an exit rather than a bypass, below.
     """
     stored_role, stored_recognized = _coerce_role(stored_role)
-    pending_role, _ = _coerce_role(pending_role)
+    pending_role, pending_recognized = _coerce_role(pending_role)
     observed = classify_role(observation)
 
     if observed is TopologyRole.UNKNOWN:
+        # Two different things produce UNKNOWN and they need different repairs.
+        # Reporting both as "coverage is incomplete" tells an operator to go
+        # looking for an unreachable cluster when the actual fix is to delete a
+        # stale endpoint for a node that was evicted.
+        if not observation.speaks_for_the_scope:
+            return RoleDecision(
+                transition=RoleTransition.OBSERVER_NOT_A_MEMBER,
+                role=stored_role,
+                previous_role=stored_role,
+                pending_role=pending_role,
+                reason=(
+                    f"The node that answered ({observation.observed_from}) is not a member this "
+                    "scope accepts, so its complete response is not evidence about this scope. "
+                    "Its endpoint is probably stale."
+                ),
+            )
         return RoleDecision(
             transition=RoleTransition.INDETERMINATE,
             role=stored_role,
@@ -233,7 +258,13 @@ def evaluate_role_transition(
             reason="Membership coverage is incomplete; the previous role is preserved as stale.",
         )
 
-    if pending_role is not TopologyRole.UNKNOWN:
+    # An unrecognized pending value is still an open block. Reading it as "not
+    # pending" would let a hand-edited row or a widened enum *delete* a
+    # provider-work block with no verdict and no record -- the silent unblock
+    # this module rejects one branch away, and the more dangerous direction of
+    # the two, since the stored-role case only mislabels a group.
+    if pending_role is not TopologyRole.UNKNOWN or not pending_recognized:
+        unreadable = " Its previous target could not be read by this build." if not pending_recognized else ""
         if observed is stored_role:
             # The scope came back to the role it is registered as: the host
             # rejoined, or the change was reverted in Proxmox. There is no longer
@@ -244,14 +275,15 @@ def evaluate_role_transition(
             # It gets its own verdict rather than reporting an ordinary STABLE:
             # this clears a provider-work block, and a block that clears itself
             # without saying so is worse to diagnose than one that persists.
+            target = pending_role.value if pending_recognized else "an unreadable role"
             return RoleDecision(
                 transition=RoleTransition.TRANSITION_WITHDRAWN,
                 role=stored_role,
                 previous_role=stored_role,
                 reason=(
-                    f"The pending transition toward {pending_role.value} was withdrawn: this "
-                    f"scope is observed as {stored_role.value} again, which is what it is "
-                    "registered as. Provider work is no longer blocked."
+                    f"The pending transition toward {target} was withdrawn: this scope is "
+                    f"observed as {stored_role.value} again, which is what it is registered "
+                    f"as. Provider work is no longer blocked.{unreadable}"
                 ),
             )
         # A pending hand-off outranks a fresh reading. Publishing the new role
@@ -261,15 +293,18 @@ def evaluate_role_transition(
         # The pending target is the one already opened, not the freshly observed
         # role. With two roles they coincide; under a widened enum, re-deriving
         # it would silently retarget the question the operator was asked, each
-        # cycle, with no one told.
+        # cycle, with no one told. The exception is a target this build cannot
+        # read: keeping it would strand the scope, because resolve_transition
+        # cannot confirm a role it cannot name.
         return RoleDecision(
             transition=RoleTransition.TRANSITION_PENDING,
             role=stored_role,
             previous_role=stored_role,
-            pending_role=pending_role,
+            pending_role=pending_role if pending_recognized else observed,
             reason=(
                 f"This scope is registered as {stored_role.value} but is observed as "
-                f"{observed.value}. Provider work is blocked until the identity hand-off is confirmed."
+                f"{observed.value}. Provider work is blocked until the identity hand-off "
+                f"is confirmed.{unreadable}"
             ),
         )
 

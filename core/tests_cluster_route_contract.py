@@ -34,8 +34,12 @@ naive reintroduction, not every form:
   names are deliberately shared here (``datastore_routes`` gives one name two
   shapes), so it is reachable in principle, though not plausibly by accident.
   ``MembershipReadInvariantTests`` has the identical property;
-* ``re_path`` escapes both predicates: they match the ``<str:node>`` and
-  ``<path:…>`` spellings that ``path()`` produces;
+* **the predicates are parameter-*name* dependent, not only syntax dependent.**
+  ``<str:node_name>`` escapes all three node tests exactly as ``re_path`` does;
+  the names checked are ``node``, ``cluster_key`` and ``object_type``, which are
+  the spellings the shipped routes use;
+* ``re_path`` escapes both predicates for the same reason: they match the
+  ``<str:node>`` and ``<path:…>`` spellings that ``path()`` produces;
 * a custom converter that accepts ``/`` escapes the structural test, which names
   only the ``path`` converter.
 """

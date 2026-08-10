@@ -145,9 +145,42 @@ class ObservationProvenanceTests(SimpleTestCase):
             accepted_members=frozenset({"pve1", "pve2"}),
         )
         decision = evaluate_role_transition(TopologyRole.COROSYNC, evicted)
-        self.assertIs(decision.transition, RoleTransition.INDETERMINATE)
+        self.assertIs(decision.transition, RoleTransition.OBSERVER_NOT_A_MEMBER)
         self.assertFalse(decision.blocks_provider_work)
         self.assertIs(decision.role, TopologyRole.COROSYNC)
+
+    def test_a_stale_endpoint_is_not_reported_as_a_coverage_problem(self):
+        # Both causes of UNKNOWN preserve the role, but they need different
+        # repairs: one says the cluster is unreachable, the other says an
+        # endpoint outlived its node. Reporting the second as the first sends
+        # the operator to look for a network fault that does not exist.
+        foreign = MembershipObservation(
+            complete=True,
+            has_cluster_row=False,
+            observed_from="pve3",
+            accepted_members=frozenset({"pve1", "pve2"}),
+        )
+        unreachable = MembershipObservation(
+            complete=False, has_cluster_row=True, observed_from="pve1", accepted_members=frozenset({"pve1"})
+        )
+        stale = evaluate_role_transition(TopologyRole.COROSYNC, foreign)
+        down = evaluate_role_transition(TopologyRole.COROSYNC, unreachable)
+
+        self.assertNotEqual(stale, down)
+        self.assertIs(down.transition, RoleTransition.INDETERMINATE)
+        self.assertIn("pve3", stale.reason)
+        self.assertNotIn("incomplete", stale.reason)
+
+    def test_a_non_member_read_cannot_withdraw_a_pending_transition(self):
+        foreign = MembershipObservation(
+            complete=True,
+            has_cluster_row=True,
+            observed_from="pve3",
+            accepted_members=frozenset({"pve1", "pve2"}),
+        )
+        decision = evaluate_role_transition(TopologyRole.COROSYNC, foreign, pending_role=TopologyRole.STANDALONE)
+        self.assertIs(decision.pending_role, TopologyRole.STANDALONE)
+        self.assertTrue(decision.blocks_provider_work)
 
     def test_a_member_of_record_still_speaks_for_the_scope(self):
         genuine = MembershipObservation(
@@ -236,6 +269,28 @@ class PendingTransitionTests(SimpleTestCase):
         ordinary = evaluate_role_transition(TopologyRole.STANDALONE, standalone_observation())
         self.assertNotEqual(withdrawn, ordinary)
         self.assertIs(ordinary.transition, RoleTransition.STABLE)
+
+    def test_an_unreadable_pending_target_does_not_silently_delete_the_block(self):
+        # The asymmetry this closes: an unrecognized *stored* role only mislabels
+        # a group, and got its own verdict. An unrecognized *pending* role
+        # deletes a provider-work block, and was reading as "not pending" --
+        # STABLE, no verdict, no record. That is the silent unblock this module
+        # rejects one branch away.
+        withdrawn = evaluate_role_transition(
+            TopologyRole.STANDALONE, standalone_observation(), pending_role="corosync-v2"
+        )
+        self.assertIs(withdrawn.transition, RoleTransition.TRANSITION_WITHDRAWN)
+        self.assertIn("unreadable", withdrawn.reason)
+
+    def test_an_unreadable_pending_target_is_retargeted_rather_than_stranded(self):
+        # Keeping a target this build cannot name would strand the scope:
+        # resolve_transition can only confirm a role it can name. So the block
+        # survives, retargeted to what is actually observed, and says why.
+        decision = evaluate_role_transition(TopologyRole.STANDALONE, corosync_observation(), pending_role="corosync-v2")
+        self.assertIs(decision.transition, RoleTransition.TRANSITION_PENDING)
+        self.assertTrue(decision.blocks_provider_work)
+        self.assertIs(decision.pending_role, TopologyRole.COROSYNC)
+        self.assertIn("could not be read", decision.reason)
 
     def test_the_pending_target_is_not_re_derived_each_cycle(self):
         # With two roles the observed and the already-pending target coincide,
