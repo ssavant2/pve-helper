@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -15,6 +14,7 @@ from core.models import (
     ProxmoxCluster,
     ProxmoxEndpoint,
 )
+from core.services.cluster_credentials import set_cluster_credential
 from core.services.cluster_node_runtime import (
     ERROR_ACQUISITION_DISABLED,
     ERROR_ACQUISITION_QUARANTINED,
@@ -34,7 +34,6 @@ from core.services.cluster_node_runtime import (
     refresh_cluster_node_runtime,
     refresh_node_runtime,
 )
-from core.services.cluster_credentials import set_cluster_credential
 from core.services.proxmox import (
     ProxmoxAPIError,
     ProxmoxClient,
