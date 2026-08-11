@@ -132,7 +132,15 @@ class ProxmoxTaskResult:
 
 
 class ProxmoxAPIError(Exception):
-    pass
+    """A provider failure with optional structured HTTP status provenance."""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ProxmoxInvalidResponseError(ProxmoxAPIError):
+    """The provider answered, but its body cannot satisfy the API contract."""
 
 
 def _collected_error(exc: ProxmoxAPIError, action: str) -> str:
@@ -497,7 +505,10 @@ class ProxmoxClient:
         except httpx.HTTPStatusError as exc:
             detail = _proxmox_error_detail(exc.response)
             suffix = f": {detail}" if detail else f" from {path}"
-            raise ProxmoxAPIError(f"{exc.response.status_code}{suffix}") from exc
+            raise ProxmoxAPIError(
+                f"{exc.response.status_code}{suffix}",
+                status_code=exc.response.status_code,
+            ) from exc
         except httpx.HTTPError as exc:
             raise ProxmoxTransportError(
                 f"{exc.__class__.__name__} from {path}",
@@ -507,9 +518,9 @@ class ProxmoxClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise ProxmoxAPIError(f"Invalid JSON response from {path}") from exc
+            raise ProxmoxInvalidResponseError(f"Invalid JSON response from {path}") from exc
         if not isinstance(payload, dict) or "data" not in payload:
-            raise ProxmoxAPIError(f"Unexpected response schema from {path}")
+            raise ProxmoxInvalidResponseError(f"Unexpected response schema from {path}")
         return payload["data"]
 
     def _get_list(self, path: str, errors: list[dict[str, Any]], action: str) -> list[dict[str, Any]]:

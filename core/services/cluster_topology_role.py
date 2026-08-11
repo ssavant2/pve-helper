@@ -136,8 +136,8 @@ class RoleDecision:
     #: The role this scope is pending *toward*, or ``UNKNOWN`` when nothing is
     #: pending. Without it a pending state reconstructed in a later generation
     #: could not say which way it points, and the operator prompt would have to
-    #: be parsed out of ``reason``. This is the field 5a1A persists alongside the
-    #: stored role.
+    #: be parsed out of ``reason``. Phase 5a1B returns it only in-process; 5a1G
+    #: persists it together with the operator exit.
     pending_role: TopologyRole = TopologyRole.UNKNOWN
     #: A stable, operator-facing reason, or "" when nothing needs explaining.
     reason: str = ""

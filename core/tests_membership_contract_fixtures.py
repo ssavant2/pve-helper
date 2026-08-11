@@ -491,9 +491,10 @@ PERMISSION_REDUCED_NODES = [
 ]
 
 #: The same token against `cluster/status`, which **does** refuse. Recorded as the
-#: message text because `ProxmoxAPIError` carries no populated `status_code` —
-#: verified live, and the same limitation `cluster-retire` recorded on 2026-07-24.
-#: A consumer that branches on a status attribute will never see this.
+#: message text because `ProxmoxAPIError` carried no populated `status_code` when
+#: U1 was captured. Phase 5a1B corrected the transport to populate structured
+#: status provenance and retains compatibility with this exact leading-code
+#: evidence shape; provider reason prose is never a decision input.
 PERMISSION_DENIED_MESSAGE = "403: Permission check failed (/, Sys.Audit)"
 
 #: The same read after the token was revoked, captured in the same session.
@@ -519,16 +520,14 @@ class PermissionDeniedShapeTests(SimpleTestCase):
         self.assertIn(privilege, PERMISSION_DENIED_MESSAGE)
         self.assertIn(path, PERMISSION_DENIED_MESSAGE)
 
-    def test_the_refusal_is_only_detectable_from_the_message(self):
-        # `ProxmoxAPIError.status_code` was absent on the live 403. Pinned so a
-        # future reader does not write `exc.status_code == 403` and ship a branch
-        # that can never run.
+    def test_legacy_evidence_has_no_status_but_new_transport_errors_can(self):
+        # U1's captured error predates structured status provenance, so a bare
+        # reconstructed exception remains status-less. 5a1B populates the field
+        # at the HTTP boundary and retains compatibility with the leading code.
         from core.services.proxmox import ProxmoxAPIError
 
-        self.assertFalse(
-            hasattr(ProxmoxAPIError("403: Permission check failed (/, Sys.Audit)"), "status_code"),
-            "if ProxmoxAPIError gains a populated status_code, 403 detection should move to it",
-        )
+        self.assertIsNone(ProxmoxAPIError(PERMISSION_DENIED_MESSAGE).status_code)
+        self.assertEqual(ProxmoxAPIError(PERMISSION_DENIED_MESSAGE, status_code=403).status_code, 403)
 
     def test_nodes_does_not_refuse_at_all(self):
         # **`GET nodes` answered 200 to a token with no permissions.** It cannot

@@ -223,10 +223,13 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
 # onto the filtered read service is struck from the list.
 RAW_MEMBERSHIP_READ_NAMES = ("node_names(", '"cluster/status"')
 MEMBERSHIP_READ_OWNER = "core/services/proxmox.py"
+MEMBERSHIP_PROJECTION_OWNER = "core/services/cluster_membership.py"
 RAW_MEMBERSHIP_READ_ALLOWLIST = frozenset(
     {
-        # The owner of both primitives.
+        # Legacy node-list primitive. N4 migrates publication consumers away.
         MEMBERSHIP_READ_OWNER,
+        # Canonical completeness-carrying membership publisher (5a1B).
+        MEMBERSHIP_PROJECTION_OWNER,
         # Onboarding must read membership before any enrollment exists, by
         # definition: it is proving what the candidate transport is attached to.
         # This one stays raw after the filter lands.
@@ -407,7 +410,7 @@ class MembershipReadInvariantTests(SimpleTestCase):
             f"{', '.join(stale)}",
         )
 
-    def test_membership_is_read_through_one_primitive(self):
+    def test_legacy_node_names_helper_has_one_definition(self):
         root = Path(settings.BASE_DIR)
         owner = root / MEMBERSHIP_READ_OWNER
         definitions = [
@@ -419,9 +422,32 @@ class MembershipReadInvariantTests(SimpleTestCase):
         self.assertEqual(
             definitions,
             ["node_names"],
-            "node_names() is the single membership primitive and lives on "
-            f"{MEMBERSHIP_READ_OWNER}. A second implementation would let one caller "
-            "swallow provider failures while another fails closed.",
+            "Legacy node_names() must remain one compatibility helper on "
+            f"{MEMBERSHIP_READ_OWNER}. Canonical completeness-carrying membership "
+            f"publication belongs to {MEMBERSHIP_PROJECTION_OWNER}.",
+        )
+
+    def test_cluster_status_projection_has_one_canonical_owner(self):
+        root = Path(settings.BASE_DIR)
+        owner_source = (root / MEMBERSHIP_PROJECTION_OWNER).read_text()
+        owners = {
+            str(path.relative_to(root))
+            for path in self._python_sources()
+            if 'client.get("cluster/status")' in path.read_text()
+        }
+        self.assertIn(MEMBERSHIP_PROJECTION_OWNER, owners)
+        self.assertEqual(
+            owner_source.count('client.get("cluster/status")'),
+            1,
+            "The canonical membership publisher must issue cluster/status through one explicit call site.",
+        )
+        projection_writers = {
+            relative for relative in owners if "ClusterMembershipState" in (root / relative).read_text()
+        }
+        self.assertEqual(
+            projection_writers,
+            {MEMBERSHIP_PROJECTION_OWNER},
+            "Raw onboarding/presentation readers may not become competing membership projection writers.",
         )
 
 
