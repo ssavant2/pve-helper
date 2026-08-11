@@ -1257,3 +1257,78 @@ class InventoryIndexInvariantTests(SimpleTestCase):
             "Indexed columns that a wider index on the same model already leads with; "
             "pass db_index=False and add a migration.",
         )
+
+
+MEMBERSHIP_OWNED_NODE_COLUMNS = frozenset(
+    {
+        "present",
+        "online",
+        "nodeid",
+        "reported_ring_address",
+        "membership_generation",
+        "first_discovered_at",
+        "last_discovered_at",
+    }
+)
+
+NODE_RUNTIME_OWNER = "core/services/cluster_node_runtime.py"
+
+
+class NodeRuntimeColumnOwnershipInvariantTests(SimpleTestCase):
+    """5a1C writes runtime columns; 5a1B writes membership columns.
+
+    The rule is enforced rather than asserted because the failure is silent and
+    the mechanism is real: ``cluster_membership._publish_complete`` rewrites every
+    node row with an argument-less ``save()`` from a snapshot taken earlier in its
+    transaction. A bare ``save()`` on this side does the mirror image -- it would
+    carry stale membership columns back over a fresher publication, and nothing in
+    a diff would look wrong.
+    """
+
+    def _owner_tree(self) -> ast.Module:
+        return ast.parse((Path(settings.BASE_DIR) / NODE_RUNTIME_OWNER).read_text())
+
+    def test_every_shared_row_save_names_the_fields_it_writes(self):
+        """Coverage rows belong wholly to this module and may save in full.
+
+        ``ClusterNodeState`` does not: 5a1B owns half its columns, so every write
+        to it here must name the runtime fields.
+        """
+        bare = [
+            node.lineno
+            for node in ast.walk(self._owner_tree())
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "save"
+            and not (isinstance(node.func.value, ast.Name) and node.func.value.id == "coverage")
+            and not any(keyword.arg == "update_fields" for keyword in node.keywords)
+        ]
+
+        self.assertEqual(
+            bare,
+            [],
+            "An argument-less save() on a shared row in the node-runtime publisher "
+            "writes every column, including the membership columns 5a1B owns, from "
+            "whatever the in-memory row happened to hold. Pass update_fields "
+            f"explicitly ({NODE_RUNTIME_OWNER} lines {bare}).",
+        )
+
+    def test_membership_columns_are_never_assigned_by_the_runtime_publisher(self):
+        offenders = sorted(
+            {
+                f"{node.attr}:{node.lineno}"
+                for parent in ast.walk(self._owner_tree())
+                if isinstance(parent, (ast.Assign, ast.AugAssign))
+                for node in ast.walk(parent.targets[0] if isinstance(parent, ast.Assign) else parent.target)
+                if isinstance(node, ast.Attribute) and node.attr in MEMBERSHIP_OWNED_NODE_COLUMNS
+            }
+        )
+
+        self.assertEqual(
+            offenders,
+            [],
+            "These membership-owned columns are assigned inside the node-runtime "
+            "publisher. Membership publication is 5a1B's; a runtime refresh that "
+            "moves them makes older membership evidence look freshly proven: "
+            f"{', '.join(offenders)}",
+        )
