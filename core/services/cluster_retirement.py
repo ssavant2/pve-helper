@@ -21,6 +21,7 @@ from django.utils import timezone
 from core.models import (
     ClusterCredential,
     ClusterMembershipState,
+    ClusterNodeEnrollment,
     ClusterNodeState,
     ClusterProjectionCoverage,
     ClusterStorage,
@@ -46,6 +47,7 @@ from core.services.audit_events import (
     finalize_cluster_retirement_audit_operations,
     record_audit_event,
 )
+from core.services.cluster_enrollment import EnrollmentRetirementResult, retire_cluster_enrollments
 from core.services.cluster_identity import ClusterIdentityError, discover_cluster_identity
 from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock, scan_admission_lock
 from core.services.cluster_projection import ClusterProjectionRetirementResult, retire_cluster_projection
@@ -231,6 +233,7 @@ class RetirementResult:
     storage: StorageRetirementResult
     guest_inventory: GuestInventoryRetirementResult
     host_projection: ClusterProjectionRetirementResult
+    enrollments: EnrollmentRetirementResult
     endpoints_deleted: int
     credential_deleted: bool
     trust_deleted: bool
@@ -618,6 +621,7 @@ def _retirement_audit_details(
     storage: StorageRetirementResult,
     guest_inventory: GuestInventoryRetirementResult,
     host_projection: ClusterProjectionRetirementResult,
+    enrollments: EnrollmentRetirementResult,
 ) -> dict[str, object]:
     return {
         "display_name": cluster.display_name,
@@ -656,7 +660,10 @@ def _retirement_audit_details(
             "cluster_membership_states_deleted": host_projection.membership_rows_deleted,
             "cluster_node_states_deleted": host_projection.node_rows_deleted,
             "cluster_projection_coverages_deleted": host_projection.coverage_rows_deleted,
+            "cluster_node_enrollments_deleted": enrollments.enrollment_rows_deleted,
         },
+        "node_enrollments": list(enrollments.enrollments),
+        "node_enrollments_omitted": enrollments.enrollments_omitted,
         "storage_mount_refs": list(storage.mount_refs),
         "storage_mount_refs_omitted": storage.mount_refs_omitted,
         "storage_consumer_refs": list(storage.consumer_refs),
@@ -700,6 +707,7 @@ def _assert_retirement_postconditions(cluster: ProxmoxCluster, mode: str) -> Non
             ClusterMembershipState.objects.filter(cluster_id=cluster.pk).exists(),
             ClusterNodeState.objects.filter(cluster_id=cluster.pk).exists(),
             ClusterProjectionCoverage.objects.filter(cluster_id=cluster.pk).exists(),
+            ClusterNodeEnrollment.objects.filter(cluster_id=cluster.pk).exists(),
             StorageCatalogState.objects.filter(cluster_id=cluster.pk).exists(),
             ClusterStorageNodeState.objects.filter(cluster_storage__cluster_id=cluster.pk).exists(),
             ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster_id=cluster.pk).exists(),
@@ -846,6 +854,7 @@ def _retire_cluster_atomic(
                 )
                 guest_inventory = retire_cluster_guest_inventory(locked)
                 host_projection = retire_cluster_projection(locked)
+                enrollments = retire_cluster_enrollments(locked)
 
                 event.details = _retirement_audit_details(
                     locked,
@@ -862,6 +871,7 @@ def _retire_cluster_atomic(
                     storage=storage,
                     guest_inventory=guest_inventory,
                     host_projection=host_projection,
+                    enrollments=enrollments,
                 )
                 type(event).objects.filter(pk=event.pk).update(details=event.details)
 
@@ -896,6 +906,7 @@ def _retire_cluster_atomic(
                     storage=storage,
                     guest_inventory=guest_inventory,
                     host_projection=host_projection,
+                    enrollments=enrollments,
                     endpoints_deleted=endpoints_deleted,
                     credential_deleted=credential_deleted,
                     trust_deleted=trust_deleted,

@@ -402,13 +402,13 @@ class LifecycleParticipantContractTests(TestCase):
         # must be classified -- this assertion is the early warning that the count
         # the plan was written against has moved.
         #
-        # Module 5 phase 5a1A added the last three: the membership/node projection
-        # and its coverage. They are current projections, so they classify like
-        # the guest projection rather than like configuration.
+        # Module 5 phase 5a1A added the membership/node projection and coverage;
+        # 5a1J adds operator-owned enrollment configuration.
         expected = {
             "membership_state",
             "node_states",
             "projection_coverage",
+            "node_enrollments",
             "audit_events",
             "credential",
             "transport_trust",

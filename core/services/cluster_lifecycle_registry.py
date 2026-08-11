@@ -134,6 +134,15 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         footprint_reason=None,
         note="Deleted so their URLs are freed to re-register.",
     ),
+    "node_enrollments": RelationClassification(
+        "node_enrollments",
+        RelationClass.CONFIG,
+        blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.NONE,
+        footprint_reason=None,
+        note="Module 5 5a1J. Operator-owned publication configuration; snapshotted "
+        "to Audit and removed by its lifecycle owner. It never changes Proxmox.",
+    ),
     "audit_events": RelationClassification(
         "audit_events",
         RelationClass.RETAINED_HISTORY,

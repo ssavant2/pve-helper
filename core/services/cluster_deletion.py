@@ -50,6 +50,7 @@ from core.models import (
     AuditEvent,
     ClusterCredential,
     ClusterMembershipState,
+    ClusterNodeEnrollment,
     ClusterNodeState,
     ClusterProjectionCoverage,
     ClusterStorage,
@@ -65,6 +66,7 @@ from core.models import (
 )
 from core.services.audit_events import record_audit_event
 from core.services.cluster_deletion_eligibility import DeletionEligibility, unused_connection_deletion_eligibility
+from core.services.cluster_enrollment import retire_cluster_enrollments
 from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock
 from core.services.cluster_scopes import historical_clusters, managed_clusters
 from core.services.cluster_trust import reset_trust_pools
@@ -116,6 +118,7 @@ class DeletionResult:
     trust_deleted: bool
     audit_events_detached: int
     projection_rows_deleted: int
+    enrollment_rows_deleted: int
 
 
 def _endpoint_snapshots(cluster_id: int) -> tuple[tuple[dict[str, object], ...], int]:
@@ -182,6 +185,7 @@ def _assert_deletion_postconditions(cluster_pk: int) -> None:
             ClusterTransportTrust.objects.filter(cluster_id=cluster_pk).exists(),
             ProxmoxEndpoint.objects.filter(cluster_id=cluster_pk).exists(),
             AuditEvent.objects.filter(cluster_id=cluster_pk).exists(),
+            ClusterNodeEnrollment.objects.filter(cluster_id=cluster_pk).exists(),
             reconstructible_left,
         )
     ):
@@ -229,6 +233,11 @@ def _delete_unused_connection_atomic(cluster, *, actor) -> DeletionResult:
             # rather than implying the connection had nothing at all.
             reconstructible_removed = _delete_reconstructible_state(cluster_pk)
             projection_rows_deleted = sum(reconstructible_removed.values())
+            enrollments = retire_cluster_enrollments(locked)
+            if ClusterNodeEnrollment._base_manager.filter(cluster_id=cluster_pk).exists():
+                raise ClusterDeletionPostconditionFailed(
+                    "The enrollment owner did not prove its deletion postcondition; no changes were committed."
+                )
 
             # Record the immutable deletion event while the relation still exists, so
             # the log-forwarding signal snapshots its top-level outbox payload in this
@@ -254,6 +263,9 @@ def _delete_unused_connection_atomic(cluster, *, actor) -> DeletionResult:
                     "footprint_reason": locked.operational_footprint_reason,
                     "reconstructible_rows_deleted": dict(sorted(reconstructible_removed.items())),
                     "reconstructible_rows_deleted_total": projection_rows_deleted,
+                    "cluster_node_enrollments_deleted": enrollments.enrollment_rows_deleted,
+                    "node_enrollments": list(enrollments.enrollments),
+                    "node_enrollments_omitted": enrollments.enrollments_omitted,
                 },
             )
 
@@ -287,6 +299,7 @@ def _delete_unused_connection_atomic(cluster, *, actor) -> DeletionResult:
                 trust_deleted=trust_deleted,
                 audit_events_detached=audit_events_detached,
                 projection_rows_deleted=projection_rows_deleted,
+                enrollment_rows_deleted=enrollments.enrollment_rows_deleted,
             )
 
 

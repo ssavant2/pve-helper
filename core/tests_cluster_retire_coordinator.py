@@ -12,6 +12,7 @@ from core.models import (
     AuditEvent,
     ClusterCredential,
     ClusterMembershipState,
+    ClusterNodeEnrollment,
     ClusterNodeState,
     ClusterProjectionCoverage,
     ClusterStorage,
@@ -29,6 +30,7 @@ from core.models import (
     ScheduledActionRun,
     StorageCatalogState,
 )
+from core.services.cluster_enrollment import EnrollmentRetirementResult
 from core.services.cluster_lifecycle_lock import acquire_operable_cluster
 from core.services.cluster_lifecycle_registry import (
     CODE_FORCE_RETIRED_UNRESOLVABLE,
@@ -40,6 +42,7 @@ from core.services.cluster_retirement import (
     ClusterRetirementActiveScan,
     ClusterRetirementConfirmationRequired,
     ClusterRetirementFailed,
+    ClusterRetirementPostconditionFailed,
     cluster_retirement_preflight,
     retire_cluster,
 )
@@ -145,6 +148,14 @@ class ClusterRetirementCoordinatorTests(TestCase):
         membership = ClusterMembershipState.objects.create(cluster=self.cluster)
         node_state = ClusterNodeState.objects.create(cluster=self.cluster, node_name="pve1")
         coverage = ClusterProjectionCoverage.objects.create(cluster=self.cluster, domain="membership")
+        enrollment = ClusterNodeEnrollment.objects.create(
+            cluster=self.cluster,
+            node_name="pve1",
+            mode=ClusterNodeEnrollment.Mode.MANAGED,
+            enrolled_at=timezone.now(),
+            enrolled_by=self.actor,
+            onboarded_via_endpoint=self.endpoint,
+        )
         definition = ClusterStorage.objects.create(
             cluster=self.cluster,
             storage_id="local",
@@ -169,6 +180,19 @@ class ClusterRetirementCoordinatorTests(TestCase):
             enabled=True,
             host="syslog.example.test",
             port=6514,
+        )
+        self.cluster.enrollment_contract_version = 1
+        self.cluster.enrollment_generation = 3
+        self.cluster.enrollment_activated_at = timezone.now()
+        self.cluster.enrollment_activated_by = self.actor
+        self.cluster.save(
+            update_fields=[
+                "enrollment_contract_version",
+                "enrollment_generation",
+                "enrollment_activated_at",
+                "enrollment_activated_by",
+                "updated_at",
+            ]
         )
         confirmation = self._verified_confirmation()
 
@@ -199,6 +223,10 @@ class ClusterRetirementCoordinatorTests(TestCase):
         self.assertEqual(self.cluster.retired_ca_uuid, CA_UUID)
         self.assertEqual(self.cluster.discovered_ca_uuid, "")
         self.assertEqual(self.cluster.lifecycle_generation, 2)
+        self.assertEqual(self.cluster.enrollment_contract_version, 1)
+        self.assertEqual(self.cluster.enrollment_generation, 3)
+        self.assertIsNotNone(self.cluster.enrollment_activated_at)
+        self.assertEqual(self.cluster.enrollment_activated_by, self.actor)
         self.assertFalse(ProxmoxEndpoint.objects.filter(cluster=self.cluster).exists())
         self.assertFalse(ClusterCredential.objects.filter(cluster=self.cluster).exists())
         self.assertFalse(ClusterTransportTrust.objects.filter(cluster=self.cluster).exists())
@@ -207,6 +235,7 @@ class ClusterRetirementCoordinatorTests(TestCase):
         self.assertFalse(ClusterMembershipState.objects.filter(pk=membership.pk).exists())
         self.assertFalse(ClusterNodeState.objects.filter(pk=node_state.pk).exists())
         self.assertFalse(ClusterProjectionCoverage.objects.filter(pk=coverage.pk).exists())
+        self.assertFalse(ClusterNodeEnrollment.objects.filter(pk=enrollment.pk).exists())
         self.assertIsNotNone(action.deleted_at)
         self.assertEqual(run.status, ScheduledActionRun.Status.CANCELLED)
         self.assertEqual(run.error, CODE_RETIRED_BEFORE_START)
@@ -230,6 +259,11 @@ class ClusterRetirementCoordinatorTests(TestCase):
         self.assertEqual(event.details["cleanup"]["cluster_membership_states_deleted"], 1)
         self.assertEqual(event.details["cleanup"]["cluster_node_states_deleted"], 1)
         self.assertEqual(event.details["cleanup"]["cluster_projection_coverages_deleted"], 1)
+        self.assertEqual(event.details["cleanup"]["cluster_node_enrollments_deleted"], 1)
+        self.assertEqual(
+            event.details["node_enrollments"],
+            [{"node_ref_snapshot": "nr1:retiring:pve1", "mode": "managed"}],
+        )
         self.assertNotIn("sealed-test-secret", str(event.details))
         delivery = LogForwardingDelivery.objects.get(audit_event_id=event.pk)
         self.assertEqual(delivery.payload["action"], "cluster.retired")
@@ -298,6 +332,37 @@ class ClusterRetirementCoordinatorTests(TestCase):
         self.assertEqual(event.details["cleanup"]["scheduled_runs_abandoned"], 1)
         self.assertEqual(event.details["cleanup"]["consoles_abandoned"], 1)
         self.assertEqual(event.details["cleanup"]["audit_operations_abandoned"], 1)
+
+    def test_retirement_rolls_back_when_enrollment_owner_does_not_delete(self):
+        enrollment = ClusterNodeEnrollment.objects.create(
+            cluster=self.cluster,
+            node_name="pve1",
+            mode=ClusterNodeEnrollment.Mode.MANAGED,
+            enrolled_at=timezone.now(),
+            enrolled_by=self.actor,
+            onboarded_via_endpoint=self.endpoint,
+        )
+        confirmation = self._verified_confirmation()
+
+        with (
+            patch(
+                "core.services.cluster_retirement.retire_cluster_enrollments",
+                return_value=EnrollmentRetirementResult(0, (), 0),
+            ),
+            self.assertRaises(ClusterRetirementPostconditionFailed),
+        ):
+            retire_cluster(
+                self.cluster,
+                confirmation=confirmation,
+                actor=self.actor,
+            )
+
+        self.cluster.refresh_from_db()
+        self.assertIsNone(self.cluster.retired_at)
+        self.assertFalse(self.cluster.enabled)
+        self.assertTrue(ClusterNodeEnrollment.objects.filter(pk=enrollment.pk).exists())
+        self.assertTrue(ProxmoxEndpoint.objects.filter(pk=self.endpoint.pk).exists())
+        self.assertFalse(AuditEvent.objects.filter(action="cluster.retired", outcome="success").exists())
 
     def test_forced_retirement_requires_exact_key_reason_and_permanent_unavailability_assertion(self):
         self.cluster.enabled = True

@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models.functions import Lower
@@ -403,6 +404,20 @@ class ProxmoxCluster(TimestampedModel):
     # eligibility can never be recovered by waiting for timed retention to run.
     operational_footprint_at = models.DateTimeField(null=True, blank=True)
     operational_footprint_reason = models.CharField(max_length=64, blank=True)
+
+    # Per-cluster node-enrollment activation. Version is the irreversible 0→1
+    # feature boundary; generation is the independent enrollment-set clock.
+    # 5a1H owns every mutation and advances generation under the locked row.
+    enrollment_contract_version = models.PositiveSmallIntegerField(default=0)
+    enrollment_generation = models.PositiveBigIntegerField(default=0)
+    enrollment_activated_at = models.DateTimeField(null=True, blank=True)
+    enrollment_activated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
 
     class Meta:
         ordering = ["key"]
@@ -1961,3 +1976,95 @@ class ClusterProjectionCoverage(TimestampedModel):
     def __str__(self) -> str:
         scope = f"{self.domain}/{self.node_name}" if self.node_name else self.domain
         return f"{self.cluster.key}: {scope}"
+
+
+class ClusterNodeEnrollment(TimestampedModel):
+    """Operator-owned configuration selecting one exact :class:`NodeRef`.
+
+    Absence of a row means unenrolled. Provider discovery must never create,
+    mutate or delete these rows. Phase 5a1J adds only the schema and lifecycle;
+    5a1H owns the verified writer and activation transaction.
+    """
+
+    class Mode(models.TextChoices):
+        MANAGED = "managed", "Managed"
+        SAFETY_ONLY = "safety_only", "Safety only"
+
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="node_enrollments",
+        # Covered by the exact NodeRef uniqueness constraint below.
+        db_index=False,
+    )
+    node_name = models.CharField(max_length=120)
+    node_ref_snapshot = models.CharField(max_length=188, editable=False)
+    mode = models.CharField(max_length=16, choices=Mode.choices)
+    enrolled_at = models.DateTimeField()
+    enrolled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    mode_changed_at = models.DateTimeField(null=True, blank=True)
+    mode_changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    mode_change_reason = models.CharField(max_length=1000, blank=True, default="")
+    onboarded_via_endpoint = models.ForeignKey(
+        ProxmoxEndpoint,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cluster", "node_name"],
+                name="core_cluster_node_enrollment_uniq",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(node_name="") & ~models.Q(node_name__contains=":"),
+                name="core_cluster_node_enrollment_valid_ref",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(mode__in=("managed", "safety_only")),
+                name="core_cluster_node_enrollment_valid_mode",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(node_ref_snapshot=""),
+                name="core_cluster_node_enrollment_snapshot_nonempty",
+            ),
+        ]
+        verbose_name = "cluster node enrollment"
+        verbose_name_plural = "cluster node enrollments"
+
+    def save(self, *args, **kwargs):
+        """Create the serialized identity once and refuse later identity drift."""
+
+        cluster_key = self.cluster.key
+        expected_snapshot = NodeRef(cluster_key=cluster_key, node=self.node_name).serialize()
+        if self._state.adding:
+            if self.node_ref_snapshot and self.node_ref_snapshot != expected_snapshot:
+                raise ValidationError({"node_ref_snapshot": "Node reference snapshot does not match the enrollment."})
+            self.node_ref_snapshot = expected_snapshot
+        else:
+            original = type(self)._base_manager.only("cluster_id", "node_name", "node_ref_snapshot").get(pk=self.pk)
+            if (
+                self.cluster_id != original.cluster_id
+                or self.node_name != original.node_name
+                or self.node_ref_snapshot != original.node_ref_snapshot
+            ):
+                raise ValidationError("An enrollment's node identity and snapshot are immutable.")
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.node_ref_snapshot} ({self.mode})"
