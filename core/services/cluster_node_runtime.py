@@ -26,6 +26,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from django.db import transaction
@@ -63,9 +64,11 @@ ERROR_NO_ENABLED_ENDPOINT = "no_enabled_endpoint"
 ERROR_MEMBERSHIP_NOT_PUBLISHED = "membership_not_published"
 ERROR_NODE_NOT_A_MEMBER = "node_not_a_member"
 
-#: Endpoint-wide or credential-wide failures. A node-specific ``invalid_payload``
-#: deliberately does not condemn the endpoint for the rest of the sweep.
-_ENDPOINT_FATAL = frozenset({ERROR_PROVIDER_UNAUTHORIZED, ERROR_PROVIDER_TIMEOUT, ERROR_PROVIDER})
+#: All endpoints already failed this sweep. Distinct from ``no_enabled_endpoint``,
+#: which is a *configuration* fact checked once per cluster: reusing that code
+#: here would tell 5a1F a cluster has no endpoint when it has one that is merely
+#: unreachable, and the two need different repairs.
+ERROR_ENDPOINTS_EXHAUSTED = "endpoints_exhausted"
 
 #: Columns this phase owns. Every write names them explicitly: a bare ``save()``
 #: would carry membership columns from a stale in-memory snapshot, which is the
@@ -144,7 +147,15 @@ class NodeRuntimeResult:
 
 @dataclass(frozen=True)
 class NodeRuntimeSweepResult:
-    """One cluster's sweep. Refusals carry an empty ``nodes`` tuple."""
+    """One cluster's sweep.
+
+    ``complete`` means only **the sweep was not refused** -- it says nothing about
+    how the individual nodes fared, and a sweep in which every node timed out is
+    still ``complete=True`` with an empty ``published``. Per-node authority lives
+    in each node's coverage row, as the phase's grain requires. ``published`` and
+    ``failed`` are exposed so a scheduler has something to act on without
+    re-deriving it from ``nodes``.
+    """
 
     cluster_key: str
     complete: bool
@@ -155,6 +166,14 @@ class NodeRuntimeSweepResult:
     @property
     def targets(self) -> int:
         return len(self.nodes)
+
+    @property
+    def published(self) -> int:
+        return sum(1 for node in self.nodes if node.complete)
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for node in self.nodes if not node.complete)
 
 
 def _truncate(value: str, limit: int) -> str:
@@ -445,13 +464,16 @@ def _read_node_status(
     """
     endpoints = [item for item in enabled_endpoints(cluster) if item.name not in failed_endpoints]
     if not endpoints:
-        return None, ERROR_NO_ENABLED_ENDPOINT
+        # Every endpoint this cluster has already failed earlier in the sweep.
+        # The cluster-level `no_enabled_endpoint` refusal ran before the loop, so
+        # reaching here means the endpoints exist and are unreachable.
+        return None, ERROR_ENDPOINTS_EXHAUSTED
 
     last_code = ERROR_PROVIDER
     for endpoint in endpoints:
         client = client_for_endpoint(endpoint)
         try:
-            payload = client.get(f"nodes/{node_name}/status")
+            payload = client.get(f"nodes/{quote(node_name, safe='')}/status")
             return normalize_node_status(payload), ""
         except InvalidNodeStatusPayload:
             # Node-specific: this endpoint answered fine, the body was unusable.
@@ -473,7 +495,12 @@ def _read_node_status(
                 exc.__class__.__name__,
                 exc_info=True,
             )
-            if code in _ENDPOINT_FATAL:
+            # Condemn the endpoint only for facts that are endpoint- or
+            # credential-wide. A transport failure and a 401/403 are; an HTTP
+            # status about one node is not -- a 500 while reading pve2 says
+            # nothing about the endpoint's ability to answer for pve3, and
+            # treating it as fatal would blank the rest of the sweep.
+            if isinstance(exc, ProxmoxTransportError) or code == ERROR_PROVIDER_UNAUTHORIZED:
                 failed_endpoints.add(endpoint.name)
             last_code = code
     return None, last_code
@@ -528,9 +555,19 @@ def _refresh_one_node(
             # have dropped this node since. Publishing runtime bound to a
             # generation that says it is not a member would be a false provenance
             # claim -- the one property this phase still promises.
+            # `membership_generation` is always the last *complete* one:
+            # `_publish_incomplete` updates coverage without advancing it. That is
+            # what makes both absence writes below genuinely "the generation that
+            # proved the absence" without an explicit completeness check here. A
+            # change to that rule in 5a1B breaks this silently.
             if not row.present:
+                # The columns are nulled; the generation is deliberately NOT
+                # reset. `coverage.generation` keeps its last published value, so
+                # resetting here would make a returning node publish generation 1
+                # after 7 -- backwards, while membership's own generation is
+                # strictly increasing. 5a1F would reasonably assume the same of
+                # runtime and be wrong.
                 _clear_runtime(row)
-                row.runtime_generation = 0
                 row.save(update_fields=list(RUNTIME_FIELDS))
                 coverage = _coverage_for(locked, node_name, membership_generation)
                 coverage.complete = False
@@ -571,7 +608,13 @@ def _refresh_one_node(
                 coverage.save()
                 stamp_cluster_projection_footprint(locked)
                 return NodeRuntimeResult(
-                    node_name, False, error_code, coverage.generation, membership_generation, called_provider=True
+                    node_name,
+                    False,
+                    error_code,
+                    coverage.generation,
+                    membership_generation,
+                    # Exhausted endpoints means no call was made for this node.
+                    called_provider=error_code != ERROR_ENDPOINTS_EXHAUSTED,
                 )
 
             generation = row.runtime_generation + 1
@@ -597,6 +640,11 @@ def refresh_node_runtime(cluster: ProxmoxCluster, node_name: str, *, observed_at
     ``node_not_a_member`` -- writing coverage for a NodeRef that has no member row
     would orphan a row nothing prunes before cluster retirement.
     """
+    if not enabled_endpoints(cluster):
+        # The sweep checks this once per cluster; without the same check here the
+        # per-node seam would write a coverage row for a code the contract puts
+        # in the zero-row set, and 5a1E would inherit that divergence.
+        return NodeRuntimeResult(node_name, False, ERROR_NO_ENABLED_ENDPOINT, 0)
     if not _membership_is_published(cluster):
         return NodeRuntimeResult(node_name, False, ERROR_MEMBERSHIP_NOT_PUBLISHED, 0)
     return _refresh_one_node(cluster, node_name, failed_endpoints=set(), observed_at=observed_at)
@@ -617,6 +665,12 @@ def _mark_departed_nodes(cluster: ProxmoxCluster, *, observed_at) -> int:
     with transaction.atomic():
         with cluster_lifecycle_lock(cluster):
             locked = historical_clusters().select_for_update().get(pk=cluster.pk)
+            # Same refusal the node loop applies: a cluster retired, disabled or
+            # quarantined between the last node and this pass must have no row
+            # written. Retirement deletes the projection under this same lock, but
+            # nothing deletes rows for a disabled or quarantined one.
+            if _acquisition_refusal(locked):
+                return 0
             state = ClusterMembershipState.objects.filter(cluster=locked).first()
             membership_generation = state.membership_generation if state is not None else 0
 
@@ -633,7 +687,6 @@ def _mark_departed_nodes(cluster: ProxmoxCluster, *, observed_at) -> int:
                 if row.node_name in handled:
                     continue
                 _clear_runtime(row)
-                row.runtime_generation = 0
                 row.save(update_fields=list(RUNTIME_FIELDS))
                 coverage = _coverage_for(locked, row.node_name, membership_generation)
                 coverage.complete = False

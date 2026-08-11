@@ -1313,6 +1313,32 @@ class NodeRuntimeColumnOwnershipInvariantTests(SimpleTestCase):
             f"explicitly ({NODE_RUNTIME_OWNER} lines {bare}).",
         )
 
+    def test_no_queryset_update_writes_a_membership_column(self):
+        """The one form ``update_fields`` cannot protect against.
+
+        ``ClusterNodeState.objects.filter(...).update(membership_generation=...)``
+        is exactly what the membership publisher does, and it is neither a
+        ``save()`` nor an attribute assignment -- so without this arm both other
+        checks pass while the column is rewritten.
+        """
+        offenders = sorted(
+            {
+                f"{keyword.arg}:{node.lineno}"
+                for node in ast.walk(self._owner_tree())
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "update"
+                for keyword in node.keywords
+                if keyword.arg in MEMBERSHIP_OWNED_NODE_COLUMNS
+            }
+        )
+
+        self.assertEqual(
+            offenders,
+            [],
+            "A queryset update() in the node-runtime publisher writes a "
+            "membership-owned column. Membership publication is 5a1B's: "
+            f"{', '.join(offenders)}",
+        )
+
     def test_membership_columns_are_never_assigned_by_the_runtime_publisher(self):
         offenders = sorted(
             {

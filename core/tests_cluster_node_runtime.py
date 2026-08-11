@@ -17,6 +17,7 @@ from core.services.cluster_node_runtime import (
     ERROR_ACQUISITION_DISABLED,
     ERROR_ACQUISITION_QUARANTINED,
     ERROR_ACQUISITION_RETIRED,
+    ERROR_ENDPOINTS_EXHAUSTED,
     ERROR_INVALID_PAYLOAD,
     ERROR_MEMBERSHIP_NOT_PUBLISHED,
     ERROR_NO_ENABLED_ENDPOINT,
@@ -388,6 +389,13 @@ class NodeRuntimeMembershipBindingTests(TestCase):
         coverage = _coverage(self.cluster, "pve1")
         self.assertEqual(coverage.error_code, ERROR_NODE_ABSENT)
         self.assertEqual(coverage.based_on_generation, 2)
+        self.assertEqual(
+            row.runtime_generation,
+            1,
+            "departure nulls the columns but must not rewind the generation: a "
+            "returning node would then publish 1 after 7, while membership's own "
+            "generation only ever increases",
+        )
 
     def test_departed_pass_is_idempotent(self):
         with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=_client(STATUS_BODY)):
@@ -473,6 +481,42 @@ class NodeRuntimeRefusalTests(TestCase):
         self.assertEqual(result.targets, 0)
         self.assertEqual(client.get.call_count, 0)
 
+    def test_the_per_node_entry_point_refuses_an_unpublished_membership(self):
+        ClusterProjectionCoverage.objects.filter(
+            cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP
+        ).update(complete=False, observed_at=None)
+        client = _client(STATUS_BODY)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=client):
+            result = refresh_node_runtime(self.cluster, "pve1")
+
+        self.assertEqual(result.error_code, ERROR_MEMBERSHIP_NOT_PUBLISHED)
+        self.assertEqual(client.get.call_count, 0)
+
+    def test_the_per_node_entry_point_refuses_a_cluster_with_no_endpoint(self):
+        """The sweep checks this once per cluster; the seam must not diverge."""
+        ProxmoxEndpoint.objects.filter(cluster=self.cluster).update(enabled=False)
+
+        result = refresh_node_runtime(self.cluster, "pve1")
+
+        self.assertEqual(result.error_code, ERROR_NO_ENABLED_ENDPOINT)
+        self.assertFalse(
+            ClusterProjectionCoverage.objects.filter(
+                cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME
+            ).exists()
+        )
+
+    def test_a_standalone_host_publishes_like_any_other(self):
+        """This phase never reads topology; a one-node standalone scope must work
+        exactly as a corosync member does."""
+        ClusterMembershipState.objects.filter(cluster=self.cluster).update(topology_role="standalone", quorate=False)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=_client(STATUS_BODY)):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertTrue(result.complete)
+        self.assertTrue(_coverage(self.cluster, "pve1").complete)
+
     def test_per_node_entry_point_refuses_an_unknown_name_without_a_row(self):
         client = _client(STATUS_BODY)
         with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=client):
@@ -485,6 +529,51 @@ class NodeRuntimeRefusalTests(TestCase):
                 cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME, node_name="ghost"
             ).exists()
         )
+
+
+class NodeRuntimeExhaustedEndpointTests(TestCase):
+    def setUp(self):
+        self.cluster = _cluster()
+        _endpoint(self.cluster)
+        _publish_membership(self.cluster, {"pve1": True, "pve2": True})
+
+    def test_a_later_node_is_not_mislabelled_as_having_no_endpoint(self):
+        """The cluster has an endpoint; it is unreachable. Recording the
+        configuration code would send an operator to check a setting that is
+        correct, and 5a1F could not tell the two states apart."""
+        error = ProxmoxTransportError("dead")
+        error.__cause__ = httpx.ConnectTimeout("dead")
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=_client(error=error)):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        first, second = result.nodes
+        self.assertEqual(first.error_code, ERROR_PROVIDER_TIMEOUT)
+        self.assertTrue(first.called_provider)
+        self.assertEqual(second.error_code, ERROR_ENDPOINTS_EXHAUSTED)
+        self.assertFalse(second.called_provider, "no endpoint was left to call")
+        self.assertEqual(_coverage(self.cluster, "pve2").error_code, ERROR_ENDPOINTS_EXHAUSTED)
+
+    def test_an_http_error_about_one_node_does_not_condemn_the_endpoint(self):
+        """A 500 while reading pve1 says nothing about the endpoint's ability to
+        answer for pve2. Treating it as fatal would blank the rest of the sweep."""
+
+        def fake_client(endpoint):
+            client = MagicMock()
+
+            def get(path, **kwargs):
+                if "pve1" in path:
+                    raise ProxmoxAPIError("boom", status_code=500)
+                return STATUS_BODY
+
+            client.get.side_effect = get
+            return client
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=fake_client):
+            refresh_cluster_node_runtime(self.cluster)
+
+        self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_PROVIDER)
+        self.assertTrue(_coverage(self.cluster, "pve2").complete)
 
 
 class NodeRuntimeIsolationTests(TestCase):
@@ -558,6 +647,18 @@ class NodeRuntimeEndpointFailoverTests(TestCase):
         self.assertEqual(attempts.count("alpha"), 3)
 
 
+#: Measured, then pinned. The entry contract deliberately holds no enumeration:
+#: four review rounds corrected a hand-counted figure without ever changing a
+#: decision, so the numbers live here where they are checked rather than argued.
+#: Total queries for one sweep of N attempted nodes, from a cold projection.
+#: Measured, not derived: exactly ``14 + 15N`` across 1, 2, 3, 5, 10 and 20 nodes.
+SWEEP_QUERIES = {1: 29, 3: 59, 20: 314}
+#: One attempted node plus one node the offline gate skips.
+MIXED_SWEEP_QUERIES = 42
+#: One departed node, nothing attempted.
+DEPARTED_SWEEP_QUERIES = 18
+
+
 class NodeRuntimeBudgetTests(TestCase):
     """The budget is `a + b·(N − F) + b′·F + c·D`, pinned by measurement.
 
@@ -593,38 +694,74 @@ class NodeRuntimeBudgetTests(TestCase):
 
         self.assertEqual(client.get.call_count, 1)
 
+    def _reset(self):
+        ClusterNodeState.objects.filter(cluster=self.cluster).delete()
+        ClusterProjectionCoverage.objects.filter(cluster=self.cluster).delete()
+
+    def _prepare(self, node_count: int) -> None:
+        """Fixture work happens outside the measured block."""
+        self._reset()
+        _publish_membership(self.cluster, {f"pve{index}": True for index in range(1, node_count + 1)})
+
     def _measure(self, node_count: int) -> int:
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
 
-        ClusterNodeState.objects.filter(cluster=self.cluster).delete()
-        ClusterProjectionCoverage.objects.filter(cluster=self.cluster).delete()
+        self._reset()
         _publish_membership(self.cluster, {f"pve{index}": True for index in range(1, node_count + 1)})
         with CaptureQueriesContext(connection) as captured:
             self._sweep()
         return len(captured.captured_queries)
 
-    def test_query_count_is_linear_in_nodes(self):
-        """The marginal cost of one more node must stay constant as the cluster
-        grows -- a per-node query that quietly became per-node-squared is exactly
-        what a budget expressed only in prose never catches."""
-        one, two, three = self._measure(1), self._measure(2), self._measure(3)
+    def test_the_sweep_cost_is_pinned_exactly_at_each_scale(self):
+        """Absolute counts, not a slope.
 
-        self.assertEqual(two - one, three - two)
-        self.assertEqual(three, one + 2 * (two - one))
+        The entry contract deleted its prose enumeration on the ground that this
+        test is the authority; a test that only checks linearity is not one, since
+        a change adding five queries per node keeps it green.
+        """
+        for nodes, expected in sorted(SWEEP_QUERIES.items()):
+            with self.subTest(nodes=nodes):
+                self._prepare(nodes)
+                with self.assertNumQueries(expected):
+                    self._sweep()
 
-    def test_skipped_node_is_cheaper_than_an_attempted_one(self):
+    def test_the_marginal_node_cost_does_not_grow_with_the_cluster(self):
+        """The per-node-squared regression is only visible at scale.
+
+        Asserted as a bound on the marginal cost rather than as exact linearity:
+        the measured totals are not a perfect line, and pretending otherwise would
+        be the same hand-derived arithmetic this budget was moved out of prose to
+        escape.
+        """
+        small = (SWEEP_QUERIES[3] - SWEEP_QUERIES[1]) / 2
+        large = (SWEEP_QUERIES[20] - SWEEP_QUERIES[3]) / 17
+
+        self.assertLessEqual(large, small + 1, "per-node query cost grew with cluster size")
+
+    def test_a_skipped_node_costs_fewer_queries_than_an_attempted_one(self):
         """`b′ < b`: a skipped node never builds a client, so it never resolves
         the credential or the trust profile."""
-        attempted = self._measure(2)
-
-        ClusterNodeState.objects.filter(cluster=self.cluster).delete()
-        ClusterProjectionCoverage.objects.filter(cluster=self.cluster).delete()
+        self._reset()
         _publish_membership(self.cluster, {"pve1": True, "pve2": False})
-        from django.db import connection
-        from django.test.utils import CaptureQueriesContext
 
-        with CaptureQueriesContext(connection) as captured:
+        with self.assertNumQueries(MIXED_SWEEP_QUERIES):
             self._sweep()
 
-        self.assertLess(len(captured.captured_queries), attempted)
+        self.assertLess(
+            MIXED_SWEEP_QUERIES,
+            SWEEP_QUERIES[1] + (SWEEP_QUERIES[3] - SWEEP_QUERIES[1]) / 2,
+            "a skipped node must cost less than an attempted one: it never builds "
+            "a client, so it never resolves the credential or the trust profile",
+        )
+
+    def test_the_departed_pass_cost_is_pinned_per_departed_row(self):
+        """`c` was never measured before: the sweep helper deleted every node row
+        first, so `D` was always zero and the term was untested."""
+        self._reset()
+        _publish_membership(self.cluster, {"pve1": True})
+        self._sweep()
+        ClusterNodeState.objects.filter(cluster=self.cluster).update(present=False)
+
+        with self.assertNumQueries(DEPARTED_SWEEP_QUERIES):
+            self._sweep()
