@@ -452,6 +452,7 @@ def _acquisition_refusal(cluster: ProxmoxCluster) -> str:
 def _read_node_status(
     cluster: ProxmoxCluster,
     node_name: str,
+    endpoints: list,
     failed_endpoints: set[str],
 ) -> tuple[NormalizedNodeRuntime | None, str]:
     """Try each usable endpoint once. Returns the runtime or a stable code.
@@ -462,15 +463,14 @@ def _read_node_status(
     remaining node. Without this set one dead endpoint costs a full client
     timeout per node instead of once per sweep.
     """
-    endpoints = [item for item in enabled_endpoints(cluster) if item.name not in failed_endpoints]
-    if not endpoints:
-        # Every endpoint this cluster has already failed earlier in the sweep.
-        # The cluster-level `no_enabled_endpoint` refusal ran before the loop, so
-        # reaching here means the endpoints exist and are unreachable.
+    usable = [item for item in endpoints if item.name not in failed_endpoints]
+    if not usable:
+        # The caller proved the cluster has endpoints, so reaching here means every
+        # one of them already failed this sweep: unreachable, not unconfigured.
         return None, ERROR_ENDPOINTS_EXHAUSTED
 
     last_code = ERROR_PROVIDER
-    for endpoint in endpoints:
+    for endpoint in usable:
         client = client_for_endpoint(endpoint)
         try:
             payload = client.get(f"nodes/{quote(node_name, safe='')}/status")
@@ -595,7 +595,17 @@ def _refresh_one_node(
                     node_name, False, ERROR_NODE_OFFLINE, coverage.generation, membership_generation
                 )
 
-            runtime, error_code = _read_node_status(locked, node_name, failed_endpoints)
+            endpoints = enabled_endpoints(locked)
+            if not endpoints:
+                # Zero-row refusal, and it must be decided *here* rather than
+                # before the lifecycle check: retirement deletes a cluster's
+                # endpoints (`cluster_retirement.py:878`), so an endpoint test
+                # placed first would answer "no enabled endpoint" for a retired
+                # cluster and invite an operator to configure a connection whose
+                # projection is finalized.
+                return NodeRuntimeResult(node_name, False, ERROR_NO_ENABLED_ENDPOINT, 0)
+
+            runtime, error_code = _read_node_status(locked, node_name, endpoints, failed_endpoints)
             coverage = _coverage_for(locked, node_name, membership_generation)
             if runtime is None:
                 # Previous-good payload and runtime_generation are preserved; only
@@ -640,11 +650,6 @@ def refresh_node_runtime(cluster: ProxmoxCluster, node_name: str, *, observed_at
     ``node_not_a_member`` -- writing coverage for a NodeRef that has no member row
     would orphan a row nothing prunes before cluster retirement.
     """
-    if not enabled_endpoints(cluster):
-        # The sweep checks this once per cluster; without the same check here the
-        # per-node seam would write a coverage row for a code the contract puts
-        # in the zero-row set, and 5a1E would inherit that divergence.
-        return NodeRuntimeResult(node_name, False, ERROR_NO_ENABLED_ENDPOINT, 0)
     if not _membership_is_published(cluster):
         return NodeRuntimeResult(node_name, False, ERROR_MEMBERSHIP_NOT_PUBLISHED, 0)
     return _refresh_one_node(cluster, node_name, failed_endpoints=set(), observed_at=observed_at)

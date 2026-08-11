@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
+
 from unittest.mock import MagicMock, patch
 
 import httpx
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from core.models import (
@@ -32,8 +34,10 @@ from core.services.cluster_node_runtime import (
     refresh_cluster_node_runtime,
     refresh_node_runtime,
 )
+from core.services.cluster_credentials import set_cluster_credential
 from core.services.proxmox import (
     ProxmoxAPIError,
+    ProxmoxClient,
     ProxmoxInvalidResponseError,
     ProxmoxTransportError,
 )
@@ -364,6 +368,11 @@ class NodeRuntimeMembershipBindingTests(TestCase):
 
         self.assertEqual(client.get.call_count, 0)
         self.assertEqual(result.nodes[0].error_code, ERROR_NODE_ABSENT)
+        self.assertEqual(
+            ClusterNodeState.objects.get(cluster=self.cluster, node_name="pve1").runtime_generation,
+            0,
+            "the loop's own drop branch must not rewind the generation either",
+        )
         coverage = _coverage(self.cluster, "pve1")
         self.assertFalse(coverage.complete)
         self.assertEqual(coverage.based_on_generation, 2)
@@ -506,6 +515,26 @@ class NodeRuntimeRefusalTests(TestCase):
             ).exists()
         )
 
+    def test_the_per_node_entry_point_reports_retirement_not_a_missing_endpoint(self):
+        """Retirement deletes a cluster's endpoints, so an endpoint test placed
+        before the lifecycle check answers the wrong question -- and sends a 5a1E
+        operator to configure a connection whose projection is finalized."""
+        ProxmoxEndpoint.objects.filter(cluster=self.cluster).delete()
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(
+            retired_at=timezone.now(),
+            enabled=False,
+            retirement_mode=ProxmoxCluster.RetirementMode.VERIFIED,
+        )
+
+        result = refresh_node_runtime(self.cluster, "pve1")
+
+        self.assertEqual(result.error_code, ERROR_ACQUISITION_RETIRED)
+        self.assertFalse(
+            ClusterProjectionCoverage.objects.filter(
+                cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME
+            ).exists()
+        )
+
     def test_a_standalone_host_publishes_like_any_other(self):
         """This phase never reads topology; a one-node standalone scope must work
         exactly as a corosync member does."""
@@ -574,6 +603,59 @@ class NodeRuntimeExhaustedEndpointTests(TestCase):
 
         self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_PROVIDER)
         self.assertTrue(_coverage(self.cluster, "pve2").complete)
+
+
+class NodeRuntimeMidSweepLifecycleTests(TestCase):
+    """A cluster whose lifecycle changes between two nodes of one sweep.
+
+    Untested through two review rounds, and it covers the departed pass's own
+    refusal guard: deleting those three lines otherwise leaves the suite green.
+    """
+
+    def setUp(self):
+        self.cluster = _cluster()
+        _endpoint(self.cluster)
+        _publish_membership(self.cluster, {"pve1": True, "pve2": True, "pve3": True})
+
+    def test_a_cluster_disabled_mid_sweep_writes_nothing_further(self):
+        def disable_after_first(endpoint):
+            ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(enabled=False)
+            return _client(STATUS_BODY)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=disable_after_first):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertTrue(_coverage(self.cluster, "pve1").complete)
+        for node_name in ("pve2", "pve3"):
+            self.assertFalse(
+                ClusterProjectionCoverage.objects.filter(
+                    cluster=self.cluster,
+                    domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME,
+                    node_name=node_name,
+                ).exists(),
+                "a late refusal must create no row at all",
+            )
+        self.assertEqual([node.error_code for node in result.nodes[1:]], [ERROR_ACQUISITION_DISABLED] * 2)
+
+    def test_the_departed_pass_refuses_a_cluster_disabled_mid_sweep(self):
+        ClusterNodeState.objects.filter(cluster=self.cluster, node_name="pve3").update(present=False)
+
+        def disable_after_first(endpoint):
+            ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(enabled=False)
+            return _client(STATUS_BODY)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=disable_after_first):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertEqual(result.departed, 0)
+        self.assertFalse(
+            ClusterProjectionCoverage.objects.filter(
+                cluster=self.cluster,
+                domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME,
+                node_name="pve3",
+            ).exists(),
+            "the departed pass must apply the same refusal the node loop does",
+        )
 
 
 class NodeRuntimeIsolationTests(TestCase):
@@ -651,14 +733,18 @@ class NodeRuntimeEndpointFailoverTests(TestCase):
 #: four review rounds corrected a hand-counted figure without ever changing a
 #: decision, so the numbers live here where they are checked rather than argued.
 #: Total queries for one sweep of N attempted nodes, from a cold projection.
-#: Measured, not derived: exactly ``14 + 15N`` across 1, 2, 3, 5, 10 and 20 nodes.
-SWEEP_QUERIES = {1: 29, 3: 59, 20: 314}
+#: Measured, not derived: exactly ``14 + 19N``, linear at 1, 3 and 20 nodes.
+SWEEP_QUERIES = {1: 33, 3: 71, 20: 394}
 #: One attempted node plus one node the offline gate skips.
-MIXED_SWEEP_QUERIES = 42
+MIXED_SWEEP_QUERIES = 46
 #: One departed node, nothing attempted.
 DEPARTED_SWEEP_QUERIES = 18
 
 
+@override_settings(
+    PVE_HELPER_ENCRYPTION_KEYS=f"k1:{base64.b64encode(b'C' * 32).decode()}",
+    PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID="k1",
+)
 class NodeRuntimeBudgetTests(TestCase):
     """The budget is `a + b·(N − F) + b′·F + c·D`, pinned by measurement.
 
@@ -670,9 +756,23 @@ class NodeRuntimeBudgetTests(TestCase):
     def setUp(self):
         self.cluster = _cluster()
         _endpoint(self.cluster)
+        # A real credential, because the budget must include the credential and
+        # trust resolution `client_for_endpoint` performs per call.
+        set_cluster_credential(self.cluster, token_id="root@pam!budget", token_secret="x" * 32)
 
     def _sweep(self):
-        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=_client(STATUS_BODY)):
+        """Patch the transport, not the client factory.
+
+        Patching `client_for_endpoint` would hide the queries the contract names
+        as part of the per-node cost: `client_for_endpoint` dereferences
+        `endpoint.cluster` and runs `resolve_credential` and
+        `resolve_trust_profile` on every call by design
+        (`cluster_resolver.py:168-184`). A budget measured with that mocked out
+        under-reports production by several queries per node -- and the
+        skipped-node test's stated mechanism would be unobservable, since the
+        attempted node would not resolve them either.
+        """
+        with patch.object(ProxmoxClient, "_request", return_value=STATUS_BODY):
             return refresh_cluster_node_runtime(self.cluster)
 
     def test_provider_calls_are_one_per_attempted_node(self):
