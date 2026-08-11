@@ -470,6 +470,34 @@ class NodeRuntimeMembershipBindingTests(TestCase):
         self.cluster.refresh_from_db()
         self.assertIsNotNone(self.cluster.operational_footprint_at)
 
+    def test_every_row_writing_branch_stamps_the_footprint(self):
+        """Not only the success branch. A cluster whose runtime reads all failed
+        still wrote coverage rows, and that is operational use -- but only the
+        publication branch was held by an assertion, so neutering the other two
+        stamps left the suite green."""
+        error = ProxmoxAPIError("boom")
+
+        branches = {
+            "failed read": (lambda: None, _client(error=error)),
+            "absent node": (
+                lambda: ClusterNodeState.objects.filter(cluster=self.cluster, node_name="pve1").update(present=False),
+                _client(STATUS_BODY),
+            ),
+        }
+
+        for label, (arrange, client) in branches.items():
+            with self.subTest(label):
+                with transaction.atomic():
+                    arrange()
+                    ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(operational_footprint_at=None)
+
+                    with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=client):
+                        refresh_cluster_node_runtime(self.cluster)
+
+                    stamped = ProxmoxCluster.objects.get(pk=self.cluster.pk).operational_footprint_at
+                    self.assertIsNotNone(stamped, f"the {label} branch writes rows and must stamp the footprint")
+                    transaction.set_rollback(True)
+
     def test_membership_columns_are_never_written_by_this_module(self):
         row = ClusterNodeState.objects.get(cluster=self.cluster, node_name="pve1")
         row.nodeid = 7
@@ -876,10 +904,89 @@ class NodeRuntimeEndpointFailoverTests(TestCase):
         # The hung node exhausts both endpoints itself; the siblings still get one.
         self.assertEqual(attempts.count("alpha"), 3)
 
-    def test_an_endpoint_hanging_for_two_nodes_is_condemned(self):
-        """The bound on the rule above. One ambiguous failure is the node's; the
-        same endpoint hanging for a *second* node is evidence about the endpoint,
-        and without a threshold the sweep's transport waste would grow with N."""
+    def test_a_successful_read_clears_the_endpoints_ambiguous_streak(self):
+        """Evidence must run both ways, and the first draft only ran it one.
+
+        Without this the streak only ever grows: nine proven-good answers in one
+        sweep were discarded, and two unlucky hung nodes anywhere in a long sweep
+        condemned an endpoint that had just answered nine times.
+
+        The reset has to be observed on a *later* node, not on the failures
+        themselves: a hung node reports the same code either way, since it falls
+        through to the surviving endpoint. What changes is whether the cleared
+        endpoint is still tried afterwards.
+        """
+        _publish_membership(self.cluster, {f"pve{index}": True for index in range(1, 5)}, generation=2)
+        # alpha hangs for pve1 and pve3 with a success in between; beta always answers.
+        hung_on_alpha = {"pve1", "pve3"}
+        attempts: list[tuple[str, str]] = []
+
+        def fake_client(endpoint):
+            client = MagicMock()
+
+            def get(path, **kwargs):
+                node = path.split("/")[1]
+                attempts.append((endpoint.name, node))
+                if endpoint.name == "alpha" and node in hung_on_alpha:
+                    error = ProxmoxTransportError("node hung", request_sent=True)
+                    error.__cause__ = httpx.ReadTimeout("node hung")
+                    raise error
+                return STATUS_BODY
+
+            client.get.side_effect = get
+            return client
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=fake_client):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertTrue(result.complete)
+        # pve2 succeeded on alpha, clearing its streak, so pve3's failure is a
+        # streak of one and alpha survives to be tried for pve4. Without the
+        # reset, pve1 and pve3 would total two and condemn a healthy endpoint.
+        self.assertIn(
+            ("alpha", "pve4"),
+            attempts,
+            "a successful read must clear the streak, or unrelated hung nodes condemn a working endpoint",
+        )
+        for name in ("pve1", "pve2", "pve3", "pve4"):
+            self.assertTrue(_coverage(self.cluster, name).complete, f"{name} must still publish through beta")
+
+    def test_two_hung_nodes_in_a_row_do_not_starve_the_rest_at_one_endpoint(self):
+        """The `E = 1` starvation shape, which is the common install topology.
+
+        Two adjacent hung nodes once condemned the only endpoint and gave every
+        later sibling `endpoints_exhausted` with zero provider calls -- the same
+        siblings each cycle, since the loop is ordered by node name.
+        """
+        ProxmoxEndpoint.objects.filter(cluster=self.cluster, name="beta").delete()
+        _publish_membership(self.cluster, {f"pve{index}": True for index in range(1, 7)}, generation=2)
+        hung = {"pve1", "pve2"}
+
+        def fake_client(endpoint):
+            client = MagicMock()
+
+            def get(path, **kwargs):
+                if any(f"/{name}/" in path for name in hung):
+                    error = ProxmoxTransportError("node hung", request_sent=True)
+                    error.__cause__ = httpx.ReadTimeout("node hung")
+                    raise error
+                return STATUS_BODY
+
+            client.get.side_effect = get
+            return client
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=fake_client):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        starved = [node.error_code for node in result.nodes if node.error_code == ERROR_ENDPOINTS_EXHAUSTED]
+        self.assertEqual(starved, [], "no sibling may be blanked by two unrelated hung nodes")
+        for name in ("pve3", "pve4", "pve5", "pve6"):
+            self.assertTrue(_coverage(self.cluster, name).complete, f"{name} must still be published")
+
+    def test_an_endpoint_hanging_for_two_nodes_in_a_row_is_condemned(self):
+        """The bound. One ambiguous failure is the node's; an uninterrupted run of
+        them is evidence about the endpoint, and without a threshold the sweep's
+        transport waste would grow with N."""
         attempts: list[str] = []
 
         def fake_client(endpoint):

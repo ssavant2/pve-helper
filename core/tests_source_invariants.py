@@ -1400,6 +1400,41 @@ class NodeRuntimeColumnOwnershipInvariantTests(SimpleTestCase):
             f"({NODE_RUNTIME_OWNER} lines {', '.join(unpacked)}).",
         )
 
+    #: Writes that reach a column without a named keyword, an attribute target or a
+    #: `save()` this module's other arms can read. Each one carried a green mutant
+    #: that wrote a membership column: `setattr` hides the attribute name from the
+    #: assignment arm, and `bulk_update` takes its field list positionally.
+    OPAQUE_WRITE_CALLS = frozenset({"setattr", "bulk_update", "bulk_create"})
+
+    def test_no_opaque_write_form_is_used_on_the_shared_row(self):
+        """The arms above all read a *name*. These forms do not present one.
+
+        Refused outright rather than analysed: deciding what
+        `setattr(row, name, value)` writes means evaluating `name`, and this
+        module has no legitimate use for any of them. `create`/`update_or_create`
+        are absent for a different reason -- 5a1C never creates a
+        ``ClusterNodeState`` row at all, which its own tests assert behaviourally.
+        """
+        offenders = sorted(
+            {
+                f"{node.func.id if isinstance(node.func, ast.Name) else node.func.attr}:{node.lineno}"
+                for node in ast.walk(self._owner_tree())
+                if isinstance(node, ast.Call)
+                and (
+                    (isinstance(node.func, ast.Name) and node.func.id in self.OPAQUE_WRITE_CALLS)
+                    or (isinstance(node.func, ast.Attribute) and node.func.attr in self.OPAQUE_WRITE_CALLS)
+                )
+            }
+        )
+
+        self.assertEqual(
+            offenders,
+            [],
+            "The node-runtime publisher uses a write form that hides the column "
+            "name from every ownership check in this class. Assign the runtime "
+            f"attribute directly and save with update_fields: {', '.join(offenders)}",
+        )
+
     def test_membership_columns_are_never_assigned_by_the_runtime_publisher(self):
         offenders = sorted(
             {

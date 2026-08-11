@@ -71,10 +71,11 @@ ERROR_NODE_NOT_A_MEMBER = "node_not_a_member"
 #: unreachable, and the two need different repairs.
 ERROR_ENDPOINTS_EXHAUSTED = "endpoints_exhausted"
 
-#: Distinct nodes an endpoint must fail *ambiguously* for before the sweep
-#: stops trying it. One is the target node's fault as readily as the relay's;
-#: two at once is evidence about the relay. See ``SweepEndpointHealth``.
-AMBIGUOUS_FAILURES_BEFORE_CONDEMNED = 2
+#: Ambiguous failures **in a row** an endpoint must produce before the sweep
+#: stops trying it. One is the target node's fault as readily as the relay's; a
+#: run of them, uninterrupted by any successful read, is evidence about the
+#: relay. A success resets the streak. See ``SweepEndpointHealth``.
+CONSECUTIVE_AMBIGUOUS_FAILURES_BEFORE_CONDEMNED = 2
 
 #: Columns this phase owns. Every write names them explicitly: a bare ``save()``
 #: would carry membership columns from a stale in-memory snapshot, which is the
@@ -518,16 +519,26 @@ class SweepEndpointHealth:
     - **Ambiguous** -- a transport failure that may have been delivered, such as
       a read timeout. It is attributable to the *target node* just as readily as
       to the relay, so condemning on the first one starves every later sibling
-      with ``endpoints_exhausted`` and zero calls. Condemned only once the same
-      endpoint has failed this way for **two distinct nodes**: two nodes hanging
-      at once is a far stronger claim than one relay being unwell, and the
-      threshold keeps the sweep's transport waste bounded at ``2·E`` timeouts
-      instead of ``N·E``.
+      with ``endpoints_exhausted`` and zero calls. Condemned only after
+      ``CONSECUTIVE_AMBIGUOUS_FAILURES_BEFORE_CONDEMNED`` failures **in a row**,
+      because a run of them is a claim about the relay while an isolated one is a
+      claim about the node -- and never when it is the last usable endpoint,
+      because ambiguous evidence must not end the sweep.
+
+    **Evidence runs both ways, and the first draft only ran it one.** A
+    successful read clears the endpoint's ambiguous streak. Without that, nine
+    proven-good answers in one sweep were discarded and the tenth hung node
+    condemned an endpoint that had just answered nine times -- and at ``E = 1``
+    two unlucky nodes starved every later sibling, deterministically, in the same
+    order every cycle. Counting *distinct* nodes rather than a streak did not
+    help: each endpoint is tried at most once per node, so distinctness was
+    structurally identical to a raw count and carried none of the argument the
+    docstring was making with it.
     """
 
     def __init__(self):
         self._condemned: set[str] = set()
-        self._ambiguous: dict[str, set[str]] = {}
+        self._ambiguous: dict[str, int] = {}
 
     def is_condemned(self, endpoint_name: str) -> bool:
         return endpoint_name in self._condemned
@@ -535,10 +546,26 @@ class SweepEndpointHealth:
     def condemn(self, endpoint_name: str) -> None:
         self._condemned.add(endpoint_name)
 
-    def record_ambiguous(self, endpoint_name: str, node_name: str) -> None:
-        nodes = self._ambiguous.setdefault(endpoint_name, set())
-        nodes.add(node_name)
-        if len(nodes) >= AMBIGUOUS_FAILURES_BEFORE_CONDEMNED:
+    def record_success(self, endpoint_name: str) -> None:
+        """The endpoint answered. Its ambiguous streak is over."""
+        self._ambiguous.pop(endpoint_name, None)
+
+    def record_ambiguous(self, endpoint_name: str, *, usable_count: int) -> None:
+        """Record an ambiguous failure; condemn only if an alternative survives.
+
+        ``usable_count`` is how many endpoints this node still had to choose
+        from. **Condemning the last one is never right**, because the evidence is
+        ambiguous by definition: at ``E = 1`` it converts a slow sweep into no
+        data at all plus a false diagnosis, marking nodes that would have
+        answered as unreachable. Letting each node pay its own timeout is exactly
+        the ``(N − F) × 15s`` bound the contract states and 5a1D sizes against.
+
+        A *proven* endpoint-wide failure is different and is condemned even when
+        it is the last one: there, skipping is both faster and correct.
+        """
+        streak = self._ambiguous.get(endpoint_name, 0) + 1
+        self._ambiguous[endpoint_name] = streak
+        if streak >= CONSECUTIVE_AMBIGUOUS_FAILURES_BEFORE_CONDEMNED and usable_count > 1:
             self._condemned.add(endpoint_name)
 
 
@@ -560,6 +587,9 @@ def _read_node_status(
         client = client_for_endpoint(endpoint)
         try:
             payload = client.get(f"nodes/{quote(node_name, safe='')}/status")
+            # Proof the endpoint answers. Without it the streak below only ever
+            # grows, and a run of unrelated hung nodes condemns a healthy relay.
+            endpoint_health.record_success(endpoint.name)
             return normalize_node_status(payload), ""
         except InvalidNodeStatusPayload:
             # Node-specific: this endpoint answered fine, the body was unusable.
@@ -588,7 +618,7 @@ def _read_node_status(
             if code == ERROR_PROVIDER_UNAUTHORIZED or (isinstance(exc, ProxmoxTransportError) and not exc.request_sent):
                 endpoint_health.condemn(endpoint.name)
             elif isinstance(exc, ProxmoxTransportError):
-                endpoint_health.record_ambiguous(endpoint.name, node_name)
+                endpoint_health.record_ambiguous(endpoint.name, usable_count=len(usable))
             last_code = code
     return None, last_code
 
