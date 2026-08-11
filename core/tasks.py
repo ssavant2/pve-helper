@@ -31,6 +31,8 @@ from .services.audit_events import record_audit_event
 from .services.cluster_footprint import FOOTPRINT_SCAN_OBSERVATION, stamp_operational_footprint
 from .services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from .services.cluster_lifecycle_lock import scan_admission_lock
+from .services.cluster_membership import refresh_cluster_membership
+from .services.cluster_node_runtime import refresh_cluster_node_runtime
 from .services.cluster_resolver import client_for_endpoint, cluster_clients
 from .services.cluster_scopes import managed_clusters
 from .services.cluster_state_identity import cluster_advisory_lock_id
@@ -102,6 +104,74 @@ SPACE_SNAPSHOT_RETENTION_DAYS = 8
 logger = logging.getLogger(__name__)
 
 CURRENT_GUEST_REFRESH_LOCK_ID = 0x50564547554501
+HOST_PROJECTION_REFRESH_LOCK_ID = 0x50564548505201
+
+
+def _refresh_cluster_host_projection(cluster) -> dict[str, object]:
+    """Acquire one cluster's membership and node runtime, once at a time.
+
+    Single-flight is load-bearing rather than defensive here. 5a1C's sweep is
+    bounded by one client timeout per attempted node, so a degraded twenty-node
+    cluster can take minutes against a one-minute cadence; without the
+    non-blocking lock the cycles stack until the worker pool is exhausted. A
+    cluster whose refresh is already running is skipped, never queued behind it.
+
+    The two domains are isolated on purpose. A membership failure does not skip
+    runtime: 5a1C is explicitly allowed to run against the previous-good member
+    list, and refusing would turn one failed call into a total blackout of node
+    facts that are still perfectly current.
+    """
+    lock_id = cluster_advisory_lock_id(HOST_PROJECTION_REFRESH_LOCK_ID, cluster)
+    acquired = connection.vendor != "postgresql"
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", [lock_id])
+            acquired = bool(cursor.fetchone()[0])
+    if not acquired:
+        return {"cluster_key": cluster.key, "skipped": True, "reason": "refresh already running"}
+
+    result: dict[str, object] = {"cluster_key": cluster.key, "skipped": False}
+    try:
+        try:
+            membership = refresh_cluster_membership(cluster)
+            result["membership_complete"] = membership.complete
+            result["membership_error"] = membership.error_code
+        except Exception:
+            logger.warning("Membership refresh failed for cluster=%s", cluster.key, exc_info=True)
+            result["membership_complete"] = False
+            result["membership_error"] = "unhandled"
+
+        try:
+            runtime = refresh_cluster_node_runtime(cluster)
+            result["runtime_targets"] = runtime.targets
+            result["runtime_error"] = runtime.error_code
+            result["runtime_departed"] = runtime.departed
+        except Exception:
+            logger.warning("Node-runtime refresh failed for cluster=%s", cluster.key, exc_info=True)
+            result["runtime_targets"] = 0
+            result["runtime_error"] = "unhandled"
+    finally:
+        if connection.vendor == "postgresql":
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
+    return result
+
+
+def refresh_cluster_host_projection() -> dict[str, object]:
+    """Refresh the host projection for every enabled cluster.
+
+    One cluster's failure never stops a sibling: each is independently guarded and
+    reported, because a shared exception path would let one unreachable
+    connection blank an entire installation's node facts.
+    """
+    results = []
+    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
+        try:
+            results.append(_refresh_cluster_host_projection(cluster))
+        except Exception:
+            logger.warning("Host-projection refresh raised for cluster=%s", cluster.key, exc_info=True)
+            results.append({"cluster_key": cluster.key, "skipped": False, "error": "unhandled"})
+    return {"clusters": results}
 
 
 def refresh_all_storage_metadata() -> dict[str, object]:
