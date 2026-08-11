@@ -14,8 +14,8 @@ membership contract rests on and it had never been observed:
 version, and an evidence row is per host.
 
 The shapes are sanitized: `id`, `ip` and `ssl_fingerprint` are placeholders, and
-no full response is stored. What matters here is the key set, the types and the
-presence or absence of the cluster row.
+the node-runtime artifact stores schema only, never values. What matters here is
+the key set, types, nullability and the presence or absence of the cluster row.
 
 **What is and is not asserted through the state machine.** The two `cluster/status`
 shapes are: they go through `classify_role` and `evaluate_role_transition`, so a
@@ -71,6 +71,154 @@ ONE_NODE_COROSYNC_CLUSTER_STATUS = [
         "type": "node",
     },
 ]
+
+#: Exact source used for the permission contract. The digest makes a later
+#: documentation change visible instead of silently rewriting this evidence.
+PVE_API_SCHEMA_PROVENANCE = {
+    "url": "https://pve.proxmox.com/pve-docs/api-viewer/apidoc.js",
+    "sha256": "9def8f13611184ee1c7d0399713130dfc4a065701d0d91a69b9c03df929344e9",
+    "captured_at": "2026-08-11",
+}
+
+#: Successful standalone read metadata. ``call_count`` is the provider cost of
+#: one logical read, not the number of evidence samples in the ledger below.
+#: Permissions are copied exactly from the official schema identified above;
+#: the live Administrator reads prove the shapes, not minimum privilege.
+STANDALONE_READ_CONTRACT = {
+    "cluster/status": {
+        "status_code": 200,
+        "call_count": 1,
+        "permissions": {"kind": "check", "path": "/", "privileges": ("Sys.Audit",)},
+    },
+    "nodes": {
+        "status_code": 200,
+        "call_count": 1,
+        "permissions": {"kind": "user", "user": "all"},
+    },
+    "nodes/{node}/status": {
+        "status_code": 200,
+        "call_count": 1,
+        "permissions": {"kind": "check", "path": "/nodes/{node}", "privileges": ("Sys.Audit",)},
+    },
+}
+
+#: Every live request used to build U1, separated from per-operation cost. The
+#: 2026-08-10 row is the original evidence session; the four 2026-08-11 calls
+#: are the correction pass (three status samples to observe numeric variation,
+#: then one full nodes shape). All were GETs; no provider mutation was issued.
+U1_EVIDENCE_LEDGER = (
+    {
+        "date": "2026-08-10",
+        "credential_state": "administrator",
+        "path": "cluster/status",
+        "status_code": 200,
+        "call_count": 1,
+    },
+    {
+        "date": "2026-08-10",
+        "credential_state": "administrator",
+        "path": "nodes",
+        "status_code": 200,
+        "call_count": 1,
+    },
+    {
+        "date": "2026-08-10",
+        "credential_state": "administrator",
+        "path": "nodes/{node}/status",
+        "status_code": 200,
+        "call_count": 1,
+    },
+    {
+        "date": "2026-08-10",
+        "credential_state": "acl_less",
+        "path": "cluster/status",
+        "status_code": 403,
+        "call_count": 1,
+    },
+    {
+        "date": "2026-08-10",
+        "credential_state": "acl_less",
+        "path": "nodes",
+        "status_code": 200,
+        "call_count": 1,
+    },
+    {
+        "date": "2026-08-10",
+        "credential_state": "revoked",
+        "path": "nodes",
+        "status_code": 401,
+        "call_count": 1,
+    },
+    {
+        "date": "2026-08-11",
+        "credential_state": "administrator",
+        "path": "nodes/{node}/status",
+        "status_code": 200,
+        "call_count": 3,
+    },
+    {
+        "date": "2026-08-11",
+        "credential_state": "administrator",
+        "path": "nodes",
+        "status_code": 200,
+        "call_count": 1,
+    },
+)
+
+#: Schema-only shape from the successful 2026-08-11 ``GET nodes`` correction
+#: read. Unlike the ACL-less shape below, all runtime fields are present.
+STANDALONE_NODES_SHAPE = [
+    {
+        "cpu": "float",
+        "disk": "int",
+        "id": "str",
+        "level": "str",
+        "maxcpu": "int",
+        "maxdisk": "int",
+        "maxmem": "int",
+        "mem": "int",
+        "node": "str",
+        "ssl_fingerprint": "str",
+        "status": "str",
+        "type": "str",
+        "uptime": "int",
+    },
+]
+STANDALONE_NODES_NULLABLE_KEYS = frozenset()
+
+#: Sanitized key/type/nullability shape from one successful scoped
+#: `GET nodes/pve301/status`, captured 2026-08-11 from standalone PVE 9.2.10.
+#: Three harmless reads observed `cpu` and `wait` as both int zero and float under
+#: load, hence `number`; every listed key was present and non-null. Nested values
+#: are represented only by their types, never copied from the host.
+STANDALONE_NODE_STATUS_SHAPE = {
+    "boot-info": {"mode": "str", "secureboot": "int"},
+    "cpu": "number",
+    "cpuinfo": {
+        "cores": "int",
+        "cpus": "int",
+        "family": "str",
+        "flags": "str",
+        "hvm": "str",
+        "mhz": "str",
+        "model": "str",
+        "sockets": "int",
+        "user_hz": "int",
+        "vendor": "str",
+    },
+    "current-kernel": {"machine": "str", "release": "str", "sysname": "str", "version": "str"},
+    "idle": "int",
+    "ksm": {"shared": "int"},
+    "kversion": "str",
+    "loadavg": ["str"],
+    "memory": {"available": "int", "free": "int", "total": "int", "used": "int"},
+    "pveversion": "str",
+    "rootfs": {"avail": "int", "free": "int", "total": "int", "used": "int"},
+    "swap": {"free": "int", "total": "int", "used": "int"},
+    "uptime": "int",
+    "wait": "number",
+}
+STANDALONE_NODE_STATUS_NULLABLE_KEYS = frozenset()
 
 
 def observation_from(
@@ -131,6 +279,160 @@ def observation_from_failure(accepted_members: frozenset[str] = frozenset()) -> 
 
 
 class StandaloneShapeTests(SimpleTestCase):
+    def test_the_standalone_membership_key_and_type_shape_is_pinned(self):
+        row = STANDALONE_CLUSTER_STATUS[0]
+        self.assertEqual(
+            set(row),
+            {"id", "ip", "level", "local", "name", "nodeid", "online", "type"},
+        )
+        self.assertEqual(
+            {key: type(value).__name__ for key, value in row.items()},
+            {
+                "id": "str",
+                "ip": "str",
+                "level": "str",
+                "local": "int",
+                "name": "str",
+                "nodeid": "int",
+                "online": "int",
+                "type": "str",
+            },
+        )
+        self.assertNotIn(None, row.values())
+
+    def test_the_one_node_corosync_key_and_type_shape_is_pinned(self):
+        cluster_row, node_row = ONE_NODE_COROSYNC_CLUSTER_STATUS
+        self.assertEqual(set(cluster_row), {"id", "name", "nodes", "quorate", "type", "version"})
+        self.assertEqual(set(node_row), set(STANDALONE_CLUSTER_STATUS[0]))
+        self.assertEqual(
+            {key: type(value).__name__ for key, value in cluster_row.items()},
+            {"id": "str", "name": "str", "nodes": "int", "quorate": "int", "type": "str", "version": "int"},
+        )
+        self.assertEqual(
+            {key: type(value).__name__ for key, value in node_row.items()},
+            {
+                "id": "str",
+                "ip": "str",
+                "level": "str",
+                "local": "int",
+                "name": "str",
+                "nodeid": "int",
+                "online": "int",
+                "type": "str",
+            },
+        )
+        self.assertNotIn(None, cluster_row.values())
+        self.assertNotIn(None, node_row.values())
+
+    def test_all_three_successful_reads_have_exact_permissions_status_and_call_cost(self):
+        self.assertEqual(
+            STANDALONE_READ_CONTRACT,
+            {
+                "cluster/status": {
+                    "status_code": 200,
+                    "call_count": 1,
+                    "permissions": {"kind": "check", "path": "/", "privileges": ("Sys.Audit",)},
+                },
+                "nodes": {
+                    "status_code": 200,
+                    "call_count": 1,
+                    "permissions": {"kind": "user", "user": "all"},
+                },
+                "nodes/{node}/status": {
+                    "status_code": 200,
+                    "call_count": 1,
+                    "permissions": {
+                        "kind": "check",
+                        "path": "/nodes/{node}",
+                        "privileges": ("Sys.Audit",),
+                    },
+                },
+            },
+        )
+
+    def test_permission_provenance_and_complete_evidence_call_ledger_are_pinned(self):
+        self.assertEqual(
+            PVE_API_SCHEMA_PROVENANCE,
+            {
+                "url": "https://pve.proxmox.com/pve-docs/api-viewer/apidoc.js",
+                "sha256": "9def8f13611184ee1c7d0399713130dfc4a065701d0d91a69b9c03df929344e9",
+                "captured_at": "2026-08-11",
+            },
+        )
+        self.assertEqual(sum(row["call_count"] for row in U1_EVIDENCE_LEDGER), 10)
+        self.assertEqual(
+            [
+                (row["date"], row["credential_state"], row["path"], row["status_code"], row["call_count"])
+                for row in U1_EVIDENCE_LEDGER
+            ],
+            [
+                ("2026-08-10", "administrator", "cluster/status", 200, 1),
+                ("2026-08-10", "administrator", "nodes", 200, 1),
+                ("2026-08-10", "administrator", "nodes/{node}/status", 200, 1),
+                ("2026-08-10", "acl_less", "cluster/status", 403, 1),
+                ("2026-08-10", "acl_less", "nodes", 200, 1),
+                ("2026-08-10", "revoked", "nodes", 401, 1),
+                ("2026-08-11", "administrator", "nodes/{node}/status", 200, 3),
+                ("2026-08-11", "administrator", "nodes", 200, 1),
+            ],
+        )
+
+    def test_the_successful_nodes_shape_is_pinned_without_values(self):
+        self.assertEqual(
+            STANDALONE_NODES_SHAPE,
+            [
+                {
+                    "cpu": "float",
+                    "disk": "int",
+                    "id": "str",
+                    "level": "str",
+                    "maxcpu": "int",
+                    "maxdisk": "int",
+                    "maxmem": "int",
+                    "mem": "int",
+                    "node": "str",
+                    "ssl_fingerprint": "str",
+                    "status": "str",
+                    "type": "str",
+                    "uptime": "int",
+                }
+            ],
+        )
+        self.assertEqual(STANDALONE_NODES_NULLABLE_KEYS, frozenset())
+
+    def test_the_successful_node_status_shape_is_pinned_without_values(self):
+        self.assertEqual(
+            STANDALONE_NODE_STATUS_SHAPE,
+            {
+                "boot-info": {"mode": "str", "secureboot": "int"},
+                "cpu": "number",
+                "cpuinfo": {
+                    "cores": "int",
+                    "cpus": "int",
+                    "family": "str",
+                    "flags": "str",
+                    "hvm": "str",
+                    "mhz": "str",
+                    "model": "str",
+                    "sockets": "int",
+                    "user_hz": "int",
+                    "vendor": "str",
+                },
+                "current-kernel": {"machine": "str", "release": "str", "sysname": "str", "version": "str"},
+                "idle": "int",
+                "ksm": {"shared": "int"},
+                "kversion": "str",
+                "loadavg": ["str"],
+                "memory": {"available": "int", "free": "int", "total": "int", "used": "int"},
+                "pveversion": "str",
+                "rootfs": {"avail": "int", "free": "int", "total": "int", "used": "int"},
+                "swap": {"free": "int", "total": "int", "used": "int"},
+                "uptime": "int",
+                "wait": "number",
+            },
+        )
+        self.assertEqual(STANDALONE_NODE_STATUS_NULLABLE_KEYS, frozenset())
+
     def test_a_standalone_host_returns_no_cluster_row(self):
         self.assertEqual([row["type"] for row in STANDALONE_CLUSTER_STATUS], ["node"])
 
@@ -237,6 +539,15 @@ class PermissionDeniedShapeTests(SimpleTestCase):
         self.assertEqual(len(PERMISSION_REDUCED_NODES), 1)
         self.assertEqual(PERMISSION_REDUCED_NODES[0]["node"], "pve301")
         self.assertEqual(PERMISSION_REDUCED_NODES[0]["status"], "online")
+        self.assertEqual(
+            set(PERMISSION_REDUCED_NODES[0]),
+            {"id", "level", "node", "ssl_fingerprint", "status", "type"},
+        )
+        self.assertEqual(
+            {key: type(value).__name__ for key, value in PERMISSION_REDUCED_NODES[0].items()},
+            {"id": "str", "level": "str", "node": "str", "ssl_fingerprint": "str", "status": "str", "type": "str"},
+        )
+        self.assertNotIn(None, PERMISSION_REDUCED_NODES[0].values())
 
     def test_a_permission_reduced_node_row_is_missing_keys_not_nulled(self):
         # The failure mode this creates: `row["cpu"]` raises KeyError, and

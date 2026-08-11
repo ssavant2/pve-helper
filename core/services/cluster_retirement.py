@@ -20,6 +20,9 @@ from django.utils import timezone
 
 from core.models import (
     ClusterCredential,
+    ClusterMembershipState,
+    ClusterNodeState,
+    ClusterProjectionCoverage,
     ClusterStorage,
     ClusterStorageMount,
     ClusterStorageNodeState,
@@ -45,6 +48,7 @@ from core.services.audit_events import (
 )
 from core.services.cluster_identity import ClusterIdentityError, discover_cluster_identity
 from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock, scan_admission_lock
+from core.services.cluster_projection import ClusterProjectionRetirementResult, retire_cluster_projection
 from core.services.cluster_resolver import ClusterResolutionError, client_for_endpoint, enabled_endpoints
 from core.services.cluster_scopes import historical_clusters
 from core.services.cluster_state_identity import invalidate_cluster_cache
@@ -226,6 +230,7 @@ class RetirementResult:
     audit_operations: AuditRetirementResult
     storage: StorageRetirementResult
     guest_inventory: GuestInventoryRetirementResult
+    host_projection: ClusterProjectionRetirementResult
     endpoints_deleted: int
     credential_deleted: bool
     trust_deleted: bool
@@ -612,6 +617,7 @@ def _retirement_audit_details(
     audit: AuditRetirementResult,
     storage: StorageRetirementResult,
     guest_inventory: GuestInventoryRetirementResult,
+    host_projection: ClusterProjectionRetirementResult,
 ) -> dict[str, object]:
     return {
         "display_name": cluster.display_name,
@@ -647,6 +653,9 @@ def _retirement_audit_details(
             "storage_catalog_states_deleted": storage.catalog_states_deleted,
             "current_guests_deleted": guest_inventory.guest_rows_deleted,
             "current_guest_states_deleted": guest_inventory.state_rows_deleted,
+            "cluster_membership_states_deleted": host_projection.membership_rows_deleted,
+            "cluster_node_states_deleted": host_projection.node_rows_deleted,
+            "cluster_projection_coverages_deleted": host_projection.coverage_rows_deleted,
         },
         "storage_mount_refs": list(storage.mount_refs),
         "storage_mount_refs_omitted": storage.mount_refs_omitted,
@@ -688,6 +697,9 @@ def _assert_retirement_postconditions(cluster: ProxmoxCluster, mode: str) -> Non
             ProxmoxEndpoint.objects.filter(cluster_id=cluster.pk).exists(),
             CurrentGuestInventory.objects.filter(cluster_id=cluster.pk).exists(),
             CurrentGuestInventoryState.objects.filter(cluster_id=cluster.pk).exists(),
+            ClusterMembershipState.objects.filter(cluster_id=cluster.pk).exists(),
+            ClusterNodeState.objects.filter(cluster_id=cluster.pk).exists(),
+            ClusterProjectionCoverage.objects.filter(cluster_id=cluster.pk).exists(),
             StorageCatalogState.objects.filter(cluster_id=cluster.pk).exists(),
             ClusterStorageNodeState.objects.filter(cluster_storage__cluster_id=cluster.pk).exists(),
             ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster_id=cluster.pk).exists(),
@@ -833,6 +845,7 @@ def _retire_cluster_atomic(
                     unmanaged_at=retired_at,
                 )
                 guest_inventory = retire_cluster_guest_inventory(locked)
+                host_projection = retire_cluster_projection(locked)
 
                 event.details = _retirement_audit_details(
                     locked,
@@ -848,6 +861,7 @@ def _retire_cluster_atomic(
                     audit=audit_operations,
                     storage=storage,
                     guest_inventory=guest_inventory,
+                    host_projection=host_projection,
                 )
                 type(event).objects.filter(pk=event.pk).update(details=event.details)
 
@@ -881,6 +895,7 @@ def _retire_cluster_atomic(
                     audit_operations=audit_operations,
                     storage=storage,
                     guest_inventory=guest_inventory,
+                    host_projection=host_projection,
                     endpoints_deleted=endpoints_deleted,
                     credential_deleted=credential_deleted,
                     trust_deleted=trust_deleted,

@@ -11,6 +11,9 @@ from django.utils import timezone
 from core.models import (
     AuditEvent,
     ClusterCredential,
+    ClusterMembershipState,
+    ClusterNodeState,
+    ClusterProjectionCoverage,
     ClusterStorage,
     ClusterTransportTrust,
     ConsoleSession,
@@ -139,6 +142,9 @@ class ClusterRetirementCoordinatorTests(TestCase):
             observed_at=timezone.now(),
         )
         CurrentGuestInventoryState.objects.create(cluster=self.cluster, complete=True)
+        membership = ClusterMembershipState.objects.create(cluster=self.cluster)
+        node_state = ClusterNodeState.objects.create(cluster=self.cluster, node_name="pve1")
+        coverage = ClusterProjectionCoverage.objects.create(cluster=self.cluster, domain="membership")
         definition = ClusterStorage.objects.create(
             cluster=self.cluster,
             storage_id="local",
@@ -198,6 +204,9 @@ class ClusterRetirementCoordinatorTests(TestCase):
         self.assertFalse(ClusterTransportTrust.objects.filter(cluster=self.cluster).exists())
         self.assertFalse(CurrentGuestInventory.objects.filter(pk=current.pk).exists())
         self.assertFalse(CurrentGuestInventoryState.objects.filter(cluster=self.cluster).exists())
+        self.assertFalse(ClusterMembershipState.objects.filter(pk=membership.pk).exists())
+        self.assertFalse(ClusterNodeState.objects.filter(pk=node_state.pk).exists())
+        self.assertFalse(ClusterProjectionCoverage.objects.filter(pk=coverage.pk).exists())
         self.assertIsNotNone(action.deleted_at)
         self.assertEqual(run.status, ScheduledActionRun.Status.CANCELLED)
         self.assertEqual(run.error, CODE_RETIRED_BEFORE_START)
@@ -218,6 +227,9 @@ class ClusterRetirementCoordinatorTests(TestCase):
         self.assertEqual(event.details["identity_verification"], "matched")
         self.assertEqual(event.details["credential_token_id"], "retire@pve!helper")
         self.assertEqual(event.details["endpoint_count"], 1)
+        self.assertEqual(event.details["cleanup"]["cluster_membership_states_deleted"], 1)
+        self.assertEqual(event.details["cleanup"]["cluster_node_states_deleted"], 1)
+        self.assertEqual(event.details["cleanup"]["cluster_projection_coverages_deleted"], 1)
         self.assertNotIn("sealed-test-secret", str(event.details))
         delivery = LogForwardingDelivery.objects.get(audit_event_id=event.pk)
         self.assertEqual(delivery.payload["action"], "cluster.retired")

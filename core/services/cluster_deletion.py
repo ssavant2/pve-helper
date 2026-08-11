@@ -49,6 +49,9 @@ from django.db import transaction
 from core.models import (
     AuditEvent,
     ClusterCredential,
+    ClusterMembershipState,
+    ClusterNodeState,
+    ClusterProjectionCoverage,
     ClusterStorage,
     ClusterTransportTrust,
     CurrentGuestInventory,
@@ -138,6 +141,9 @@ def _endpoint_snapshots(cluster_id: int) -> tuple[tuple[dict[str, object], ...],
 # blocks eligibility. ``ClusterStorage`` CASCADEs its node states, mount bindings,
 # volume coverages and observations, so its count includes them.
 _RECONSTRUCTIBLE_RELATIONS: tuple[tuple[str, type, str], ...] = (
+    ("projection_coverage", ClusterProjectionCoverage, "cluster_id"),
+    ("node_states", ClusterNodeState, "cluster_id"),
+    ("membership_state", ClusterMembershipState, "cluster_id"),
     ("current_guests", CurrentGuestInventory, "cluster_id"),
     ("inventory_state", CurrentGuestInventoryState, "cluster_id"),
     ("storage_catalog_state", StorageCatalogState, "cluster_id"),

@@ -38,6 +38,7 @@ FOOTPRINT_PROVIDER_OPERATION = "provider_operation"
 FOOTPRINT_SCAN_OBSERVATION = "scan_observation"
 FOOTPRINT_GUEST_PROJECTION = "guest_projection"
 FOOTPRINT_STORAGE_PROJECTION = "storage_projection"
+FOOTPRINT_HOST_PROJECTION = "host_projection"
 FOOTPRINT_CONSOLE_SESSION = "console_session"
 # The inventory the app collects by itself the moment a connection is added. It
 # is provider work, but nobody asked for it as an operation: it is the add
@@ -63,6 +64,7 @@ RECONSTRUCTIBLE_FOOTPRINT_REASONS = frozenset(
         FOOTPRINT_SCAN_OBSERVATION,
         FOOTPRINT_GUEST_PROJECTION,
         FOOTPRINT_STORAGE_PROJECTION,
+        FOOTPRINT_HOST_PROJECTION,
         FOOTPRINT_INVENTORY_BOOTSTRAP,
     }
 )

@@ -1752,23 +1752,14 @@ class ClusterMembershipState(TimestampedModel):
     Cluster-grain: node-grain facts live in :class:`ClusterNodeState`. Published
     transactionally by the 5a1B reconciler; web processes only read it.
 
-    **The topology role is stored as two columns, not one, and that is the point
-    of this table existing before the reconciler.** `cluster_topology_role`
-    decides transitions from typed roles and refuses anything else, because
-    tolerating an unreadable value was tried inside that module and produced a
-    silent group flip, then a silently deleted provider-work block, then a
-    permanent lockout in the exit built to fix it (5a0B rounds 3-5). The fault
-    was that a phase with no column cannot decide what a bad column value means.
-    Here it can:
+    The registered topology role deliberately remains free text at rest. A value
+    written by a newer build reads as ``UNKNOWN`` and is re-adopted only from a
+    later complete observation; it never guesses a Hosts/Clusters group.
 
-    * :attr:`topology_role` unreadable -> read as ``UNKNOWN``. Nothing blocks,
-      nothing flips: it is re-adopted from the next complete observation, which
-      is what ``UNKNOWN`` already means;
-    * :attr:`transition_pending` is **its own boolean**, so an unreadable
-      :attr:`pending_topology_role` can never delete a provider-work block by
-      collapsing to "not pending". The block survives with an unnamed direction,
-      and the operator confirmation names the role instead of a refusal waiting
-      for a machine that may never answer.
+    The pending-transition columns do **not** belong to this schema slice. They
+    land with 5a1G's confirmation surface, because persisting a provider-work
+    block before its operator exit exists would strand the cluster. Keeping that
+    schema out of 5a1A is what makes this unreadable-value tolerance non-blocking.
     """
 
     cluster = models.OneToOneField(
@@ -1779,11 +1770,7 @@ class ClusterMembershipState(TimestampedModel):
     #: Free text on purpose: a value this build does not recognize must be
     #: readable and re-adoptable, not a database error in a periodic reconciler.
     topology_role = models.CharField(max_length=32, default="unknown")
-    #: Whether an identity hand-off is awaiting operator confirmation. Stored
-    #: rather than derived from `pending_topology_role`, so an unreadable
-    #: direction cannot silently unblock provider work.
-    transition_pending = models.BooleanField(default=False)
-    pending_topology_role = models.CharField(max_length=32, blank=True, default="")
+    membership_generation = models.PositiveBigIntegerField(default=0)
     member_count = models.PositiveIntegerField(default=0)
     quorate = models.BooleanField(default=False)
     #: The node that answered the read, from `cluster/status`'s `local=1` row.
@@ -1807,17 +1794,6 @@ class ClusterMembershipState(TimestampedModel):
         except ValueError:
             return TopologyRole.UNKNOWN
 
-    def pending_role(self):
-        """Return the pending direction, or ``UNKNOWN`` when there is none or it
-        cannot be read. Never consult this to decide *whether* something is
-        pending -- :attr:`transition_pending` owns that."""
-        from core.services.cluster_topology_role import TopologyRole
-
-        try:
-            return TopologyRole(self.pending_topology_role)
-        except ValueError:
-            return TopologyRole.UNKNOWN
-
     @property
     def role_is_readable(self) -> bool:
         """False when the stored role came from a build this one cannot read.
@@ -1832,12 +1808,14 @@ class ClusterMembershipState(TimestampedModel):
 
 
 class ClusterNodeState(TimestampedModel):
-    """One `NodeRef`'s current membership facts. Module 5 phase 5a1A.
+    """One `NodeRef`'s typed membership/runtime projection. Module 5 phase 5a1A.
 
     This is the discovery projection `docs/node-enrollment.local.md` requires and
-    the membership half of the Hosts table. Runtime facts (CPU, memory, uptime,
-    versions) are a separate domain published by 5a1C into its own columns; none
-    are stubbed here, because a deferred capability does not get a placeholder.
+    the row 5a1C publishes node-runtime facts into. Membership and runtime keep
+    separate generation fields and coverage rows, so one targeted runtime update
+    cannot make older membership evidence look fresh (or vice versa). Missing
+    runtime metrics stay ``NULL``/blank; an absent provider key is unknown, never
+    a healthy-looking zero.
 
     Rows are a **current projection, not history**. A node absent from a complete
     generation becomes ``present=False`` rather than being deleted, because
@@ -1853,9 +1831,9 @@ class ClusterNodeState(TimestampedModel):
         # single-column index would be a strict prefix of both.
         db_index=False,
     )
-    node = models.CharField(max_length=120)
+    node_name = models.CharField(max_length=120)
     #: Corosync node id. **Evidence only, never identity** -- it is reassignable.
-    nodeid = models.IntegerField(null=True, blank=True)
+    nodeid = models.PositiveIntegerField(null=True, blank=True)
     #: False only under a complete membership generation. A failed read leaves
     #: the previous value untouched.
     present = models.BooleanField(default=True)
@@ -1864,13 +1842,41 @@ class ClusterNodeState(TimestampedModel):
     #: prefilling an Add-node form, never proven reachability**: it may be a
     #: cluster-internal network, and it carries no port or scheme.
     reported_ring_address = models.CharField(max_length=255, blank=True, default="")
-    membership_generation = models.BigIntegerField(default=0)
-    first_seen_at = models.DateTimeField(null=True, blank=True)
-    last_seen_at = models.DateTimeField(null=True, blank=True)
+    membership_generation = models.PositiveBigIntegerField(default=0)
+    first_discovered_at = models.DateTimeField(null=True, blank=True)
+    last_discovered_at = models.DateTimeField(null=True, blank=True)
+
+    # Node-runtime domain. 5a1C normalizes `nodes/<node>/status` into these
+    # decision/display fields; raw provider payloads are not authoritative state.
+    runtime_generation = models.PositiveBigIntegerField(default=0)
+    cpu_usage = models.FloatField(null=True, blank=True)
+    cpu_wait = models.FloatField(null=True, blank=True)
+    cpu_model = models.CharField(max_length=255, blank=True, default="")
+    cpu_sockets = models.PositiveSmallIntegerField(null=True, blank=True)
+    cpu_cores = models.PositiveSmallIntegerField(null=True, blank=True)
+    memory_total_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    memory_used_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    swap_total_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    swap_used_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    rootfs_total_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    rootfs_used_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    load_average_1m = models.FloatField(null=True, blank=True)
+    load_average_5m = models.FloatField(null=True, blank=True)
+    load_average_15m = models.FloatField(null=True, blank=True)
+    uptime_seconds = models.PositiveBigIntegerField(null=True, blank=True)
+    pve_version = models.CharField(max_length=120, blank=True, default="")
+    kernel_version = models.CharField(max_length=255, blank=True, default="")
+    current_kernel_release = models.CharField(max_length=255, blank=True, default="")
+    boot_mode = models.CharField(max_length=32, blank=True, default="")
+    secure_boot_enabled = models.BooleanField(null=True, blank=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["cluster", "node"], name="core_cluster_node_state_uniq"),
+            models.UniqueConstraint(fields=["cluster", "node_name"], name="core_cluster_node_state_uniq"),
+            models.CheckConstraint(
+                condition=~models.Q(node_name="") & ~models.Q(node_name__contains=":"),
+                name="core_cluster_node_state_valid_ref",
+            ),
         ]
         indexes = [
             models.Index(fields=["cluster", "present"], name="core_node_state_present_idx"),
@@ -1879,13 +1885,13 @@ class ClusterNodeState(TimestampedModel):
         verbose_name_plural = "cluster node states"
 
     def __str__(self) -> str:
-        return f"{self.cluster.key}/{self.node}"
+        return f"{self.cluster.key}/{self.node_name}"
 
 
 class ClusterProjectionCoverage(TimestampedModel):
     """What one refresh of one scope actually proved. Module 5 phase 5a1A.
 
-    Keyed by ``(cluster, domain, node)`` where a null node means the scope is
+    Keyed by ``(cluster, domain, node_name)`` where a null node means the scope is
     cluster-grain. **The uniqueness is `NULLS NOT DISTINCT`**: without it
     PostgreSQL treats every cluster-grain row as distinct from every other, so a
     domain would silently accumulate one coverage row per refresh and "the
@@ -1906,12 +1912,15 @@ class ClusterProjectionCoverage(TimestampedModel):
         # Covered by `core_projection_coverage_uniq`, which leads with it.
         db_index=False,
     )
-    domain = models.CharField(max_length=64)
+    domain = models.CharField(
+        max_length=64,
+        choices=((DOMAIN_MEMBERSHIP, "Membership"), (DOMAIN_NODE_RUNTIME, "Node runtime")),
+    )
     #: Null for a cluster-grain scope. Part of the identity, see the class note.
-    node = models.CharField(max_length=120, null=True, blank=True)
-    generation = models.BigIntegerField(default=0)
+    node_name = models.CharField(max_length=120, null=True, blank=True)
+    generation = models.PositiveBigIntegerField(default=0)
     #: The membership generation this scope was composed against, when composed.
-    based_on_generation = models.BigIntegerField(null=True, blank=True)
+    based_on_generation = models.PositiveBigIntegerField(null=True, blank=True)
     complete = models.BooleanField(default=False)
     attempted_at = models.DateTimeField(null=True, blank=True)
     observed_at = models.DateTimeField(null=True, blank=True)
@@ -1922,14 +1931,33 @@ class ClusterProjectionCoverage(TimestampedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["cluster", "domain", "node"],
+                fields=["cluster", "domain", "node_name"],
                 name="core_projection_coverage_uniq",
                 nulls_distinct=False,
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        domain="membership",
+                        node_name__isnull=True,
+                        based_on_generation__isnull=True,
+                    )
+                    | (
+                        models.Q(
+                            domain="node_runtime",
+                            node_name__isnull=False,
+                            based_on_generation__isnull=False,
+                        )
+                        & ~models.Q(node_name="")
+                        & ~models.Q(node_name__contains=":")
+                    )
+                ),
+                name="core_projection_coverage_scope",
             ),
         ]
         verbose_name = "cluster projection coverage"
         verbose_name_plural = "cluster projection coverage"
 
     def __str__(self) -> str:
-        scope = f"{self.domain}/{self.node}" if self.node else self.domain
+        scope = f"{self.domain}/{self.node_name}" if self.node_name else self.domain
         return f"{self.cluster.key}: {scope}"

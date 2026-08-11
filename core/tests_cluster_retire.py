@@ -35,6 +35,9 @@ from django.utils import timezone
 from core.models import (
     AuditEvent,
     ClusterCredential,
+    ClusterMembershipState,
+    ClusterNodeState,
+    ClusterProjectionCoverage,
     ClusterStorage,
     ClusterTransportTrust,
     ConsoleSession,
@@ -71,8 +74,10 @@ from core.services.cluster_deletion_eligibility import (
 from core.services.cluster_footprint import (
     FOOTPRINT_CONSOLE_SESSION,
     FOOTPRINT_GUEST_PROJECTION,
+    FOOTPRINT_HOST_PROJECTION,
     FOOTPRINT_PROVIDER_OPERATION,
     FOOTPRINT_SCAN_OBSERVATION,
+    OPERATOR_FOOTPRINT_REASONS,
     RECONSTRUCTIBLE_FOOTPRINT_REASONS,
     stamp_operational_footprint,
 )
@@ -82,7 +87,7 @@ from core.services.cluster_lifecycle_lock import (
     acquire_operable_cluster,
     cluster_lifecycle_lock,
 )
-from core.services.cluster_lifecycle_registry import CLUSTER_REVERSE_RELATIONS
+from core.services.cluster_lifecycle_registry import CLUSTER_REVERSE_RELATIONS, FootprintPolicy
 from core.services.cluster_onboarding import disable_cluster
 from core.services.cluster_scopes import (
     has_historical_clusters,
@@ -450,6 +455,23 @@ class LifecycleParticipantContractTests(TestCase):
         # them against the model silently skips the mislabelled rows.
         for accessor, classification in CLUSTER_REVERSE_RELATIONS.items():
             self.assertEqual(accessor, classification.accessor)
+
+    def test_every_reverse_relation_declares_its_footprint_policy(self):
+        for accessor, classification in CLUSTER_REVERSE_RELATIONS.items():
+            with self.subTest(accessor=accessor):
+                if classification.footprint_policy is FootprintPolicy.RECONSTRUCTIBLE:
+                    self.assertIn(classification.footprint_reason, RECONSTRUCTIBLE_FOOTPRINT_REASONS)
+                elif classification.footprint_policy is FootprintPolicy.OPERATOR:
+                    self.assertIn(classification.footprint_reason, OPERATOR_FOOTPRINT_REASONS)
+                else:
+                    self.assertIsNone(classification.footprint_reason)
+
+        for accessor in ("membership_state", "node_states", "projection_coverage"):
+            self.assertIs(
+                CLUSTER_REVERSE_RELATIONS[accessor].footprint_policy,
+                FootprintPolicy.RECONSTRUCTIBLE,
+            )
+            self.assertEqual(CLUSTER_REVERSE_RELATIONS[accessor].footprint_reason, FOOTPRINT_HOST_PROJECTION)
 
 
 class ProviderAuditActionIntentCoverageTests(TestCase):
@@ -1394,24 +1416,30 @@ class ClusterConnectionHardDeleteTests(TestCase):
             vmid=100,
         )
         CurrentGuestInventoryState.objects.create(cluster=cluster)
+        ClusterMembershipState.objects.create(cluster=cluster)
+        ClusterNodeState.objects.create(cluster=cluster, node_name="pve1")
+        ClusterProjectionCoverage.objects.create(cluster=cluster, domain="membership")
         StorageCatalogState.objects.create(cluster=cluster)
         ClusterStorage.objects.create(cluster=cluster, storage_id="local", storage_type="dir")
         stamp_operational_footprint(cluster, reason=FOOTPRINT_GUEST_PROJECTION)
 
         result = delete_unused_cluster_connection(_reload(cluster), actor=self.actor)
 
-        self.assertEqual(result.projection_rows_deleted, 5)
+        self.assertEqual(result.projection_rows_deleted, 8)
         self.assertFalse(historical_clusters().filter(pk=pk).exists())
         self.assertFalse(ScanClusterObservation.objects.filter(cluster_id=pk).exists())
         self.assertFalse(ProxmoxInventory.objects.filter(cluster_id=pk).exists())
         self.assertFalse(CurrentGuestInventoryState.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(ClusterMembershipState.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(ClusterNodeState.objects.filter(cluster_id=pk).exists())
+        self.assertFalse(ClusterProjectionCoverage.objects.filter(cluster_id=pk).exists())
         self.assertFalse(StorageCatalogState.objects.filter(cluster_id=pk).exists())
         self.assertFalse(ClusterStorage.objects.filter(cluster_id=pk).exists())
         # The scan itself is a global orchestration job and is not the connection's
         # to delete; only its coverage of this cluster goes.
         self.assertTrue(ScanRun.objects.filter(pk=scan.pk).exists())
         event = AuditEvent.objects.get(pk=result.audit_event_id)
-        self.assertEqual(event.details["reconstructible_rows_deleted_total"], 5)
+        self.assertEqual(event.details["reconstructible_rows_deleted_total"], 8)
         self.assertEqual(event.details["footprint_reason"], FOOTPRINT_GUEST_PROJECTION)
 
     def test_configuration_audit_is_detached_and_preserved(self):

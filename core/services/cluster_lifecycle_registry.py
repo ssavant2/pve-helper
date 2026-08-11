@@ -53,6 +53,14 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
+from core.services.cluster_footprint import (
+    FOOTPRINT_CONSOLE_SESSION,
+    FOOTPRINT_GUEST_PROJECTION,
+    FOOTPRINT_HOST_PROJECTION,
+    FOOTPRINT_SCAN_OBSERVATION,
+    FOOTPRINT_STORAGE_PROJECTION,
+)
+
 
 class RelationClass(enum.Enum):
     """How a reverse relation to ``ProxmoxCluster`` participates in retirement."""
@@ -71,6 +79,16 @@ class RelationClass(enum.Enum):
     OPERATIONAL = "operational"  # retention-purged; durable signal is operational_footprint_at
 
 
+class FootprintPolicy(enum.Enum):
+    """How a relation participates in the durable operational-footprint marker."""
+
+    NONE = "none"  # connection configuration; never operational use
+    RECONSTRUCTIBLE = "reconstructible"  # machine-written state with an allowlisted reason
+    OPERATOR = "operator"  # operator use with a permanently blocking reason
+    ACTION_DEPENDENT = "action_dependent"  # Audit decides from its action registry
+    RELATION_BLOCKER = "relation_blocker"  # the durable relation itself blocks hard delete
+
+
 @dataclass(frozen=True)
 class RelationClassification:
     """One reverse relation's static retirement classification.
@@ -82,6 +100,8 @@ class RelationClassification:
     accessor: str
     kind: RelationClass
     blocks_hard_delete: bool
+    footprint_policy: FootprintPolicy
+    footprint_reason: str | None
     note: str
 
 
@@ -94,24 +114,32 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "credential",
         RelationClass.CONFIG,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.NONE,
+        footprint_reason=None,
         note="CASCADE; snapshot non-secret fields to Audit, then delete.",
     ),
     "transport_trust": RelationClassification(
         "transport_trust",
         RelationClass.CONFIG,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.NONE,
+        footprint_reason=None,
         note="CASCADE; snapshot non-secret fields to Audit, then delete.",
     ),
     "endpoints": RelationClassification(
         "endpoints",
         RelationClass.CONFIG,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.NONE,
+        footprint_reason=None,
         note="Deleted so their URLs are freed to re-register.",
     ),
     "audit_events": RelationClassification(
         "audit_events",
         RelationClass.RETAINED_HISTORY,
         blocks_hard_delete=True,
+        footprint_policy=FootprintPolicy.ACTION_DEPENDENT,
+        footprint_reason=None,
         note="Preserved on retirement. Hard delete keeps only allowlisted config "
         "events and detaches the relation; any operational event blocks.",
     ),
@@ -119,6 +147,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "proxmox_objects",
         RelationClass.CURRENT_PROJECTION,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_SCAN_OBSERVATION,
         note="Preserved by retirement, but not a series: scan retention keeps only the "
         "latest completed scan per cluster, and the next scan rebuilds it. Hard delete "
         "removes this cluster's rows.",
@@ -127,6 +157,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "scan_observations",
         RelationClass.OPERATIONAL,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_SCAN_OBSERVATION,
         note="Per-scan coverage metadata; CASCADEs with its ScanRun after "
         "SCAN_METADATA_RETENTION_DAYS, so the durable signal is operational_footprint_at. "
         "Hard delete removes this cluster's rows.",
@@ -135,6 +167,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "storage_space_snapshots",
         RelationClass.OPERATIONAL,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_STORAGE_PROJECTION,
         note="Storage-space samples, purged at SPACE_SNAPSHOT_RETENTION_DAYS on every "
         "recording run, so the durable signal is operational_footprint_at. Hard delete "
         "removes this cluster's rows.",
@@ -143,6 +177,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "current_guests",
         RelationClass.CURRENT_PROJECTION,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_GUEST_PROJECTION,
         note="Removed via the current-inventory owner (R2 retire_cluster_guest_inventory); "
         "hard delete removes the rows. Rebuilt by the next refresh.",
     ),
@@ -150,12 +186,16 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "inventory_state",
         RelationClass.CURRENT_PROJECTION,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_GUEST_PROJECTION,
         note="Current-inventory state row; removed via the inventory owner. Rebuilt by the next refresh.",
     ),
     "storage_catalog_state": RelationClassification(
         "storage_catalog_state",
         RelationClass.STORAGE_OWNED,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_STORAGE_PROJECTION,
         note="CASCADE; the storage adapter invalidates it. Publication state only, "
         "rebuilt by the next catalog refresh.",
     ),
@@ -163,6 +203,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "storage_definitions",
         RelationClass.STORAGE_OWNED,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_STORAGE_PROJECTION,
         note="Tombstoned via unmanaged_at by the storage adapter on retirement; hard "
         "delete removes them and CASCADEs their node states, mount bindings, coverages "
         "and observations. Rebuilt by the next catalog refresh.",
@@ -171,18 +213,24 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "storage_consumers",
         RelationClass.OPERATOR_SAFETY_INPUT,
         blocks_hard_delete=True,
+        footprint_policy=FootprintPolicy.RELATION_BLOCKER,
+        footprint_reason=None,
         note="PROTECT; explicit per-consumer resolution, never inferred. Any row blocks.",
     ),
     "scheduled_actions": RelationClassification(
         "scheduled_actions",
         RelationClass.DURABLE_OPERATION,
         blocks_hard_delete=True,
+        footprint_policy=FootprintPolicy.RELATION_BLOCKER,
+        footprint_reason=None,
         note="Stop future dispatch (soft-delete), preserve run history. Any row blocks.",
     ),
     "membership_state": RelationClassification(
         "membership_state",
         RelationClass.CURRENT_PROJECTION,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_HOST_PROJECTION,
         note="Module 5 5a1A. CASCADE; one row per cluster, rebuilt by the next membership "
         "refresh. Hard delete removes it. Holds no operator decision -- enrollment does, and "
         "that is a different table.",
@@ -191,6 +239,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "node_states",
         RelationClass.CURRENT_PROJECTION,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_HOST_PROJECTION,
         note="Module 5 5a1A. CASCADE; the discovery/membership projection per NodeRef. "
         "Current state, not history: an absent node is marked present=False rather than "
         "deleted, but the whole set is rebuilt by the next complete generation.",
@@ -199,6 +249,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "projection_coverage",
         RelationClass.CURRENT_PROJECTION,
         blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_HOST_PROJECTION,
         note="Module 5 5a1A. CASCADE; what the last refresh of each scope proved. Rebuilt "
         "by the next refresh and meaningless without the projections it describes.",
     ),
@@ -206,6 +258,8 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "console_sessions",
         RelationClass.OPERATIONAL,
         blocks_hard_delete=True,
+        footprint_policy=FootprintPolicy.OPERATOR,
+        footprint_reason=FOOTPRINT_CONSOLE_SESSION,
         note="SET_NULL and retention-purged, so the durable signal is "
         "operational_footprint_at; remaining rows have provider secrets blanked. Any row blocks.",
     ),
