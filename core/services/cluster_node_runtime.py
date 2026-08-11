@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any
 from urllib.parse import quote
 
@@ -69,6 +70,11 @@ ERROR_NODE_NOT_A_MEMBER = "node_not_a_member"
 #: here would tell 5a1F a cluster has no endpoint when it has one that is merely
 #: unreachable, and the two need different repairs.
 ERROR_ENDPOINTS_EXHAUSTED = "endpoints_exhausted"
+
+#: Distinct nodes an endpoint must fail *ambiguously* for before the sweep
+#: stops trying it. One is the target node's fault as readily as the relay's;
+#: two at once is evidence about the relay. See ``SweepEndpointHealth``.
+AMBIGUOUS_FAILURES_BEFORE_CONDEMNED = 2
 
 #: Columns this phase owns. Every write names them explicitly: a bare ``save()``
 #: would carry membership columns from a stale in-memory snapshot, which is the
@@ -259,9 +265,16 @@ def _load_average(value: Any) -> tuple[float, float, float]:
         if isinstance(entry, bool) or not isinstance(entry, (str, int, float)):
             raise InvalidNodeStatusPayload("Node status field 'loadavg' holds an unparsable entry.")
         try:
-            parsed.append(float(entry))
+            number = float(entry)
         except ValueError as exc:
             raise InvalidNodeStatusPayload("Node status field 'loadavg' holds an unparsable entry.") from exc
+        # `float("nan")` and `float("inf")` parse, and PostgreSQL's double
+        # precision stores both, so nothing downstream would object -- a load
+        # average of NaN would simply render. Parsable is not the property worth
+        # testing; representable as a load is.
+        if not isfinite(number):
+            raise InvalidNodeStatusPayload("Node status field 'loadavg' holds a non-finite entry.")
+        parsed.append(number)
     return parsed[0], parsed[1], parsed[2]
 
 
@@ -354,28 +367,66 @@ def _provider_error_code(exc: ProxmoxAPIError) -> str:
     return ERROR_PROVIDER
 
 
-def _membership_is_published(cluster: ProxmoxCluster) -> bool:
-    """Whether membership has ever published a complete generation.
+@dataclass(frozen=True)
+class _ClusterGate:
+    """The cluster-grain answer both entry points must give identically.
 
-    A cluster that has only ever published *incomplete* membership has a coverage
-    row and no proven observation, and must not be read as "no members".
-
-    The test is ``observed_at`` alone, deliberately **not** ``complete=True`` as
-    the entry contract first wrote it. The coverage row is mutated in place, and
-    ``cluster_membership._publish_incomplete`` clears ``complete`` while
-    preserving the prior authoritative ``observed_at``. Requiring both would mean
-    a single failed membership refresh retracts the whole cluster's runtime
-    acquisition -- the sweep would refuse with ``membership_not_published`` for a
-    cluster that has published members for months. ``observed_at`` is the durable
-    record that a complete publication happened; ``complete`` is the current
-    attempt's outcome, and only the offline skip is allowed to care about it.
+    ``refusal`` is a zero-call, zero-row code; when it is empty the caller may
+    proceed to the node. ``membership_complete`` is carried out of the same
+    coverage read that decided ``membership_not_published``, because the offline
+    skip needs it and a second query would ask the same row the same question.
     """
-    return ClusterProjectionCoverage.objects.filter(
-        cluster=cluster,
-        domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP,
-        node_name__isnull=True,
-        observed_at__isnull=False,
-    ).exists()
+
+    endpoints: list
+    membership_complete: bool
+    refusal: str
+
+
+def _cluster_gate(locked: ProxmoxCluster) -> _ClusterGate:
+    """Every cluster-grain refusal, in one place, in one order.
+
+    Both entry points call this under the lifecycle lock so they cannot answer
+    differently. They did: the per-node seam tested membership *before* the
+    lifecycle refusal and outside the lock, and retirement deletes a cluster's
+    coverage rows (``cluster_projection.retire_cluster_projection``), so a
+    retired cluster answered ``membership_not_published`` on the seam and
+    ``acquisition_retired`` on the sweep -- telling an operator to publish
+    membership for a connection whose projection is finalized.
+
+    Order is load-bearing. The lifecycle refusal is first because retirement
+    deletes both the endpoints and the coverage this function would otherwise
+    read, so either later test would describe a finalized cluster as a
+    misconfigured one.
+
+    Membership publication is tested on ``observed_at`` alone, deliberately
+    **not** on ``complete=True`` as the entry contract first wrote it. The
+    coverage row is mutated in place, and ``cluster_membership._publish_incomplete``
+    clears ``complete`` while preserving the prior authoritative ``observed_at``.
+    Requiring both would let one failed membership refresh retract a whole
+    cluster's runtime acquisition. This also matches what 5a1B's own
+    ``_accepted_members`` tests, which is ``observed_at`` and not ``complete``.
+    """
+    refusal = _acquisition_refusal(locked)
+    if refusal:
+        return _ClusterGate([], False, refusal)
+
+    endpoints = enabled_endpoints(locked)
+    if not endpoints:
+        return _ClusterGate([], False, ERROR_NO_ENABLED_ENDPOINT)
+
+    coverage = (
+        ClusterProjectionCoverage.objects.filter(
+            cluster=locked,
+            domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP,
+            node_name__isnull=True,
+        )
+        .only("complete", "observed_at")
+        .first()
+    )
+    if coverage is None or coverage.observed_at is None:
+        return _ClusterGate([], False, ERROR_MEMBERSHIP_NOT_PUBLISHED)
+
+    return _ClusterGate(endpoints, coverage.complete, "")
 
 
 def _coverage_for(cluster: ProxmoxCluster, node_name: str, based_on_generation: int):
@@ -449,21 +500,56 @@ def _acquisition_refusal(cluster: ProxmoxCluster) -> str:
     return ""
 
 
+class SweepEndpointHealth:
+    """Per-sweep endpoint condemnation. One instance per sweep, never shared.
+
+    The resolver orders endpoints on ``last_health_status``, which only the scan
+    health task ever writes, so a transport that dies at the start of a sweep
+    keeps its healthy rank for every remaining node. Without condemnation one
+    dead endpoint costs a full client timeout per node instead of once per sweep.
+
+    Condemnation is not one rule but two, because ``nodes/<node>/status`` is
+    *proxied*: one member answers for every node, so a failure has two possible
+    owners and the client's ``request_sent`` is what separates them.
+
+    - **Proven endpoint-wide** -- a 401/403 (the credential is rejected for every
+      node) or a transport failure with ``request_sent=False`` (a connect error
+      or pool timeout: the endpoint was never reached). Condemned on sight.
+    - **Ambiguous** -- a transport failure that may have been delivered, such as
+      a read timeout. It is attributable to the *target node* just as readily as
+      to the relay, so condemning on the first one starves every later sibling
+      with ``endpoints_exhausted`` and zero calls. Condemned only once the same
+      endpoint has failed this way for **two distinct nodes**: two nodes hanging
+      at once is a far stronger claim than one relay being unwell, and the
+      threshold keeps the sweep's transport waste bounded at ``2·E`` timeouts
+      instead of ``N·E``.
+    """
+
+    def __init__(self):
+        self._condemned: set[str] = set()
+        self._ambiguous: dict[str, set[str]] = {}
+
+    def is_condemned(self, endpoint_name: str) -> bool:
+        return endpoint_name in self._condemned
+
+    def condemn(self, endpoint_name: str) -> None:
+        self._condemned.add(endpoint_name)
+
+    def record_ambiguous(self, endpoint_name: str, node_name: str) -> None:
+        nodes = self._ambiguous.setdefault(endpoint_name, set())
+        nodes.add(node_name)
+        if len(nodes) >= AMBIGUOUS_FAILURES_BEFORE_CONDEMNED:
+            self._condemned.add(endpoint_name)
+
+
 def _read_node_status(
     cluster: ProxmoxCluster,
     node_name: str,
     endpoints: list,
-    failed_endpoints: set[str],
+    endpoint_health: SweepEndpointHealth,
 ) -> tuple[NormalizedNodeRuntime | None, str]:
-    """Try each usable endpoint once. Returns the runtime or a stable code.
-
-    ``failed_endpoints`` is the per-sweep skip set. The resolver orders on
-    ``last_health_status``, which only the scan health task ever writes, so a
-    transport that dies at the start of a sweep keeps its healthy rank for every
-    remaining node. Without this set one dead endpoint costs a full client
-    timeout per node instead of once per sweep.
-    """
-    usable = [item for item in endpoints if item.name not in failed_endpoints]
+    """Try each usable endpoint once. Returns the runtime or a stable code."""
+    usable = [item for item in endpoints if not endpoint_health.is_condemned(item.name)]
     if not usable:
         # The caller proved the cluster has endpoints, so reaching here means every
         # one of them already failed this sweep: unreachable, not unconfigured.
@@ -495,13 +581,14 @@ def _read_node_status(
                 exc.__class__.__name__,
                 exc_info=True,
             )
-            # Condemn the endpoint only for facts that are endpoint- or
-            # credential-wide. A transport failure and a 401/403 are; an HTTP
-            # status about one node is not -- a 500 while reading pve2 says
-            # nothing about the endpoint's ability to answer for pve3, and
-            # treating it as fatal would blank the rest of the sweep.
-            if isinstance(exc, ProxmoxTransportError) or code == ERROR_PROVIDER_UNAUTHORIZED:
-                failed_endpoints.add(endpoint.name)
+            # See `SweepEndpointHealth` for why this splits three ways rather
+            # than two. An HTTP status about one node condemns nothing: a 500
+            # while reading pve2 says nothing about this endpoint's ability to
+            # answer for pve3.
+            if code == ERROR_PROVIDER_UNAUTHORIZED or (isinstance(exc, ProxmoxTransportError) and not exc.request_sent):
+                endpoint_health.condemn(endpoint.name)
+            elif isinstance(exc, ProxmoxTransportError):
+                endpoint_health.record_ambiguous(endpoint.name, node_name)
             last_code = code
     return None, last_code
 
@@ -510,7 +597,7 @@ def _refresh_one_node(
     cluster: ProxmoxCluster,
     node_name: str,
     *,
-    failed_endpoints: set[str],
+    endpoint_health: SweepEndpointHealth,
     observed_at=None,
 ) -> NodeRuntimeResult:
     """Acquire and publish one node, in its own transaction under the lock.
@@ -523,9 +610,11 @@ def _refresh_one_node(
     with transaction.atomic():
         with cluster_lifecycle_lock(cluster):
             locked = historical_clusters().select_for_update().get(pk=cluster.pk)
-            refusal = _acquisition_refusal(locked)
-            if refusal:
-                return NodeRuntimeResult(node_name, False, refusal, 0)
+            # Every cluster-grain refusal, resolved once, in the order both entry
+            # points share. All of them are zero-call and zero-row.
+            gate = _cluster_gate(locked)
+            if gate.refusal:
+                return NodeRuntimeResult(node_name, False, gate.refusal, 0)
 
             # Lock the node row *before* reading the generation it will be bound
             # to. The lifecycle lock already serializes this against 5a1B, so the
@@ -537,12 +626,7 @@ def _refresh_one_node(
 
             state = ClusterMembershipState.objects.filter(cluster=locked).first()
             membership_generation = state.membership_generation if state is not None else 0
-            membership_complete = ClusterProjectionCoverage.objects.filter(
-                cluster=locked,
-                domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP,
-                node_name__isnull=True,
-                complete=True,
-            ).exists()
+            membership_complete = gate.membership_complete
 
             if row is None:
                 # Zero-call, zero-row: coverage for a NodeRef with no member row
@@ -595,17 +679,7 @@ def _refresh_one_node(
                     node_name, False, ERROR_NODE_OFFLINE, coverage.generation, membership_generation
                 )
 
-            endpoints = enabled_endpoints(locked)
-            if not endpoints:
-                # Zero-row refusal, and it must be decided *here* rather than
-                # before the lifecycle check: retirement deletes a cluster's
-                # endpoints (`cluster_retirement.py:878`), so an endpoint test
-                # placed first would answer "no enabled endpoint" for a retired
-                # cluster and invite an operator to configure a connection whose
-                # projection is finalized.
-                return NodeRuntimeResult(node_name, False, ERROR_NO_ENABLED_ENDPOINT, 0)
-
-            runtime, error_code = _read_node_status(locked, node_name, endpoints, failed_endpoints)
+            runtime, error_code = _read_node_status(locked, node_name, gate.endpoints, endpoint_health)
             coverage = _coverage_for(locked, node_name, membership_generation)
             if runtime is None:
                 # Previous-good payload and runtime_generation are preserved; only
@@ -649,10 +723,14 @@ def refresh_node_runtime(cluster: ProxmoxCluster, node_name: str, *, observed_at
     name, and in refusing an unknown name with a zero-call, zero-row
     ``node_not_a_member`` -- writing coverage for a NodeRef that has no member row
     would orphan a row nothing prunes before cluster retirement.
+
+    It adds no gate of its own. Every cluster-grain refusal is ``_cluster_gate``'s,
+    reached through the same locked path the sweep uses, because a check placed
+    here would sit outside the lock and ahead of the lifecycle test -- which is
+    exactly how this seam came to answer ``membership_not_published`` for a
+    retired cluster.
     """
-    if not _membership_is_published(cluster):
-        return NodeRuntimeResult(node_name, False, ERROR_MEMBERSHIP_NOT_PUBLISHED, 0)
-    return _refresh_one_node(cluster, node_name, failed_endpoints=set(), observed_at=observed_at)
+    return _refresh_one_node(cluster, node_name, endpoint_health=SweepEndpointHealth(), observed_at=observed_at)
 
 
 def _mark_departed_nodes(cluster: ProxmoxCluster, *, observed_at) -> int:
@@ -687,7 +765,13 @@ def _mark_departed_nodes(cluster: ProxmoxCluster, *, observed_at) -> int:
                     complete=False,
                 ).values_list("node_name", flat=True)
             )
-            rows = ClusterNodeState.objects.select_for_update().filter(cluster=locked, present=False)
+            # Ordered because unordered multi-row SELECT ... FOR UPDATE is a deadlock
+            # shape. The cluster advisory lock serializes every writer of these
+            # rows today, so the order is what keeps that from being the only
+            # thing standing between this pass and a deadlock.
+            rows = (
+                ClusterNodeState.objects.select_for_update().filter(cluster=locked, present=False).order_by("node_name")
+            )
             for row in rows:
                 if row.node_name in handled:
                     continue
@@ -717,13 +801,9 @@ def refresh_cluster_node_runtime(cluster: ProxmoxCluster, *, observed_at=None) -
     with transaction.atomic():
         with cluster_lifecycle_lock(cluster):
             locked = historical_clusters().select_for_update().get(pk=cluster.pk)
-            refusal = _acquisition_refusal(locked)
-            if refusal:
-                return NodeRuntimeSweepResult(locked.key, False, refusal)
-            if not enabled_endpoints(locked):
-                return NodeRuntimeSweepResult(locked.key, False, ERROR_NO_ENABLED_ENDPOINT)
-            if not _membership_is_published(locked):
-                return NodeRuntimeSweepResult(locked.key, False, ERROR_MEMBERSHIP_NOT_PUBLISHED)
+            gate = _cluster_gate(locked)
+            if gate.refusal:
+                return NodeRuntimeSweepResult(locked.key, False, gate.refusal)
             targets = list(
                 ClusterNodeState.objects.filter(cluster=locked, present=True)
                 .order_by("node_name")
@@ -731,9 +811,9 @@ def refresh_cluster_node_runtime(cluster: ProxmoxCluster, *, observed_at=None) -
             )
 
     when = observed_at or timezone.now()
-    failed_endpoints: set[str] = set()
+    endpoint_health = SweepEndpointHealth()
     results = [
-        _refresh_one_node(cluster, node_name, failed_endpoints=failed_endpoints, observed_at=when)
+        _refresh_one_node(cluster, node_name, endpoint_health=endpoint_health, observed_at=when)
         for node_name in targets
     ]
     departed = _mark_departed_nodes(cluster, observed_at=when)

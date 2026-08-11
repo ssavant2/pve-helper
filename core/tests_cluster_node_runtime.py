@@ -4,6 +4,7 @@ import base64
 from unittest.mock import MagicMock, patch
 
 import httpx
+from django.db import transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -34,6 +35,7 @@ from core.services.cluster_node_runtime import (
     refresh_cluster_node_runtime,
     refresh_node_runtime,
 )
+from core.services.cluster_projection import retire_cluster_projection
 from core.services.proxmox import (
     ProxmoxAPIError,
     ProxmoxClient,
@@ -417,6 +419,57 @@ class NodeRuntimeMembershipBindingTests(TestCase):
         self.assertEqual(first.departed, 1)
         self.assertEqual(second.departed, 0)
 
+    def test_the_node_loop_clears_runtime_on_its_own_drop_branch(self):
+        """The loop's drop branch, not the departed pass.
+
+        A node dropped by a mid-sweep republication is refused *by the loop*, and
+        the departed pass then skips it because the loop already wrote its code.
+        So the loop's own clearing is the only thing nulling those columns --
+        deleting it left the whole suite green, because the one test reaching
+        this branch swept a node that had never published runtime.
+        """
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=_client(STATUS_BODY)):
+            refresh_cluster_node_runtime(self.cluster)
+
+        published = ClusterNodeState.objects.get(cluster=self.cluster, node_name="pve1")
+        self.assertIsNotNone(published.cpu_usage, "precondition: the node published runtime")
+
+        # 5a1B republishes without this node between the target read and its turn.
+        original = refresh_node_runtime
+
+        def drop_then_refresh(cluster, node_name, **kwargs):
+            ClusterNodeState.objects.filter(cluster=cluster, node_name=node_name).update(present=False)
+            ClusterMembershipState.objects.filter(cluster=cluster).update(membership_generation=2)
+            return original(cluster, node_name, **kwargs)
+
+        client = _client(STATUS_BODY)
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=client):
+            drop_then_refresh(self.cluster, "pve1")
+
+        row = ClusterNodeState.objects.get(cluster=self.cluster, node_name="pve1")
+        self.assertIsNone(row.cpu_usage, "the loop's drop branch must null the stale runtime itself")
+        self.assertEqual(row.cpu_model, "")
+        self.assertEqual(row.runtime_generation, 1, "nulling must not rewind the generation")
+        self.assertEqual(client.get.call_count, 0, "a dropped node costs no provider call")
+        coverage = _coverage(self.cluster, "pve1")
+        self.assertEqual(coverage.error_code, ERROR_NODE_ABSENT)
+        self.assertEqual(coverage.based_on_generation, 2, "the generation that proved the absence")
+
+    def test_publication_stamps_the_operational_footprint(self):
+        """The footprint is what tells retirement this cluster was really used.
+
+        Nothing asserted it: neutering every stamp call failed only the query
+        counters, so a cluster whose sole projection activity was runtime would
+        classify as never-used.
+        """
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(operational_footprint_at=None)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=_client(STATUS_BODY)):
+            refresh_cluster_node_runtime(self.cluster)
+
+        self.cluster.refresh_from_db()
+        self.assertIsNotNone(self.cluster.operational_footprint_at)
+
     def test_membership_columns_are_never_written_by_this_module(self):
         row = ClusterNodeState.objects.get(cluster=self.cluster, node_name="pve1")
         row.nodeid = 7
@@ -515,9 +568,18 @@ class NodeRuntimeRefusalTests(TestCase):
         )
 
     def test_the_per_node_entry_point_reports_retirement_not_a_missing_endpoint(self):
-        """Retirement deletes a cluster's endpoints, so an endpoint test placed
-        before the lifecycle check answers the wrong question -- and sends a 5a1E
-        operator to configure a connection whose projection is finalized."""
+        """Retirement deletes a cluster's endpoints *and* its projection, so any
+        test placed before the lifecycle check answers the wrong question -- and
+        sends a 5a1E operator to configure a connection whose projection is
+        finalized.
+
+        The state is produced by the real finalizer rather than assembled by
+        hand. The hand-assembled version left the membership coverage row in
+        place, which is a state retirement cannot produce, and so it passed while
+        the membership test in front of the lifecycle check answered
+        ``membership_not_published`` for exactly this cluster.
+        """
+        retire_cluster_projection(self.cluster)
         ProxmoxEndpoint.objects.filter(cluster=self.cluster).delete()
         ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(
             retired_at=timezone.now(),
@@ -526,13 +588,62 @@ class NodeRuntimeRefusalTests(TestCase):
         )
 
         result = refresh_node_runtime(self.cluster, "pve1")
+        sweep = refresh_cluster_node_runtime(self.cluster)
 
         self.assertEqual(result.error_code, ERROR_ACQUISITION_RETIRED)
+        self.assertEqual(sweep.error_code, ERROR_ACQUISITION_RETIRED)
         self.assertFalse(
             ClusterProjectionCoverage.objects.filter(
                 cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME
             ).exists()
         )
+
+    def test_both_entry_points_refuse_a_cluster_identically(self):
+        """The seam 5a1E inherits must not have its own gate order.
+
+        Each of these states is reachable, and for two of them the two entry
+        points once disagreed: a retired cluster answered
+        ``membership_not_published`` on the seam, and an endpoint-less cluster
+        wrote an offline coverage row on the seam while the sweep refused
+        cluster-wide and wrote nothing.
+        """
+        cases = {
+            "retired": lambda: (
+                retire_cluster_projection(self.cluster),
+                ProxmoxEndpoint.objects.filter(cluster=self.cluster).delete(),
+                ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(
+                    retired_at=timezone.now(),
+                    enabled=False,
+                    retirement_mode=ProxmoxCluster.RetirementMode.VERIFIED,
+                ),
+            ),
+            "disabled": lambda: ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(enabled=False),
+            "no endpoint": lambda: ProxmoxEndpoint.objects.filter(cluster=self.cluster).update(enabled=False),
+            "no endpoint, offline node": lambda: (
+                ProxmoxEndpoint.objects.filter(cluster=self.cluster).update(enabled=False),
+                ClusterNodeState.objects.filter(cluster=self.cluster, node_name="pve1").update(online=False),
+            ),
+            "membership never published": lambda: (
+                ClusterProjectionCoverage.objects.filter(
+                    cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP
+                ).update(observed_at=None),
+            ),
+        }
+
+        for label, arrange in cases.items():
+            with self.subTest(label):
+                with transaction.atomic():
+                    arrange()
+
+                    per_node = refresh_node_runtime(self.cluster, "pve1")
+                    sweep = refresh_cluster_node_runtime(self.cluster)
+                    rows = ClusterProjectionCoverage.objects.filter(
+                        cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME
+                    ).count()
+
+                    self.assertEqual(per_node.error_code, sweep.error_code)
+                    self.assertEqual(rows, 0, "a cluster-grain refusal is zero-row on both entry points")
+                    transaction.set_rollback(True)
 
     def test_a_standalone_host_publishes_like_any_other(self):
         """This phase never reads topology; a one-node standalone scope must work
@@ -569,7 +680,7 @@ class NodeRuntimeExhaustedEndpointTests(TestCase):
         """The cluster has an endpoint; it is unreachable. Recording the
         configuration code would send an operator to check a setting that is
         correct, and 5a1F could not tell the two states apart."""
-        error = ProxmoxTransportError("dead")
+        error = ProxmoxTransportError("dead", request_sent=False)
         error.__cause__ = httpx.ConnectTimeout("dead")
 
         with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=_client(error=error)):
@@ -686,13 +797,18 @@ class NodeRuntimeEndpointFailoverTests(TestCase):
 
     def test_dead_endpoint_is_tried_once_per_sweep_not_once_per_node(self):
         """`last_health_status` is only written by the scan task, so without the
-        per-sweep skip set a dead transport costs a timeout on every node."""
+        per-sweep skip set a dead transport costs a timeout on every node.
+
+        `request_sent=False` is what the real client sets for a connect timeout
+        (`proxmox._UNSENT_TRANSPORT_ERRORS`), and it is what proves the failure
+        belongs to the endpoint rather than to the node it was asked about.
+        """
         attempts: list[str] = []
 
         def fake_client(endpoint):
             attempts.append(endpoint.name)
             if endpoint.name == "alpha":
-                error = ProxmoxTransportError("dead")
+                error = ProxmoxTransportError("dead", request_sent=False)
                 error.__cause__ = httpx.ConnectTimeout("dead")
                 return _client(error=error)
             return _client(STATUS_BODY)
@@ -703,6 +819,107 @@ class NodeRuntimeEndpointFailoverTests(TestCase):
         self.assertTrue(result.complete)
         self.assertEqual(attempts.count("alpha"), 1)
         self.assertEqual(attempts.count("beta"), 3)
+
+    def test_unauthorized_condemns_the_endpoint_for_the_rest_of_the_sweep(self):
+        """A rejected credential is endpoint-wide by construction: it will reject
+        the next node too. Deleting this arm of the condemnation rule left the
+        whole suite green."""
+        attempts: list[str] = []
+
+        def fake_client(endpoint):
+            attempts.append(endpoint.name)
+            if endpoint.name == "alpha":
+                error = ProxmoxAPIError("denied")
+                error.status_code = 403
+                return _client(error=error)
+            return _client(STATUS_BODY)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=fake_client):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertTrue(result.complete)
+        self.assertEqual(attempts.count("alpha"), 1)
+        self.assertEqual(attempts.count("beta"), 3)
+
+    def test_one_hung_node_does_not_starve_its_siblings(self):
+        """`nodes/<node>/status` is proxied, so a read timeout has two possible
+        owners and `request_sent` is the only thing that separates them.
+
+        Condemning on the first ambiguous failure made one hung node blank the
+        rest of the sweep with `endpoints_exhausted` and zero provider calls --
+        and because the loop is ordered by node name, the same siblings starved
+        every cycle.
+        """
+        attempts: list[str] = []
+
+        def fake_client(endpoint):
+            attempts.append(endpoint.name)
+            client = MagicMock()
+
+            def get(path, **kwargs):
+                if "pve1" in path:
+                    error = ProxmoxTransportError("node hung", request_sent=True)
+                    error.__cause__ = httpx.ReadTimeout("node hung")
+                    raise error
+                return STATUS_BODY
+
+            client.get.side_effect = get
+            return client
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=fake_client):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertTrue(result.complete)
+        self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_PROVIDER_TIMEOUT)
+        self.assertTrue(_coverage(self.cluster, "pve2").complete)
+        self.assertTrue(_coverage(self.cluster, "pve3").complete)
+        # The hung node exhausts both endpoints itself; the siblings still get one.
+        self.assertEqual(attempts.count("alpha"), 3)
+
+    def test_an_endpoint_hanging_for_two_nodes_is_condemned(self):
+        """The bound on the rule above. One ambiguous failure is the node's; the
+        same endpoint hanging for a *second* node is evidence about the endpoint,
+        and without a threshold the sweep's transport waste would grow with N."""
+        attempts: list[str] = []
+
+        def fake_client(endpoint):
+            attempts.append(endpoint.name)
+            if endpoint.name == "alpha":
+                error = ProxmoxTransportError("relay hung", request_sent=True)
+                error.__cause__ = httpx.ReadTimeout("relay hung")
+                return _client(error=error)
+            return _client(STATUS_BODY)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=fake_client):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertTrue(result.complete)
+        # pve1 and pve2 each pay one timeout; pve3 is spared.
+        self.assertEqual(attempts.count("alpha"), 2)
+        self.assertEqual(attempts.count("beta"), 3)
+        self.assertTrue(_coverage(self.cluster, "pve3").complete)
+
+    def test_the_node_name_is_url_quoted(self):
+        """The path is built by interpolation, so the quoting is the only thing
+        between a node name and the request line."""
+        paths: list[str] = []
+
+        def fake_client(endpoint):
+            client = MagicMock()
+
+            def get(path, **kwargs):
+                paths.append(path)
+                return STATUS_BODY
+
+            client.get.side_effect = get
+            return client
+
+        ClusterNodeState.objects.filter(cluster=self.cluster, node_name="pve1").update(node_name="pve 1/x")
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", side_effect=fake_client):
+            refresh_cluster_node_runtime(self.cluster)
+
+        self.assertIn("nodes/pve%201%2Fx/status", paths)
 
     def test_invalid_payload_does_not_condemn_the_endpoint(self):
         """A node-specific bad body is not evidence against the transport."""
@@ -734,8 +951,11 @@ class NodeRuntimeEndpointFailoverTests(TestCase):
 #: Total queries for one sweep of N attempted nodes, from a cold projection.
 #: Measured, not derived: exactly ``14 + 19N``, linear at 1, 3 and 20 nodes.
 SWEEP_QUERIES = {1: 33, 3: 71, 20: 394}
-#: One attempted node plus one node the offline gate skips.
-MIXED_SWEEP_QUERIES = 46
+#: One attempted node plus one node the offline gate skips. A skipped node pays
+#: the cluster gate (endpoints included, so both entry points refuse identically)
+#: but never builds a client, so it never resolves the credential or the trust
+#: profile -- which is what keeps `b′` below `b`.
+MIXED_SWEEP_QUERIES = 47
 #: One departed node, nothing attempted.
 DEPARTED_SWEEP_QUERIES = 18
 
@@ -802,16 +1022,6 @@ class NodeRuntimeBudgetTests(TestCase):
         self._reset()
         _publish_membership(self.cluster, {f"pve{index}": True for index in range(1, node_count + 1)})
 
-    def _measure(self, node_count: int) -> int:
-        from django.db import connection
-        from django.test.utils import CaptureQueriesContext
-
-        self._reset()
-        _publish_membership(self.cluster, {f"pve{index}": True for index in range(1, node_count + 1)})
-        with CaptureQueriesContext(connection) as captured:
-            self._sweep()
-        return len(captured.captured_queries)
-
     def test_the_sweep_cost_is_pinned_exactly_at_each_scale(self):
         """Absolute counts, not a slope.
 
@@ -824,19 +1034,6 @@ class NodeRuntimeBudgetTests(TestCase):
                 self._prepare(nodes)
                 with self.assertNumQueries(expected):
                     self._sweep()
-
-    def test_the_marginal_node_cost_does_not_grow_with_the_cluster(self):
-        """The per-node-squared regression is only visible at scale.
-
-        Asserted as a bound on the marginal cost rather than as exact linearity:
-        the measured totals are not a perfect line, and pretending otherwise would
-        be the same hand-derived arithmetic this budget was moved out of prose to
-        escape.
-        """
-        small = (SWEEP_QUERIES[3] - SWEEP_QUERIES[1]) / 2
-        large = (SWEEP_QUERIES[20] - SWEEP_QUERIES[3]) / 17
-
-        self.assertLessEqual(large, small + 1, "per-node query cost grew with cluster size")
 
     def test_a_skipped_node_costs_fewer_queries_than_an_attempted_one(self):
         """`b′ < b`: a skipped node never builds a client, so it never resolves

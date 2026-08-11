@@ -7,6 +7,8 @@ from pathlib import Path
 from django.conf import settings
 from django.test import SimpleTestCase
 
+from core.services.cluster_node_runtime import RUNTIME_FIELDS
+
 NATIVE_DIALOG_PATTERN = re.compile(
     r"\bwindow\.(?:alert|confirm)\s*\("
     r"|(?:^|[;{}=:(,!&|?])\s*(?:alert|confirm)\s*\("
@@ -1285,22 +1287,63 @@ class NodeRuntimeColumnOwnershipInvariantTests(SimpleTestCase):
     a diff would look wrong.
     """
 
+    #: The one constructor of a coverage row in the publisher. A receiver assigned
+    #: from it owns every one of its columns and may save in full.
+    COVERAGE_FACTORY = "_coverage_for"
+
     def _owner_tree(self) -> ast.Module:
         return ast.parse((Path(settings.BASE_DIR) / NODE_RUNTIME_OWNER).read_text())
 
-    def test_every_shared_row_save_names_the_fields_it_writes(self):
+    def _assigns_coverage_row(self, value: ast.expr) -> bool:
+        return (
+            isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == self.COVERAGE_FACTORY
+        )
+
+    def test_the_owned_field_set_excludes_every_membership_column(self):
+        """The check the ``update_fields`` arms all delegate to.
+
+        Every write in the module passes ``update_fields=list(RUNTIME_FIELDS)``,
+        so naming the keyword proves nothing on its own: widening that one tuple
+        by a single membership column reopens the whole hole while every other
+        arm stays green. This is the arm that closes it.
+        """
+        overlap = sorted(set(RUNTIME_FIELDS) & MEMBERSHIP_OWNED_NODE_COLUMNS)
+
+        self.assertEqual(
+            overlap,
+            [],
+            "RUNTIME_FIELDS names a column 5a1B owns, so every update_fields "
+            "write in the node-runtime publisher now carries it: "
+            f"{', '.join(overlap)}",
+        )
+
+    def test_every_shared_row_save_names_only_the_fields_it_owns(self):
         """Coverage rows belong wholly to this module and may save in full.
 
         ``ClusterNodeState`` does not: 5a1B owns half its columns, so every write
-        to it here must name the runtime fields.
+        to it here must name the runtime fields -- and name *only* those, which
+        the companion test above enforces on the tuple they all pass.
+
+        The exemption is keyed on the model the receiver was assigned from, not
+        on the variable's name. Keying it on the name ``coverage`` meant binding
+        a ``ClusterNodeState`` to that name silently bought the exemption.
         """
+        tree = self._owner_tree()
+        coverage_names = {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name) and self._assigns_coverage_row(node.value)
+        }
+
         bare = [
             node.lineno
-            for node in ast.walk(self._owner_tree())
+            for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "save"
-            and not (isinstance(node.func.value, ast.Name) and node.func.value.id == "coverage")
+            and not (isinstance(node.func.value, ast.Name) and node.func.value.id in coverage_names)
             and not any(keyword.arg == "update_fields" for keyword in node.keywords)
         ]
 
@@ -1321,15 +1364,26 @@ class NodeRuntimeColumnOwnershipInvariantTests(SimpleTestCase):
         ``save()`` nor an attribute assignment -- so without this arm both other
         checks pass while the column is rewritten.
         """
+        updates = [
+            node
+            for node in ast.walk(self._owner_tree())
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "update"
+        ]
+
         offenders = sorted(
             {
                 f"{keyword.arg}:{node.lineno}"
-                for node in ast.walk(self._owner_tree())
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "update"
+                for node in updates
                 for keyword in node.keywords
                 if keyword.arg in MEMBERSHIP_OWNED_NODE_COLUMNS
             }
         )
+
+        # `**{"present": False}` has `keyword.arg is None`, so the named-keyword
+        # scan above cannot see it. Reading the column names out of an arbitrary
+        # expression is not decidable here, so the unpacking form is refused
+        # outright: this module has no legitimate use for it.
+        unpacked = sorted({str(node.lineno) for node in updates for keyword in node.keywords if keyword.arg is None})
 
         self.assertEqual(
             offenders,
@@ -1337,6 +1391,13 @@ class NodeRuntimeColumnOwnershipInvariantTests(SimpleTestCase):
             "A queryset update() in the node-runtime publisher writes a "
             "membership-owned column. Membership publication is 5a1B's: "
             f"{', '.join(offenders)}",
+        )
+        self.assertEqual(
+            unpacked,
+            [],
+            "A queryset update() in the node-runtime publisher takes **kwargs, "
+            "which hides the column names from this invariant. Name the columns "
+            f"({NODE_RUNTIME_OWNER} lines {', '.join(unpacked)}).",
         )
 
     def test_membership_columns_are_never_assigned_by_the_runtime_publisher(self):
