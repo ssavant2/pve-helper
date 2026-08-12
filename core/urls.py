@@ -388,6 +388,11 @@ urlpatterns = [
     ),
     path("clusters/<str:cluster_key>/nodes/add/", views.cluster_node_add, name="cluster_node_add"),
     path(
+        "clusters/<str:cluster_key>/nodes/activate/",
+        views.cluster_enrollment_activate,
+        name="cluster_enrollment_activate",
+    ),
+    path(
         "clusters/<str:cluster_key>/nodes/<str:node_name>/action/",
         views.cluster_node_action,
         name="cluster_node_action",

@@ -27,6 +27,7 @@ from core.models import (
 )
 from core.services.cluster_enrollment import (
     ClusterEnrollmentError,
+    activate_cluster_enrollment,
     change_enrollment_mode,
     enroll_node,
     node_change_blockers,
@@ -390,6 +391,79 @@ class ConnectionsPassiveRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Discovered, not added")
         self.assertContains(response, "Add node")
+
+
+class EnrollmentActivationTests(TestCase):
+    """5a1H-2. The one irreversible control in the phase."""
+
+    def setUp(self):
+        self.cluster = _cluster()
+        _publish_membership(self.cluster, "pve1", "pve2", "pve3")
+
+    def test_activation_enrolls_the_reviewed_set_and_advances_the_generation_once(self):
+        """One reviewed set is one decision, not one decision per node."""
+
+        actor = get_user_model().objects.create_user(username="op", password="x")
+
+        result = activate_cluster_enrollment(
+            self.cluster,
+            selections={"pve1": "managed", "pve3": "managed", "pve2": "safety_only"},
+            actor=actor,
+        )
+        self.cluster.refresh_from_db()
+
+        self.assertEqual(self.cluster.enrollment_generation, 1)
+        self.assertEqual(result.generation, 1)
+        self.assertEqual(self.cluster.enrollment_contract_version, 1)
+        self.assertIsNotNone(self.cluster.enrollment_activated_at)
+        self.assertEqual(self.cluster.enrollment_activated_by, actor)
+        modes = dict(ClusterNodeEnrollment.objects.filter(cluster=self.cluster).values_list("node_name", "mode"))
+        self.assertEqual(modes, {"pve1": "managed", "pve2": "safety_only", "pve3": "managed"})
+
+    def test_an_unenrolled_member_gets_no_row_at_all(self):
+        """Absence of a row *is* unenrolled; activation must not invent a third mode."""
+
+        activate_cluster_enrollment(self.cluster, selections={"pve1": "managed"})
+
+        self.assertFalse(ClusterNodeEnrollment.objects.filter(cluster=self.cluster, node_name="pve2").exists())
+
+    def test_activation_is_refused_once_the_contract_is_active(self):
+        activate_cluster_enrollment(self.cluster, selections={"pve1": "managed"})
+
+        with self.assertRaises(ClusterEnrollmentError):
+            activate_cluster_enrollment(self.cluster, selections={"pve2": "managed"})
+        self.cluster.refresh_from_db()
+
+        self.assertEqual(self.cluster.enrollment_generation, 1)
+        self.assertEqual(self.cluster.enrollment_contract_version, 1)
+
+    def test_an_empty_set_is_refused_rather_than_publishing_nothing_silently(self):
+        with self.assertRaises(ClusterEnrollmentError):
+            activate_cluster_enrollment(self.cluster, selections={})
+        self.cluster.refresh_from_db()
+
+        self.assertEqual(self.cluster.enrollment_contract_version, 0)
+
+    def test_a_node_outside_current_membership_cannot_be_reviewed(self):
+        with self.assertRaises(ClusterEnrollmentError):
+            activate_cluster_enrollment(self.cluster, selections={"pve99": "managed"})
+        self.cluster.refresh_from_db()
+
+        self.assertEqual(self.cluster.enrollment_contract_version, 0)
+        self.assertFalse(ClusterNodeEnrollment.objects.filter(cluster=self.cluster).exists())
+
+    def test_activation_needs_no_endpoint_for_a_hidden_node(self):
+        """The deliberately weaker standard: a `safety_only` node has no endpoint."""
+
+        activate_cluster_enrollment(self.cluster, selections={"pve1": "managed", "pve2": "safety_only"})
+
+        hidden = ClusterNodeEnrollment.objects.get(cluster=self.cluster, node_name="pve2")
+        self.assertIsNone(hidden.onboarded_via_endpoint)
+
+    def test_activation_creates_no_storage_consumer(self):
+        activate_cluster_enrollment(self.cluster, selections={"pve1": "managed", "pve2": "safety_only"})
+
+        self.assertFalse(ProxmoxStorageConsumer.objects.exists())
 
 
 class OnboardingEnrollmentContractTests(TestCase):

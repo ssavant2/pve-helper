@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header cluster-page-header">
+    <div><a href="{% url 'core:cluster_connection' cluster.key %}">{{ cluster.display_name }}</a><h1>Activate enrollment</h1><p>From now on this connection publishes exactly the nodes you enroll. Nothing changes on Proxmox.</p></div>
+    <a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a>
+  </div>
+
+  <section class="panel cluster-wizard-panel">
+    <div class="panel-heading"><div><h2>Reviewed set</h2><p class="panel-meta">This cannot be undone. The contract version is monotonic and is never cleared, so the connection can never fall back to publishing every node it happens to see.</p></div></div>
+
+    <table class="data-table compact"><thead><tr><th>Node</th><th>Enrolled as</th></tr></thead><tbody>
+      {% for node_name, mode in selections %}<tr><td>{{ node_name }}</td><td>{% if mode == "managed" %}<span class="badge completed">Managed</span>{% else %}<span class="badge muted-badge">Safety only</span>{% endif %}</td></tr>{% endfor %}
+    </tbody></table>
+
+    <ul class="cluster-impact-list">
+      {% if hidden_nodes %}<li><strong>Hidden from operational views:</strong> {{ hidden_nodes|join:", " }}. pve-helper keeps reading these for disk references, so shared-storage orphan classification and the Recycle Bin stay correct.</li>{% endif %}
+      {% if unselected %}<li><strong>Not enrolled at all:</strong> {{ unselected|join:", " }}. pve-helper stops reading these entirely, so shared storage they could consume drops to "unknown" coverage and file actions there will ask for an acknowledgement naming the node. They are not blocked.</li>{% endif %}
+      <li>Guests and storage on nodes you did not enroll disappear from operational views. Historical scan evidence and Audit history are retained.</li>
+    </ul>
+
+    <form method="post" class="cluster-confirm-form" action="{% url 'core:cluster_enrollment_activate' cluster.key %}">{% csrf_token %}
+      <input type="hidden" name="step" value="confirm">{{ activate_form.impact }}
+      {% include "core/partials/cluster_form_errors.html" with form=activate_form %}
+      <label class="cluster-field-wide"><span>{{ activate_form.reason.label }}</span>{{ activate_form.reason }}</label>
+      <label class="cluster-check">{{ activate_form.confirm_impact }}<span>{{ activate_form.confirm_impact.label }}</span></label>
+      <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a><button class="secondary-action danger" type="submit">Activate enrollment</button></div>
+    </form>
+  </section>
+{% endblock %}

@@ -242,6 +242,90 @@ def change_enrollment_mode(cluster, *, node_name: str, mode: str, actor=None, re
     )
 
 
+@dataclass(frozen=True)
+class ActivationResult:
+    enrolled: tuple[tuple[str, str], ...]
+    generation: int
+    contract_version: int
+
+
+@transaction.atomic
+def activate_cluster_enrollment(cluster, *, selections: dict[str, str], actor=None) -> ActivationResult:
+    """Move one cluster from legacy publication to the enrollment contract.
+
+    Irreversible by design: the version is monotonic and never cleared, so a rolled
+    back binary that ignores it is visible in one query rather than silently
+    re-enabling cluster-wide publication.
+
+    The whole transaction advances the generation **once**, not once per node — the
+    reviewed set is a single decision.
+
+    Enrollment here rests on **membership evidence alone**, deliberately a weaker
+    standard than Add node's per-node endpoint proof. The node is already a proven
+    member of this exact cluster; requiring an endpoint would make it impossible to
+    enroll the very nodes this feature exists for — the ones kept `safety_only`
+    precisely because pve-helper should not talk to them directly.
+    """
+
+    locked = acquire_operable_cluster(cluster)
+    if locked.enrollment_contract_version >= 1:
+        raise ClusterEnrollmentError("This connection already uses the enrollment contract.")
+    if not selections:
+        raise ClusterEnrollmentError(
+            "Select at least one node. Activating with an empty set would publish nothing for this connection."
+        )
+
+    known = set(_reviewable_members(locked))
+    enrolled: list[tuple[str, str]] = []
+    for node_name in sorted(selections):
+        mode = _validate_mode(selections[node_name])
+        if node_name not in known:
+            raise ClusterEnrollmentError(
+                f"Node '{node_name}' is not in this connection's current membership and cannot be reviewed."
+            )
+        enrollment, created = ClusterNodeEnrollment.objects.get_or_create(
+            cluster=locked,
+            node_name=node_name,
+            defaults={
+                "mode": mode,
+                "enrolled_at": timezone.now(),
+                "enrolled_by": actor,
+            },
+        )
+        if not created and enrollment.mode != mode:
+            enrollment.mode = mode
+            enrollment.mode_changed_at = timezone.now()
+            enrollment.mode_changed_by = actor
+            enrollment.save(update_fields=["mode", "mode_changed_at", "mode_changed_by", "updated_at"])
+        enrolled.append((node_name, mode))
+
+    generation = _advance_generation(locked)
+    locked.enrollment_contract_version = 1
+    locked.enrollment_activated_at = timezone.now()
+    locked.enrollment_activated_by = actor
+    locked.save(
+        update_fields=[
+            "enrollment_contract_version",
+            "enrollment_activated_at",
+            "enrollment_activated_by",
+            "updated_at",
+        ]
+    )
+    return ActivationResult(enrolled=tuple(enrolled), generation=generation, contract_version=1)
+
+
+def _reviewable_members(cluster) -> list[str]:
+    """Current membership, read through the projection owner like every other consumer."""
+
+    from core.services.cluster_projection_read import ClusterProjectionNotFound, read_cluster_projection
+
+    try:
+        projection = read_cluster_projection(cluster.key)
+    except ClusterProjectionNotFound:
+        return []
+    return [node.node_name for node in projection.nodes if node.present]
+
+
 @transaction.atomic
 def remove_enrollment(cluster, *, node_name: str) -> EnrollmentWrite:
     """Stop reading a node entirely. The endpoint, if any, is left alone."""

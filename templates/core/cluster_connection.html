@@ -77,6 +77,28 @@
     </tbody></table>
   </section>
 
+  {% if cluster.enrollment_contract_version == 0 %}
+    <section class="panel panel-spaced cluster-enrollment-review" data-enrollment-review>
+      <div class="panel-heading cluster-section-heading">
+        <div><h2>Enrollment review required</h2><p class="panel-meta">This connection still publishes every node it discovers. Choose the set it should publish, then activate. Nodes you leave out are no longer read at all.</p></div>
+      </div>
+      <form method="post" action="{% url 'core:cluster_enrollment_activate' cluster.key %}">{% csrf_token %}
+        <table class="data-table compact"><thead><tr><th>Node</th><th>Membership</th><th>Enroll as</th></tr></thead><tbody>
+          {% for row in node_rows %}{% if row.present %}<tr>
+            <td>{{ row.node_name }}</td>
+            <td>{% if row.online %}<span class="badge completed">Online</span>{% else %}<span class="badge warning">Offline</span>{% endif %}</td>
+            <td><select name="mode_{{ row.node_name }}">
+              <option value="managed">Managed — publish its guests and storage</option>
+              <option value="safety_only">Safety only — read for disk references, hide from views</option>
+              <option value="" selected>Do not enroll — stop reading it</option>
+            </select></td>
+          </tr>{% endif %}{% empty %}<tr><td colspan="3" class="empty-state">No node has been discovered yet.</td></tr>{% endfor %}
+        </tbody></table>
+        <div class="cluster-form-actions"><button class="secondary-action" type="submit">Review and activate</button></div>
+      </form>
+    </section>
+  {% endif %}
+
   <section class="panel panel-spaced cluster-nodes-panel" data-cluster-nodes>
     <div class="panel-heading cluster-section-heading">
       <div><h2>Nodes</h2><p class="panel-meta">Which nodes pve-helper may read and publish. Membership is discovered; enrollment is your decision, and changing it never touches Proxmox.</p></div>

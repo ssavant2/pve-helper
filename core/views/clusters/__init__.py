@@ -13,7 +13,7 @@ from .connections import (
     cluster_endpoint_add,
     clusters_overview,
 )
-from .enrollment import cluster_node_action, cluster_node_add
+from .enrollment import cluster_enrollment_activate, cluster_node_action, cluster_node_add
 
 __all__ = [
     "cluster_add",
@@ -21,6 +21,7 @@ __all__ = [
     "cluster_connection_action",
     "cluster_endpoint_action",
     "cluster_endpoint_add",
+    "cluster_enrollment_activate",
     "cluster_node_action",
     "cluster_node_add",
     "clusters_overview",

@@ -30,6 +30,7 @@ from core.models import ClusterNodeEnrollment, CurrentGuestInventory, ProxmoxEnd
 from core.services.audit_events import record_audit_event
 from core.services.cluster_enrollment import (
     ClusterEnrollmentError,
+    activate_cluster_enrollment,
     change_enrollment_mode,
     enroll_node,
     enrollments_by_node,
@@ -459,6 +460,109 @@ def _queue_node_reconciliation(request, cluster, node_name: str, write) -> None:
             "Node enrollment committed but its targeted refresh was not queued",
             extra={"cluster_key": cluster.key, "node_name": node_name, "reason": str(exc)},
         )
+
+
+@require_POST
+@app_login_required
+def cluster_enrollment_activate(request, cluster_key: str):
+    """Review the discovered set once, then move this connection off legacy publication.
+
+    Two steps for the same reason every other irreversible control here has two: the
+    version can never be cleared, so the operator sees the exact set and its
+    consequence before it becomes permanent.
+    """
+
+    from .connections import _render_cluster_connection
+
+    cluster = get_object_or_404(managed_clusters(), key=cluster_key)
+    if cluster.enrollment_contract_version >= 1:
+        return _render_cluster_connection(
+            request, cluster, operation_error="This connection already uses the enrollment contract."
+        )
+
+    if request.POST.get("step") != "confirm":
+        selections = {
+            name: mode
+            for name, mode in (
+                (row["node_name"], request.POST.get(f"mode_{row['node_name']}", ""))
+                for row in node_enrollment_rows(cluster)
+                if row["present"]
+            )
+            if mode in {"managed", "safety_only"}
+        }
+        if not selections:
+            return _render_cluster_connection(
+                request,
+                cluster,
+                operation_error=(
+                    "Select at least one node. Activating with an empty set would publish nothing for this connection."
+                ),
+            )
+        return render(
+            request,
+            "core/cluster_enrollment_activate.html",
+            {
+                **navigation_context(
+                    "clusters",
+                    page_title=(cluster.display_name, "Activate enrollment"),
+                    cluster_key=cluster.key,
+                ),
+                "cluster": cluster,
+                "selections": sorted(selections.items()),
+                "hidden_nodes": sorted(name for name, mode in selections.items() if mode == "safety_only"),
+                "unselected": sorted(
+                    row["node_name"]
+                    for row in node_enrollment_rows(cluster)
+                    if row["present"] and row["node_name"] not in selections
+                ),
+                "activate_form": NodeEnrollmentChangeForm(
+                    initial={
+                        "impact": _sign(
+                            request,
+                            _NODE_IMPACT_SALT,
+                            {
+                                "kind": "enrollment-activation",
+                                "cluster_key": cluster.key,
+                                "selections": selections,
+                            },
+                        )
+                    }
+                ),
+            },
+        )
+
+    form = NodeEnrollmentChangeForm(request.POST)
+    if not form.is_valid():
+        return _render_cluster_connection(request, cluster, operation_error="Confirm the reviewed set first.")
+    try:
+        payload = _load(request, form.cleaned_data["impact"], _NODE_IMPACT_SALT, "enrollment-activation")
+        if payload["cluster_key"] != cluster.key:
+            raise ClusterOnboardingError("This confirmation belongs to a different connection.")
+    except ClusterOnboardingError as exc:
+        return _render_cluster_connection(request, cluster, operation_error=str(exc))
+
+    try:
+        result = activate_cluster_enrollment(cluster, selections=payload["selections"], actor=_actor(request))
+    except ClusterEnrollmentError as exc:
+        return _render_cluster_connection(request, cluster, operation_error=str(exc))
+
+    for node_name, mode in result.enrolled:
+        record_audit_event(
+            request,
+            action="cluster.node.enrolled",
+            object_type="cluster_node",
+            object_id=f"{cluster.key}:{node_name}",
+            cluster=cluster,
+            details={
+                "cluster_key": cluster.key,
+                "node_name": node_name,
+                "mode": mode,
+                "via": "enrollment_activation",
+                "enrollment_contract_version": result.contract_version,
+                "enrollment_generation": result.generation,
+            },
+        )
+    return redirect("core:cluster_connection", cluster_key=cluster.key)
 
 
 @require_POST

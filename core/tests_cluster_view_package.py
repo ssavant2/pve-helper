@@ -18,6 +18,7 @@ PUBLIC_CONNECTION_VIEWS = (
 #: facade. The invariant is that the facade exports URL-facing callables only — not
 #: that they all come from one file.
 PUBLIC_ENROLLMENT_VIEWS = (
+    "cluster_enrollment_activate",
     "cluster_node_action",
     "cluster_node_add",
 )
