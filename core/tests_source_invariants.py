@@ -453,6 +453,200 @@ class MembershipReadInvariantTests(SimpleTestCase):
         )
 
 
+# 5a1F: this is the consumer-side half of the persisted projection boundary. The
+# endpoint publishers above are allowed to own provider I/O; passive views and
+# advisories are not. Two guest views predate the boundary and remain named debt,
+# with their removal phases already assigned in the Module 5 ledger. Exact
+# per-module/per-domain entries keep that debt from authorizing a second call.
+HOST_PROJECTION_READ_OWNER = "core/services/cluster_projection_read.py"
+HOST_PROJECTION_MODEL_NAMES = frozenset({"ClusterMembershipState", "ClusterNodeState", "ClusterProjectionCoverage"})
+HOST_STATE_PROVIDER_IO_ALLOWLIST = {
+    # Guest Summary HA card; 5d1 replaces this membership/HA live read.
+    "core/views/guests/read_model_support.py": frozenset({"membership"}),
+    # Migrate dialog CPU signature; 5a4E replaces this node-status fan-out.
+    "core/views/guests/_core.py": frozenset({"node_runtime"}),
+}
+HOST_PROJECTION_OWNER_FORBIDDEN_IMPORTS = frozenset(
+    {
+        "core.services.cluster_membership",
+        "core.services.cluster_node_runtime",
+        "core.services.cluster_resolver",
+        "core.services.proxmox",
+        "core.tasks",
+    }
+)
+HOST_PROJECTION_PUBLISHER_MODULES = frozenset(
+    {"core.services.cluster_membership", "core.services.cluster_node_runtime"}
+)
+
+
+class HostProjectionConsumerInvariantTests(SimpleTestCase):
+    """Views/advisories consume the persisted read service, never its sources."""
+
+    def _consumer_sources(self) -> list[Path]:
+        root = Path(settings.BASE_DIR)
+        views = sorted((root / "core" / "views").rglob("*.py"))
+        services = [
+            path
+            for path in sorted((root / "core" / "services").glob("*.py"))
+            if any(token in path.stem for token in ("advisory", "evc", "maintenance"))
+        ]
+        extra_packages = []
+        for package in (root / "core" / "advisories", root / "core" / "api"):
+            if package.exists():
+                extra_packages.extend(sorted(package.rglob("*.py")))
+        return [path for path in [*views, *services, *extra_packages] if not path.name.startswith("tests")]
+
+    @staticmethod
+    def _literal_shape(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            return "".join(
+                value.value if isinstance(value, ast.Constant) and isinstance(value.value, str) else "{}"
+                for value in node.values
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = HostProjectionConsumerInvariantTests._literal_shape(node.left)
+            right = HostProjectionConsumerInvariantTests._literal_shape(node.right)
+            if left is not None and right is not None:
+                return left + right
+        return None
+
+    @staticmethod
+    def _host_provider_domains(tree: ast.AST) -> set[str]:
+        domains = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
+            for expression in expressions:
+                shape = HostProjectionConsumerInvariantTests._literal_shape(expression)
+                if shape is None:
+                    continue
+                if "cluster/status" in shape:
+                    domains.add("membership")
+                if re.search(r"(?:^|/)nodes/(?:\{\}|[^/]+)/status(?:$|\?)", shape):
+                    domains.add("node_runtime")
+        return domains
+
+    def test_views_and_advisories_do_not_read_host_state_from_the_provider(self):
+        root = Path(settings.BASE_DIR)
+        found = {}
+        for path in self._consumer_sources():
+            domains = self._host_provider_domains(ast.parse(path.read_text()))
+            if domains:
+                found[str(path.relative_to(root))] = frozenset(domains)
+
+        unexpected = {
+            module: sorted(domains - HOST_STATE_PROVIDER_IO_ALLOWLIST.get(module, frozenset()))
+            for module, domains in found.items()
+            if domains - HOST_STATE_PROVIDER_IO_ALLOWLIST.get(module, frozenset())
+        }
+        self.assertEqual(
+            unexpected,
+            {},
+            "A passive view/advisory reads cluster/status or nodes/<node>/status. "
+            f"Consume {HOST_PROJECTION_READ_OWNER} instead: {unexpected}",
+        )
+
+        stale = {
+            module: sorted(domains - found.get(module, frozenset()))
+            for module, domains in HOST_STATE_PROVIDER_IO_ALLOWLIST.items()
+            if domains - found.get(module, frozenset())
+        }
+        self.assertEqual(
+            stale,
+            {},
+            "A legacy host-provider read is gone; remove its exact temporary "
+            f"allowlist entry so it cannot be reintroduced: {stale}",
+        )
+
+    def test_provider_detector_distinguishes_node_state_from_guest_state(self):
+        node_state = ast.parse('client.get(f"nodes/{node}/status")')
+        concatenated_node_state = ast.parse('client.get(f"nodes/{node}" + "/status")')
+        guest_state = ast.parse('client.get(f"nodes/{node}/qemu/{vmid}/status/current")')
+
+        self.assertEqual(self._host_provider_domains(node_state), {"node_runtime"})
+        self.assertEqual(self._host_provider_domains(concatenated_node_state), {"node_runtime"})
+        self.assertEqual(self._host_provider_domains(guest_state), set())
+
+    def test_views_and_advisories_do_not_bypass_the_projection_read_owner(self):
+        root = Path(settings.BASE_DIR)
+        offenders = []
+        for path in self._consumer_sources():
+            tree = ast.parse(path.read_text())
+            direct_models = {
+                node.value.id
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute)
+                and node.attr == "objects"
+                and isinstance(node.value, ast.Name)
+                and node.value.id in HOST_PROJECTION_MODEL_NAMES
+            }
+            direct_models.update(
+                alias.name
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module == "core.models"
+                for alias in node.names
+                if alias.name in HOST_PROJECTION_MODEL_NAMES
+            )
+            if direct_models:
+                offenders.append(f"{path.relative_to(root)} ({', '.join(sorted(direct_models))})")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Views/advisories must not invent a second completeness or currency "
+            f"predicate over projection ORM rows; consume {HOST_PROJECTION_READ_OWNER}: "
+            f"{', '.join(offenders)}",
+        )
+
+    def test_views_and_advisories_cannot_import_projection_publishers(self):
+        root = Path(settings.BASE_DIR)
+        offenders = []
+        for path in self._consumer_sources():
+            tree = ast.parse(path.read_text())
+            modules = {
+                node.module
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module in HOST_PROJECTION_PUBLISHER_MODULES
+            }
+            modules.update(
+                alias.name
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Import)
+                for alias in node.names
+                if alias.name in HOST_PROJECTION_PUBLISHER_MODULES
+            )
+            if modules:
+                offenders.append(f"{path.relative_to(root)} ({', '.join(sorted(modules))})")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "A passive view/advisory may request the durable manual lifecycle, "
+            "but it may not import a provider publisher directly: "
+            f"{', '.join(offenders)}",
+        )
+
+    def test_projection_read_owner_cannot_import_provider_or_refresh_modules(self):
+        root = Path(settings.BASE_DIR)
+        tree = ast.parse((root / HOST_PROJECTION_READ_OWNER).read_text())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+
+        self.assertEqual(
+            sorted(imported & HOST_PROJECTION_OWNER_FORBIDDEN_IMPORTS),
+            [],
+            "The passive host projection read owner may not import provider, publisher, resolver or task modules.",
+        )
+
+
 class FrontendSourceInvariantTests(SimpleTestCase):
     def _frontend_sources(self) -> list[Path]:
         root = Path(settings.BASE_DIR)

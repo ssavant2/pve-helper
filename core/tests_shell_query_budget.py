@@ -72,7 +72,8 @@ MODULE5_QUERY_ALLOWANCES = {
     "cluster Summary (5a2C)": (6, "/clusters/<key>/"),
     # tree cost + 1 node row + 1 coverage + 1 guest-by-node aggregate.
     "node Summary (5a2D)": (6, "/clusters/<key>/nodes/<node>/"),
-    # 1 projection + 1 coverage + 1 generation, no provider I/O.
+    # 1 managed cluster + 1 membership state + 1 node-state bulk read +
+    # 1 all-domain coverage bulk read, no provider I/O.
     "first diagnostics read (5a1F)": (4, "service-level, no page"),
 }
 
