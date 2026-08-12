@@ -29,6 +29,7 @@ from core.models import (
     ClusterStorageNodeState,
     ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
+    ClusterTopologyHandoffStorageBinding,
     ProxmoxCluster,
     ProxmoxStorageConsumer,
     StorageCatalogState,
@@ -96,6 +97,7 @@ class StorageRetirementPreflight:
     node_state_count: int
     coverage_count: int
     observation_count: int
+    handoff_intent_count: int
     mounts: tuple[StorageRetirementMount, ...]
     consumers: tuple[StorageRetirementConsumer, ...]
 
@@ -115,6 +117,7 @@ class StorageRetirementResult:
     coverages_deleted: int
     observations_deleted: int
     bindings_deleted: int
+    handoff_intents_deleted: int
     consumers_deleted: int
     catalog_states_deleted: int
     mount_refs: tuple[str, ...]
@@ -226,6 +229,14 @@ def _storage_snapshot(
             lock,
         ).values_list(*_model_fields(ClusterStorageVolumeObservation)),
     )
+    handoff_intent_count = _hash_rows(
+        digest,
+        "topology_handoff_intents",
+        _for_update(
+            ClusterTopologyHandoffStorageBinding.objects.filter(cluster_id=cluster.pk).order_by("pk"),
+            lock,
+        ).values_list(*_model_fields(ClusterTopologyHandoffStorageBinding)),
+    )
 
     binding_fields = _model_fields(ClusterStorageMount)
     binding_rows = list(
@@ -300,6 +311,7 @@ def _storage_snapshot(
         node_state_count=node_state_count,
         coverage_count=coverage_count,
         observation_count=observation_count,
+        handoff_intent_count=handoff_intent_count,
         mounts=mounts,
         consumers=consumers,
     )
@@ -359,6 +371,7 @@ def finalize_cluster_retirement_storage(
         ).delete()[0]
         node_states_deleted = ClusterStorageNodeState.objects.filter(cluster_storage__cluster_id=cluster.pk).delete()[0]
         bindings_deleted = ClusterStorageMount.objects.filter(cluster_storage__cluster_id=cluster.pk).delete()[0]
+        handoff_intents_deleted = ClusterTopologyHandoffStorageBinding.objects.filter(cluster_id=cluster.pk).delete()[0]
         catalog_states_deleted = StorageCatalogState.objects.filter(cluster_id=cluster.pk).delete()[0]
         consumers_deleted = 0
         if normalized_mode == ProxmoxCluster.RetirementMode.FORCED:
@@ -376,6 +389,7 @@ def finalize_cluster_retirement_storage(
             coverages_deleted=coverages_deleted,
             observations_deleted=observations_deleted,
             bindings_deleted=bindings_deleted,
+            handoff_intents_deleted=handoff_intents_deleted,
             consumers_deleted=consumers_deleted,
             catalog_states_deleted=catalog_states_deleted,
             mount_refs=mount_refs,

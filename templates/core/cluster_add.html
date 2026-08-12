@@ -2,21 +2,22 @@
 
 {% block content %}
   <div class="page-header cluster-page-header">
-    <div><a href="{% url 'core:clusters_overview' %}">Connections</a><h1>Add Proxmox host or cluster</h1><p>Register a standalone host through itself, or a cluster through one of its nodes. Credentials are sent only after you inspect and approve the endpoint certificate.</p></div>
+    <div><a href="{% url 'core:clusters_overview' %}">Connections</a><h1>{% if handoff_source %}Replace topology identity{% else %}Add Proxmox host or cluster{% endif %}</h1><p>{% if handoff_source %}Create a new permanent identity for <code>{{ handoff_source.key }}</code>'s confirmed {{ handoff_snapshot.registered_role }} → {{ handoff_snapshot.pending_role }} transition. The old identity and its history will be retired, never renamed.{% else %}Register a standalone host through itself, or a cluster through one of its nodes. Credentials are sent only after you inspect and approve the endpoint certificate.{% endif %}</p></div>
     <a class="secondary-action" href="{% url 'core:clusters_overview' %}">Cancel</a>
   </div>
 
   <ol class="cluster-wizard-steps" aria-label="Onboarding progress">
     <li class="{% if step == 'identity' %}active{% else %}complete{% endif %}"><span>1</span>Connection</li>
-    <li class="{% if step == 'trust' %}active{% elif step == 'confirm' %}complete{% endif %}"><span>2</span>Trust &amp; token</li>
-    <li class="{% if step == 'confirm' %}active{% endif %}"><span>3</span>Identity</li>
+    <li class="{% if step == 'trust' %}active{% elif step == 'confirm' or step == 'handoff-confirm' %}complete{% endif %}"><span>2</span>Trust &amp; token</li>
+    <li class="{% if step == 'confirm' %}active{% elif step == 'handoff-confirm' %}complete{% endif %}"><span>3</span>Identity</li>
+    {% if handoff_source %}<li class="{% if step == 'handoff-confirm' %}active{% endif %}"><span>4</span>Hand-off</li>{% endif %}
   </ol>
 
   {% if step == "identity" %}
     <section class="panel cluster-wizard-panel">
       <div class="panel-heading"><div><h2>Connection identity</h2><p class="panel-meta">The cluster key becomes durable identity in URLs, Audit and queued operations.</p></div></div>
       <form method="post" class="cluster-form-grid">
-        {% csrf_token %}<input type="hidden" name="action" value="inspect">
+        {% csrf_token %}<input type="hidden" name="action" value="inspect">{% if handoff %}<input type="hidden" name="handoff" value="{{ handoff }}">{% endif %}
         {% include "core/partials/cluster_form_errors.html" with form=inspect_form %}
         <label><span>Display name</span>{{ inspect_form.display_name }}<small>{{ inspect_form.display_name.help_text }}</small>{% for error in inspect_form.display_name.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
         <label><span>Cluster key</span>{{ inspect_form.cluster_key }}<small>{{ inspect_form.cluster_key.help_text }}</small>{% for error in inspect_form.cluster_key.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
@@ -38,10 +39,10 @@
         <label><span>API token ID</span>{{ trust_form.token_id }}<small>{{ trust_form.token_id.help_text }}</small>{% for error in trust_form.token_id.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
         <label><span>API token secret</span>{{ trust_form.token_secret }}<small>The secret is never rendered back or written to Audit.</small>{% for error in trust_form.token_secret.errors %}<small class="form-error">{{ error }}</small>{% endfor %}</label>
         <label class="cluster-check cluster-field-wide">{{ trust_form.confirm_certificate }}<span>{{ trust_form.confirm_certificate.label }}</span></label>
-        <div class="cluster-form-actions cluster-field-wide"><a class="secondary-action" href="{% url 'core:cluster_add' %}">Start over</a><button class="secondary-action" type="submit">Verify Proxmox</button></div>
+        <div class="cluster-form-actions cluster-field-wide"><a class="secondary-action" href="{% url 'core:cluster_add' %}{% if handoff_source %}?handoff_from={{ handoff_source.key }}{% endif %}">Start over</a><button class="secondary-action" type="submit">Verify Proxmox</button></div>
       </form>
     </section>
-  {% else %}
+  {% elif step == "confirm" %}
     <section class="panel cluster-wizard-panel">
       <div class="panel-heading"><div><h2>Bind verified cluster identity</h2><p class="panel-meta">The token has Administrator permissions on <code>/</code>. Review the permanent identity before saving.</p></div></div>
       <div class="cluster-verification-grid">
@@ -55,7 +56,39 @@
         {% csrf_token %}<input type="hidden" name="action" value="confirm">{{ confirm_form.candidate }}
         {% include "core/partials/cluster_form_errors.html" with form=confirm_form %}
         <label class="cluster-check">{{ confirm_form.confirm_identity }}<span>{{ confirm_form.confirm_identity.label }}</span></label>
-        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_add' %}">Cancel</a><button class="secondary-action" type="submit">Add and enable connection</button></div>
+        {% if handoff_source %}
+          <div class="cluster-field-wide cluster-handoff-review">
+            <h3>Explicit endpoint and storage hand-off</h3>
+            <p>The verified endpoint <code>{{ candidate.endpoint_url }}</code> will be registered on <code>{{ candidate.key }}</code>. Every endpoint on <code>{{ handoff_source.key }}</code> is released when that immutable identity is retired.</p>
+            {% if handoff_snapshot.storage_bindings %}
+              <p>Select only mappings that should be rebound after the replacement publishes its own complete storage metadata. Unselected mappings are released.</p>
+              {% for binding in handoff_snapshot.storage_bindings %}
+                <label class="cluster-check"><input type="checkbox" name="storage_binding" value="{{ binding.pk }}"><span><code>{{ binding.storage_id }}</code> · {{ binding.scope }}{% if binding.node %} / {{ binding.node }}{% endif %} → {{ binding.mount_label }}</span></label>
+              {% endfor %}
+            {% else %}<p>No storage mappings belong to the old identity.</p>{% endif %}
+          </div>
+        {% endif %}
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% if handoff_source %}{% url 'core:cluster_connection' handoff_source.key %}{% else %}{% url 'core:cluster_add' %}{% endif %}">Cancel</a><button class="secondary-action" type="submit">{% if handoff_source %}Review irreversible hand-off{% else %}Add and enable connection{% endif %}</button></div>
+      </form>
+    </section>
+  {% else %}
+    <section class="panel cluster-wizard-panel">
+      <div class="panel-heading"><div><h2>Confirm irreversible topology hand-off</h2><p class="panel-meta">This exact decision is signed to your verified candidate and the current source snapshot. Changing any selection requires a new review.</p></div></div>
+      {% if handoff_source %}
+        <div class="cluster-verification-grid">
+          <div><span>Retire identity</span><strong>{{ handoff_source.key }}</strong></div><div><span>Create identity</span><strong>{{ candidate.key }}</strong></div>
+          <div><span>Confirmed transition</span><strong>{{ handoff_snapshot.registered_role }} → {{ handoff_snapshot.pending_role }}</strong></div><div><span>Replacement CA UUID</span><code>{{ verified.identity.ca_uuid }}</code></div>
+        </div>
+        <div class="cluster-field-wide cluster-handoff-review">
+          <h3>Signed storage mapping selection</h3>
+          {% for binding in selected_storage_bindings %}<p><code>{{ binding.storage_id }}</code> · {{ binding.scope }}{% if binding.node %} / {{ binding.node }}{% endif %} → {{ binding.mount_label }}</p>{% empty %}<p>No storage mappings will be rebound.</p>{% endfor %}
+        </div>
+      {% endif %}
+      <form method="post" class="cluster-confirm-form">
+        {% csrf_token %}<input type="hidden" name="action" value="complete-handoff">{{ final_form.handoff_confirmation }}
+        {% include "core/partials/cluster_form_errors.html" with form=final_form %}
+        <label class="cluster-check">{{ final_form.confirm_handoff }}<span>{{ final_form.confirm_handoff.label }}</span></label>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% if handoff_source %}{% url 'core:cluster_connection' handoff_source.key %}{% else %}{% url 'core:clusters_overview' %}{% endif %}">Cancel</a><button class="secondary-action danger" type="submit">Retire old and create replacement</button></div>
       </form>
     </section>
   {% endif %}

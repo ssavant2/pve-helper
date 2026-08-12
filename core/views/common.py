@@ -596,6 +596,13 @@ def _audit_action_label(event: AuditEvent) -> str:
         "cluster.retirement_refused": "Retirement refused",
         "cluster.retired": "Retire cluster",
         "cluster.force_retired": "Force-retire cluster",
+        "cluster.topology_transition_detected": "Topology transition detected",
+        "cluster.topology_transition_withdrawn": "Topology transition withdrawn",
+        "cluster.topology_handoff_completed": "Complete topology hand-off",
+        "cluster.topology_handoff_storage_applied": "Apply hand-off storage mappings",
+        "cluster.topology_handoff_storage_refused": "Refuse hand-off storage mappings",
+        "cluster.topology_membership_recovered": "Recover cluster membership",
+        "cluster.topology_pending_repaired": "Discard unreadable topology evidence",
         "cluster.unused_connection_deleted": "Delete unused cluster connection",
     }
     if event.action in cluster_action_labels:
@@ -710,6 +717,8 @@ def _audit_detail_label(event: AuditEvent) -> str:
         "cluster.force_retired",
     }:
         return _retirement_audit_detail(event.action, details)
+    if event.action == "cluster.topology_handoff_storage_refused":
+        return str(details.get("error_reason") or details.get("reason") or "Storage hand-off mapping refused")
     return str(details.get("summary") or details.get("error_reason") or "")
 
 
@@ -740,6 +749,7 @@ def _retirement_audit_detail(action: str, details: dict) -> str:
     verification = {
         "matched": "Identity matched",
         "skipped": "Identity verification skipped",
+        "superseded_by_verified_handoff": "Old identity superseded by verified topology hand-off",
     }.get(str(details.get("identity_verification") or ""), "")
     endpoint_count = details.get("endpoint_count")
     endpoints = (

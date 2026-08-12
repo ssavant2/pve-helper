@@ -102,6 +102,9 @@ class ClusterProjectionRead:
     ingestion_quarantined: bool
     topology_role: str
     topology_role_readable: bool
+    transition_pending: bool
+    pending_topology_role: str
+    pending_role_is_readable: bool
     membership_generation: int
     member_count: int
     quorate: bool
@@ -317,6 +320,9 @@ def read_cluster_projection(cluster_key: str, *, now: datetime | None = None) ->
         ingestion_quarantined=cluster.ingestion_quarantined,
         topology_role=membership_state.topology_role if membership_state else "unknown",
         topology_role_readable=membership_state.role_is_readable if membership_state else True,
+        transition_pending=membership_state.transition_pending if membership_state else False,
+        pending_topology_role=membership_state.pending_topology_role if membership_state else "unknown",
+        pending_role_is_readable=membership_state.pending_role_is_readable if membership_state else True,
         membership_generation=membership_generation,
         member_count=membership_state.member_count if membership_state else 0,
         quorate=membership_state.quorate if membership_state else False,

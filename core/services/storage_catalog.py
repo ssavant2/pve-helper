@@ -440,6 +440,13 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
         elif coverage_errors:
             state.volume_errors = coverage_errors
         state.save()
+        # 5a1G hand-off intents are explicit operator configuration, but they
+        # cannot bind until this replacement identity has published its own
+        # complete metadata generation. The helper locks and applies/refuses the
+        # entire reviewed set atomically; it never guesses a storage by URL/name.
+        from core.services.cluster_topology_handoff import apply_topology_handoff_storage_bindings
+
+        apply_topology_handoff_storage_bindings(cluster, metadata_generation=generation)
     return state
 
 

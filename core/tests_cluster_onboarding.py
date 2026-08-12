@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 
 from core.models import (
     ClusterCredential,
+    ClusterMembershipState,
     ClusterTransportTrust,
     ProxmoxCluster,
     ProxmoxEndpoint,
@@ -21,6 +22,7 @@ from core.services.cluster_onboarding import (
     verify_new_cluster,
     verify_replacement_credential,
 )
+from core.services.cluster_topology_role import TopologyRole
 from core.services.cluster_trust import TRUST_PUBLIC, InspectedCertificate, approve_cluster_transport
 
 TEST_KEY = base64.b64encode(b"o" * 32).decode()
@@ -146,6 +148,84 @@ class ClusterOnboardingTests(TestCase):
         self.assertEqual(verified.node_names, ("pve201",))
         self.assertEqual(ProxmoxCluster.objects.count(), 0)
         self.assertNotIn("super-secret", repr(candidate))
+
+    def test_handoff_verification_narrowly_reuses_source_endpoint_and_ca(self):
+        source = ProxmoxCluster.objects.create(
+            key="source",
+            display_name="Source",
+            enabled=True,
+            discovered_ca_uuid=self.identity.ca_uuid,
+        )
+        ProxmoxEndpoint.objects.create(
+            cluster=source,
+            name=self.candidate.endpoint_name,
+            url=self.candidate.endpoint_url,
+        )
+        ClusterMembershipState.objects.create(
+            cluster=source,
+            topology_role=TopologyRole.STANDALONE,
+            transition_pending=True,
+            pending_topology_role=TopologyRole.COROSYNC,
+        )
+
+        class CompleteCorosyncClient(_CandidateClient):
+            def get(self, path):
+                if path == "cluster/status":
+                    return [
+                        {"type": "cluster", "name": "Candidate Cluster", "nodes": 1, "quorate": 1},
+                        {"type": "node", "name": "pve201", "nodeid": 1, "online": 1, "local": 1},
+                    ]
+                return super().get(path)
+
+        with (
+            patch("core.services.cluster_onboarding.inspect_transport", return_value=self.certificate),
+            patch("core.services.cluster_onboarding.ProxmoxClient", CompleteCorosyncClient),
+            patch("core.services.cluster_onboarding.discover_cluster_identity", return_value=self.identity),
+        ):
+            candidate, verified = verify_new_cluster(
+                self.candidate,
+                expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
+                handoff_from=source,
+            )
+
+        self.assertEqual(candidate.endpoint_url, self.candidate.endpoint_url)
+        self.assertEqual(verified.identity.ca_uuid, source.discovered_ca_uuid)
+        self.assertTrue(verified.membership_complete)
+        self.assertEqual(verified.topology_role, TopologyRole.COROSYNC)
+
+        with self.assertRaisesMessage(ClusterOnboardingError, "already registered"):
+            verify_new_cluster(
+                self.candidate,
+                expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
+            )
+
+    def test_handoff_verification_rejects_non_strict_membership_payload(self):
+        source = ProxmoxCluster.objects.create(key="source", display_name="Source", enabled=True)
+        ClusterMembershipState.objects.create(
+            cluster=source,
+            topology_role=TopologyRole.STANDALONE,
+            transition_pending=True,
+            pending_topology_role=TopologyRole.COROSYNC,
+        )
+        with patch(
+            "core.services.cluster_onboarding._verify_connection",
+            return_value=VerifiedConnection(
+                certificate=self.certificate,
+                identity=self.identity,
+                node_names=("pve201",),
+                version="9.2.4",
+                discovered_name="Candidate Cluster",
+                administrator_privileges=("VM.Audit",),
+                topology_role=TopologyRole.UNKNOWN,
+                membership_complete=False,
+            ),
+        ):
+            with self.assertRaisesMessage(ClusterOnboardingError, "fresh complete membership"):
+                verify_new_cluster(
+                    self.candidate,
+                    expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
+                    handoff_from=source,
+                )
 
     def test_verification_requires_every_current_administrator_privilege(self):
         class LimitedClient(_CandidateClient):

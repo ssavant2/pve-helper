@@ -11,6 +11,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from core.models import (
+    AuditEvent,
     ClusterMembershipState,
     ClusterNodeState,
     ClusterProjectionCoverage,
@@ -337,7 +338,7 @@ class MembershipReconcilerTests(TestCase):
         self.assertEqual(malformed.error_code, ERROR_INVALID_PAYLOAD)
         self.assertEqual(ClusterMembershipState.objects.get(cluster=cluster).membership_generation, generation)
 
-    def test_role_change_is_complete_and_nonblocking_until_5a1g(self):
+    def test_role_change_persists_one_sticky_block_and_audits_once(self):
         cluster = _cluster("role-change")
         endpoint = _endpoint(cluster)
         standalone = _client([{**STANDALONE_CLUSTER_STATUS[0], "name": "pve1", "id": "node/pve1"}])
@@ -353,8 +354,51 @@ class MembershipReconcilerTests(TestCase):
         self.assertEqual(state.topology_role, TopologyRole.STANDALONE)
         self.assertTrue(coverage.complete)
         self.assertEqual(coverage.error_code, ERROR_TOPOLOGY_ROLE_CHANGE)
-        self.assertNotIn("transition_pending", {field.name for field in state._meta.get_fields()})
-        self.assertNotIn("pending_topology_role", {field.name for field in state._meta.get_fields()})
+        self.assertTrue(state.transition_pending)
+        self.assertEqual(state.pending_topology_role, TopologyRole.COROSYNC)
+        event = AuditEvent.objects.get(action="cluster.topology_transition_detected")
+        self.assertEqual(event.cluster_key_snapshot, cluster.key)
+        self.assertEqual(event.details["registered_role"], TopologyRole.STANDALONE)
+        self.assertEqual(event.details["pending_role"], TopologyRole.COROSYNC)
+
+        repeated = self._refresh(cluster, {endpoint.name: _client(_corosync_rows(1))})
+        state.refresh_from_db()
+        self.assertEqual(repeated.role_decision.transition, RoleTransition.TRANSITION_PENDING)
+        self.assertTrue(state.transition_pending)
+        self.assertEqual(AuditEvent.objects.filter(action="cluster.topology_transition_detected").count(), 1)
+
+    def test_complete_return_to_registered_role_withdraws_and_audits_the_block(self):
+        cluster = _cluster("role-withdrawn")
+        endpoint = _endpoint(cluster)
+        standalone_rows = [{**STANDALONE_CLUSTER_STATUS[0], "name": "pve1", "id": "node/pve1"}]
+        self._refresh(cluster, {endpoint.name: _client(standalone_rows)})
+        self._refresh(cluster, {endpoint.name: _client(_corosync_rows(1))})
+
+        result = self._refresh(cluster, {endpoint.name: _client(standalone_rows)})
+
+        state = ClusterMembershipState.objects.get(cluster=cluster)
+        self.assertEqual(result.role_decision.transition, RoleTransition.TRANSITION_WITHDRAWN)
+        self.assertFalse(state.transition_pending)
+        self.assertEqual(state.pending_topology_role, TopologyRole.UNKNOWN)
+        event = AuditEvent.objects.get(action="cluster.topology_transition_withdrawn")
+        self.assertEqual(event.details["withdrawn_pending_role"], TopologyRole.COROSYNC)
+
+    def test_unreadable_pending_target_stays_blocked_until_operator_repair(self):
+        cluster = _cluster("future-pending")
+        endpoint = _endpoint(cluster)
+        ClusterMembershipState.objects.create(
+            cluster=cluster,
+            topology_role=TopologyRole.STANDALONE,
+            transition_pending=True,
+            pending_topology_role="corosync-v2",
+        )
+
+        result = self._refresh(cluster, {endpoint.name: _client(_corosync_rows(1))})
+
+        state = ClusterMembershipState.objects.get(cluster=cluster)
+        self.assertEqual(result.role_decision.transition, RoleTransition.INDETERMINATE)
+        self.assertTrue(state.transition_pending)
+        self.assertEqual(state.pending_topology_role, "corosync-v2")
 
     def test_sibling_clusters_with_same_node_names_are_isolated(self):
         first = _cluster("first-sibling")

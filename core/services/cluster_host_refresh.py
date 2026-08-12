@@ -8,7 +8,7 @@ from django.db import connection, transaction
 from django.utils import timezone
 from django_q.tasks import async_task
 
-from core.models import AuditEvent, ProxmoxCluster
+from core.models import AuditEvent, ClusterMembershipState, ProxmoxCluster
 from core.services.audit_events import record_audit_event
 from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock
 from core.services.cluster_membership import refresh_cluster_membership
@@ -63,12 +63,22 @@ def _scope_identity(cluster: ProxmoxCluster, scope: str, node_name: str) -> tupl
     return scope, node_ref.serialize()
 
 
-def _locked_operable_cluster(cluster: ProxmoxCluster) -> ProxmoxCluster:
+def _locked_operable_cluster(cluster: ProxmoxCluster, *, scope: str) -> ProxmoxCluster:
     locked = historical_clusters().select_for_update().get(pk=cluster.pk)
     if locked.retired_at is not None:
         raise ClusterHostRefreshQueueError("The selected Proxmox cluster has been retired.")
     if not locked.enabled:
         raise ClusterHostRefreshQueueError("The selected Proxmox cluster is disabled.")
+    if (
+        scope != HOST_REFRESH_SCOPE_MEMBERSHIP
+        and ClusterMembershipState.objects.filter(
+            cluster=locked,
+            transition_pending=True,
+        ).exists()
+    ):
+        raise ClusterHostRefreshQueueError(
+            "Node-runtime refresh is blocked until the standalone/corosync identity hand-off is completed."
+        )
     return locked
 
 
@@ -136,7 +146,7 @@ def queue_cluster_host_refresh(
     with transaction.atomic():
         with cluster_lifecycle_lock(cluster):
             _advisory_xact_lock(cluster_advisory_lock_id(_QUEUE_LOCK_ID, cluster))
-            cluster = _locked_operable_cluster(cluster)
+            cluster = _locked_operable_cluster(cluster, scope=scope)
             if _active_scope_exists(cluster=cluster, scope=scope, node_ref=node_ref):
                 raise ClusterHostRefreshAlreadyActive("This host projection scope is already queued or running.")
             now = timezone.now().isoformat()
@@ -178,7 +188,7 @@ def retry_cluster_host_refresh(event_id: int) -> str:
     with transaction.atomic():
         with cluster_lifecycle_lock(event.cluster):
             _advisory_xact_lock(cluster_advisory_lock_id(_QUEUE_LOCK_ID, event.cluster))
-            cluster = _locked_operable_cluster(event.cluster)
+            cluster = _locked_operable_cluster(event.cluster, scope=scope)
             event = AuditEvent.objects.select_for_update().get(pk=event_id)
             details = dict(event.details) if isinstance(event.details, dict) else {}
             if event.outcome != "failed" or details.get("retryable") is not True:

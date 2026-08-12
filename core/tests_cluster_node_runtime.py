@@ -30,6 +30,7 @@ from core.services.cluster_node_runtime import (
     ERROR_PROVIDER,
     ERROR_PROVIDER_TIMEOUT,
     ERROR_PROVIDER_UNAUTHORIZED,
+    ERROR_TOPOLOGY_TRANSITION_PENDING,
     InvalidNodeStatusPayload,
     normalize_node_status,
     refresh_cluster_node_runtime,
@@ -558,6 +559,25 @@ class NodeRuntimeRefusalTests(TestCase):
             cluster=self.cluster, domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP
         ).update(complete=False, observed_at=None)
         self._assert_zero_call_refusal(ERROR_MEMBERSHIP_NOT_PUBLISHED)
+
+    def test_pending_topology_transition_makes_no_provider_call_or_projection_write(self):
+        ClusterMembershipState.objects.filter(cluster=self.cluster).update(
+            transition_pending=True,
+            pending_topology_role="standalone",
+        )
+        client = _client(STATUS_BODY)
+
+        with patch("core.services.cluster_node_runtime.client_for_endpoint", return_value=client):
+            result = refresh_cluster_node_runtime(self.cluster)
+
+        self.assertEqual(client.get.call_count, 0)
+        self.assertEqual([node.error_code for node in result.nodes], [ERROR_TOPOLOGY_TRANSITION_PENDING])
+        self.assertFalse(
+            ClusterProjectionCoverage.objects.filter(
+                cluster=self.cluster,
+                domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME,
+            ).exists()
+        )
 
     def test_zero_target_sweep_is_a_success(self):
         ClusterNodeState.objects.filter(cluster=self.cluster).delete()

@@ -236,6 +236,9 @@ RAW_MEMBERSHIP_READ_ALLOWLIST = frozenset(
         # definition: it is proving what the candidate transport is attached to.
         # This one stays raw after the filter lands.
         "core/services/cluster_onboarding.py",
+        # 5a1G's explicit stale-observer recovery re-verifies one stored endpoint
+        # and requires operator confirmation before publishing the candidate set.
+        "core/services/cluster_topology_handoff.py",
         # Scan pass-2 gap fill. Becomes the *safety* read set (managed +
         # safety_only), not the published one -- it stays a raw caller on purpose.
         "core/tasks.py",

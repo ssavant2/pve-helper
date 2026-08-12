@@ -62,6 +62,13 @@ CLUSTER_CONFIGURATION_AUDIT_ACTIONS = frozenset(
         "cluster.retirement_verification_failed",
         "cluster.transport.approve",
         "cluster.trust.cutover",
+        "cluster.topology_handoff_completed",
+        "cluster.topology_handoff_storage_applied",
+        "cluster.topology_handoff_storage_refused",
+        "cluster.topology_membership_recovered",
+        "cluster.topology_pending_repaired",
+        "cluster.topology_transition_detected",
+        "cluster.topology_transition_withdrawn",
         "cluster.unused_connection_deleted",
         "cluster.updated",
     }

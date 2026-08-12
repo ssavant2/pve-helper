@@ -1771,10 +1771,10 @@ class ClusterMembershipState(TimestampedModel):
     written by a newer build reads as ``UNKNOWN`` and is re-adopted only from a
     later complete observation; it never guesses a Hosts/Clusters group.
 
-    The pending-transition columns do **not** belong to this schema slice. They
-    land with 5a1G's confirmation surface, because persisting a provider-work
-    block before its operator exit exists would strand the cluster. Keeping that
-    schema out of 5a1A is what makes this unreadable-value tolerance non-blocking.
+    The pending-transition columns land with 5a1G's confirmation surface. The
+    boolean is the fail-closed acquisition gate; the free-text target preserves
+    forward compatibility without silently dropping a block written by a newer
+    build. An unreadable target has an explicit Connections repair ceremony.
     """
 
     cluster = models.OneToOneField(
@@ -1785,6 +1785,8 @@ class ClusterMembershipState(TimestampedModel):
     #: Free text on purpose: a value this build does not recognize must be
     #: readable and re-adoptable, not a database error in a periodic reconciler.
     topology_role = models.CharField(max_length=32, default="unknown")
+    transition_pending = models.BooleanField(default=False)
+    pending_topology_role = models.CharField(max_length=32, default="unknown")
     membership_generation = models.PositiveBigIntegerField(default=0)
     member_count = models.PositiveIntegerField(default=0)
     quorate = models.BooleanField(default=False)
@@ -1796,6 +1798,19 @@ class ClusterMembershipState(TimestampedModel):
     class Meta:
         verbose_name = "cluster membership state"
         verbose_name_plural = "cluster membership states"
+        constraints = [
+            models.CheckConstraint(
+                name="core_membership_pending_role_coherent",
+                condition=(
+                    models.Q(transition_pending=False, pending_topology_role="unknown")
+                    | (
+                        models.Q(transition_pending=True)
+                        & ~models.Q(pending_topology_role__in=("", "unknown"))
+                        & ~models.Q(pending_topology_role=models.F("topology_role"))
+                    )
+                ),
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.cluster.key}: {self.topology_role}"
@@ -1809,6 +1824,26 @@ class ClusterMembershipState(TimestampedModel):
         except ValueError:
             return TopologyRole.UNKNOWN
 
+    def pending_role(self):
+        """Return the pending target as a typed role, or ``UNKNOWN``.
+
+        ``transition_pending`` remains authoritative when this returns UNKNOWN:
+        that is a newer-build/hand-edited value and must stay blocked until the
+        explicit repair action discards the unreadable evidence.
+        """
+        from core.services.cluster_topology_role import TopologyRole
+
+        try:
+            return TopologyRole(self.pending_topology_role)
+        except ValueError:
+            return TopologyRole.UNKNOWN
+
+    @property
+    def pending_role_is_readable(self) -> bool:
+        from core.services.cluster_topology_role import TopologyRole
+
+        return self.pending_topology_role in {member.value for member in TopologyRole}
+
     @property
     def role_is_readable(self) -> bool:
         """False when the stored role came from a build this one cannot read.
@@ -1820,6 +1855,65 @@ class ClusterMembershipState(TimestampedModel):
         from core.services.cluster_topology_role import TopologyRole
 
         return self.topology_role in {member.value for member in TopologyRole}
+
+
+class ClusterTopologyHandoffStorageBinding(TimestampedModel):
+    """One operator-confirmed storage mapping waiting on replacement coverage.
+
+    The old definition is never reassigned. The hand-off snapshots the exact
+    storage ID, scope, node and mount onto the replacement identity. Only that
+    replacement's own complete metadata generation may apply the intent.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPLIED = "applied", "Applied"
+        REFUSED = "refused", "Refused"
+
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="topology_handoff_storage_bindings",
+        # Covered by ``core_topology_handoff_binding_uniq``.
+        db_index=False,
+    )
+    source_cluster_key_snapshot = models.CharField(max_length=63)
+    storage_id = models.CharField(max_length=120)
+    mount = models.ForeignKey(
+        StorageMount,
+        on_delete=models.PROTECT,
+        related_name="topology_handoff_intents",
+    )
+    scope = models.CharField(max_length=12, choices=ClusterStorageMount.Scope.choices)
+    node = models.CharField(max_length=120, null=True, blank=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    applied_at = models.DateTimeField(null=True, blank=True)
+    refusal_reason = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ["cluster__key", "storage_id", "node"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cluster", "storage_id", "node"],
+                name="core_topology_handoff_binding_uniq",
+                nulls_distinct=False,
+            ),
+            models.CheckConstraint(
+                name="core_topology_handoff_binding_scope",
+                condition=(
+                    models.Q(scope=ClusterStorageMount.Scope.SHARED, node__isnull=True)
+                    | (models.Q(scope=ClusterStorageMount.Scope.NODE, node__isnull=False) & ~models.Q(node=""))
+                ),
+            ),
+            models.CheckConstraint(
+                name="core_topology_handoff_binding_status",
+                condition=models.Q(status__in=("pending", "applied", "refused")),
+            ),
+            models.CheckConstraint(
+                name="core_topology_handoff_source_nonempty",
+                condition=~models.Q(source_cluster_key_snapshot=""),
+            ),
+        ]
 
 
 class ClusterNodeState(TimestampedModel):

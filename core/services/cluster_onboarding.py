@@ -18,6 +18,8 @@ from django.utils import timezone
 
 from core.models import (
     AuditEvent,
+    ClusterCredential,
+    ClusterTransportTrust,
     ConsoleSession,
     ProxmoxCluster,
     ProxmoxEndpoint,
@@ -39,7 +41,9 @@ from core.services.cluster_identity import (
     reapprove_identity,
 )
 from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock
+from core.services.cluster_resolver import has_pending_topology_transition
 from core.services.cluster_state_identity import invalidate_cluster_cache
+from core.services.cluster_topology_role import TopologyRole
 from core.services.cluster_trust import (
     TRUST_CA_PEM,
     TRUST_PUBLIC,
@@ -93,6 +97,8 @@ class VerifiedConnection:
     version: str
     discovered_name: str
     administrator_privileges: tuple[str, ...]
+    topology_role: TopologyRole = TopologyRole.UNKNOWN
+    membership_complete: bool = False
 
 
 def normalize_candidate(candidate: ClusterCandidate) -> ClusterCandidate:
@@ -166,11 +172,14 @@ def verify_new_cluster(
     candidate: ClusterCandidate,
     *,
     expected_certificate_fingerprint: str,
+    handoff_from: ProxmoxCluster | None = None,
 ) -> tuple[ClusterCandidate, VerifiedConnection]:
     candidate = normalize_candidate(candidate)
+    if handoff_from is not None and not has_pending_topology_transition(handoff_from):
+        raise ClusterOnboardingError("The source connection has no pending topology hand-off.")
     if ProxmoxCluster.objects.filter(key__iexact=candidate.key).exists():
         raise ClusterOnboardingError(f"Cluster key '{candidate.key}' is already registered.")
-    _assert_endpoint_available(candidate.endpoint_url)
+    _assert_endpoint_available(candidate.endpoint_url, handoff_from=handoff_from)
     verified = _verify_connection(
         endpoint_url=candidate.endpoint_url,
         endpoint_name=candidate.endpoint_name,
@@ -178,8 +187,16 @@ def verify_new_cluster(
         credential=ProxmoxCredential(candidate.token_id, candidate.token_secret),
         expected_certificate_fingerprint=expected_certificate_fingerprint,
     )
+    if handoff_from is not None:
+        pending_role = handoff_from.membership_state.pending_topology_role
+        if not verified.membership_complete or verified.topology_role.value != pending_role:
+            raise ClusterOnboardingError(
+                "Topology hand-off requires fresh complete membership proving the pending replacement role."
+            )
     owner = ProxmoxCluster.objects.filter(discovered_ca_uuid=verified.identity.ca_uuid).first()
     if owner is not None:
+        if handoff_from is not None and owner.pk == handoff_from.pk:
+            return candidate, verified
         raise ClusterOnboardingError(f"This physical Proxmox cluster is already registered as '{owner.key}'.")
     return candidate, verified
 
@@ -296,29 +313,63 @@ def persist_new_cluster(candidate: ClusterCandidate, verified: VerifiedConnectio
             key=candidate.key,
             display_name=candidate.display_name,
             enabled=False,
-            discovered_name=verified.discovered_name,
-            discovered_ca_uuid=verified.identity.ca_uuid,
-            discovered_ca_fingerprint=verified.identity.ca_fingerprint,
-            details={"proxmox_version": verified.version, "onboarded_nodes": list(verified.node_names)},
         )
-        ProxmoxEndpoint.objects.create(
-            cluster=cluster,
-            name=candidate.endpoint_name,
-            url=candidate.endpoint_url,
-            enabled=True,
-        )
-        approve_cluster_transport(cluster, mode=candidate.trust_mode, ca_pem=candidate.ca_pem)
-        set_cluster_credential(
-            cluster,
-            token_id=candidate.token_id,
-            token_secret=candidate.token_secret,
-        )
-        activate_multicluster_identity()
-        return enable_cluster(cluster)
+        return persist_verified_cluster_configuration(cluster, candidate, verified)
     except IntegrityError as exc:
         raise ClusterOnboardingError(
             "The cluster key, endpoint URL or Proxmox CA identity was registered concurrently. Nothing was saved."
         ) from exc
+
+
+def persist_verified_cluster_configuration(
+    cluster: ProxmoxCluster,
+    candidate: ClusterCandidate,
+    verified: VerifiedConnection,
+) -> ProxmoxCluster:
+    """Fill a new disabled identity with ordinary verified onboarding config.
+
+    The hand-off coordinator creates its replacement row first so both lifecycle
+    locks exist, retires the old owner, then calls this exact persistence seam.
+    A caller may not use it to edit an already configured identity.
+    """
+    candidate = normalize_candidate(candidate)
+    locked = ProxmoxCluster.objects.select_for_update().get(pk=cluster.pk)
+    if any(
+        (
+            locked.enabled,
+            locked.retired_at is not None,
+            bool(locked.discovered_ca_uuid),
+            locked.endpoints.exists(),
+            ClusterCredential.objects.filter(cluster=locked).exists(),
+            ClusterTransportTrust.objects.filter(cluster=locked).exists(),
+        )
+    ):
+        raise ClusterOnboardingError("Only a new empty cluster identity can receive verified onboarding config.")
+    locked.display_name = candidate.display_name
+    locked.discovered_name = verified.discovered_name
+    locked.discovered_ca_uuid = verified.identity.ca_uuid
+    locked.discovered_ca_fingerprint = verified.identity.ca_fingerprint
+    locked.details = {"proxmox_version": verified.version, "onboarded_nodes": list(verified.node_names)}
+    locked.save(
+        update_fields=[
+            "display_name",
+            "discovered_name",
+            "discovered_ca_uuid",
+            "discovered_ca_fingerprint",
+            "details",
+            "updated_at",
+        ]
+    )
+    ProxmoxEndpoint.objects.create(
+        cluster=locked,
+        name=candidate.endpoint_name,
+        url=candidate.endpoint_url,
+        enabled=True,
+    )
+    approve_cluster_transport(locked, mode=candidate.trust_mode, ca_pem=candidate.ca_pem)
+    set_cluster_credential(locked, token_id=candidate.token_id, token_secret=candidate.token_secret)
+    activate_multicluster_identity()
+    return enable_cluster(locked)
 
 
 @transaction.atomic
@@ -586,6 +637,19 @@ def _verify_connection(
             ),
             "",
         )
+    topology_role = TopologyRole.UNKNOWN
+    membership_complete = False
+    try:
+        from core.services.cluster_membership import normalize_cluster_status
+
+        normalized_membership = normalize_cluster_status(status)
+    except ValueError:
+        # Ordinary onboarding historically accepts the looser metadata response;
+        # the topology hand-off separately requires this strict proof to be true.
+        pass
+    else:
+        membership_complete = True
+        topology_role = TopologyRole.COROSYNC if normalized_membership.has_cluster_row else TopologyRole.STANDALONE
     required = tuple(sorted(key for key, value in administrator_role.items() if value))
     return VerifiedConnection(
         certificate=certificate,
@@ -594,6 +658,8 @@ def _verify_connection(
         version=version,
         discovered_name=discovered_name,
         administrator_privileges=required,
+        topology_role=topology_role,
+        membership_complete=membership_complete,
     )
 
 
@@ -642,10 +708,12 @@ def _validate_endpoint_only(endpoint_url: str, endpoint_name: str) -> None:
     normalize_candidate(placeholder)
 
 
-def _assert_endpoint_available(endpoint_url: str) -> None:
+def _assert_endpoint_available(endpoint_url: str, *, handoff_from: ProxmoxCluster | None = None) -> None:
     normalized = normalize_endpoint_url(endpoint_url)
     owner = ProxmoxEndpoint.objects.filter(normalized_url=normalized).select_related("cluster").first()
     if owner is not None:
+        if handoff_from is not None and owner.cluster_id == handoff_from.pk:
+            return
         raise ClusterOnboardingError(
             f"Endpoint {normalized} is already registered as '{owner.name}' on cluster '{owner.cluster.key}'."
         )

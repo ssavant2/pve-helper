@@ -6,6 +6,7 @@ from core.models import AuditEvent, ProxmoxCluster, ProxmoxEndpoint
 from core.services.cluster_resolver import (
     client_for_endpoint,
     cluster_clients,
+    require_cluster_acquirable,
 )
 from core.services.public_errors import PublicMessageError
 from core.services.refs import GuestRef, RefParseError
@@ -39,6 +40,7 @@ def cluster_for_guest_ref(ref: GuestRef) -> ProxmoxCluster:
 def client_for_audit_event(event: AuditEvent, *, preferred_endpoint_url: str = ""):
     ref = guest_ref_from_audit_event(event)
     cluster = cluster_for_guest_ref(ref)
+    require_cluster_acquirable(cluster)
     preferred_endpoint_url = str(preferred_endpoint_url or (event.details or {}).get("proxmox_endpoint") or "")
     if preferred_endpoint_url:
         endpoint = ProxmoxEndpoint.objects.filter(

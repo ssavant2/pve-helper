@@ -29,6 +29,7 @@ from core.models import (
     ClusterStorageNodeState,
     ClusterStorageVolumeCoverage,
     ClusterStorageVolumeObservation,
+    ClusterTopologyHandoffStorageBinding,
     ClusterTransportTrust,
     CurrentGuestInventory,
     CurrentGuestInventoryState,
@@ -112,6 +113,8 @@ _TOKEN_FIELDS = frozenset(
         "trust_version",
         "storage_impact_digest",
         "issued_at",
+        "identity_verification",
+        "replacement_ca_uuid",
     }
 )
 
@@ -218,6 +221,8 @@ class ConfirmedRetirementPreflight:
     trust_version: str
     storage_impact_digest: str
     issued_at: int
+    identity_verification: str
+    replacement_ca_uuid: str
 
 
 @dataclass(frozen=True)
@@ -355,9 +360,11 @@ def _payload(
     endpoint_id: int | None,
     storage_impact_digest: str,
     issued_at: int,
+    identity_verification: str,
+    replacement_ca_uuid: str = "",
 ) -> dict:
     return {
-        "version": 1,
+        "version": 2,
         "cluster_pk": cluster.pk,
         "cluster_key": cluster.key,
         "mode": mode,
@@ -368,6 +375,8 @@ def _payload(
         "trust_version": _trust_version(cluster.pk),
         "storage_impact_digest": storage_impact_digest,
         "issued_at": issued_at,
+        "identity_verification": identity_verification,
+        "replacement_ca_uuid": replacement_ca_uuid,
     }
 
 
@@ -407,6 +416,7 @@ def cluster_retirement_preflight(
                 endpoint_id=endpoint.pk if endpoint is not None else None,
                 storage_impact_digest=storage.impact_digest,
                 issued_at=issued_at,
+                identity_verification=identity_verification,
             ),
             salt=RETIREMENT_PREFLIGHT_SALT,
             compress=True,
@@ -415,6 +425,74 @@ def cluster_retirement_preflight(
     return RetirementPreflight(
         mode=mode,
         endpoint_id=endpoint.pk if endpoint is not None else None,
+        identity_verification=identity_verification,
+        observed_at=observed_at,
+        storage=storage,
+        scheduled_actions=scheduled,
+        consoles=consoles,
+        audit_operations=audit,
+        active_scan_count=active_scan_count,
+        blocker_codes=blockers,
+        confirmation=confirmation,
+    )
+
+
+def cluster_handoff_retirement_preflight(
+    cluster,
+    *,
+    endpoint_id: int | None = None,
+    replacement_ca_uuid: str,
+) -> RetirementPreflight:
+    """Verified-retirement evidence for a transition-blocked enabled identity.
+
+    The ordinary retirement preflight deliberately requires an operator-disabled
+    connection. A topology hand-off cannot disable before its replacement has
+    passed onboarding verification without risking a strand, so this narrow seam
+    performs the same identity and impact proof while leaving the row unchanged.
+    The final coordinator disables under the lifecycle lock immediately before
+    the ordinary retirement validator/finalizer consumes this token.
+    """
+    cluster = _current_cluster(cluster)
+    pending = ClusterMembershipState.objects.filter(cluster=cluster, transition_pending=True).first()
+    if pending is None or not pending.pending_role_is_readable:
+        raise RetirementPreflightInvalid(
+            "Topology hand-off retirement is available only for a readable pending identity transition."
+        )
+    endpoint = _selected_endpoint(cluster, endpoint_id)
+    storage, scheduled, consoles, audit, active_scan_count, blockers = _local_impact(
+        cluster,
+        ProxmoxCluster.RetirementMode.VERIFIED,
+    )
+    replacement_ca_uuid = str(replacement_ca_uuid or "").strip()
+    if not replacement_ca_uuid:
+        raise RetirementPreflightInvalid("The replacement Proxmox CA identity is required.")
+    if replacement_ca_uuid == cluster.discovered_ca_uuid:
+        _verify_selected_endpoint(cluster, endpoint)
+        identity_verification = "matched"
+        token_replacement_ca_uuid = ""
+    else:
+        identity_verification = "superseded_by_verified_handoff"
+        token_replacement_ca_uuid = replacement_ca_uuid
+    observed_at = timezone.now()
+    issued_at = int(observed_at.timestamp())
+    confirmation = ""
+    if not blockers:
+        confirmation = signing.dumps(
+            _payload(
+                cluster,
+                mode=ProxmoxCluster.RetirementMode.VERIFIED,
+                endpoint_id=endpoint.pk,
+                storage_impact_digest=storage.impact_digest,
+                issued_at=issued_at,
+                identity_verification=identity_verification,
+                replacement_ca_uuid=token_replacement_ca_uuid,
+            ),
+            salt=RETIREMENT_PREFLIGHT_SALT,
+            compress=True,
+        )
+    return RetirementPreflight(
+        mode=ProxmoxCluster.RetirementMode.VERIFIED,
+        endpoint_id=endpoint.pk,
         identity_verification=identity_verification,
         observed_at=observed_at,
         storage=storage,
@@ -441,7 +519,7 @@ def _load_confirmation(token: str) -> dict:
     if (
         not isinstance(payload, dict)
         or set(payload) != _TOKEN_FIELDS
-        or payload.get("version") != 1
+        or payload.get("version") != 2
         or isinstance(payload.get("cluster_pk"), bool)
         or not isinstance(payload.get("cluster_pk"), int)
         or isinstance(payload.get("lifecycle_generation"), bool)
@@ -454,6 +532,8 @@ def _load_confirmation(token: str) -> dict:
         or not isinstance(payload.get("credential_version"), str)
         or not isinstance(payload.get("trust_version"), str)
         or not isinstance(payload.get("storage_impact_digest"), str)
+        or payload.get("identity_verification") not in {"matched", "skipped", "superseded_by_verified_handoff"}
+        or not isinstance(payload.get("replacement_ca_uuid"), str)
         or (
             payload.get("endpoint_id") is not None
             and (isinstance(payload.get("endpoint_id"), bool) or not isinstance(payload.get("endpoint_id"), int))
@@ -499,8 +579,22 @@ def validate_retirement_preflight(
             ) from exc
         if pinned_ca_uuid != current.discovered_ca_uuid:
             raise RetirementPreflightChanged("The cluster identity changed after preflight. Run preflight again.")
+        if payload["identity_verification"] == "superseded_by_verified_handoff":
+            if not payload["replacement_ca_uuid"] or payload["replacement_ca_uuid"] == pinned_ca_uuid:
+                raise RetirementPreflightInvalid(
+                    "This retirement confirmation is invalid or has expired. Run preflight again."
+                )
+        elif payload["identity_verification"] != "matched" or payload["replacement_ca_uuid"]:
+            raise RetirementPreflightInvalid(
+                "This retirement confirmation is invalid or has expired. Run preflight again."
+            )
         endpoint_id = endpoint.pk
-    elif endpoint_id is not None or pinned_ca_uuid != "":
+    elif (
+        endpoint_id is not None
+        or pinned_ca_uuid != ""
+        or payload["identity_verification"] != "skipped"
+        or payload["replacement_ca_uuid"]
+    ):
         raise RetirementPreflightInvalid("This retirement confirmation is invalid or has expired. Run preflight again.")
 
     storage = cluster_retirement_storage_preflight(current, mode=expected_mode)
@@ -522,6 +616,8 @@ def validate_retirement_preflight(
         trust_version=payload["trust_version"],
         storage_impact_digest=storage.impact_digest,
         issued_at=issued_at,
+        identity_verification=payload["identity_verification"],
+        replacement_ca_uuid=payload["replacement_ca_uuid"],
     )
 
 
@@ -629,7 +725,8 @@ def _retirement_audit_details(
         "retirement_mode": confirmed.mode,
         "retirement_reason": reason,
         "retired_at": retired_at.isoformat(),
-        "identity_verification": ("matched" if confirmed.mode == ProxmoxCluster.RetirementMode.VERIFIED else "skipped"),
+        "identity_verification": confirmed.identity_verification,
+        "replacement_ca_uuid": confirmed.replacement_ca_uuid,
         "identity_observed_at": datetime.fromtimestamp(confirmed.issued_at, tz=UTC).isoformat(),
         "verified_endpoint_id": confirmed.endpoint_id,
         "pinned_ca_uuid": cluster.discovered_ca_uuid,
@@ -653,6 +750,7 @@ def _retirement_audit_details(
             "storage_coverages_deleted": storage.coverages_deleted,
             "storage_observations_deleted": storage.observations_deleted,
             "storage_bindings_deleted": storage.bindings_deleted,
+            "topology_handoff_storage_intents_deleted": storage.handoff_intents_deleted,
             "storage_consumers_deleted": storage.consumers_deleted,
             "storage_catalog_states_deleted": storage.catalog_states_deleted,
             "current_guests_deleted": guest_inventory.guest_rows_deleted,
@@ -713,6 +811,7 @@ def _assert_retirement_postconditions(cluster: ProxmoxCluster, mode: str) -> Non
             ClusterStorageVolumeCoverage.objects.filter(cluster_storage__cluster_id=cluster.pk).exists(),
             ClusterStorageVolumeObservation.objects.filter(cluster_storage__cluster_id=cluster.pk).exists(),
             ClusterStorageMount.objects.filter(cluster_storage__cluster_id=cluster.pk).exists(),
+            ClusterTopologyHandoffStorageBinding.objects.filter(cluster_id=cluster.pk).exists(),
             ProxmoxStorageConsumer.objects.filter(cluster_id=cluster.pk).exists(),
             ScheduledAction.objects.filter(cluster_id=cluster.pk, deleted_at__isnull=True).exists(),
         )
@@ -755,6 +854,7 @@ def _retire_cluster_atomic(
     reason: str,
     typed_cluster_key: str,
     permanent_unavailability_asserted: bool,
+    replacement_ca_uuid: str,
 ) -> RetirementResult:
     with transaction.atomic():
         with scan_admission_lock():
@@ -776,6 +876,10 @@ def _retire_cluster_atomic(
                     permanent_unavailability_asserted=permanent_unavailability_asserted,
                     reason=reason,
                 )
+                if confirmed.replacement_ca_uuid != str(replacement_ca_uuid or ""):
+                    raise RetirementPreflightChanged(
+                        "The verified replacement identity changed. Run hand-off review again."
+                    )
 
                 # Lock every active global scan row while holding the admission
                 # lock. Scan admission takes the same locks in this order.
@@ -817,9 +921,8 @@ def _retire_cluster_atomic(
                         "cluster_key": locked.key,
                         "retirement_mode": confirmed.mode,
                         "retirement_reason": normalized_reason,
-                        "identity_verification": (
-                            "matched" if confirmed.mode == ProxmoxCluster.RetirementMode.VERIFIED else "skipped"
-                        ),
+                        "identity_verification": confirmed.identity_verification,
+                        "replacement_ca_uuid": confirmed.replacement_ca_uuid,
                         "endpoint_count": endpoint_count,
                         "endpoints": list(endpoints),
                         "credential_token_id": credential_token_id,
@@ -958,6 +1061,7 @@ def retire_cluster(
     reason: str = "",
     typed_cluster_key: str = "",
     permanent_unavailability_asserted: bool = False,
+    replacement_ca_uuid: str = "",
 ) -> RetirementResult:
     """Atomically retire one cluster without making any provider request.
 
@@ -976,6 +1080,7 @@ def retire_cluster(
             reason=reason,
             typed_cluster_key=typed_cluster_key,
             permanent_unavailability_asserted=permanent_unavailability_asserted,
+            replacement_ca_uuid=replacement_ca_uuid,
         )
     except Exception as exc:
         owner_blocked = isinstance(

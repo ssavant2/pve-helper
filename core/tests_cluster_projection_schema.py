@@ -187,13 +187,22 @@ class ClusterProjectionSchemaTests(TestCase):
             with self.subTest(field=field_name):
                 self.assertIsInstance(ClusterNodeState._meta.get_field(field_name), field_type)
 
-    def test_unreadable_registered_role_is_unknown_and_cannot_create_a_pending_block(self):
+    def test_unreadable_registered_and_pending_roles_are_tolerated_but_visible(self):
         state = ClusterMembershipState.objects.create(cluster=_cluster("future"), topology_role="corosync-v2")
         self.assertIs(state.role(), TopologyRole.UNKNOWN)
         self.assertFalse(state.role_is_readable)
         field_names = {field.name for field in ClusterMembershipState._meta.get_fields()}
-        self.assertNotIn("transition_pending", field_names)
-        self.assertNotIn("pending_topology_role", field_names)
+        self.assertIn("transition_pending", field_names)
+        self.assertIn("pending_topology_role", field_names)
+
+        pending = ClusterMembershipState.objects.create(
+            cluster=_cluster("future-pending"),
+            topology_role="standalone",
+            transition_pending=True,
+            pending_topology_role="corosync-v2",
+        )
+        self.assertIs(pending.pending_role(), TopologyRole.UNKNOWN)
+        self.assertFalse(pending.pending_role_is_readable)
 
 
 class ClusterProjectionLifecycleTests(TestCase):

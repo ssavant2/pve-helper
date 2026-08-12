@@ -5,10 +5,9 @@ one cluster, tries each enabled endpoint at most once and publishes a single
 atomic membership generation. Web processes consume the projection; they never
 call this service while rendering.
 
-Topology hand-off deliberately does not live here. Until 5a1G ships its operator
-exit, a trusted standalone/corosync change publishes current membership facts but
-keeps the registered role and returns the transition only as an in-process
-diagnostic.
+Topology hand-off deliberately does not live here. 5a1G persists the state
+machine's sticky target and supplies the operator exit; this publisher only opens
+or automatically withdraws that gate together with one auditable generation.
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ from core.models import (
     ClusterProjectionCoverage,
     ProxmoxCluster,
 )
+from core.services.audit_events import record_audit_event
 from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock
 from core.services.cluster_projection import stamp_cluster_projection_footprint
 from core.services.cluster_resolver import client_for_endpoint, enabled_endpoints
@@ -272,10 +272,28 @@ def _publish_complete(
     state, _created = ClusterMembershipState.objects.select_for_update().get_or_create(cluster=cluster)
     generation = state.membership_generation + 1
     error_code = ""
+    opened = False
+    withdrawn_role = ""
 
     if decision.transition in (RoleTransition.ADOPTED, RoleTransition.STABLE):
         state.topology_role = decision.role.value
     elif decision.transition is RoleTransition.TRANSITION_PENDING:
+        error_code = ERROR_TOPOLOGY_ROLE_CHANGE
+        opened = not state.transition_pending
+        state.transition_pending = True
+        state.pending_topology_role = decision.pending_role.value
+    elif decision.transition is RoleTransition.TRANSITION_WITHDRAWN:
+        withdrawn_role = state.pending_topology_role
+        state.transition_pending = False
+        state.pending_topology_role = TopologyRole.UNKNOWN.value
+    elif (
+        decision.transition is RoleTransition.INDETERMINATE
+        and state.transition_pending
+        and not state.pending_role_is_readable
+    ):
+        # A newer build (or a hand edit) asked a question this binary cannot
+        # interpret. Membership facts may stay current, but only the explicit
+        # Connections repair may discard that fail-closed evidence.
         error_code = ERROR_TOPOLOGY_ROLE_CHANGE
     else:
         raise RuntimeError(f"Unexpected complete membership decision: {decision.transition}")
@@ -285,6 +303,35 @@ def _publish_complete(
     state.quorate = normalized.quorate
     state.observed_from = normalized.observed_from
     state.save()
+
+    if opened:
+        record_audit_event(
+            action="cluster.topology_transition_detected",
+            object_type="cluster",
+            object_id=cluster.key,
+            outcome="warning",
+            system_username="system",
+            cluster=cluster,
+            details={
+                "cluster_key": cluster.key,
+                "registered_role": decision.previous_role.value,
+                "pending_role": decision.pending_role.value,
+                "operator_confirmation_required": True,
+            },
+        )
+    elif decision.transition is RoleTransition.TRANSITION_WITHDRAWN:
+        record_audit_event(
+            action="cluster.topology_transition_withdrawn",
+            object_type="cluster",
+            object_id=cluster.key,
+            system_username="system",
+            cluster=cluster,
+            details={
+                "cluster_key": cluster.key,
+                "registered_role": decision.role.value,
+                "withdrawn_pending_role": withdrawn_role,
+            },
+        )
 
     observed_names = {item.node_name for item in normalized.nodes}
     existing = {item.node_name: item for item in ClusterNodeState.objects.select_for_update().filter(cluster=cluster)}
@@ -429,7 +476,16 @@ def refresh_cluster_membership(cluster: ProxmoxCluster, *, observed_at=None) -> 
 
         state = ClusterMembershipState.objects.filter(cluster=locked).first()
         stored_role = state.role() if state is not None else TopologyRole.UNKNOWN
-        decision = evaluate_role_transition(stored_role, observation)
+        pending_role = state.pending_role() if state is not None else TopologyRole.UNKNOWN
+        if state is not None and state.transition_pending and not state.pending_role_is_readable:
+            decision = RoleDecision(
+                transition=RoleTransition.INDETERMINATE,
+                role=stored_role,
+                previous_role=stored_role,
+                reason="The pending topology role was written by a newer build and requires operator repair.",
+            )
+        else:
+            decision = evaluate_role_transition(stored_role, observation, pending_role=pending_role)
         published_at = observed_at or timezone.now()
         generation, error_code = _publish_complete(
             locked,

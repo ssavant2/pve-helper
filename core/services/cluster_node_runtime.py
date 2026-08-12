@@ -61,6 +61,7 @@ ERROR_PROVIDER = "provider_error"
 ERROR_ACQUISITION_DISABLED = "acquisition_disabled"
 ERROR_ACQUISITION_QUARANTINED = "acquisition_quarantined"
 ERROR_ACQUISITION_RETIRED = "acquisition_retired"
+ERROR_TOPOLOGY_TRANSITION_PENDING = "topology_transition_pending"
 ERROR_NO_ENABLED_ENDPOINT = "no_enabled_endpoint"
 ERROR_MEMBERSHIP_NOT_PUBLISHED = "membership_not_published"
 ERROR_NODE_NOT_A_MEMBER = "node_not_a_member"
@@ -658,6 +659,20 @@ def _refresh_one_node(
             membership_generation = state.membership_generation if state is not None else 0
             membership_complete = gate.membership_complete
 
+            # Keep the topology gate on the original membership-state read. A
+            # second, earlier read would both spend a query per node and bind
+            # runtime provenance to a stale generation if membership republishes
+            # while this node row is being locked. Pending handoff is still
+            # zero-provider-call and performs no projection write.
+            if state is not None and state.transition_pending:
+                return NodeRuntimeResult(
+                    node_name,
+                    False,
+                    ERROR_TOPOLOGY_TRANSITION_PENDING,
+                    0,
+                    membership_generation,
+                )
+
             if row is None:
                 # Zero-call, zero-row: coverage for a NodeRef with no member row
                 # would orphan a row nothing prunes before cluster retirement.
@@ -785,6 +800,8 @@ def _mark_departed_nodes(cluster: ProxmoxCluster, *, observed_at) -> int:
             if _acquisition_refusal(locked):
                 return 0
             state = ClusterMembershipState.objects.filter(cluster=locked).first()
+            if state is not None and state.transition_pending:
+                return 0
             membership_generation = state.membership_generation if state is not None else 0
 
             handled = set(

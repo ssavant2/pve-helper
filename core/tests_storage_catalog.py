@@ -316,6 +316,15 @@ class StorageCatalogTests(TestCase):
         self.assertEqual(len(storage_volumes(storage_view(shared))), 1)
         self.assertEqual(len(storage_volumes(storage_view(local, node="pve2"))), 1)
 
+    def test_complete_metadata_invokes_deferred_handoff_application_with_exact_generation(self):
+        with patch("core.services.cluster_topology_handoff.apply_topology_handoff_storage_bindings") as apply_bindings:
+            state = self._metadata()
+
+        apply_bindings.assert_called_once_with(
+            self.cluster,
+            metadata_generation=state.metadata_generation,
+        )
+
     def test_steady_state_refresh_writes_no_observation_rows(self):
         """The projection must stop rewriting itself to prove nothing changed."""
         self._metadata()

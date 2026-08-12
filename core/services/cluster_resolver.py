@@ -21,7 +21,7 @@ from typing import Any
 
 from django.db.models import Case, IntegerField, Value, When
 
-from core.models import ProxmoxCluster, ProxmoxEndpoint
+from core.models import ClusterMembershipState, ProxmoxCluster, ProxmoxEndpoint
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTransportError
 from core.services.public_errors import public_exception_message
 
@@ -44,6 +44,10 @@ class ClusterRetiredError(ClusterResolutionError):
     """Acquisition was attempted against a permanently retired cluster."""
 
 
+class ClusterTopologyTransitionPendingError(ClusterResolutionError):
+    """Acquisition was attempted while physical topology identity is changing."""
+
+
 #: Caller-owned prose for each way acquisition can be refused. The exceptions carry
 #: their own text, but that text is written for a log: it names the cluster key and,
 #: for a quarantine, repeats the stored reason verbatim. A refusal that reaches a
@@ -63,6 +67,11 @@ _REFUSAL_MESSAGES: tuple[tuple[type[ClusterResolutionError], str], ...] = (
     (
         ClusterDisabledError,
         "This connection is disabled. Re-enable it, which re-verifies its identity and trust, before reading from it.",
+    ),
+    (
+        ClusterTopologyTransitionPendingError,
+        "This connection changed between standalone and corosync topology. Provider work "
+        "is blocked until the identity hand-off is completed under Connections.",
     ),
 )
 
@@ -110,6 +119,21 @@ def _require_acquirable(cluster: ProxmoxCluster) -> None:
             f"Cluster '{cluster.key}' is quarantined: {cluster.quarantine_reason} "
             "Re-approve its identity before reading from or writing to it."
         )
+    if ClusterMembershipState.objects.filter(cluster_id=cluster.pk, transition_pending=True).exists():
+        raise ClusterTopologyTransitionPendingError(
+            f"Cluster '{cluster.key}' has a pending standalone/corosync identity transition. "
+            "Complete its identity hand-off under Connections before provider work resumes."
+        )
+
+
+def require_cluster_acquirable(cluster: ProxmoxCluster) -> None:
+    """Public gate for callers that select an already-qualified endpoint."""
+    _require_acquirable(cluster)
+
+
+def has_pending_topology_transition(cluster: ProxmoxCluster) -> bool:
+    """Whether this exact identity owns the durable topology acquisition gate."""
+    return ClusterMembershipState.objects.filter(cluster_id=cluster.pk, transition_pending=True).exists()
 
 
 @dataclass(frozen=True)

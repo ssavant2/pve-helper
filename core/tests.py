@@ -40,6 +40,7 @@ from core.auth import PveHelperOIDCBackend
 from core.checks import production_startup_errors
 from core.models import (
     AuditEvent,
+    ClusterMembershipState,
     ClusterStorage,
     ClusterStorageMount,
     ClusterStorageNodeState,
@@ -3331,6 +3332,28 @@ class ScanRetentionTests(TestCase):
 
 
 class ScanTaskTests(TestCase):
+    def test_run_scan_does_not_acquire_provider_client_for_pending_topology(self):
+        cluster = ProxmoxCluster.objects.create(key="pending", display_name="Pending", enabled=True)
+        ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.test:8006", cluster=cluster)
+        ClusterMembershipState.objects.create(
+            cluster=cluster,
+            transition_pending=True,
+            topology_role="standalone",
+            pending_topology_role="corosync",
+        )
+        scan = ScanRun.objects.create(progress_message="Queued")
+
+        with (
+            patch("core.tasks.client_for_endpoint") as client_for_endpoint,
+            patch("core.tasks.ensure_bootstrap"),
+            patch("core.tasks._prune_scan_history_after_success"),
+        ):
+            run_scan(scan.id)
+
+        client_for_endpoint.assert_not_called()
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, ScanRun.Status.COMPLETED)
+
     def test_run_scan_uses_inventory_result_ok_and_audits_completion(self):
         cluster = ProxmoxCluster.objects.create(key="default", display_name="Default cluster", enabled=True)
         ProxmoxEndpoint.objects.create(name="pve1", url="https://pve1.example.test:8006", cluster=cluster)

@@ -144,6 +144,8 @@ class ClusterRetirementPreflightTests(TestCase):
                 "trust_version",
                 "storage_impact_digest",
                 "issued_at",
+                "identity_verification",
+                "replacement_ca_uuid",
             },
         )
         self.assertEqual(payload["cluster_pk"], self.cluster.pk)

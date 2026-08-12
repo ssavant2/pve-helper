@@ -409,6 +409,7 @@ class LifecycleParticipantContractTests(TestCase):
             "node_states",
             "projection_coverage",
             "node_enrollments",
+            "topology_handoff_storage_bindings",
             "audit_events",
             "credential",
             "transport_trust",

@@ -8,6 +8,51 @@
 
   {% if operation_error %}<div class="panel cluster-operation-error"><strong>Operation refused:</strong> {{ operation_error }}{% if show_force_retire %}<button class="secondary-action danger" type="submit" form="cluster-force-retire-form">Force-retire a permanently unavailable site</button>{% endif %}</div>{% endif %}
   {% if cluster.ingestion_quarantined %}<div class="panel cluster-quarantine"><strong>Identity quarantine:</strong> {{ cluster.quarantine_reason }}</div>{% endif %}
+  {% if topology_state.transition_pending %}
+    <section class="panel panel-spaced cluster-topology-transition" data-topology-transition>
+      <h2>Topology identity changed</h2>
+      {% if topology_state.pending_role_is_readable %}
+        <p>This connection is registered as <strong>{{ topology_state.topology_role }}</strong> but a complete membership observation proves <strong>{{ topology_state.pending_topology_role }}</strong>. New provider work is blocked. The replacement must get a new permanent key; this key and all of its history remain attached to the retired identity.</p>
+        <a class="secondary-action danger" href="{% url 'core:cluster_add' %}?handoff_from={{ cluster.key }}">Review {{ topology_state.topology_role }} → {{ topology_state.pending_topology_role }} hand-off</a>
+      {% else %}
+        <p>This build cannot read the pending role <code>{{ topology_state.pending_topology_role }}</code>, so provider work remains blocked. Discarding only this pending evidence leaves the registered role unchanged; the next complete membership refresh classifies again.</p>
+        <form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" class="cluster-inline-form">
+          {% csrf_token %}<input type="hidden" name="action" value="repair-topology-pending">
+          <label><span>Type <code>{{ cluster.key }}</code> to discard unreadable evidence</span><input type="text" name="typed_cluster_key" autocomplete="off" required></label>
+          <button class="secondary-action danger" type="submit">Discard unreadable pending evidence</button>
+        </form>
+      {% endif %}
+    </section>
+  {% endif %}
+  {% if membership_coverage.error_code == 'observer_not_a_member' %}
+    <section class="panel panel-spaced cluster-membership-recovery" data-membership-recovery>
+      <h2>Endpoint is outside the accepted membership</h2>
+      <p>The answering node was not in this identity's last accepted member set. Re-verify stored transport trust and pinned CA, then review a fresh complete candidate set before replacing it.</p>
+      {% if membership_recovery_candidate %}
+        <dl class="cluster-detail-list"><dt>Verified endpoint</dt><dd>{{ membership_recovery_candidate.endpoint_name }}</dd><dt>Answering node</dt><dd>{{ membership_recovery_candidate.observed_from }}</dd><dt>Candidate members</dt><dd>{{ membership_recovery_candidate.members|join:", " }}</dd><dt>Topology</dt><dd>{{ membership_recovery_candidate.topology_role.value }}</dd></dl>
+        <form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}">
+          {% csrf_token %}<input type="hidden" name="action" value="confirm-membership-recovery"><input type="hidden" name="recovery" value="{{ membership_recovery_token }}">
+          <label class="cluster-check"><input type="checkbox" name="confirm_members" value="yes" required><span>Replace the accepted membership with exactly the displayed candidate set.</span></label>
+          <button class="secondary-action danger" type="submit">Replace accepted membership</button>
+        </form>
+      {% else %}
+        <form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" class="cluster-inline-form">
+          {% csrf_token %}<input type="hidden" name="action" value="inspect-membership-recovery">
+          <label><span>Endpoint</span><select name="endpoint_id" required>{% for endpoint in retirement_endpoints %}<option value="{{ endpoint.pk }}">{{ endpoint.name }}</option>{% endfor %}</select></label>
+          <button class="secondary-action" type="submit">Verify and inspect candidate members</button>
+        </form>
+      {% endif %}
+    </section>
+  {% endif %}
+  {% if topology_handoff_storage_bindings %}
+    <section class="panel panel-spaced cluster-topology-storage-bindings" data-topology-storage-bindings>
+      <h2>Hand-off storage mappings</h2>
+      <p>Mappings are applied only after this replacement publishes complete metadata for the exact storage scope and node.</p>
+      <table class="data-table compact"><thead><tr><th>Storage</th><th>Scope</th><th>Node</th><th>Mount</th><th>Status</th><th>Reason</th></tr></thead><tbody>
+        {% for binding in topology_handoff_storage_bindings %}<tr><td><code>{{ binding.storage_id }}</code></td><td>{{ binding.get_scope_display }}</td><td>{{ binding.node|default:"-" }}</td><td>{{ binding.mount.display_name }}</td><td><span class="badge {% if binding.status == 'applied' %}completed{% elif binding.status == 'refused' %}failed{% else %}muted-badge{% endif %}">{{ binding.get_status_display }}</span></td><td>{% if binding.refusal_reason %}{{ binding.refusal_reason }} Review the replacement metadata and bind this storage manually if it is still intended.{% else %}-{% endif %}</td></tr>{% endfor %}
+      </tbody></table>
+    </section>
+  {% endif %}
 
   <div class="cluster-detail-grid">
     <section class="panel">

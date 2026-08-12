@@ -143,6 +143,15 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         note="Module 5 5a1J. Operator-owned publication configuration; snapshotted "
         "to Audit and removed by its lifecycle owner. It never changes Proxmox.",
     ),
+    "topology_handoff_storage_bindings": RelationClassification(
+        "topology_handoff_storage_bindings",
+        RelationClass.CONFIG,
+        blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.NONE,
+        footprint_reason=None,
+        note="Module 5 5a1G. Operator-confirmed replacement binding intent; included "
+        "in the storage retirement digest and removed by the storage lifecycle owner.",
+    ),
     "audit_events": RelationClassification(
         "audit_events",
         RelationClass.RETAINED_HISTORY,

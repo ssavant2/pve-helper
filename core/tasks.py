@@ -1791,11 +1791,17 @@ def _run_scan(scan: ScanRun) -> None:
     # The environment is not reapplied here: after the durable marker exists the
     # database is the sole runtime authority for endpoints, storage and consumers.
     ensure_bootstrap()
-    # A disabled cluster blocks refresh acquisition, so its endpoints are not
-    # scanned even though the endpoint rows are enabled. exclude() keeps legacy
-    # null-cluster endpoints and enabled-cluster endpoints; it drops only those whose
-    # cluster is explicitly disabled.
-    endpoints = list(ProxmoxEndpoint.objects.filter(enabled=True).exclude(cluster__enabled=False).order_by("name"))
+    # A disabled cluster or a pending topology identity transition blocks refresh
+    # acquisition, so its endpoints are not scanned even though their own rows are
+    # enabled.  This query is itself a provider-call gate: the installation-wide
+    # scan intentionally does not rely on callers having gone through the cluster
+    # resolver first.  exclude() still keeps legacy null-cluster endpoints.
+    endpoints = list(
+        ProxmoxEndpoint.objects.filter(enabled=True)
+        .exclude(cluster__enabled=False)
+        .exclude(cluster__membership_state__transition_pending=True)
+        .order_by("name")
+    )
     storages = list(StorageMount.objects.filter(enabled=True).order_by("display_name"))
     scan_target = scan.target_storage
     if scan_target is not None:

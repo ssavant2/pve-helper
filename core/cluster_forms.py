@@ -105,6 +105,13 @@ class ClusterConfirmForm(forms.Form):
     )
 
 
+class TopologyHandoffFinalForm(forms.Form):
+    handoff_confirmation = forms.CharField(widget=forms.HiddenInput)
+    confirm_handoff = forms.BooleanField(
+        label="Retire the old immutable identity and create the replacement with exactly these storage mappings.",
+    )
+
+
 class EndpointInspectForm(forms.Form):
     endpoint_url = forms.URLField(
         max_length=500,

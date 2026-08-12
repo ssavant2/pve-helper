@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -10,9 +11,15 @@ from django.utils import timezone
 from core.models import (
     AuditEvent,
     ClusterCredential,
+    ClusterMembershipState,
+    ClusterProjectionCoverage,
+    ClusterStorage,
+    ClusterStorageMount,
+    ClusterTopologyHandoffStorageBinding,
     ProxmoxCluster,
     ProxmoxEndpoint,
     RuntimeConfigurationState,
+    StorageMount,
 )
 from core.services.cluster_credentials import set_cluster_credential
 from core.services.cluster_identity import ObservedClusterIdentity
@@ -146,6 +153,81 @@ class ClusterConnectionViewTests(TestCase):
         body = detail.content.decode()
         self.assertLess(body.index("Verify and rotate credential"), body.index("Remove stored credential"))
 
+    def test_pending_topology_renders_only_the_state_machine_direction_and_handoff_link(self):
+        cluster = ProxmoxCluster.objects.create(key="pending", display_name="Pending", enabled=True)
+        ClusterMembershipState.objects.create(
+            cluster=cluster,
+            topology_role="standalone",
+            transition_pending=True,
+            pending_topology_role="corosync",
+        )
+
+        with patch("core.services.cluster_onboarding.ProxmoxClient") as provider:
+            response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+
+        self.assertContains(response, "standalone → corosync")
+        self.assertContains(response, f"?handoff_from={cluster.key}")
+        self.assertNotContains(response, 'name="pending_topology_role"')
+        provider.assert_not_called()
+
+    def test_replacement_connection_renders_actionable_storage_intent_status(self):
+        cluster = ProxmoxCluster.objects.create(key="replacement", display_name="Replacement", enabled=True)
+        mount = StorageMount.objects.create(storage_id="nas", display_name="NAS mount", path="/mnt/nas")
+        ClusterTopologyHandoffStorageBinding.objects.create(
+            cluster=cluster,
+            source_cluster_key_snapshot="old",
+            storage_id="local",
+            mount=mount,
+            scope=ClusterStorageMount.Scope.NODE,
+            node="pve1",
+            status=ClusterTopologyHandoffStorageBinding.Status.REFUSED,
+            refusal_reason="Storage 'local' has no complete present metadata for node 'pve1'.",
+        )
+
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+
+        self.assertContains(response, "Hand-off storage mappings")
+        self.assertContains(response, "local")
+        self.assertContains(response, "pve1")
+        self.assertContains(response, "NAS mount")
+        self.assertContains(response, "no complete present metadata")
+        self.assertContains(response, "bind this storage manually")
+
+    def test_unreadable_pending_role_renders_exact_key_repair_not_handoff(self):
+        cluster = ProxmoxCluster.objects.create(key="future", display_name="Future", enabled=True)
+        ClusterMembershipState.objects.create(
+            cluster=cluster,
+            topology_role="standalone",
+            transition_pending=True,
+            pending_topology_role="corosync-v2",
+        )
+
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+
+        self.assertContains(response, "Discard unreadable pending evidence")
+        self.assertContains(response, 'name="typed_cluster_key"')
+        self.assertNotContains(response, "Review standalone")
+
+    def test_observer_not_member_renders_two_step_recovery_without_provider_call(self):
+        cluster = ProxmoxCluster.objects.create(key="observer", display_name="Observer", enabled=True)
+        ClusterProjectionCoverage.objects.create(
+            cluster=cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP,
+            error_code="observer_not_a_member",
+        )
+        ProxmoxEndpoint.objects.create(
+            cluster=cluster,
+            name="pve-stale",
+            url="https://pve-stale.example.test:8006",
+        )
+
+        with patch("core.views.clusters.connections.inspect_membership_recovery") as inspect:
+            response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
+
+        self.assertContains(response, "Verify and inspect candidate members")
+        self.assertNotContains(response, "Replace accepted membership")
+        inspect.assert_not_called()
+
     def _inspect_key(self, cluster_key):
         with patch("core.views.clusters.connections.inspect_transport", return_value=self.certificate):
             return self.client.post(
@@ -243,6 +325,114 @@ class ClusterConnectionViewTests(TestCase):
         audit = self.client.get(reverse("core:audit_log"))
         self.assertContains(audit, "Add cluster")
         self.assertContains(audit, self.candidate.display_name)
+
+    def test_handoff_post_workflow_signs_storage_selection_before_final_mutation(self):
+        source = ProxmoxCluster.objects.create(
+            key="source",
+            display_name="Source",
+            enabled=True,
+            discovered_ca_uuid=self.identity.ca_uuid,
+        )
+        ProxmoxEndpoint.objects.create(
+            cluster=source,
+            name=self.candidate.endpoint_name,
+            url=self.candidate.endpoint_url,
+        )
+        ClusterMembershipState.objects.create(
+            cluster=source,
+            topology_role="standalone",
+            transition_pending=True,
+            pending_topology_role="corosync",
+        )
+        mount = StorageMount.objects.create(storage_id="nas", display_name="NAS mount", path="/mnt/nas")
+        definition = ClusterStorage.objects.create(
+            cluster=source,
+            storage_id="nas",
+            storage_type="nfs",
+            shared=True,
+        )
+        binding = ClusterStorageMount.objects.create(
+            cluster_storage=definition,
+            mount=mount,
+            scope=ClusterStorageMount.Scope.SHARED,
+        )
+        start = self.client.get(reverse("core:cluster_add"), {"handoff_from": source.key})
+        handoff = start.context["handoff"]
+        with patch("core.views.clusters.connections.inspect_transport", return_value=self.certificate):
+            inspected = self.client.post(
+                reverse("core:cluster_add"),
+                {
+                    "action": "inspect",
+                    "handoff": handoff,
+                    "display_name": self.candidate.display_name,
+                    "cluster_key": self.candidate.key,
+                    "endpoint_url": self.candidate.endpoint_url,
+                    "endpoint_name": self.candidate.endpoint_name,
+                },
+            )
+        inspection = inspected.context["trust_form"]["inspection"].value()
+        with patch(
+            "core.views.clusters.connections.verify_new_cluster",
+            return_value=(self.candidate, self.verified),
+        ):
+            verified = self.client.post(
+                reverse("core:cluster_add"),
+                {
+                    "action": "verify",
+                    "inspection": inspection,
+                    "trust_mode": TRUST_PUBLIC,
+                    "ca_pem": "",
+                    "token_id": self.candidate.token_id,
+                    "token_secret": self.candidate.token_secret,
+                    "confirm_certificate": "on",
+                },
+            )
+            candidate_token = verified.context["confirm_form"]["candidate"].value()
+            with patch("core.views.clusters.connections.complete_topology_handoff") as complete:
+                reviewed = self.client.post(
+                    reverse("core:cluster_add"),
+                    {
+                        "action": "confirm",
+                        "candidate": candidate_token,
+                        "confirm_identity": "on",
+                        "storage_binding": str(binding.pk),
+                    },
+                )
+            complete.assert_not_called()
+            self.assertEqual(reviewed.context["step"], "handoff-confirm")
+            signed_confirmation = reviewed.context["final_form"]["handoff_confirmation"].value()
+            tampered_confirmation = ("x" if signed_confirmation[0] != "x" else "y") + signed_confirmation[1:]
+            refused = self.client.post(
+                reverse("core:cluster_add"),
+                {
+                    "action": "complete-handoff",
+                    "handoff_confirmation": tampered_confirmation,
+                    "confirm_handoff": "on",
+                },
+            )
+            self.assertContains(refused, "verification is invalid")
+            self.assertFalse(source.is_retired)
+
+            with (
+                patch(
+                    "core.views.clusters.connections.cluster_handoff_retirement_preflight",
+                    return_value=SimpleNamespace(gate_clear=True, confirmation="retirement", blocker_codes=()),
+                ),
+                patch("core.views.clusters.connections.complete_topology_handoff", return_value=source) as complete,
+                patch("core.views.clusters.connections._queue_first_inventory"),
+            ):
+                response = self.client.post(
+                    reverse("core:cluster_add"),
+                    {
+                        "action": "complete-handoff",
+                        "handoff_confirmation": signed_confirmation,
+                        "confirm_handoff": "on",
+                        "storage_binding": str(binding.pk + 999),
+                    },
+                )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(complete.call_args.kwargs["selected_storage_binding_ids"], (binding.pk,))
 
     def test_wizard_rejects_a_tampered_candidate_without_persisting(self):
         candidate_token = self._candidate_token()

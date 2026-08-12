@@ -5,11 +5,12 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from core.models import ProxmoxCluster, ProxmoxEndpoint
+from core.models import ClusterMembershipState, ProxmoxCluster, ProxmoxEndpoint
 from core.services.cluster_resolver import (
     ClusterDisabledError,
     ClusterResolutionError,
     ClusterRetiredError,
+    ClusterTopologyTransitionPendingError,
     cluster_clients,
     cluster_wide_read,
     cluster_write,
@@ -227,6 +228,28 @@ class RetiredClusterTests(ClusterResolverTestCase):
     def test_retired_is_still_a_resolution_error_for_existing_handlers(self):
         with self.assertRaises(ClusterResolutionError):
             cluster_clients(self.cluster_a)
+
+
+class PendingTopologyTransitionTests(ClusterResolverTestCase):
+    def setUp(self):
+        super().setUp()
+        ClusterMembershipState.objects.create(
+            cluster=self.cluster_a,
+            topology_role="standalone",
+            transition_pending=True,
+            pending_topology_role="corosync",
+        )
+
+    def test_every_generic_provider_acquisition_is_refused_before_a_client_is_built(self):
+        with patch("core.services.cluster_resolver.client_for_endpoint") as factory:
+            for acquire in (
+                lambda: cluster_wide_read(self.cluster_a, operation="inventory", call=lambda client: client.read()),
+                lambda: cluster_clients(self.cluster_a),
+                lambda: pin_cluster_write_client(self.cluster_a),
+            ):
+                with self.subTest(acquire=acquire), self.assertRaises(ClusterTopologyTransitionPendingError):
+                    acquire()
+            factory.assert_not_called()
 
 
 class ClusterWriteContractTests(ClusterResolverTestCase):

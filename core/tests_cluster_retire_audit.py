@@ -82,6 +82,15 @@ class ClusterRetirementAuditPresentationTests(TestCase):
                 },
             ),
             self._event("cluster.unused_connection_deleted"),
+            self._event(
+                "cluster.retired",
+                details={
+                    "retirement_mode": "verified",
+                    "identity_verification": "superseded_by_verified_handoff",
+                    "endpoint_count": 1,
+                    "cleanup": {},
+                },
+            ),
         ]
 
         response = self.client.get(reverse("core:audit_log"), {"cluster": self.retired.key})
@@ -109,6 +118,13 @@ class ClusterRetirementAuditPresentationTests(TestCase):
             ),
         )
         self.assertEqual(presented[events[4].pk], ("Delete unused cluster connection", ""))
+        self.assertEqual(
+            presented[events[5].pk],
+            (
+                "Retire cluster",
+                "Old identity superseded by verified topology hand-off · 1 endpoint removed · 0 cleanup changes",
+            ),
+        )
         self.assertNotContains(response, "cluster.retirement_preflight_identity_mismatch")
         self.assertNotContains(response, "cluster.force_retired")
 

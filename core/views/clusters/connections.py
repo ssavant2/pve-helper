@@ -17,10 +17,12 @@ from core.cluster_forms import (
     EndpointConfirmForm,
     EndpointInspectForm,
     EndpointTrustConfirmForm,
+    TopologyHandoffFinalForm,
     TrustCredentialForm,
 )
 from core.models import (
     ClusterCredential,
+    ClusterTopologyHandoffStorageBinding,
     ClusterTransportTrust,
     CurrentGuestInventory,
     ProxmoxCluster,
@@ -58,16 +60,26 @@ from core.services.cluster_onboarding import (
     verify_registered_endpoint,
     verify_replacement_credential,
 )
+from core.services.cluster_projection_read import read_cluster_projection
 from core.services.cluster_resolver import enabled_endpoints
 from core.services.cluster_retirement import (
     RETIREMENT_REASON_MAX_LENGTH,
     ClusterRetirementError,
     RetirementPreflightEndpointError,
     RetirementPreflightError,
+    cluster_handoff_retirement_preflight,
     cluster_retirement_preflight,
     retire_cluster,
 )
 from core.services.cluster_scopes import historical_clusters, managed_clusters
+from core.services.cluster_topology_handoff import (
+    ClusterTopologyHandoffError,
+    complete_topology_handoff,
+    confirm_membership_recovery,
+    inspect_membership_recovery,
+    repair_unreadable_pending_transition,
+    topology_handoff_snapshot,
+)
 from core.services.cluster_trust import TransportTrustError
 from core.services.config import endpoint_name_from_url
 from core.services.datastore_nav import datastore_url
@@ -90,6 +102,9 @@ CLUSTER_OPERATION_ERRORS = (
     ClusterActivationError,
     TransportTrustError,
     EncryptionConfigurationError,
+    ClusterTopologyHandoffError,
+    RetirementPreflightError,
+    ClusterRetirementError,
 )
 
 
@@ -98,6 +113,9 @@ _CANDIDATE_SALT = "pve-helper.cluster-onboarding.candidate.v1"
 _ENDPOINT_INSPECTION_SALT = "pve-helper.endpoint-onboarding.inspection.v1"
 _ENDPOINT_CANDIDATE_SALT = "pve-helper.endpoint-onboarding.candidate.v1"
 _TOKEN_MAX_AGE_SECONDS = 10 * 60
+_HANDOFF_SALT = "pve-helper.cluster-topology-handoff.v1"
+_HANDOFF_CONFIRM_SALT = "pve-helper.cluster-topology-handoff-confirm.v1"
+_MEMBERSHIP_RECOVERY_SALT = "pve-helper.cluster-membership-recovery.v1"
 
 logger = logging.getLogger(__name__)
 
@@ -416,10 +434,55 @@ def clusters_overview(request):
     )
 
 
+def _handoff_payload(request, raw: str = "") -> tuple[dict | None, ProxmoxCluster | None, object | None]:
+    if not raw:
+        return None, None, None
+    payload = _load(request, raw, _HANDOFF_SALT, "topology-handoff")
+    cluster = historical_clusters().filter(pk=payload.get("cluster_pk"), key=payload.get("cluster_key")).first()
+    if cluster is None or cluster.is_retired:
+        raise ClusterTopologyHandoffError("The source connection is no longer available for hand-off.")
+    snapshot = topology_handoff_snapshot(cluster)
+    if snapshot.digest != payload.get("snapshot_digest"):
+        raise ClusterTopologyHandoffError("The topology hand-off changed. Start from Connections again.")
+    return payload, cluster, snapshot
+
+
+def _new_handoff_token(request, cluster: ProxmoxCluster) -> tuple[str, object]:
+    snapshot = topology_handoff_snapshot(cluster)
+    return (
+        _sign(
+            request,
+            _HANDOFF_SALT,
+            {
+                "kind": "topology-handoff",
+                "cluster_pk": cluster.pk,
+                "cluster_key": cluster.key,
+                "snapshot_digest": snapshot.digest,
+                "pending_role": snapshot.pending_role,
+            },
+        ),
+        snapshot,
+    )
+
+
 @app_login_required
 def cluster_add(request):
     context = {**navigation_context("clusters", page_title="Add host/cluster"), "step": "identity"}
     if request.method == "GET":
+        handoff_key = request.GET.get("handoff_from", "").strip()
+        if handoff_key:
+            cluster = get_object_or_404(managed_clusters(), key=handoff_key)
+            try:
+                handoff_token, snapshot = _new_handoff_token(request, cluster)
+            except ClusterTopologyHandoffError as exc:
+                return _render_cluster_connection(request, cluster, operation_error=str(exc))
+            context.update(
+                {
+                    "handoff": handoff_token,
+                    "handoff_snapshot": snapshot,
+                    "handoff_source": cluster,
+                }
+            )
         context["inspect_form"] = ClusterInspectForm()
         return render(request, "core/cluster_add.html", context)
 
@@ -427,6 +490,16 @@ def cluster_add(request):
     if action == "inspect":
         form = ClusterInspectForm(request.POST)
         context["inspect_form"] = form
+        handoff_raw = request.POST.get("handoff", "")
+        try:
+            _handoff, handoff_source, handoff_snapshot = _handoff_payload(request, handoff_raw)
+        except ClusterTopologyHandoffError as exc:
+            form.add_error(None, str(exc))
+            return render(request, "core/cluster_add.html", context)
+        if handoff_source is not None:
+            context.update(
+                {"handoff": handoff_raw, "handoff_source": handoff_source, "handoff_snapshot": handoff_snapshot}
+            )
         if form.is_valid():
             try:
                 certificate = inspect_transport(form.cleaned_data["endpoint_url"])
@@ -441,6 +514,7 @@ def cluster_add(request):
                         "endpoint_name": form.cleaned_data["endpoint_name"]
                         or endpoint_name_from_url(form.cleaned_data["endpoint_url"]),
                         "certificate": _certificate_data(certificate),
+                        "handoff": handoff_raw,
                     },
                 )
             except ClusterOnboardingError as exc:
@@ -473,9 +547,12 @@ def cluster_add(request):
         if form.is_valid():
             candidate = _candidate_from_inspection(inspection, form.cleaned_data)
             try:
+                handoff_raw = str(inspection.get("handoff") or "")
+                _handoff, handoff_source, handoff_snapshot = _handoff_payload(request, handoff_raw)
                 candidate, verified = verify_new_cluster(
                     candidate,
                     expected_certificate_fingerprint=inspection["certificate"]["sha256_fingerprint"],
+                    handoff_from=handoff_source,
                 )
                 candidate_token = _sign(
                     request,
@@ -485,6 +562,7 @@ def cluster_add(request):
                         "candidate": _candidate_data(candidate),
                         "token_secret_sealed": encrypt_secret(candidate.token_secret),
                         "verified": _verified_data(verified),
+                        "handoff": handoff_raw,
                     },
                 )
             except CLUSTER_OPERATION_ERRORS as exc:
@@ -496,6 +574,9 @@ def cluster_add(request):
                         "verified": verified,
                         "candidate": candidate,
                         "confirm_form": ClusterConfirmForm(initial={"candidate": candidate_token}),
+                        "handoff": handoff_raw,
+                        "handoff_source": handoff_source,
+                        "handoff_snapshot": handoff_snapshot,
                     }
                 )
         return render(request, "core/cluster_add.html", context)
@@ -506,7 +587,17 @@ def cluster_add(request):
         try:
             payload = _load(request, request.POST.get("candidate", ""), _CANDIDATE_SALT, "cluster-candidate")
             candidate = _candidate_from_data(payload["candidate"], decrypt_secret(payload["token_secret_sealed"]))
-            context.update({"candidate": candidate, "verified": _verified_from_data(payload["verified"])})
+            handoff_raw = str(payload.get("handoff") or "")
+            _handoff, handoff_source, handoff_snapshot = _handoff_payload(request, handoff_raw)
+            context.update(
+                {
+                    "candidate": candidate,
+                    "verified": _verified_from_data(payload["verified"]),
+                    "handoff": handoff_raw,
+                    "handoff_source": handoff_source,
+                    "handoff_snapshot": handoff_snapshot,
+                }
+            )
         except CLUSTER_OPERATION_ERRORS as exc:
             form.add_error(None, str(exc))
             return render(request, "core/cluster_add.html", context)
@@ -515,8 +606,35 @@ def cluster_add(request):
                 candidate, verified = verify_new_cluster(
                     candidate,
                     expected_certificate_fingerprint=payload["verified"]["certificate"]["sha256_fingerprint"],
+                    handoff_from=handoff_source,
                 )
                 _assert_verified_unchanged(payload["verified"], verified)
+                if handoff_source is not None:
+                    raw_selected_ids = request.POST.getlist("storage_binding")
+                    if any(not str(value).isdigit() for value in raw_selected_ids):
+                        raise ClusterTopologyHandoffError("The selected storage mapping list is invalid.")
+                    selected_ids = tuple(sorted({int(value) for value in raw_selected_ids}))
+                    available = {row.pk: row for row in handoff_snapshot.storage_bindings}
+                    if not set(selected_ids) <= set(available):
+                        raise ClusterTopologyHandoffError("The selected storage mapping list changed.")
+                    confirmation = _sign(
+                        request,
+                        _HANDOFF_CONFIRM_SALT,
+                        {
+                            "kind": "topology-handoff-confirmation",
+                            "candidate_token": request.POST.get("candidate", ""),
+                            "snapshot_digest": handoff_snapshot.digest,
+                            "selected_storage_binding_ids": list(selected_ids),
+                        },
+                    )
+                    context.update(
+                        {
+                            "step": "handoff-confirm",
+                            "final_form": TopologyHandoffFinalForm(initial={"handoff_confirmation": confirmation}),
+                            "selected_storage_bindings": [available[row_id] for row_id in selected_ids],
+                        }
+                    )
+                    return render(request, "core/cluster_add.html", context)
                 with transaction.atomic():
                     cluster = persist_new_cluster(candidate, verified)
                     record_audit_event(
@@ -535,6 +653,80 @@ def cluster_add(request):
                             "ca_uuid": verified.identity.ca_uuid,
                         },
                     )
+            except CLUSTER_OPERATION_ERRORS as exc:
+                form.add_error(None, str(exc))
+            else:
+                _queue_first_inventory(request, cluster)
+                return redirect("core:cluster_connection", cluster_key=cluster.key)
+        return render(request, "core/cluster_add.html", context)
+
+    if action == "complete-handoff":
+        form = TopologyHandoffFinalForm(request.POST)
+        context.update({"step": "handoff-confirm", "final_form": form})
+        try:
+            confirmation_payload = _load(
+                request,
+                request.POST.get("handoff_confirmation", ""),
+                _HANDOFF_CONFIRM_SALT,
+                "topology-handoff-confirmation",
+            )
+            candidate_token = str(confirmation_payload.get("candidate_token") or "")
+            payload = _load(request, candidate_token, _CANDIDATE_SALT, "cluster-candidate")
+            candidate = _candidate_from_data(payload["candidate"], decrypt_secret(payload["token_secret_sealed"]))
+            handoff_raw = str(payload.get("handoff") or "")
+            _handoff, handoff_source, handoff_snapshot = _handoff_payload(request, handoff_raw)
+            if handoff_source is None or confirmation_payload.get("snapshot_digest") != handoff_snapshot.digest:
+                raise ClusterTopologyHandoffError("The topology hand-off changed. Start from Connections again.")
+            raw_selected_ids = confirmation_payload.get("selected_storage_binding_ids", [])
+            if not isinstance(raw_selected_ids, list):
+                raise ClusterTopologyHandoffError("The signed storage mapping list is invalid.")
+            selected_ids = tuple(int(value) for value in raw_selected_ids)
+            available = {row.pk: row for row in handoff_snapshot.storage_bindings}
+            if len(set(selected_ids)) != len(selected_ids) or not set(selected_ids) <= set(available):
+                raise ClusterTopologyHandoffError("The signed storage mapping list is invalid or changed.")
+            context.update(
+                {
+                    "candidate": candidate,
+                    "verified": _verified_from_data(payload["verified"]),
+                    "handoff": handoff_raw,
+                    "handoff_source": handoff_source,
+                    "handoff_snapshot": handoff_snapshot,
+                    "selected_storage_bindings": [available[row_id] for row_id in selected_ids],
+                }
+            )
+        except (TypeError, ValueError):
+            form.add_error(None, "The signed storage mapping list is invalid.")
+            return render(request, "core/cluster_add.html", context)
+        except CLUSTER_OPERATION_ERRORS as exc:
+            form.add_error(None, str(exc))
+            return render(request, "core/cluster_add.html", context)
+        if form.is_valid():
+            try:
+                candidate, verified = verify_new_cluster(
+                    candidate,
+                    expected_certificate_fingerprint=payload["verified"]["certificate"]["sha256_fingerprint"],
+                    handoff_from=handoff_source,
+                )
+                _assert_verified_unchanged(payload["verified"], verified)
+                preflight = cluster_handoff_retirement_preflight(
+                    handoff_source,
+                    replacement_ca_uuid=verified.identity.ca_uuid,
+                )
+                if not preflight.gate_clear or not preflight.confirmation:
+                    raise ClusterTopologyHandoffError(
+                        "The source connection has retirement blockers: "
+                        + ", ".join(preflight.blocker_codes or ("unknown",))
+                        + "."
+                    )
+                cluster = complete_topology_handoff(
+                    old_cluster=handoff_source,
+                    candidate=candidate,
+                    verified=verified,
+                    expected_snapshot_digest=handoff_snapshot.digest,
+                    selected_storage_binding_ids=selected_ids,
+                    retirement_confirmation=preflight.confirmation,
+                    actor=request.user,
+                )
             except CLUSTER_OPERATION_ERRORS as exc:
                 form.add_error(None, str(exc))
             else:
@@ -610,10 +802,19 @@ def _render_cluster_connection(
     *,
     operation_error: str = "",
     show_force_retire: bool = False,
+    membership_recovery_candidate=None,
+    membership_recovery_token: str = "",
 ):
     credential = ClusterCredential.objects.filter(cluster=cluster).first()
     trust = ClusterTransportTrust.objects.filter(cluster=cluster).first()
     retirement_endpoints = enabled_endpoints(cluster)
+    topology_state = read_cluster_projection(cluster.key)
+    membership_coverage = topology_state.membership_coverage
+    topology_handoff_storage_bindings = list(
+        ClusterTopologyHandoffStorageBinding.objects.filter(cluster=cluster)
+        .select_related("mount")
+        .order_by("storage_id", "scope", "node", "pk")
+    )
     return render(
         request,
         "core/cluster_connection.html",
@@ -640,6 +841,11 @@ def _render_cluster_connection(
             "credential_form": CredentialRotationForm(initial={"token_id": credential.token_id if credential else ""}),
             "operation_error": operation_error,
             "show_force_retire": show_force_retire,
+            "topology_state": topology_state,
+            "membership_coverage": membership_coverage,
+            "membership_recovery_candidate": membership_recovery_candidate,
+            "membership_recovery_token": membership_recovery_token,
+            "topology_handoff_storage_bindings": topology_handoff_storage_bindings,
         },
     )
 
@@ -743,6 +949,53 @@ def cluster_connection_action(request, cluster_key: str):
                     cluster=cluster,
                     details={"cluster_key": cluster.key, "ca_uuid": identity.ca_uuid},
                 )
+        elif action == "repair-topology-pending":
+            repair_unreadable_pending_transition(
+                cluster,
+                typed_cluster_key=request.POST.get("typed_cluster_key", "").strip(),
+                actor=request.user,
+            )
+        elif action == "inspect-membership-recovery":
+            candidate = inspect_membership_recovery(
+                cluster,
+                endpoint_id=(
+                    int(request.POST["endpoint_id"]) if request.POST.get("endpoint_id", "").isdigit() else None
+                ),
+            )
+            token = _sign(
+                request,
+                _MEMBERSHIP_RECOVERY_SALT,
+                {
+                    "kind": "membership-recovery",
+                    "cluster_pk": cluster.pk,
+                    "cluster_key": cluster.key,
+                    "endpoint_id": candidate.endpoint_id,
+                    "candidate_digest": candidate.digest,
+                },
+            )
+            return _render_cluster_connection(
+                request,
+                cluster,
+                membership_recovery_candidate=candidate,
+                membership_recovery_token=token,
+            )
+        elif action == "confirm-membership-recovery":
+            payload = _load(
+                request,
+                request.POST.get("recovery", ""),
+                _MEMBERSHIP_RECOVERY_SALT,
+                "membership-recovery",
+            )
+            if payload.get("cluster_pk") != cluster.pk or payload.get("cluster_key") != cluster.key:
+                raise ClusterTopologyHandoffError("This membership recovery belongs to another connection.")
+            if request.POST.get("confirm_members", "") != "yes":
+                raise ClusterTopologyHandoffError("Confirm the displayed member set before replacing it.")
+            confirm_membership_recovery(
+                cluster,
+                endpoint_id=int(payload["endpoint_id"]),
+                expected_digest=str(payload["candidate_digest"]),
+                actor=request.user,
+            )
         else:
             raise Http404("Unknown cluster action")
     except CLUSTER_OPERATION_ERRORS as exc:
@@ -1034,11 +1287,14 @@ def _verified_data(verified: VerifiedConnection) -> dict:
         "version": verified.version,
         "discovered_name": verified.discovered_name,
         "administrator_privileges": list(verified.administrator_privileges),
+        "topology_role": verified.topology_role.value,
+        "membership_complete": verified.membership_complete,
     }
 
 
 def _verified_from_data(data: dict) -> VerifiedConnection:
     from core.services.cluster_identity import ObservedClusterIdentity
+    from core.services.cluster_topology_role import TopologyRole
 
     identity = data.get("identity") or {}
     return VerifiedConnection(
@@ -1051,6 +1307,12 @@ def _verified_from_data(data: dict) -> VerifiedConnection:
         version=str(data.get("version") or ""),
         discovered_name=str(data.get("discovered_name") or ""),
         administrator_privileges=tuple(str(value) for value in data.get("administrator_privileges") or []),
+        topology_role=(
+            TopologyRole(str(data.get("topology_role") or "unknown"))
+            if str(data.get("topology_role") or "unknown") in {role.value for role in TopologyRole}
+            else TopologyRole.UNKNOWN
+        ),
+        membership_complete=data.get("membership_complete") is True,
     )
 
 
@@ -1059,7 +1321,9 @@ def _assert_verified_unchanged(expected: dict, current: VerifiedConnection) -> N
     if (
         str(expected_identity.get("ca_uuid") or "") != current.identity.ca_uuid
         or str(expected_identity.get("ca_fingerprint") or "") != current.identity.ca_fingerprint
+        or str(expected.get("topology_role") or "unknown") != current.topology_role.value
+        or (expected.get("membership_complete") is True) != current.membership_complete
     ):
         raise ClusterOnboardingError(
-            "The Proxmox CA identity changed after verification. Restart onboarding and review it again."
+            "The verified Proxmox identity or topology changed. Restart onboarding and review it again."
         )
