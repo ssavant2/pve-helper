@@ -29,6 +29,7 @@ from .models import (
 )
 from .services.audit_events import record_audit_event
 from .services.cluster_footprint import FOOTPRINT_SCAN_OBSERVATION, stamp_operational_footprint
+from .services.cluster_host_refresh import CLUSTER_HOST_REFRESH_ACTION
 from .services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from .services.cluster_lifecycle_lock import scan_admission_lock
 from .services.cluster_membership import refresh_cluster_membership
@@ -52,6 +53,10 @@ from .services.durable_guest_operations import (
 )
 from .services.entry_classification import ScanEntryClassifier
 from .services.filesystem import storage_space_info
+from .services.host_projection_singleflight import (
+    HOST_PROJECTION_REFRESH_LOCK_ID as HOST_PROJECTION_REFRESH_LOCK_ID,
+)
+from .services.host_projection_singleflight import host_projection_refresh_lock
 from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
 from .services.proxmox import (
@@ -104,7 +109,6 @@ SPACE_SNAPSHOT_RETENTION_DAYS = 8
 logger = logging.getLogger(__name__)
 
 CURRENT_GUEST_REFRESH_LOCK_ID = 0x50564547554501
-HOST_PROJECTION_REFRESH_LOCK_ID = 0x50564548505201
 
 
 def _refresh_cluster_host_projection(cluster) -> dict[str, object]:
@@ -121,17 +125,11 @@ def _refresh_cluster_host_projection(cluster) -> dict[str, object]:
     list, and refusing would turn one failed call into a total blackout of node
     facts that are still perfectly current.
     """
-    lock_id = cluster_advisory_lock_id(HOST_PROJECTION_REFRESH_LOCK_ID, cluster)
-    acquired = connection.vendor != "postgresql"
-    if connection.vendor == "postgresql":
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(%s)", [lock_id])
-            acquired = bool(cursor.fetchone()[0])
-    if not acquired:
-        return {"cluster_key": cluster.key, "skipped": True, "reason": "refresh already running"}
+    with host_projection_refresh_lock(cluster) as acquired:
+        if not acquired:
+            return {"cluster_key": cluster.key, "skipped": True, "reason": "refresh already running"}
 
-    result: dict[str, object] = {"cluster_key": cluster.key, "skipped": False}
-    try:
+        result: dict[str, object] = {"cluster_key": cluster.key, "skipped": False}
         try:
             membership = refresh_cluster_membership(cluster)
             result["membership_complete"] = membership.complete
@@ -150,11 +148,7 @@ def _refresh_cluster_host_projection(cluster) -> dict[str, object]:
             logger.warning("Node-runtime refresh failed for cluster=%s", cluster.key, exc_info=True)
             result["runtime_targets"] = 0
             result["runtime_error"] = "unhandled"
-    finally:
-        if connection.vendor == "postgresql":
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
-    return result
+        return result
 
 
 def refresh_cluster_host_projection() -> dict[str, object]:
@@ -571,6 +565,12 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         error="The first inventory worker stopped reporting progress; refresh the connection manually.",
         now=timezone.now(),
     )
+    interrupted_host_projection_refreshes = _reap_stale_heartbeat_operations(
+        action=CLUSTER_HOST_REFRESH_ACTION,
+        error="The host projection refresh worker stopped reporting progress; retry is safe.",
+        now=timezone.now(),
+        retryable=True,
+    )
     interrupted_orphaned_operations = _reap_orphaned_cluster_operations(now=timezone.now())
     return {
         "resolved_from_proxmox": resolved,
@@ -580,6 +580,7 @@ def reap_stale_guest_tasks() -> dict[str, int]:
         "interrupted_tag_inventory_refreshes": interrupted_tag_inventory_refreshes,
         "interrupted_storage_catalog_refreshes": interrupted_storage_catalog_refreshes,
         "interrupted_inventory_bootstraps": interrupted_inventory_bootstraps,
+        "interrupted_host_projection_refreshes": interrupted_host_projection_refreshes,
         "interrupted_orphaned_operations": interrupted_orphaned_operations,
     }
 
@@ -596,6 +597,7 @@ _REAPER_OWNED_ACTIONS = frozenset(
         TAG_INVENTORY_REFRESH_ACTION,
         STORAGE_CATALOG_REFRESH_ACTION,
         CLUSTER_INVENTORY_BOOTSTRAP_ACTION,
+        CLUSTER_HOST_REFRESH_ACTION,
     }
 )
 _REAPER_OWNED_ACTION_PREFIXES = ("guest.",)
@@ -692,7 +694,7 @@ def _reap_stale_tag_operations(*, now) -> int:
     return interrupted
 
 
-def _reap_stale_heartbeat_operations(*, action: str, error: str, now) -> int:
+def _reap_stale_heartbeat_operations(*, action: str, error: str, now, retryable: bool = False) -> int:
     """Resolve one heartbeat-reporting bulk operation whose worker stopped.
 
     The tag inventory refresh and the storage catalog refresh share a shape: commit
@@ -735,6 +737,8 @@ def _reap_stale_heartbeat_operations(*, action: str, error: str, now) -> int:
                 continue
             details["stage"] = "interrupted"
             details["error"] = error
+            if retryable:
+                details["retryable"] = True
             details["interrupted_at"] = now.isoformat()
             details["finished_at"] = now.isoformat()
             event.outcome = "failed"

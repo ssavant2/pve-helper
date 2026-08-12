@@ -3,6 +3,12 @@ from __future__ import annotations
 from django.db import transaction
 
 from ..models import ProxmoxCluster
+from ..services.cluster_host_refresh import (
+    ClusterHostRefreshAlreadyActive,
+    ClusterHostRefreshQueueError,
+    ClusterHostRefreshRetryError,
+    retry_cluster_host_refresh,
+)
 from ..services.cluster_scopes import managed_clusters
 from ..services.cluster_state_labels import cluster_degraded_context
 from ..services.public_errors import public_exception_message
@@ -305,6 +311,23 @@ def cancel_recent_task(request):
 @app_login_required
 def retry_recent_task(request):
     task_id = request.POST.get("task_id", "").strip()
+    if task_id.startswith("host_projection:"):
+        try:
+            event_id = int(task_id.split(":", 1)[1])
+            queued_task_id = retry_cluster_host_refresh(event_id)
+        except ValueError:
+            return JsonResponse({"ok": False, "error": "Invalid task id."}, status=400)
+        except (ClusterHostRefreshRetryError, ClusterHostRefreshAlreadyActive):
+            return JsonResponse(
+                {"ok": False, "error": "This host projection refresh is not available for retry."},
+                status=409,
+            )
+        except ClusterHostRefreshQueueError:
+            return JsonResponse(
+                {"ok": False, "error": "The host projection refresh could not be queued; retry is safe."},
+                status=503,
+            )
+        return JsonResponse({"ok": True, "queued_task_id": queued_task_id}, status=202)
     if not task_id.startswith("guest:"):
         return JsonResponse({"ok": False, "error": "This task type cannot be retried."}, status=409)
     try:

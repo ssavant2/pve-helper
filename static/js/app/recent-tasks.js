@@ -359,6 +359,32 @@ const initRecentTasks = () => {
     return true;
   };
 
+  // Host pages opt into projection reconciliation with an exact scope marker.
+  // The task may finish successfully or publish degraded coverage; both outcomes
+  // change what the persisted page must show, so either terminal state reloads it.
+  const maybeRefreshHostProjectionView = (tasks) => {
+    const hostView = document.querySelector("[data-host-projection-view]");
+    if (!hostView) {
+      return false;
+    }
+    const viewRenderedAtMs = Number(hostView.dataset.renderedAtMs || 0);
+    const completed = tasks.find((task) => {
+      if (task.action !== "cluster.host_projection.refresh" || !["completed", "failed"].includes(task.status_class)) {
+        return false;
+      }
+      if (hostView.dataset.clusterKey && task.cluster_key !== hostView.dataset.clusterKey) {
+        return false;
+      }
+      return Number(task.finished_at_ms || 0) > viewRenderedAtMs && !taskWasReloaded(task);
+    });
+    if (!completed) {
+      return false;
+    }
+    rememberTaskReload(completed);
+    loadSoftNavigation(new URL(window.location.href), { push: false });
+    return true;
+  };
+
   // On a guest detail/tab page, refresh the whole page as soon as a migration
   // for that guest completes — its node, hardware/datastore storage refs and
   // related-object links all change, and the poll shouldn't lag behind.
@@ -752,6 +778,7 @@ const initRecentTasks = () => {
         maybeRefreshCurrentStorageBrowser(loadedTasks) ||
         maybeRefreshTagInventory(loadedTasks) ||
         maybeRefreshStorageCatalogView(loadedTasks) ||
+        maybeRefreshHostProjectionView(loadedTasks) ||
         maybeRefreshCurrentGuestInventory(loadedTasks) ||
         maybeRefreshCurrentGuestDetail(loadedTasks)
       ) {

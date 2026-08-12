@@ -22,6 +22,10 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from core.models import AuditEvent, ScanRun, ScheduledActionRun
+from core.services.cluster_host_refresh import (
+    CLUSTER_HOST_REFRESH_ACTION,
+    HOST_REFRESH_SCOPE_MEMBERSHIP,
+)
 from core.services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from core.services.guests import guest_identity, guest_identity_from_scheduled_action
 from core.services.public_errors import SHUTDOWN_INCOMPLETE_CODES
@@ -202,6 +206,7 @@ def _task_index(cluster_key: str):
     return _scan_index(cluster_key).union(
         _file_index(cluster_key),
         _catalog_index(cluster_key),
+        _host_refresh_index(cluster_key),
         _cluster_inventory_index(cluster_key),
         _mount_index(cluster_key),
         _scheduled_index(cluster_key),
@@ -254,6 +259,14 @@ def _catalog_index(cluster_key: str):
     return _index_values(
         _visible_catalog_refresh_tasks().filter(_audit_cluster_q(cluster_key)),
         "catalog",
+        _worker_started_at(),
+    )
+
+
+def _host_refresh_index(cluster_key: str):
+    return _index_values(
+        _visible_host_refresh_tasks().filter(_audit_cluster_q(cluster_key)),
+        "host_projection",
         _worker_started_at(),
     )
 
@@ -371,6 +384,7 @@ INDEX_KINDS = (
     "scan",
     "file",
     "catalog",
+    "host_projection",
     "cluster_inventory",
     "mount",
     "scheduled_action",
@@ -395,6 +409,7 @@ def _hydrate_index_rows(rows: list[dict]) -> list[dict[str, object]]:
     for kind, builder in (
         ("file", _file_task),
         ("catalog", _catalog_refresh_task),
+        ("host_projection", _host_refresh_task),
         ("cluster_inventory", _cluster_inventory_task),
         ("mount", _mount_task),
         ("guest", _guest_task),
@@ -907,6 +922,50 @@ def _visible_catalog_refresh_tasks():
     return AuditEvent.objects.filter(action=STORAGE_CATALOG_REFRESH_ACTION).filter(
         Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running"))
     )
+
+
+def _visible_host_refresh_tasks():
+    cutoff = timezone.now() - timedelta(minutes=RECENT_TASK_RETENTION_MINUTES)
+    return AuditEvent.objects.filter(action=CLUSTER_HOST_REFRESH_ACTION).filter(
+        Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running"))
+    )
+
+
+def _host_refresh_task(event: AuditEvent) -> dict[str, object]:
+    details = event.details if isinstance(event.details, dict) else {}
+    status, status_class = {
+        "queued": ("Queued", "queued"),
+        "running": ("Running", "running"),
+        "success": ("Completed", "completed"),
+    }.get(event.outcome, ("Failed", "failed"))
+    terminal = status_class in {"completed", "failed"}
+    scope = str(details.get("scope") or "")
+    node_ref = str(details.get("node_ref") or "")
+    node_name = node_ref.split(":", 2)[-1] if node_ref else ""
+    retryable = event.outcome == "failed" and details.get("retryable") is True
+    if retryable:
+        status = "Failed — right-click for options"
+    return {
+        "id": f"host_projection:{event.id}",
+        "kind": "host_projection",
+        "action": CLUSTER_HOST_REFRESH_ACTION,
+        "name": "Refresh cluster membership" if scope == HOST_REFRESH_SCOPE_MEMBERSHIP else "Refresh node runtime",
+        "target": node_name or (event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-"),
+        "cluster_key": event.cluster.key if event.cluster_id else event.cluster_key_snapshot or "",
+        "cluster": event.cluster.display_name if event.cluster_id else event.cluster_key_snapshot or "-",
+        "status": status,
+        "status_class": status_class,
+        "details": str(details.get("error") or details.get("coverage_error") or details.get("stage") or "-"),
+        "initiator": event.username or (event.user.get_username() if event.user else "system"),
+        "queued_for": "-",
+        "started_at": _parsed_detail_time(details, "started_at") or event.timestamp,
+        "finished_at": _parsed_detail_time(details, "finished_at") if terminal else None,
+        "server": node_name or str(details.get("cluster_key") or ""),
+        "sort_at": _parsed_detail_time(details, "started_at") or event.timestamp,
+        "cancelable": False,
+        "retryable": retryable,
+        "retry_label": "Failed — right-click for options" if retryable else "",
+    }
 
 
 def _catalog_refresh_task(event: AuditEvent) -> dict[str, object]:

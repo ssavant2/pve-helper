@@ -5,6 +5,64 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+IDENTITY_TRIGGER_SQL = """
+    CREATE FUNCTION core_enrollment_enforce_identity() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE
+        cluster_key text;
+        expected_snapshot text;
+    BEGIN
+        SELECT "key" INTO STRICT cluster_key
+        FROM core_proxmoxcluster
+        WHERE id = NEW.cluster_id;
+
+        expected_snapshot := 'nr1:' || cluster_key || ':' || NEW.node_name;
+        IF NEW.node_ref_snapshot IS DISTINCT FROM expected_snapshot THEN
+            RAISE EXCEPTION 'Enrollment NodeRef snapshot does not match its cluster and node.'
+                USING ERRCODE = '23514',
+                      CONSTRAINT = 'core_cluster_node_enrollment_snapshot_matches';
+        END IF;
+
+        IF TG_OP = 'UPDATE' AND (
+            NEW.cluster_id IS DISTINCT FROM OLD.cluster_id
+            OR NEW.node_name IS DISTINCT FROM OLD.node_name
+            OR NEW.node_ref_snapshot IS DISTINCT FROM OLD.node_ref_snapshot
+        ) THEN
+            RAISE EXCEPTION 'Enrollment NodeRef identity is immutable.'
+                USING ERRCODE = '23514',
+                      CONSTRAINT = 'core_cluster_node_enrollment_identity_immutable';
+        END IF;
+
+        RETURN NEW;
+    END;
+    $$;
+
+    CREATE TRIGGER core_enrollment_enforce_identity_trigger
+    BEFORE INSERT OR UPDATE ON core_clusternodeenrollment
+    FOR EACH ROW EXECUTE FUNCTION core_enrollment_enforce_identity();
+"""
+
+IDENTITY_TRIGGER_REVERSE_SQL = """
+    DROP TRIGGER IF EXISTS core_enrollment_enforce_identity_trigger
+        ON core_clusternodeenrollment;
+    DROP FUNCTION IF EXISTS core_enrollment_enforce_identity();
+"""
+
+
+def create_identity_trigger(_apps, schema_editor):
+    # The ordinary suite and deployments use PostgreSQL, where this trigger is the
+    # database-level identity guarantee. Playwright deliberately migrates a
+    # throwaway SQLite database; PostgreSQL's PL/pgSQL syntax is neither supported
+    # nor needed for that isolated render fixture.
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute(IDENTITY_TRIGGER_SQL)
+
+
+def drop_identity_trigger(_apps, schema_editor):
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute(IDENTITY_TRIGGER_REVERSE_SQL)
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -128,47 +186,5 @@ class Migration(migrations.Migration):
                 ],
             },
         ),
-        migrations.RunSQL(
-            sql="""
-                CREATE FUNCTION core_enrollment_enforce_identity() RETURNS trigger
-                LANGUAGE plpgsql AS $$
-                DECLARE
-                    cluster_key text;
-                    expected_snapshot text;
-                BEGIN
-                    SELECT "key" INTO STRICT cluster_key
-                    FROM core_proxmoxcluster
-                    WHERE id = NEW.cluster_id;
-
-                    expected_snapshot := 'nr1:' || cluster_key || ':' || NEW.node_name;
-                    IF NEW.node_ref_snapshot IS DISTINCT FROM expected_snapshot THEN
-                        RAISE EXCEPTION 'Enrollment NodeRef snapshot does not match its cluster and node.'
-                            USING ERRCODE = '23514',
-                                  CONSTRAINT = 'core_cluster_node_enrollment_snapshot_matches';
-                    END IF;
-
-                    IF TG_OP = 'UPDATE' AND (
-                        NEW.cluster_id IS DISTINCT FROM OLD.cluster_id
-                        OR NEW.node_name IS DISTINCT FROM OLD.node_name
-                        OR NEW.node_ref_snapshot IS DISTINCT FROM OLD.node_ref_snapshot
-                    ) THEN
-                        RAISE EXCEPTION 'Enrollment NodeRef identity is immutable.'
-                            USING ERRCODE = '23514',
-                                  CONSTRAINT = 'core_cluster_node_enrollment_identity_immutable';
-                    END IF;
-
-                    RETURN NEW;
-                END;
-                $$;
-
-                CREATE TRIGGER core_enrollment_enforce_identity_trigger
-                BEFORE INSERT OR UPDATE ON core_clusternodeenrollment
-                FOR EACH ROW EXECUTE FUNCTION core_enrollment_enforce_identity();
-            """,
-            reverse_sql="""
-                DROP TRIGGER IF EXISTS core_enrollment_enforce_identity_trigger
-                    ON core_clusternodeenrollment;
-                DROP FUNCTION IF EXISTS core_enrollment_enforce_identity();
-            """,
-        ),
+        migrations.RunPython(create_identity_trigger, drop_identity_trigger),
     ]

@@ -492,6 +492,7 @@ class ProviderAuditActionIntentCoverageTests(TestCase):
     # is the ratchet: a new such module fails here until somebody adds it and, with
     # it, classifies its action.
     _BACKGROUND_OPERATION_SERVICES = {
+        "cluster_host_refresh.py",
         "cluster_inventory_bootstrap.py",
         "storage_catalog_refresh.py",
         "tag_actions.py",

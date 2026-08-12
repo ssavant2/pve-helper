@@ -43,6 +43,7 @@ from core.models import (
     ScheduledActionRun,
     StorageMount,
 )
+from core.services.cluster_host_refresh import CLUSTER_HOST_REFRESH_ACTION
 from core.services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from core.services.recent_tasks import (
     BULK_FILE_ACTION,
@@ -59,6 +60,7 @@ from core.services.recent_tasks import (
     _cluster_inventory_task,
     _file_task,
     _guest_task,
+    _host_refresh_task,
     _mount_task,
     _open_force_stop_question_q,
     _scan_initiators,
@@ -95,6 +97,12 @@ def _reference_page(page: int = 0, limit: int = 5, *, cluster_key: str = ""):
     )
     for event in catalog:
         entries.append(_entry(_catalog_refresh_task(event), event.id))
+
+    host_refreshes = AuditEvent.objects.filter(action=CLUSTER_HOST_REFRESH_ACTION).filter(
+        Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running"))
+    )
+    for event in host_refreshes:
+        entries.append(_entry(_host_refresh_task(event), event.id))
 
     bootstraps = AuditEvent.objects.filter(action=CLUSTER_INVENTORY_BOOTSTRAP_ACTION).filter(
         Q(timestamp__gte=cutoff) | Q(outcome__in=("queued", "running"))
@@ -225,6 +233,7 @@ class RecentTaskIndexParityTests(TestCase):
         self._build_scans()
         self._build_scheduled_runs()
         self._build_catalog_refreshes()
+        self._build_host_refreshes()
         self._build_inventory_bootstraps()
         self._build_mount_events()
         self._build_file_events()
@@ -369,6 +378,24 @@ class RecentTaskIndexParityTests(TestCase):
                 "started_at": self._ago(6).isoformat(),
                 "stage": "completed with incomplete coverage",
                 "incomplete_nodes": ["pve2"],
+            },
+        )
+
+    def _build_host_refreshes(self):
+        self._audit(
+            action=CLUSTER_HOST_REFRESH_ACTION,
+            minutes_ago=46,
+            outcome="failed",
+            cluster=self.cluster_a,
+            details={
+                "cluster_key": "alpha",
+                "scope": "node_runtime",
+                "node_ref": "nr1:alpha:pve1",
+                "started_at": self._ago(8).isoformat(),
+                "finished_at": self._ago(7).isoformat(),
+                "stage": "incomplete",
+                "coverage_error": "provider_timeout",
+                "retryable": True,
             },
         )
 

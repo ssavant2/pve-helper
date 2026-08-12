@@ -71,6 +71,7 @@ CLUSTER_CONFIGURATION_AUDIT_ACTIONS = frozenset(
 # block unused-connection hard deletion for good.
 CLUSTER_OPERATOR_INITIATED_AUDIT_ACTIONS = frozenset(
     {
+        "cluster.host_projection.refresh",
         "storage.catalog.refresh",
         "tag.bulk_operation",
         "tag.inventory.refresh",
