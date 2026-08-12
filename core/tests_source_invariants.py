@@ -483,6 +483,50 @@ HOST_PROJECTION_PUBLISHER_MODULES = frozenset(
 )
 
 
+class EnrollmentWriterInvariantTests(SimpleTestCase):
+    """`cluster_enrollment.py` is the only module that reaches the enrollment model.
+
+    The generation clock is advanced in exactly one place. A view that edits a row
+    directly does not advance it, and nothing fails loudly — the projection filter
+    5a1I builds on it simply reads a stale scope. That is the defect this pins, and
+    the 5a1F projection ratchet does not cover this model.
+    """
+
+    OWNER = "core/services/cluster_enrollment.py"
+
+    #: Cluster hard-delete and retirement enumerate every reverse relation by
+    #: design, enrollment among them. They destroy the cluster row itself, so the
+    #: generation clock they would advance is about to cease to exist.
+    LIFECYCLE_FINALIZERS = frozenset({"core/services/cluster_deletion.py", "core/services/cluster_retirement.py"})
+
+    def test_only_the_enrollment_service_reaches_the_enrollment_model(self):
+        root = Path(settings.BASE_DIR)
+        offenders = []
+        allowed = {self.OWNER, "core/models.py", "core/admin.py"} | self.LIFECYCLE_FINALIZERS
+        for path in sorted((root / "core").rglob("*.py")):
+            relative = path.relative_to(root).as_posix()
+            if path.name.startswith("tests") or relative in allowed:
+                continue
+            if relative.startswith("core/migrations/"):
+                continue
+            tree = ast.parse(path.read_text())
+            if any(
+                isinstance(node, ast.Attribute)
+                and node.attr in {"objects", "_base_manager"}
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "ClusterNodeEnrollment"
+                for node in ast.walk(tree)
+            ):
+                offenders.append(relative)
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Enrollment rows are read and written through "
+            f"{self.OWNER} so the generation clock advances exactly once: {', '.join(offenders)}",
+        )
+
+
 class HostProjectionConsumerInvariantTests(SimpleTestCase):
     """Views/advisories consume the persisted read service, never its sources."""
 

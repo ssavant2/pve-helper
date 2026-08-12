@@ -91,6 +91,7 @@ from core.services.secret_encryption import (
 )
 
 from ..common import app_login_required, navigation_context
+from .enrollment import node_enrollment_rows
 
 # Curated, secret-free domain errors surfaced to the operator. Catching this
 # explicit set — rather than the RuntimeError base they all share — keeps an
@@ -843,6 +844,7 @@ def _render_cluster_connection(
             "show_force_retire": show_force_retire,
             "topology_state": topology_state,
             "membership_coverage": membership_coverage,
+            "node_rows": node_enrollment_rows(cluster),
             "membership_recovery_candidate": membership_recovery_candidate,
             "membership_recovery_token": membership_recovery_token,
             "topology_handoff_storage_bindings": topology_handoff_storage_bindings,
@@ -1289,6 +1291,7 @@ def _verified_data(verified: VerifiedConnection) -> dict:
         "administrator_privileges": list(verified.administrator_privileges),
         "topology_role": verified.topology_role.value,
         "membership_complete": verified.membership_complete,
+        "local_node_name": verified.local_node_name,
     }
 
 
@@ -1313,6 +1316,7 @@ def _verified_from_data(data: dict) -> VerifiedConnection:
             else TopologyRole.UNKNOWN
         ),
         membership_complete=data.get("membership_complete") is True,
+        local_node_name=str(data.get("local_node_name") or ""),
     )
 
 
@@ -1323,6 +1327,11 @@ def _assert_verified_unchanged(expected: dict, current: VerifiedConnection) -> N
         or str(expected_identity.get("ca_fingerprint") or "") != current.identity.ca_fingerprint
         or str(expected.get("topology_role") or "unknown") != current.topology_role.value
         or (expected.get("membership_complete") is True) != current.membership_complete
+        # Without this the node an Add-node candidate represents is proven at the
+        # verify step and never re-bound at confirm, so a URL that resolves to a
+        # different member in between (VIP, round-robin DNS, a re-pointed host)
+        # commits an enrollment against a stale proof.
+        or str(expected.get("local_node_name") or "") != current.local_node_name
     ):
         raise ClusterOnboardingError(
             "The verified Proxmox identity or topology changed. Restart onboarding and review it again."

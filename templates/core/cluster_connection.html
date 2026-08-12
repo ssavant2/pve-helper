@@ -77,6 +77,28 @@
     </tbody></table>
   </section>
 
+  <section class="panel panel-spaced cluster-nodes-panel" data-cluster-nodes>
+    <div class="panel-heading cluster-section-heading">
+      <div><h2>Nodes</h2><p class="panel-meta">Which nodes pve-helper may read and publish. Membership is discovered; enrollment is your decision, and changing it never touches Proxmox.</p></div>
+    </div>
+    <table class="data-table compact"><thead><tr><th>Name</th><th>Enrollment</th><th>Membership</th><th>Last observed</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+      {% for row in node_rows %}<tr>
+        <td>{{ row.node_name }}{% if row.endpoint %}<br><code class="muted">{{ row.endpoint.name }}</code>{% endif %}</td>
+        <td>{% if row.state == "managed" %}<span class="badge completed">Managed</span>{% elif row.state == "safety_only" %}<span class="badge muted-badge">Safety only</span>{% else %}<span class="badge warning">{{ row.state_label }}</span>{% endif %}</td>
+        <td>{% if row.present %}{% if row.online %}<span class="badge completed">Online</span>{% else %}<span class="badge warning">Offline</span>{% endif %}{% else %}<span class="badge muted-badge">Not in current membership</span>{% endif %}</td>
+        <td>{{ row.last_discovered_at|default:"-" }}</td>
+        <td class="cluster-node-actions">
+          {% if not row.enrolled %}
+            <a class="secondary-action" href="{% url 'core:cluster_node_add' cluster.key %}?node={{ row.node_name|urlencode }}">Add node</a>
+          {% else %}
+            <form method="post" action="{% url 'core:cluster_node_action' cluster.key row.node_name %}">{% csrf_token %}<input type="hidden" name="action" value="{% if row.mode == 'managed' %}hide{% else %}manage{% endif %}"><button class="secondary-action" type="submit">{% if row.mode == 'managed' %}Hide{% else %}Manage{% endif %}</button></form>
+            <form method="post" action="{% url 'core:cluster_node_action' cluster.key row.node_name %}">{% csrf_token %}<input type="hidden" name="action" value="remove"><button class="secondary-action danger" type="submit">Remove</button></form>
+          {% endif %}
+        </td>
+      </tr>{% empty %}<tr><td colspan="5" class="empty-state">No node has been discovered yet. Membership is published by the periodic host projection refresh.</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+
   <section class="panel panel-spaced cluster-lifecycle-panel">
     <div><h2>Connection lifecycle</h2><p>Disabling blocks new refreshes, schedules, consoles and writes while retaining inventory, schedules and Audit history, and is reversible. Permanent removal is below: retirement is irreversible and keeps the connection's history, while a connection that never acquired any history can be deleted outright.</p></div>
     {% if cluster.enabled %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}" data-confirm="Disable {{ cluster.display_name }}? New provider operations stop, but last-known data and history remain." data-confirm-title="Disable cluster" data-confirm-label="Disable" data-confirm-danger="true">{% csrf_token %}<input type="hidden" name="action" value="disable"><button class="secondary-action danger" type="submit">Disable cluster</button></form>{% else %}<form method="post" action="{% url 'core:cluster_connection_action' cluster.key %}">{% csrf_token %}<input type="hidden" name="action" value="enable"><button class="secondary-action" type="submit" {% if not credential or not trust %}disabled title="Credential and trust are required"{% endif %}>Verify and enable cluster</button></form>{% endif %}

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="page-header cluster-page-header">
+    <div><a href="{% url 'core:cluster_connection' cluster.key %}">{{ cluster.display_name }}</a><h1>{% if action == "remove" %}Remove{% elif action == "hide" %}Hide{% else %}Manage{% endif %} node {{ node_name }}</h1><p>This is a pve-helper policy change. Nothing is changed on Proxmox, and no guest is stopped, moved or deleted.</p></div>
+    <a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a>
+  </div>
+
+  <section class="panel cluster-wizard-panel">
+    <div class="panel-heading"><div><h2>What changes</h2><p class="panel-meta">Every consequence that applies is listed here, not only the first one found.</p></div></div>
+    <ul class="cluster-impact-list">
+      {% for consequence in impact.consequences %}<li>{{ consequence }}</li>{% endfor %}
+    </ul>
+
+    {% if impact.guests %}
+      <h3>Guests currently placed on {{ node_name }}</h3>
+      <table class="data-table compact"><thead><tr><th>Type</th><th>VMID</th><th>Name</th></tr></thead><tbody>
+        {% for guest in impact.guests %}<tr><td>{{ guest.object_type|upper }}</td><td>{{ guest.vmid }}</td><td>{{ guest.name|default:"-" }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% if impact.guest_count > impact.guests|length %}<p class="panel-meta">Showing {{ impact.guests|length }} of {{ impact.guest_count }}.</p>{% endif %}
+    {% endif %}
+
+    {% if impact.blockers %}
+      <div class="panel cluster-operation-error"><strong>Resolve this durable work first:</strong>
+        <ul>{% for blocker in impact.blockers %}<li>{{ blocker }}</li>{% endfor %}</ul>
+        <p>These targets would be silently retargeted or stranded by the change, so pve-helper refuses it rather than guessing what you meant.</p>
+      </div>
+      <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Back to the connection</a></div>
+    {% else %}
+      <form method="post" class="cluster-confirm-form" action="{% url 'core:cluster_node_action' cluster.key node_name %}">{% csrf_token %}
+        <input type="hidden" name="action" value="{{ action }}"><input type="hidden" name="step" value="confirm">{{ change_form.impact }}
+        {% include "core/partials/cluster_form_errors.html" with form=change_form %}
+        <label class="cluster-field-wide"><span>{{ change_form.reason.label }}</span>{{ change_form.reason }}</label>
+        <label class="cluster-check">{{ change_form.confirm_impact }}<span>{{ change_form.confirm_impact.label }}</span></label>
+        <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a><button class="secondary-action{% if action == 'remove' %} danger{% endif %}" type="submit">{% if action == "remove" %}Remove node{% elif action == "hide" %}Hide node{% else %}Manage node{% endif %}</button></div>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}

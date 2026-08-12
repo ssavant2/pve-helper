@@ -83,6 +83,8 @@ class ClusterNodeProjectionRead:
     present: bool
     online: bool
     reported_ring_address: str
+    first_discovered_at: datetime | None
+    last_discovered_at: datetime | None
     membership_generation: int
     runtime_generation: int
     runtime_status: NodeRuntimeReadStatus
@@ -305,6 +307,8 @@ def read_cluster_projection(cluster_key: str, *, now: datetime | None = None) ->
                 present=row.present,
                 online=row.online,
                 reported_ring_address=row.reported_ring_address,
+                first_discovered_at=row.first_discovered_at,
+                last_discovered_at=row.last_discovered_at,
                 membership_generation=row.membership_generation,
                 runtime_generation=row.runtime_generation,
                 runtime_status=runtime_status,

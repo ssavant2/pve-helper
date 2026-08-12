@@ -386,6 +386,12 @@ urlpatterns = [
         views.cluster_endpoint_action,
         name="cluster_endpoint_action",
     ),
+    path("clusters/<str:cluster_key>/nodes/add/", views.cluster_node_add, name="cluster_node_add"),
+    path(
+        "clusters/<str:cluster_key>/nodes/<str:node_name>/action/",
+        views.cluster_node_action,
+        name="cluster_node_action",
+    ),
     path("datastores/mounts/register/", views.storage_mount_register, name="storage_mount_register"),
     # The datastore object view. Each tab has two shapes sharing one route name:
     # a shared datastore is cluster-wide and carries no node, a node-local one is

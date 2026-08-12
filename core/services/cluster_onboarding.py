@@ -19,6 +19,7 @@ from django.utils import timezone
 from core.models import (
     AuditEvent,
     ClusterCredential,
+    ClusterNodeEnrollment,
     ClusterTransportTrust,
     ConsoleSession,
     ProxmoxCluster,
@@ -99,6 +100,12 @@ class VerifiedConnection:
     administrator_privileges: tuple[str, ...]
     topology_role: TopologyRole = TopologyRole.UNKNOWN
     membership_complete: bool = False
+    #: The node that served ``cluster/status``, i.e. the single row with ``local=1``.
+    #: This is the only proof of *which member* a candidate transport represents;
+    #: an endpoint name or URL hostname is not evidence. Empty whenever the payload
+    #: was not strict enough to normalize, in which case a caller that needs node
+    #: identity must refuse rather than guess (5a1H decision 5).
+    local_node_name: str = ""
 
 
 def normalize_candidate(candidate: ClusterCandidate) -> ClusterCandidate:
@@ -360,7 +367,7 @@ def persist_verified_cluster_configuration(
             "updated_at",
         ]
     )
-    ProxmoxEndpoint.objects.create(
+    endpoint = ProxmoxEndpoint.objects.create(
         cluster=locked,
         name=candidate.endpoint_name,
         url=candidate.endpoint_url,
@@ -368,8 +375,49 @@ def persist_verified_cluster_configuration(
     )
     approve_cluster_transport(locked, mode=candidate.trust_mode, ca_pem=candidate.ca_pem)
     set_cluster_credential(locked, token_id=candidate.token_id, token_secret=candidate.token_secret)
+    _activate_enrollment_contract(locked, verified, endpoint)
     activate_multicluster_identity()
     return enable_cluster(locked)
+
+
+def _activate_enrollment_contract(
+    locked: ProxmoxCluster,
+    verified: VerifiedConnection,
+    endpoint: ProxmoxEndpoint,
+) -> None:
+    """A new connection starts under the enrollment contract, never in legacy mode.
+
+    Legacy mode (`enrollment_contract_version == 0`) exists only for connections that
+    predate enrollment and must be reviewed before the filter can be trusted. A
+    connection created today has nothing to review, and leaving it at 0 would make
+    the publication filter silently exempt it forever.
+
+    The initial enrollment needs proof of *which* node the submitted endpoint is.
+    When `cluster/status` did not identify its local node, the connection is still
+    persisted — refusing onboarding over this would strand a working cluster — but
+    it stays in legacy mode so the Connections review panel asks the operator, which
+    is exactly what the contract requires of an unproven mapping.
+    """
+
+    from core.services.cluster_enrollment import enroll_node
+
+    if not verified.local_node_name:
+        return
+    enroll_node(
+        locked,
+        node_name=verified.local_node_name,
+        mode=ClusterNodeEnrollment.Mode.MANAGED,
+        endpoint=endpoint,
+        # Onboarding runs before `enable_cluster`, so the operability check would
+        # refuse its own connection.
+        require_enabled=False,
+    )
+    locked.refresh_from_db(fields=["enrollment_generation"])
+    locked.enrollment_contract_version = 1
+    locked.enrollment_activated_at = timezone.now()
+    locked.save(
+        update_fields=["enrollment_contract_version", "enrollment_activated_at", "updated_at"],
+    )
 
 
 @transaction.atomic
@@ -639,6 +687,7 @@ def _verify_connection(
         )
     topology_role = TopologyRole.UNKNOWN
     membership_complete = False
+    local_node_name = ""
     try:
         from core.services.cluster_membership import normalize_cluster_status
 
@@ -646,10 +695,13 @@ def _verify_connection(
     except ValueError:
         # Ordinary onboarding historically accepts the looser metadata response;
         # the topology hand-off separately requires this strict proof to be true.
+        # Node enrollment does too: it leaves `local_node_name` empty rather than
+        # inferring the member from an endpoint name.
         pass
     else:
         membership_complete = True
         topology_role = TopologyRole.COROSYNC if normalized_membership.has_cluster_row else TopologyRole.STANDALONE
+        local_node_name = normalized_membership.observed_from
     required = tuple(sorted(key for key, value in administrator_role.items() if value))
     return VerifiedConnection(
         certificate=certificate,
@@ -660,6 +712,7 @@ def _verify_connection(
         administrator_privileges=required,
         topology_role=topology_role,
         membership_complete=membership_complete,
+        local_node_name=local_node_name,
     )
 
 

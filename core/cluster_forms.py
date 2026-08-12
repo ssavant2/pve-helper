@@ -140,6 +140,37 @@ class EndpointTrustConfirmForm(forms.Form):
     )
 
 
+class NodeEnrollmentConfirmForm(forms.Form):
+    """The last step of Add node: the candidate is proven to *be* the chosen node."""
+
+    candidate = forms.CharField(widget=forms.HiddenInput)
+    mode = forms.ChoiceField(
+        choices=(
+            ("managed", "Managed — pve-helper publishes this node's guests and storage"),
+            ("safety_only", "Safety only — read for disk references, hidden from operational views"),
+        ),
+        label="Enrollment mode",
+    )
+    confirm_identity = forms.BooleanField(
+        label="Add this verified node to the cluster named above.",
+    )
+
+
+class NodeEnrollmentChangeForm(forms.Form):
+    """Hide, unhide or remove. The signed impact is what carries the authority."""
+
+    impact = forms.CharField(widget=forms.HiddenInput)
+    reason = forms.CharField(
+        max_length=1000,
+        required=False,
+        label="Reason (recorded in Audit)",
+        widget=forms.TextInput(attrs={"autocomplete": "off"}),
+    )
+    confirm_impact = forms.BooleanField(
+        label="I have read the consequences listed above and want to apply this change.",
+    )
+
+
 class CredentialRotationForm(forms.Form):
     token_id = forms.CharField(max_length=255, label="API token ID")
     token_secret = forms.CharField(
