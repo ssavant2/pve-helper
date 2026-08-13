@@ -33,6 +33,7 @@ from .services.cluster_host_refresh import CLUSTER_HOST_REFRESH_ACTION
 from .services.cluster_inventory_bootstrap import CLUSTER_INVENTORY_BOOTSTRAP_ACTION
 from .services.cluster_lifecycle_lock import scan_admission_lock
 from .services.cluster_membership import refresh_cluster_membership
+from .services.cluster_node_networks import refresh_cluster_node_networks
 from .services.cluster_node_runtime import refresh_cluster_node_runtime
 from .services.cluster_resolver import client_for_endpoint, cluster_clients
 from .services.cluster_scopes import managed_clusters
@@ -56,7 +57,7 @@ from .services.filesystem import storage_space_info
 from .services.host_projection_singleflight import (
     HOST_PROJECTION_REFRESH_LOCK_ID as HOST_PROJECTION_REFRESH_LOCK_ID,
 )
-from .services.host_projection_singleflight import host_projection_refresh_lock
+from .services.host_projection_singleflight import host_projection_refresh_lock, node_network_refresh_lock
 from .services.image_info import probe_qemu_image_info
 from .services.partial_scan import refresh_storage_directory
 from .services.proxmox import (
@@ -164,6 +165,52 @@ def refresh_cluster_host_projection() -> dict[str, object]:
             results.append(_refresh_cluster_host_projection(cluster))
         except Exception:
             logger.warning("Host-projection refresh raised for cluster=%s", cluster.key, exc_info=True)
+            results.append({"cluster_key": cluster.key, "skipped": False, "error": "unhandled"})
+    return {"clusters": results}
+
+
+def _refresh_cluster_node_networks(cluster) -> dict[str, object]:
+    """One cluster's node interfaces, once at a time, on this domain's own lock.
+
+    Single-flight for the same reason the host projection needs it -- the sweep is
+    bounded by one client timeout per attempted node -- but on a *different* lock, so
+    a degraded network pass can never make the membership/node-runtime cycle report
+    "refresh already running" and skip.
+    """
+    with node_network_refresh_lock(cluster) as acquired:
+        if not acquired:
+            return {"cluster_key": cluster.key, "skipped": True, "reason": "refresh already running"}
+
+        try:
+            sweep = refresh_cluster_node_networks(cluster)
+        except Exception:
+            logger.warning("Node-network refresh failed for cluster=%s", cluster.key, exc_info=True)
+            return {"cluster_key": cluster.key, "skipped": False, "error": "unhandled"}
+        return {
+            "cluster_key": cluster.key,
+            "skipped": False,
+            "ran": sweep.ran,
+            "refusal": sweep.refusal,
+            "targets": sweep.targets,
+            "published": sweep.published,
+            "failed": sweep.failed,
+            "retracted": sweep.retracted,
+        }
+
+
+def refresh_node_network_projection() -> dict[str, object]:
+    """Refresh node interfaces for every enabled cluster. 5a4B-i's periodic entry.
+
+    One cluster's failure never stops a sibling, matching the host projection: a
+    shared exception path would let one unreachable connection leave every other
+    installation's bridge lists un-refreshed.
+    """
+    results = []
+    for cluster in ProxmoxCluster.objects.filter(enabled=True).order_by("key"):
+        try:
+            results.append(_refresh_cluster_node_networks(cluster))
+        except Exception:
+            logger.warning("Node-network refresh raised for cluster=%s", cluster.key, exc_info=True)
             results.append({"cluster_key": cluster.key, "skipped": False, "error": "unhandled"})
     return {"clusters": results}
 

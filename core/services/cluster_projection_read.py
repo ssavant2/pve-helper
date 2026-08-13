@@ -266,7 +266,19 @@ def read_cluster_projection(cluster_key: str, *, now: datetime | None = None) ->
 
     membership_state = ClusterMembershipState.objects.filter(cluster_id=cluster.pk).first()  # query 2
     node_rows = list(ClusterNodeState.objects.filter(cluster_id=cluster.pk).order_by("node_name"))  # query 3
-    coverages = list(ClusterProjectionCoverage.objects.filter(cluster_id=cluster.pk))  # query 4
+    # Query 4, filtered by domain rather than loading every coverage row. 5a4B-i adds
+    # one `node_network` row per node per cluster; unfiltered, they would be fetched
+    # into this read, inflate its pinned row budget, and sit one predicate away from
+    # entering a status derivation that knows nothing about them.
+    coverages = list(
+        ClusterProjectionCoverage.objects.filter(
+            cluster_id=cluster.pk,
+            domain__in=(
+                ClusterProjectionCoverage.DOMAIN_MEMBERSHIP,
+                ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME,
+            ),
+        )
+    )
 
     membership_coverage = next(
         (item for item in coverages if item.domain == ClusterProjectionCoverage.DOMAIN_MEMBERSHIP),

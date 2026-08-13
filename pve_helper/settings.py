@@ -363,6 +363,12 @@ CURRENT_GUEST_REFRESH_INTERVAL_MINUTES = env_int("CURRENT_GUEST_REFRESH_INTERVAL
 # Module 5 host projection (membership + node runtime). Same default as the guest
 # projection on purpose: both feed panels that share a page.
 HOST_PROJECTION_REFRESH_INTERVAL_MINUTES = env_int("HOST_PROJECTION_REFRESH_INTERVAL_MINUTES", 1)
+# Module 5a4B-i node network projection, on its own lane and its own cadence. Not
+# the host-projection interval: a node's bridges and bonds change when an operator
+# edits them, not continuously, so a one-minute cadence would spend 2N provider
+# calls a minute re-proving a stable answer. Currency here is generation equality
+# against coverage, never age, so a slower cadence costs no correctness.
+NODE_NETWORK_REFRESH_INTERVAL_MINUTES = env_int("NODE_NETWORK_REFRESH_INTERVAL_MINUTES", 15)
 # Guest-agent OS/hostname/IP enrichment rarely changes, so the periodic reconcile
 # only re-reads a guest's agent once its stored copy is older than this. Keeps the
 # extra per-guest agent calls a slow trickle even though the reconcile runs often.

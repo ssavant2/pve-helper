@@ -263,6 +263,17 @@ CLUSTER_REVERSE_RELATIONS: dict[str, RelationClassification] = {
         "Current state, not history: an absent node is marked present=False rather than "
         "deleted, but the whole set is rebuilt by the next complete generation.",
     ),
+    "node_interfaces": RelationClassification(
+        "node_interfaces",
+        RelationClass.CURRENT_PROJECTION,
+        blocks_hard_delete=False,
+        footprint_policy=FootprintPolicy.RECONSTRUCTIBLE,
+        footprint_reason=FOOTPRINT_HOST_PROJECTION,
+        note="Module 5 5a4B-i. CASCADE; what a guest NIC may attach to per node. Current "
+        "state, not history: a removed interface is tombstoned rather than deleted so "
+        "'gone' stays distinguishable from 'unknown', but the whole set is rebuilt by the "
+        "next complete pass and describes nothing once the connection is gone.",
+    ),
     "projection_coverage": RelationClassification(
         "projection_coverage",
         RelationClass.CURRENT_PROJECTION,

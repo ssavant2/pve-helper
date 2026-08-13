@@ -465,7 +465,9 @@ class MembershipReadInvariantTests(SimpleTestCase):
 # with their removal phases already assigned in the Module 5 ledger. Exact
 # per-module/per-domain entries keep that debt from authorizing a second call.
 HOST_PROJECTION_READ_OWNER = "core/services/cluster_projection_read.py"
-HOST_PROJECTION_MODEL_NAMES = frozenset({"ClusterMembershipState", "ClusterNodeState", "ClusterProjectionCoverage"})
+HOST_PROJECTION_MODEL_NAMES = frozenset(
+    {"ClusterMembershipState", "ClusterNodeState", "ClusterProjectionCoverage", "ClusterNodeInterface"}
+)
 HOST_STATE_PROVIDER_IO_ALLOWLIST = {
     # Guest Summary HA card; 5d1 replaces this membership/HA live read.
     "core/views/guests/read_model_support.py": frozenset({"membership"}),
@@ -482,7 +484,11 @@ HOST_PROJECTION_OWNER_FORBIDDEN_IMPORTS = frozenset(
     }
 )
 HOST_PROJECTION_PUBLISHER_MODULES = frozenset(
-    {"core.services.cluster_membership", "core.services.cluster_node_runtime"}
+    {
+        "core.services.cluster_membership",
+        "core.services.cluster_node_runtime",
+        "core.services.cluster_node_networks",
+    }
 )
 
 

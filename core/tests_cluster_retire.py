@@ -403,10 +403,12 @@ class LifecycleParticipantContractTests(TestCase):
         # the plan was written against has moved.
         #
         # Module 5 phase 5a1A added the membership/node projection and coverage;
-        # 5a1J adds operator-owned enrollment configuration.
+        # 5a1J adds operator-owned enrollment configuration; 5a4B-i adds the node
+        # network projection.
         expected = {
             "membership_state",
             "node_states",
+            "node_interfaces",
             "projection_coverage",
             "node_enrollments",
             "topology_handoff_storage_bindings",

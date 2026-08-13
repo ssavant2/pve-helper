@@ -2027,6 +2027,7 @@ class ClusterProjectionCoverage(TimestampedModel):
 
     DOMAIN_MEMBERSHIP = "membership"
     DOMAIN_NODE_RUNTIME = "node_runtime"
+    DOMAIN_NODE_NETWORK = "node_network"
 
     cluster = models.ForeignKey(
         ProxmoxCluster,
@@ -2037,7 +2038,11 @@ class ClusterProjectionCoverage(TimestampedModel):
     )
     domain = models.CharField(
         max_length=64,
-        choices=((DOMAIN_MEMBERSHIP, "Membership"), (DOMAIN_NODE_RUNTIME, "Node runtime")),
+        choices=(
+            (DOMAIN_MEMBERSHIP, "Membership"),
+            (DOMAIN_NODE_RUNTIME, "Node runtime"),
+            (DOMAIN_NODE_NETWORK, "Node network"),
+        ),
     )
     #: Null for a cluster-grain scope. Part of the identity, see the class note.
     node_name = models.CharField(max_length=120, null=True, blank=True)
@@ -2066,8 +2071,11 @@ class ClusterProjectionCoverage(TimestampedModel):
                         based_on_generation__isnull=True,
                     )
                     | (
+                        # Node-grained domains share one arm. They impose the same
+                        # rule, and a per-domain arm would be a third place to keep
+                        # in step with `core_cluster_node_state_valid_ref`.
                         models.Q(
-                            domain="node_runtime",
+                            domain__in=("node_runtime", "node_network"),
                             node_name__isnull=False,
                             based_on_generation__isnull=False,
                         )
@@ -2084,6 +2092,99 @@ class ClusterProjectionCoverage(TimestampedModel):
     def __str__(self) -> str:
         scope = f"{self.domain}/{self.node_name}" if self.node_name else self.domain
         return f"{self.cluster.key}: {scope}"
+
+
+class ClusterNodeInterface(TimestampedModel):
+    """One network interface on one node, as the provider last described it. 5a4B-i.
+
+    The row exists to answer **what a guest NIC may attach to on this node**, without
+    a provider call on render. Two consumers computed that answer independently and
+    both got it wrong against live production, in opposite directions; the projection
+    is where that answer stops being re-derived.
+
+    ``attachable`` is published, never derived. It is true iff
+    ``nodes/<node>/network?type=any_bridge`` returned this interface for this node.
+    Type, name and presence in the plain interface listing are all insufficient: a
+    realized SDN vnet with no address is absent from the plain listing entirely, one
+    with an address comes back ``unknown``, and the cluster-wide vnet list carries no
+    node opinion at all -- which is how one consumer came to offer a vnet on a node
+    whose zone excludes it.
+
+    **Two flags, because absence and ignorance are different answers.**
+    ``present=False, unreachable=False`` means a complete read proved the interface
+    is gone. ``unreachable=True`` means the node did not answer and the row is
+    unknown -- a node taken down for patching must read as unknown, never as "no
+    bridges", because a consumer that reads the latter as proof disables a legitimate
+    migration target. This mirrors :class:`ClusterStorageNodeState`, which carries the
+    same pair for the same reason.
+
+    Rows are tombstoned, never deleted, so "this bridge disappeared" stays
+    distinguishable from "this node was never swept".
+    """
+
+    cluster = models.ForeignKey(
+        ProxmoxCluster,
+        on_delete=models.CASCADE,
+        related_name="node_interfaces",
+        # Covered by `core_node_interface_uniq`, which leads with this column.
+        db_index=False,
+    )
+    #: Deliberately **not** an FK to `ClusterNodeState`: a cascade would delete the
+    #: tombstones this model exists to keep. The valid-ref check below is the same
+    #: one `core_cluster_node_state_valid_ref` applies.
+    node_name = models.CharField(max_length=120)
+    iface = models.CharField(max_length=120)
+
+    #: From the `any_bridge` answer wherever the two reads overlap, so a realized
+    #: vnet is never stored as `unknown`. Live values: bridge, bond, eth, vnet,
+    #: unknown. No `OVSBridge` was observed on any probed node.
+    interface_type = models.CharField(max_length=32, blank=True, default="")
+    #: Published, never derived. See the class note.
+    attachable = models.BooleanField(default=False)
+    active = models.BooleanField(null=True, blank=True)
+    autostart = models.BooleanField(null=True, blank=True)
+    method = models.CharField(max_length=32, blank=True, default="")
+    address = models.CharField(max_length=64, blank=True, default="")
+    cidr = models.CharField(max_length=64, blank=True, default="")
+    gateway = models.CharField(max_length=64, blank=True, default="")
+    bridge_ports = models.CharField(max_length=255, blank=True, default="")
+    bridge_vids = models.CharField(max_length=255, blank=True, default="")
+    bridge_vlan_aware = models.BooleanField(null=True, blank=True)
+    bond_mode = models.CharField(max_length=64, blank=True, default="")
+    bond_slaves = models.CharField(max_length=255, blank=True, default="")
+    #: Opaque presentation text. 5a4B stores no SDN concept: no zone, no tag, no
+    #: controller. Those are 5a4C's.
+    comments = models.TextField(blank=True, default="")
+
+    #: Advanced only by a pass in which **both** per-node reads succeeded. Currency
+    #: is equality with this node's `node_network` coverage generation, never age.
+    observed_generation = models.PositiveBigIntegerField(default=0)
+    #: The enrollment generation the publishing pass was composed against, so a row
+    #: published before a node was hidden is detectable rather than merely stale.
+    based_on_enrollment_generation = models.PositiveBigIntegerField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    present = models.BooleanField(default=True)
+    #: The node failed to answer, as opposed to answering that the interface is
+    #: gone. Both leave `present` False; only this one means "unknown".
+    unreachable = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["cluster__key", "node_name", "iface"]
+        constraints = [
+            models.UniqueConstraint(fields=["cluster", "node_name", "iface"], name="core_node_interface_uniq"),
+            models.CheckConstraint(
+                condition=~models.Q(node_name="") & ~models.Q(node_name__contains=":") & ~models.Q(iface=""),
+                name="core_node_interface_valid_ref",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["cluster", "node_name", "attachable"], name="core_node_iface_attach_idx"),
+        ]
+        verbose_name = "cluster node interface"
+        verbose_name_plural = "cluster node interfaces"
+
+    def __str__(self) -> str:
+        return f"{self.cluster.key}/{self.node_name}/{self.iface}"
 
 
 class ClusterNodeEnrollment(TimestampedModel):
