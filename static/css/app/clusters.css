@@ -416,8 +416,12 @@
   height: auto;
 }
 
-.node-summary-identity {
-  margin-top: 14px;
+.node-runtime-observation {
+  padding-right: 0;
+  padding-left: 0;
+  border-bottom: 0;
+  font-size: inherit;
+  line-height: normal;
 }
 
 .cluster-summary-nodes-table {

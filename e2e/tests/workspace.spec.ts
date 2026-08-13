@@ -141,12 +141,26 @@ test("node Summary shows its own runtime state, not the cluster's", async ({ pag
   await expect(page.getByRole("main")).toContainText("Guests");
   await expect(page.getByRole("main")).toContainText("Node reference");
 
-  const cards = await page.locator(".cluster-detail-grid").boundingBox();
+  const guests = await page.locator(".cluster-detail-grid .panel", { hasText: "Guests" }).boundingBox();
   const identity = await page.locator(".node-summary-identity").boundingBox();
-  expect(cards).not.toBeNull();
+  expect(guests).not.toBeNull();
   expect(identity).not.toBeNull();
-  expect(identity!.y - (cards!.y + cards!.height)).toBeGreaterThanOrEqual(12);
+  expect(Math.abs(identity!.y - guests!.y)).toBeLessThanOrEqual(1);
+  expect(identity!.x - (guests!.x + guests!.width)).toBeGreaterThanOrEqual(12);
+  expect(Math.abs(identity!.width - guests!.width)).toBeLessThanOrEqual(1);
   await expect(page.locator(".cluster-workspace-page > .vs-object-header")).toHaveCSS("border-bottom-width", "0px");
+
+  const runtimeLine = await page.locator(".node-runtime-observation").boundingBox();
+  const cpuLabel = await page.locator(".node-runtime-observation + .cluster-detail-list dt").first().boundingBox();
+  expect(runtimeLine).not.toBeNull();
+  expect(cpuLabel).not.toBeNull();
+  expect(Math.abs(runtimeLine!.x - cpuLabel!.x)).toBeLessThanOrEqual(1);
+  await expect(page.locator(".node-runtime-observation")).toHaveCSS("border-bottom-width", "0px");
+  const runtimeFontSize = await page.locator(".node-runtime-observation").evaluate((element) => getComputedStyle(element).fontSize);
+  await expect(page.locator(".node-runtime-observation + .cluster-detail-list dt").first()).toHaveCSS(
+    "font-size",
+    runtimeFontSize,
+  );
 });
 
 test("the built tabs are links and the unbuilt ones state the intended shape", async ({ page }) => {

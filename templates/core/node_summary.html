@@ -33,11 +33,11 @@
     <section class="panel">
       <div class="panel-heading"><h2>Utilisation</h2></div>
       {% if node.runtime_coverage %}
-        <p class="panel-meta">
+        <p class="panel-meta node-runtime-observation">
           Runtime generation {{ node.runtime_generation }}, observed {{ node.runtime_coverage.observed_at|default:"never" }}
         </p>
       {% else %}
-        <p class="panel-meta">This node's runtime has never been published.</p>
+        <p class="panel-meta node-runtime-observation">This node's runtime has never been published.</p>
       {% endif %}
       <dl class="cluster-detail-list">
         <dt>CPU</dt>
@@ -114,16 +114,16 @@
         <dt>Running</dt><dd>{{ summary.placement.running }}</dd>
       </dl>
     </section>
-  </div>
 
-  <section class="panel node-summary-identity">
-    <div class="panel-heading"><h2>Identity</h2></div>
-    <dl class="cluster-detail-list">
-      <dt>Node reference</dt><dd>{{ node.node_ref }}</dd>
-      <dt>Corosync node id</dt><dd>{{ node.nodeid|default_if_none:"-" }}</dd>
-      <dt>Ring address</dt><dd>{{ node.reported_ring_address|default:"-" }}</dd>
-      <dt>First discovered</dt><dd>{{ node.first_discovered_at|default:"-" }}</dd>
-      <dt>Last discovered</dt><dd>{{ node.last_discovered_at|default:"-" }}</dd>
-    </dl>
-  </section>
+    <section class="panel node-summary-identity">
+      <div class="panel-heading"><h2>Identity</h2></div>
+      <dl class="cluster-detail-list">
+        <dt>Node reference</dt><dd>{{ node.node_ref }}</dd>
+        <dt>Corosync node id</dt><dd>{{ node.nodeid|default_if_none:"-" }}</dd>
+        <dt>Ring address</dt><dd>{{ node.reported_ring_address|default:"-" }}</dd>
+        <dt>First discovered</dt><dd>{{ node.first_discovered_at|default:"-" }}</dd>
+        <dt>Last discovered</dt><dd>{{ node.last_discovered_at|default:"-" }}</dd>
+      </dl>
+    </section>
+  </div>
 {% endblock %}
