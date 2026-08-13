@@ -407,13 +407,32 @@
   min-height: 100%;
 }
 
+.cluster-workspace-page > .vs-object-header {
+  border-bottom: 0;
+}
+
 .cluster-workspace-page > .vm-overview-page {
   flex: 1 1 auto;
   height: auto;
 }
 
-.cluster-summary-nodes {
+.node-summary-identity {
   margin-top: 14px;
+}
+
+.cluster-summary-nodes-table {
+  min-width: 640px;
+  table-layout: fixed;
+}
+
+.cluster-summary-nodes-table col:first-child,
+.cluster-summary-nodes-table col:last-child {
+  width: 30%;
+}
+
+.cluster-summary-nodes-table col:nth-child(2),
+.cluster-summary-nodes-table col:nth-child(3) {
+  width: 20%;
 }
 
 .cluster-detail-grid > .panel,

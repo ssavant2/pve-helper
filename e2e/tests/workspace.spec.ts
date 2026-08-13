@@ -115,11 +115,22 @@ test("cluster Summary states its capacity coverage rather than a bare total", as
   const capacity = page.getByRole("main").locator(".panel", { hasText: "Capacity" }).first();
   await expect(capacity).toContainText(/reporting/);
 
-  const cards = await page.locator(".cluster-detail-grid").boundingBox();
+  const guests = await page.locator(".cluster-summary-guests").boundingBox();
   const nodes = await page.locator(".cluster-summary-nodes").boundingBox();
-  expect(cards).not.toBeNull();
+  expect(guests).not.toBeNull();
   expect(nodes).not.toBeNull();
-  expect(nodes!.y - (cards!.y + cards!.height)).toBeGreaterThanOrEqual(12);
+  expect(Math.abs(nodes!.y - guests!.y)).toBeLessThanOrEqual(1);
+  expect(nodes!.x - (guests!.x + guests!.width)).toBeGreaterThanOrEqual(12);
+  expect(Math.abs(nodes!.width - guests!.width)).toBeLessThanOrEqual(1);
+  await expect(page.locator(".cluster-workspace-page > .vs-object-header")).toHaveCSS("border-bottom-width", "0px");
+
+  const nodeHeaderPositions = await page
+    .locator(".cluster-summary-nodes-table th")
+    .evaluateAll((headers) => headers.map((header) => header.getBoundingClientRect().x));
+  expect(nodeHeaderPositions).toHaveLength(4);
+  expect(nodeHeaderPositions.slice(1).every((position, index) => position - nodeHeaderPositions[index] >= 120)).toBe(
+    true,
+  );
 });
 
 test("node Summary shows its own runtime state, not the cluster's", async ({ page }) => {
@@ -129,6 +140,13 @@ test("node Summary shows its own runtime state, not the cluster's", async ({ pag
   await expect(page.getByRole("heading", { name: "pve1", level: 1 })).toBeVisible();
   await expect(page.getByRole("main")).toContainText("Guests");
   await expect(page.getByRole("main")).toContainText("Node reference");
+
+  const cards = await page.locator(".cluster-detail-grid").boundingBox();
+  const identity = await page.locator(".node-summary-identity").boundingBox();
+  expect(cards).not.toBeNull();
+  expect(identity).not.toBeNull();
+  expect(identity!.y - (cards!.y + cards!.height)).toBeGreaterThanOrEqual(12);
+  await expect(page.locator(".cluster-workspace-page > .vs-object-header")).toHaveCSS("border-bottom-width", "0px");
 });
 
 test("the built tabs are links and the unbuilt ones state the intended shape", async ({ page }) => {
