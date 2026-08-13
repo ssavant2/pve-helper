@@ -33,7 +33,7 @@ test("right-click opens the context menu", async ({ page }) => {
   await expect(menu).toBeVisible();
 });
 
-test("certificate expiry details wrap vertically and Acknowledge answers the task", async ({ page }) => {
+test("certificate expiry uses five rows and both actions work", async ({ page }) => {
   let submittedAnswer = "";
   await page.route("**/tasks/dismiss-question/", async (route) => {
     submittedAnswer = route.request().postData() || "";
@@ -63,7 +63,27 @@ test("certificate expiry details wrap vertically and Acknowledge answers the tas
   await expect(detailGrid.locator(":scope > div")).toHaveCount(5);
   await expect
     .poll(() => detailGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length))
-    .toBe(2);
+    .toBe(1);
+
+  await dialog.getByRole("button", { name: "Open Certificates settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/certificates\/$/);
+
+  await page.evaluate(() => {
+    void import("/static/js/app/certificates.js").then(({ openCertificateExpiryQuestion }) =>
+      openCertificateExpiryQuestion(
+        {
+          condition: "expiring",
+          detail: "Expires in 14 days.",
+          certificate_label: "wildcard_2026",
+          usage_label: "HTTPS certificate",
+          subject: "CN=*.hqgbg.net",
+          issuer: "CN=YE1,O=Let's Encrypt,C=US",
+          not_after: "2026-08-28T05:15:00Z",
+        },
+        "certificate:987",
+      ),
+    );
+  });
 
   await dialog.getByRole("button", { name: "Acknowledge", exact: true }).click();
   await expect.poll(() => submittedAnswer).toContain("task_id=certificate%3A987");

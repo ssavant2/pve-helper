@@ -260,19 +260,20 @@
   line-height: 1.3;
 }
 
-/* Certificate subjects and issuers are routinely much longer than ordinary
-   status labels. Two columns gives them useful line length while still keeping
-   the five facts easy to scan vertically in the compact action dialog. */
+/* These are five facts, so render five full-width rows rather than a card grid.
+   The value column gets all remaining width and long certificate names wrap. */
 .certificate-expiry-detail-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.certificate-expiry-detail-grid > div,
-.certificate-expiry-detail-grid strong {
+.certificate-expiry-detail-grid > div {
+  grid-template-columns: minmax(100px, 0.3fr) minmax(0, 1fr);
+  align-items: start;
   min-width: 0;
 }
 
 .certificate-expiry-detail-grid strong {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -410,7 +411,7 @@
 }
 
 @media (max-width: 600px) {
-  .certificate-expiry-detail-grid {
+  .certificate-expiry-detail-grid > div {
     grid-template-columns: minmax(0, 1fr);
   }
 }

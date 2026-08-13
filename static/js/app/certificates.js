@@ -37,7 +37,7 @@ export const openCertificateExpiryQuestion = async (payload, taskId) => {
     distinguishDismiss: true,
   });
   if (answer === "confirm") {
-    loadSoftNavigation(CERTIFICATE_SETTINGS_PATH);
+    loadSoftNavigation(new URL(CERTIFICATE_SETTINGS_PATH, window.location.origin));
     return;
   }
   if (answer === "decline") {
