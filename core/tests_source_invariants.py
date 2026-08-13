@@ -284,10 +284,11 @@ NODE_SCOPED_VIEW_READ = re.compile(
 )
 NODE_SCOPED_VIEW_READ_ALLOWLIST = frozenset(
     {
-        # The migrate dialog's CPU/bridge helpers (`capabilities/qemu/cpu`,
-        # `status`, `network`) plus the vzdump write. The three read helpers are
-        # the uncached 3N + 2 fan-out recorded in the ledger; 5a4B/5a4E replace
-        # them with projection reads and strike this entry.
+        # The migrate dialog's CPU helpers (`capabilities/qemu/cpu`, `status`)
+        # plus the vzdump write. The bridge read left this module for
+        # `services/node_networks.py` when the two bridge readers were unified,
+        # so the remaining fan-out here is 2N + 2; 5a4E replaces it with
+        # projection reads and strikes this entry.
         "core/views/guests/_core.py",
         # Volume delete addresses a storage on a node. A write owned by the
         # storage domain, not node state.

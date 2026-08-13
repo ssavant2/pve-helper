@@ -398,10 +398,10 @@ const openMigrateDialog = (overview, rows) => {
       netBody.innerHTML = "";
       return;
     }
-    // Selectable = bridges realized on the node + all cluster SDN vnets (which
-    // are cluster-scoped). "present" (for the warning/default) stays realized-only.
-    const vnets = Array.isArray(optionsData?.sdn_vnets) ? optionsData.sdn_vnets : [];
-    const selectable = Array.from(new Set([...available, ...vnets])).sort();
+    // Selectable = exactly what the target node can attach to. Adding the cluster
+    // vnet list on top offered vnets whose zone excludes the node, which lands the
+    // guest on a bridge that is not there.
+    const selectable = available;
     netBody.innerHTML = relevant
       .map((nic) => {
         const present = available.includes(nic.bridge);

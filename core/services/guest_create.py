@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
+from core.services.node_networks import node_attachable_bridges
 from core.services.proxmox import ProxmoxAPIError
 from core.services.publication_scope import published_node_names
 from core.services.storage_catalog import node_storage_rows, storage_volume_rows
@@ -58,31 +59,12 @@ def _content_volids(cluster, node: str, storages: list[str], content: str) -> li
 
 
 def _bridges(client, node: str) -> list[str]:
-    bridges: list[str] = []
-    try:
-        net = client.get(f"nodes/{quote(node, safe='')}/network")
-        if isinstance(net, list):
-            for entry in net:
-                if isinstance(entry, dict) and entry.get("type") in ("bridge", "OVSBridge") and entry.get("iface"):
-                    bridges.append(entry["iface"])
-    except ProxmoxAPIError:
-        pass
-    try:
-        vnets = client.get("cluster/sdn/vnets")
-        if isinstance(vnets, list):
-            for entry in vnets:
-                if isinstance(entry, dict) and entry.get("vnet"):
-                    bridges.append(entry["vnet"])
-    except ProxmoxAPIError:
-        pass
-    # de-duplicate, keep order
-    seen = set()
-    result = []
-    for bridge in bridges:
-        if bridge not in seen:
-            seen.add(bridge)
-            result.append(bridge)
-    return result
+    """Attachable targets on ``node``, from the one reader that knows.
+
+    This used to append every cluster SDN vnet with no node or zone test, so the
+    form offered vnets that do not exist on the selected node.
+    """
+    return node_attachable_bridges(client, node)
 
 
 def create_options(object_type: str, node: str | None = None, *, cluster) -> dict[str, Any]:

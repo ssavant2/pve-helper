@@ -10,6 +10,7 @@ from core.services.current_guest_inventory import (
     delete_current_guest,
     update_current_guest_config,
 )
+from core.services.node_networks import node_attachable_bridges
 from core.services.public_errors import public_exception_message
 from core.services.publication_scope import (
     UnpublishedTargetError,
@@ -383,26 +384,14 @@ def _guest_nic_bridges(detail: SimpleNamespace) -> list[dict]:
     return nics
 
 
-def _node_available_bridges(client, node: str, sdn_vnets: set[str]) -> list[str]:
-    """Bridges a NIC can attach to on ``node``: Linux/OVS bridges + realized SDN
-    vnets. Proxmox has no per-host port-group concept, so a NIC's bridge name
-    must exist on the target node or the guest lands without a network there."""
-    try:
-        raw = client.get(f"nodes/{quote(node, safe='')}/network")
-    except ProxmoxAPIError:
-        return []
-    if not isinstance(raw, list):
-        return []
-    bridges: set[str] = set()
-    for iface in raw:
-        if not isinstance(iface, dict):
-            continue
-        name = str(iface.get("iface") or "")
-        if not name:
-            continue
-        if str(iface.get("type") or "") in {"bridge", "OVSBridge"} or name in sdn_vnets:
-            bridges.add(name)
-    return sorted(bridges)
+def _node_available_bridges(client, node: str) -> list[str]:
+    """Bridges a NIC can attach to on ``node``. Proxmox has no per-host port-group
+    concept, so a NIC's bridge name must exist on the target node or the guest
+    lands without a network there.
+
+    Delegates to `core.services.node_networks`, which documents why this cannot be
+    computed from the plain interface listing plus a cluster vnet list."""
+    return node_attachable_bridges(client, node)
 
 
 def _migrate_not_allowed_reason(reason: object) -> str:

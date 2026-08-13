@@ -124,7 +124,6 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
     storages_by_node: dict[str, list[str]] = {}
     storage_free_by_node: dict[str, dict[str, int]] = {}
     bridges_by_node: dict[str, list[str]] = {}
-    sdn_vnet_names: list[str] = []
     local_resources: list[str] = []
     for client in common.cluster_scoped_clients(detail.cluster):
         try:
@@ -133,17 +132,10 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
             continue
         if not isinstance(raw_nodes, list):
             continue
-        try:
-            sdn_vnets = {
-                str(vnet.get("vnet"))
-                for vnet in client.get("cluster/sdn/vnets")
-                if isinstance(vnet, dict) and vnet.get("vnet")
-            }
-        except ProxmoxAPIError:
-            sdn_vnets = set()
-        # SDN vnets are cluster-scoped, so any of them can be assigned to a NIC on
-        # any node (the per-node realized set below still drives the warning).
-        sdn_vnet_names = sorted(sdn_vnets)
+        # No cluster SDN read: `_node_available_bridges` already returns each node's
+        # realized vnets, zone restrictions included. A cluster-wide vnet list has no
+        # node opinion and offering it as selectable put guests on bridges that do
+        # not exist on the target.
         # Proxmox migration preconditions give the real allowed/blocked target
         # set + reasons (missing storage/bridge, passthrough, ...). Defensive:
         # if the endpoint can't answer, fall back to "all online nodes allowed".
@@ -227,7 +219,7 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
                         pass
             storages_by_node[name] = sorted(set(ids))
             storage_free_by_node[name] = free
-            bridges_by_node[name] = _node_available_bridges(client, name, sdn_vnets)
+            bridges_by_node[name] = _node_available_bridges(client, name)
         break
 
     return JsonResponse(
@@ -243,7 +235,6 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
             "storages_by_node": storages_by_node,
             "storage_free_by_node": storage_free_by_node,
             "bridges_by_node": bridges_by_node,
-            "sdn_vnets": sdn_vnet_names,
             "local_resources": local_resources,
         }
     )

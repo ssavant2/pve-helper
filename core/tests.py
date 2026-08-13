@@ -8884,10 +8884,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                         {"storage": "nfs-vm", "content": "images,iso"},
                         {"storage": "local", "content": "iso"},
                     ]
-                if path == "nodes/pve1/network":
+                if path == "nodes/pve1/network?type=any_bridge":
                     return [{"type": "bridge", "iface": "vmbr0"}]
-                if path == "cluster/sdn/vnets":
-                    return []
                 if path == "nodes/pve1/storage/local/content?content=iso":
                     return [{"volid": "local:iso/ubuntu.iso"}]
                 if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
@@ -8930,10 +8928,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return 500
                 if path == "nodes/pve1/storage":
                     return [{"storage": "nfs-vm", "content": "images,iso"}]
-                if path == "nodes/pve1/network":
+                if path == "nodes/pve1/network?type=any_bridge":
                     return [{"type": "bridge", "iface": "vmbr0"}]
-                if path == "cluster/sdn/vnets":
-                    return []
                 if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
                     return []
                 raise ProxmoxAPIError(path)
@@ -9130,10 +9126,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return 602
                 if path == "nodes/pve1/storage":
                     return [{"storage": "nfs-ct", "content": "rootdir,vztmpl"}]
-                if path == "nodes/pve1/network":
+                if path == "nodes/pve1/network?type=any_bridge":
                     return [{"type": "bridge", "iface": "vmbr0"}]
-                if path == "cluster/sdn/vnets":
-                    return []
                 if path == "nodes/pve1/storage/nfs-ct/content?content=vztmpl":
                     return []
                 raise ProxmoxAPIError(path)
@@ -9288,10 +9282,8 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return 500
                 if path == "nodes/pve1/storage":
                     return [{"storage": "nfs-vm", "content": "images,iso"}]
-                if path == "nodes/pve1/network":
+                if path == "nodes/pve1/network?type=any_bridge":
                     return [{"type": "bridge", "iface": "vmbr0"}]
-                if path == "cluster/sdn/vnets":
-                    return []
                 if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
                     return []
                 raise ProxmoxAPIError(path)
