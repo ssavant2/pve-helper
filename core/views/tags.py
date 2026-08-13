@@ -10,9 +10,10 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from core.models import CurrentGuestInventory, ProxmoxInventory
+from core.models import ProxmoxInventory
 from core.services.cluster_scopes import managed_clusters
 from core.services.cluster_state_labels import cluster_degraded_context
+from core.services.current_guest_inventory import published_guest_queryset
 from core.services.guests import is_template
 from core.services.proxmox import ProxmoxAPIError
 from core.services.tag_actions import (
@@ -120,7 +121,7 @@ def tag_detail(request, cluster_key: str):
         user_id=request.user.pk,
         cluster_key=context["cluster_key"],
     )
-    if CurrentGuestInventory.objects.exists():
+    if published_guest_queryset().exists():
         cluster = _catalog_cluster(context["inventory_state"])
         try:
             linked_clones = set(common.fetch_live_guest_lineage(cluster=cluster))

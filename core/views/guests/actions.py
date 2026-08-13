@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from core.services.public_errors import public_exception_message
+from core.services.publication_scope import publishes_node, unpublished_target_message
 from core.services.tags import TagValidationError, validate_tag
 
 from .. import common
@@ -480,6 +481,13 @@ def _migrate_guest_from_bulk_request(
             return "Choose a target node.", audit, None, None
         if target_node == detail.node:
             return "The target node must differ from the current node.", audit, None, None
+        # The filtered target list is a rendering-time courtesy; this is the
+        # enforcement. A form rendered before the node was hidden, or a replayed
+        # request, must not move a guest onto a node taken out of scope. The message
+        # is composed rather than stringified from an exception: this return value
+        # reaches the bulk-action JSON response.
+        if not publishes_node(detail.cluster, target_node):
+            return unpublished_target_message(target_node, what="migration target"), audit, None, None
         data: dict[str, object] = {"target": target_node}
         # A running VM must migrate online (live); a running CT has no live
         # migration, so use restart migration. Stopped guests migrate offline.

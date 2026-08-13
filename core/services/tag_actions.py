@@ -4,9 +4,9 @@ from django.db import transaction
 from django.utils import timezone
 from django_q.tasks import async_task
 
-from core.models import AuditEvent, CurrentGuestInventory, ProxmoxCluster
+from core.models import AuditEvent, ProxmoxCluster
 from core.services.audit_events import record_audit_event
-from core.services.current_guest_inventory import update_current_guest_config
+from core.services.current_guest_inventory import published_guest_queryset, update_current_guest_config
 from core.services.proxmox import (
     ProxmoxAPIError,
     VerifiedGuestInventory,
@@ -188,7 +188,7 @@ def _target_from_guest(row, *, cluster) -> dict:
 def latest_tag_targets(tag: str, *, cluster) -> tuple[list[dict], VerifiedGuestInventory]:
     """Union retained membership with an explicitly covered live inventory."""
     targets: dict[tuple[str, str, str, int], dict] = {}
-    for row in CurrentGuestInventory.objects.filter(cluster=cluster):
+    for row in published_guest_queryset().filter(cluster=cluster):
         if tag in parse_tags(row.config):
             target = _target_from_guest(row, cluster=cluster)
             targets[(target["cluster_key"], target["node"], target["object_type"], target["vmid"])] = target

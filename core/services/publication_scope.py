@@ -38,10 +38,15 @@ from dataclasses import dataclass
 from django.utils import timezone
 
 from core.models import ClusterNodeEnrollment, CurrentGuestInventory
+from core.services.public_errors import PublicMessageError
 
 #: The contract version at which enrollment starts deciding publication. Below it a
 #: cluster publishes exactly as it did before enrollment existed.
 ENROLLMENT_CONTRACT_ACTIVE = 1
+
+
+class UnpublishedTargetError(PublicMessageError, ValueError):
+    """A write named a node this cluster does not publish. Safe to show an operator."""
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,52 @@ def publication_scope(cluster) -> PublicationScope:
         managed_nodes=frozenset(managed),
         safety_nodes=frozenset(safety),
     )
+
+
+def published_node_names(cluster, client, *, fallback: str = "") -> list[str]:
+    """This cluster's live node list, restricted to what it may publish.
+
+    The raw ``node_names`` read lives here rather than at the call sites, so that
+    ``RAW_MEMBERSHIP_READ_ALLOWLIST`` can strike a module the moment it migrates
+    instead of trusting that whoever kept the raw call also remembered the filter.
+
+    Provider errors propagate: a target list that silently became empty because
+    Proxmox did not answer is indistinguishable from one that is empty because
+    nothing is enrolled, and the two require opposite responses from the operator.
+    """
+
+    scope = publication_scope(cluster)
+    return [node for node in client.node_names(fallback=fallback) if scope.publishes(node)]
+
+
+def publishes_node(cluster, node: str) -> bool:
+    """Whether one write may name ``node``. The predicate behind every preflight."""
+
+    return publication_scope(cluster).publishes(node)
+
+
+def unpublished_target_message(node: str, *, what: str = "target") -> str:
+    """The operator-facing refusal, composed from named values only.
+
+    Deliberately not built by stringifying an exception. These messages reach a JSON
+    bulk-action response, and the boundary rule is that provider/Python exception text
+    never crosses it — a rule worth keeping mechanical rather than case by case.
+    """
+
+    return f"Node '{node}' is not an enrolled {what} on this connection."
+
+
+def refuse_unpublished_target(cluster, node: str, *, what: str = "target") -> None:
+    """Fail a write closed when its node is not one this cluster publishes.
+
+    The filtered target lists above are a rendering-time courtesy. This is the
+    enforcement: a form rendered before a node was hidden, a replayed request or a
+    hand-built POST must not reach a node the operator has taken out of scope.
+    """
+
+    if publishes_node(cluster, node):
+        return
+    raise UnpublishedTargetError(unpublished_target_message(node, what=what))
 
 
 def apply_publication_scope(cluster, *, scope: PublicationScope | None = None) -> int:

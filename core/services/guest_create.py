@@ -4,6 +4,7 @@ from typing import Any
 from urllib.parse import quote
 
 from core.services.proxmox import ProxmoxAPIError
+from core.services.publication_scope import published_node_names
 from core.services.storage_catalog import node_storage_rows, storage_volume_rows
 
 VM_OSTYPES = [
@@ -88,7 +89,7 @@ def create_options(object_type: str, node: str | None = None, *, cluster) -> dic
     client = _first_client(cluster=cluster)
     if client is None:
         return {"available": False, "nodes": [], "node": ""}
-    nodes = client.node_names(fallback="")
+    nodes = published_node_names(cluster, client)
     node = node if node in nodes else (nodes[0] if nodes else "")
     if not node:
         return {"available": False, "nodes": nodes, "node": ""}

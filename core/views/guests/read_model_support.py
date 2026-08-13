@@ -7,6 +7,7 @@ from django.core.cache import cache
 from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_scopes import managed_clusters
 from core.services.cluster_state_identity import cluster_cache_key
+from core.services.current_guest_inventory import published_guest_queryset
 from core.services.guest_agent_info import config_agent_enabled, empty_agent_info, fetch_guest_agent_info
 from core.services.guest_observation import (
     UNOBSERVED_LABEL,
@@ -26,7 +27,6 @@ from ..common import (
     LIVE_GUEST_STATUS_CACHE_SECONDS,
     NET_KEY_RE,
     OSTYPE_LABELS,
-    CurrentGuestInventory,
     Http404,
     ProxmoxAPIError,
     ProxmoxInventory,
@@ -241,7 +241,7 @@ def _decorate_guest_tag_chips(rows, *, catalog) -> list[str]:
 
 def _guest_rows(*, current_guests=None):
     """Build every guest row from the non-blocking current-state projection."""
-    current = list(current_guests if current_guests is not None else CurrentGuestInventory.objects.all())
+    current = list(current_guests if current_guests is not None else published_guest_queryset())
     rows = [
         _build_guest_row(
             object_type=guest.object_type,
@@ -664,7 +664,7 @@ def _guest_lineage(detail: SimpleNamespace) -> dict:
         return empty
     names = {
         guest.vmid: guest.name
-        for guest in CurrentGuestInventory.objects.filter(
+        for guest in published_guest_queryset().filter(
             cluster=detail.cluster,
             object_type=ProxmoxInventory.ObjectType.VM,
         )
@@ -734,7 +734,7 @@ def _resolve_guest_detail(
 ) -> SimpleNamespace:
     """Resolve one cluster-qualified guest without provider I/O in the request."""
     ref = _coerce_guest_ref(object_type_or_ref, vmid, cluster_key=cluster_key, node=node)
-    current_query = CurrentGuestInventory.objects.filter(
+    current_query = published_guest_queryset().filter(
         cluster__key=ref.cluster_key,
         object_type=ref.object_type,
         vmid=ref.vmid,

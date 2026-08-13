@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from core.services.current_guest_inventory import published_guest_queryset
 from core.services.guest_observation import runtime_is_observed
 
 from ..common import (
     GUEST_OBJECT_TYPES,
-    CurrentGuestInventory,
     Http404,
     JsonResponse,
     ProxmoxInventory,
@@ -100,7 +100,7 @@ def vms_overview_snapshot_info(request):
 
 @app_login_required
 def vms_status(request):
-    current = list(CurrentGuestInventory.objects.select_related("cluster").all())
+    current = list(published_guest_queryset().select_related("cluster"))
     refreshed_at = max(
         (guest.runtime_observed_at for guest in current if guest.runtime_observed_at),
         default=None,

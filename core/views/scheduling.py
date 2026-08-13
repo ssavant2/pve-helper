@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from django.db import transaction
 
+from core.services.current_guest_inventory import published_guest_queryset
+
 from ..models import ProxmoxCluster
 from ..services.cluster_host_refresh import (
     ClusterHostRefreshAlreadyActive,
@@ -30,7 +32,6 @@ from .common import (
     SCHEDULED_ACTION_RECURRENCE_ONCE,
     SCHEDULED_ACTION_WEEKDAYS,
     AuditEvent,
-    CurrentGuestInventory,
     Http404,
     JsonResponse,
     ProxmoxAPIError,
@@ -788,7 +789,7 @@ def _scheduled_action_form_values(action: ScheduledAction, post=None) -> dict:
 def _scheduled_action_target_choices(action: ScheduledAction | None = None) -> list[dict]:
     choices = []
     seen = set()
-    guests = CurrentGuestInventory.objects.select_related("cluster")
+    guests = published_guest_queryset().select_related("cluster")
     if action is not None and action.cluster_id:
         # Offering guests from other clusters would offer a target the form then
         # rejects, since a schedule lives in the cluster its page is scoped to.
@@ -836,11 +837,15 @@ def _live_guest_target_label(guest) -> str:
 def _scheduled_target_label(ref: GuestRef | None) -> str:
     if ref is None:
         return ""
-    obj = CurrentGuestInventory.objects.filter(
-        cluster__key=ref.cluster_key,
-        object_type=ref.object_type,
-        vmid=ref.vmid,
-    ).first()
+    obj = (
+        published_guest_queryset()
+        .filter(
+            cluster__key=ref.cluster_key,
+            object_type=ref.object_type,
+            vmid=ref.vmid,
+        )
+        .first()
+    )
     if obj:
         return _inventory_target_label(obj)
     type_label = "VM" if ref.object_type == ScheduledAction.TargetType.VM else "Container"
@@ -992,11 +997,15 @@ def _parse_scheduled_target_ref(value: str) -> GuestRef | None:
 def _apply_target_snapshot(action: ScheduledAction) -> None:
     action.target_node = ""
     action.target_name_snapshot = ""
-    obj = CurrentGuestInventory.objects.filter(
-        cluster=action.cluster,
-        object_type=action.target_type,
-        vmid=action.target_vmid,
-    ).first()
+    obj = (
+        published_guest_queryset()
+        .filter(
+            cluster=action.cluster,
+            object_type=action.target_type,
+            vmid=action.target_vmid,
+        )
+        .first()
+    )
     if obj:
         action.target_node = obj.node
         action.target_name_snapshot = obj.name

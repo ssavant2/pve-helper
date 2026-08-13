@@ -10,13 +10,13 @@ from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 
 from core.models import (
-    CurrentGuestInventory,
     ProxmoxCluster,
     ProxmoxInventory,
     ProxmoxStorageConsumer,
 )
 from core.services.cluster_scopes import has_historical_clusters, managed_clusters
 from core.services.cluster_state_labels import cluster_degraded_label
+from core.services.current_guest_inventory import published_guest_queryset
 
 from .common import app_login_required, browser_title
 
@@ -130,7 +130,8 @@ def legacy_guest_redirect(route_name: str) -> Callable:
         if request.method not in SAFE_REDIRECT_METHODS:
             return _reject_legacy_mutation()
         matches = list(
-            CurrentGuestInventory.objects.filter(
+            published_guest_queryset()
+            .filter(
                 cluster__isnull=False,
                 object_type=object_type,
                 vmid=vmid,
@@ -182,10 +183,12 @@ def legacy_node_redirect(route_name: str) -> Callable:
         if request.method not in SAFE_REDIRECT_METHODS:
             return _reject_legacy_mutation()
         cluster_ids = set(
-            CurrentGuestInventory.objects.filter(
+            published_guest_queryset()
+            .filter(
                 cluster__enabled=True,
                 node=node,
-            ).values_list("cluster_id", flat=True)
+            )
+            .values_list("cluster_id", flat=True)
         )
         cluster_ids.update(
             ProxmoxInventory.objects.filter(

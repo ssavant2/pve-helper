@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from core.models import CurrentGuestInventory
-from core.services.current_guest_inventory import current_inventory_state
+from core.services.current_guest_inventory import current_inventory_state, published_guest_queryset
 from core.services.tag_registry import registered_tags, resolve_tag_registry_cluster
 from core.services.tags import RegisteredTag, TagChip, TagSummary, inventory_rows, parse_tags, tag_chip
 
@@ -64,7 +64,7 @@ class TagCatalog:
 def load_tag_catalog(*, cluster) -> TagCatalog:
     cluster, cluster_error = resolve_tag_registry_cluster(cluster)
     registered, registry_error = registered_tags(cluster=cluster) if cluster else ({}, cluster_error)
-    guests = tuple(CurrentGuestInventory.objects.filter(cluster=cluster).order_by("node", "vmid") if cluster else ())
+    guests = tuple(published_guest_queryset().filter(cluster=cluster).order_by("node", "vmid") if cluster else ())
     assigned = tuple(
         sorted(
             {name for guest in guests for name in parse_tags(guest.config)},

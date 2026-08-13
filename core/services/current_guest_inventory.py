@@ -60,6 +60,30 @@ def current_guest_queryset():
     return CurrentGuestInventory.objects.filter(object_type__in=GUEST_TYPES)
 
 
+def published_guest_queryset():
+    """Guests an operator may see and act on. The default for every ordinary surface.
+
+    Rows on a node the operator has not enrolled as ``managed`` are excluded. They
+    still exist — see :mod:`core.services.publication_scope` for why they must — and
+    are reachable through :func:`safety_guest_queryset` by the callers that need
+    evidence rather than inventory.
+    """
+
+    return CurrentGuestInventory.objects.filter(published=True)
+
+
+def safety_guest_queryset():
+    """Every stored guest row, published or not, as safety evidence.
+
+    Deliberately named. A hidden node's guest still holds its disks, so the storage
+    risk gate and volume-usage classification must see it or they will offer to
+    delete a live disk. Callers of this are an allowlist in the source invariants:
+    reaching for it to render a list is the mistake it exists to make visible.
+    """
+
+    return CurrentGuestInventory.objects.all()
+
+
 def _identity_filter(keys: set[tuple[str, int]]) -> Q:
     query = Q()
     for object_type, vmid in keys:

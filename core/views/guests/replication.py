@@ -1,6 +1,11 @@
 """Guest replication tab + create/delete (extracted from _core)."""
 
 from core.services.public_errors import public_exception_message
+from core.services.publication_scope import (
+    UnpublishedTargetError,
+    published_node_names,
+    refuse_unpublished_target,
+)
 
 from .. import common
 from ..common import (
@@ -44,7 +49,7 @@ def guest_replication(request, cluster_key: str, object_type: str, vmid: int):
         )
     target_nodes = []
     if clients:
-        target_nodes = [n for n in clients[0].node_names(fallback="") if n != detail.node]
+        target_nodes = [n for n in published_node_names(detail.cluster, clients[0]) if n != detail.node]
     context = _guest_tab_context(detail, "replication")
     context.update({"replication_jobs": jobs, "replication_error": error, "target_nodes": target_nodes})
     return render(request, "core/guest_replication.html", context)
@@ -57,6 +62,16 @@ def guest_replication_create(request, cluster_key, object_type, vmid):
     target = request.POST.get("target", "").strip()
     if not target:
         messages.error(request, "Select a target node.")
+        return redirect(
+            "core:guest_replication",
+            cluster_key=cluster_key,
+            object_type=object_type,
+            vmid=vmid,
+        )
+    try:
+        refuse_unpublished_target(detail.cluster, target, what="replication target")
+    except UnpublishedTargetError as exc:
+        messages.error(request, str(exc))
         return redirect(
             "core:guest_replication",
             cluster_key=cluster_key,

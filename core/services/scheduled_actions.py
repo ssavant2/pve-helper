@@ -35,6 +35,7 @@ from core.services.public_errors import (
     public_exception_message,
     public_failure,
 )
+from core.services.publication_scope import published_node_names
 from core.services.scheduled_action_settings import run_history_retention_days
 from core.services.scheduled_recurrence import RecurrenceError, next_run_after
 
@@ -676,7 +677,7 @@ def _find_guest(
     )
     for endpoint, client in zip(endpoints, clients, strict=True):
         try:
-            node_names = client.node_names(fallback=endpoint.name)
+            node_names = published_node_names(cluster, client, fallback=endpoint.name)
         except ProxmoxAPIError as exc:
             errors.append({"endpoint": endpoint.name, "error": _lookup_error(exc)})
             continue

@@ -11,6 +11,11 @@ from core.services.current_guest_inventory import (
     update_current_guest_config,
 )
 from core.services.public_errors import public_exception_message
+from core.services.publication_scope import (
+    UnpublishedTargetError,
+    published_node_names,
+    refuse_unpublished_target,
+)
 from core.services.refs import GuestRef
 from core.services.storage_catalog import node_storage_rows, storage_volume_rows
 from core.services.storage_paths import storage_mount_root
@@ -562,6 +567,10 @@ def _create_guest(request, object_type: str, options: dict, *, cluster):
     vmid = post.get("vmid", "").strip()
     if not vmid.isdigit():
         return "VMID must be a whole number."
+    try:
+        refuse_unpublished_target(cluster, node, what="placement target")
+    except UnpublishedTargetError as exc:
+        return str(exc)
     ref = GuestRef(cluster.key, object_type, int(vmid), node=node)
     disk_storage = post.get("disk_storage", "").strip()
     if not disk_storage:
@@ -667,7 +676,7 @@ def _restore_options(cluster) -> tuple[list[dict], list[dict], dict[str, dict[st
     for client in common.cluster_scoped_clients(cluster):
         endpoint = str(getattr(client, "endpoint", ""))
         try:
-            client_nodes = client.node_names(fallback="")
+            client_nodes = published_node_names(cluster, client)
             if not nextid:
                 nextid = str(client.get("cluster/nextid"))
         except ProxmoxAPIError:

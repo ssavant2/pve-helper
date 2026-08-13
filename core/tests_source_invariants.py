@@ -223,7 +223,11 @@ class ClusterScopeSourceInvariantTests(SimpleTestCase):
 # node_names() callers and missed the guest HA card's direct cluster/status read.
 # Freeze the set so the next one cannot be added silently. A module that migrates
 # onto the filtered read service is struck from the list.
-RAW_MEMBERSHIP_READ_NAMES = ("node_names(", '"cluster/status"')
+# Anchored at a non-identifier boundary so the filtered seam that *wraps* the raw
+# read — `published_node_names(...)` — is not mistaken for the raw read itself. A
+# plain substring match would have made every module that migrated onto the filter
+# look like a fresh offender, which is precisely backwards.
+RAW_MEMBERSHIP_READ_NAMES = (r"(?<![A-Za-z0-9_])node_names\(", r'"cluster/status"')
 MEMBERSHIP_READ_OWNER = "core/services/proxmox.py"
 MEMBERSHIP_PROJECTION_OWNER = "core/services/cluster_membership.py"
 RAW_MEMBERSHIP_READ_ALLOWLIST = frozenset(
@@ -242,13 +246,11 @@ RAW_MEMBERSHIP_READ_ALLOWLIST = frozenset(
         # Scan pass-2 gap fill. Becomes the *safety* read set (managed +
         # safety_only), not the published one -- it stays a raw caller on purpose.
         "core/tasks.py",
-        # Node target lists offered to an operator. All four must move onto the
-        # filtered read in N4: a hidden node must never appear as a placement,
-        # migration, clone or replication target.
-        "core/services/guest_create.py",
-        "core/services/scheduled_actions.py",
-        "core/views/guests/_core.py",
-        "core/views/guests/replication.py",
+        # 5a1I's publication filter. It owns the raw read for every node target list
+        # in the app so that a migrating module is struck from this set outright,
+        # rather than keeping a raw call and being trusted to have filtered it. The
+        # four target-list modules that used to sit here moved onto it.
+        "core/services/publication_scope.py",
         # Known debt, found by this invariant rather than by review: the guest
         # Summary HA card reads cluster/status live from a request-rendering path
         # and derives its node count from raw provider truth. That already breaks
@@ -388,7 +390,7 @@ class MembershipReadInvariantTests(SimpleTestCase):
         found = set()
         for path in self._python_sources():
             text = path.read_text()
-            if any(needle in text for needle in RAW_MEMBERSHIP_READ_NAMES):
+            if any(re.search(needle, text) for needle in RAW_MEMBERSHIP_READ_NAMES):
                 found.add(str(path.relative_to(root)))
         return found
 
@@ -564,6 +566,94 @@ class EnrollmentWriterInvariantTests(SimpleTestCase):
             writes,
             [],
             f"{self.PUBLICATION_READER} may resolve enrollments but never write them: {', '.join(writes)}",
+        )
+
+
+#: Modules allowed to reach `CurrentGuestInventory` directly instead of going through
+#: `published_guest_queryset()`. Everything else renders ordinary guest inventory and
+#: must not show an operator a node they took out of scope.
+#:
+#: The list is not a formality. Each entry is a module that needs *evidence* rather
+#: than inventory, and moving one onto the published read would be a safety
+#: regression, not a cleanup — a hidden node's guest still holds its disks.
+PUBLISHED_GUEST_READ_ALLOWLIST = frozenset(
+    {
+        # The projection's own owner: reconcilers, the two read seams, targeted
+        # refresh and retirement.
+        "core/services/current_guest_inventory.py",
+        # Writes the publication mark. By definition it must see unpublished rows.
+        "core/services/publication_scope.py",
+        # Storage safety. The risk gate, volume usage and the browser's guest links
+        # must see a hidden node's guests or they will offer to delete a live disk.
+        "core/services/file_actions.py",
+        "core/services/storage_catalog.py",
+        "core/views/storage/_shared.py",
+        "core/views/storage/api.py",
+        "core/views/storage/browser_context.py",
+        "core/views/storage/content.py",
+        "core/views/storage/mounts.py",
+        # Enrollment surfaces and their gates are *about* the hidden node. Counting
+        # only published guests would report "0 guests" for the node being hidden and
+        # let a hide sail past the durable work it would strand.
+        "core/services/cluster_enrollment.py",
+        "core/views/clusters/enrollment.py",
+        # Lifecycle: connection diagnostics and the retirement barrier count rows,
+        # not inventory. A row the operator cannot see still blocks a delete.
+        "core/views/clusters/connections.py",
+        "core/services/cluster_retirement.py",
+    }
+)
+
+
+class PublishedGuestReadInvariantTests(SimpleTestCase):
+    """Ordinary guest surfaces read the published projection, not the model.
+
+    Publication is only worth writing if something reads it. Before this ratchet the
+    filter was enforced by whoever remembered it at each of thirty call sites; the
+    one that forgot would render a hidden node's guests with no error anywhere.
+    """
+
+    def test_ordinary_guest_surfaces_use_the_published_read(self):
+        root = Path(settings.BASE_DIR)
+        offenders = []
+        for path in sorted((root / "core").rglob("*.py")):
+            relative = path.relative_to(root).as_posix()
+            if path.name.startswith("tests") or relative.startswith("core/migrations/"):
+                continue
+            if relative in PUBLISHED_GUEST_READ_ALLOWLIST or relative in {"core/models.py", "core/admin.py"}:
+                continue
+            tree = ast.parse(path.read_text())
+            if any(
+                isinstance(node, ast.Attribute)
+                and node.attr in {"objects", "_base_manager"}
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "CurrentGuestInventory"
+                for node in ast.walk(tree)
+            ):
+                offenders.append(relative)
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Read guests through published_guest_queryset() so an unenrolled node "
+            "cannot appear as ordinary inventory. If the module genuinely needs "
+            "safety evidence, use safety_guest_queryset() and add it to "
+            f"PUBLISHED_GUEST_READ_ALLOWLIST with the reason: {', '.join(offenders)}",
+        )
+
+    def test_the_allowlist_does_not_outlive_its_call_sites(self):
+        root = Path(settings.BASE_DIR)
+        stale = sorted(
+            relative
+            for relative in PUBLISHED_GUEST_READ_ALLOWLIST
+            if "CurrentGuestInventory" not in (root / relative).read_text()
+        )
+
+        self.assertEqual(
+            stale,
+            [],
+            "These modules no longer read the guest projection directly, so their "
+            f"allowlist entries would silently re-permit a future one. Strike them: {', '.join(stale)}",
         )
 
 

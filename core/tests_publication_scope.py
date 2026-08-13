@@ -23,11 +23,20 @@ from core.models import (
 from core.services.cluster_enrollment import activate_cluster_enrollment, change_enrollment_mode
 from core.services.current_guest_inventory import (
     ScanGuestObservation,
+    published_guest_queryset,
     reconcile_live_guest_inventory,
     reconcile_scan_guest_inventory,
+    safety_guest_queryset,
 )
-from core.services.proxmox import ProxmoxGuestSummary, VerifiedGuestInventory
-from core.services.publication_scope import apply_publication_scope, publication_scope
+from core.services.proxmox import ProxmoxAPIError, ProxmoxGuestSummary, VerifiedGuestInventory
+from core.services.publication_scope import (
+    UnpublishedTargetError,
+    apply_publication_scope,
+    publication_scope,
+    published_node_names,
+    refuse_unpublished_target,
+)
+from core.services.storage_catalog import _guest_references
 from core.tests_cluster_node_enrollment import _publish_membership
 
 
@@ -195,6 +204,63 @@ class PublicationScopeTests(TestCase):
         self.assertFalse(hidden.published)
         self.assertTrue(CurrentGuestInventory.objects.filter(vmid=200).exists())
         self.assertTrue(CurrentGuestInventory.objects.get(vmid=100).published)
+
+    # --- consumers -------------------------------------------------------------
+
+    def test_the_read_seams_disagree_about_a_hidden_node_on_purpose(self):
+        """The phase's exit criterion: gone from inventory, still there for safety."""
+        self._guest_row("pve1", 100)
+        self._guest_row("pve2", 200)
+        self._enroll("pve1", ClusterNodeEnrollment.Mode.MANAGED)
+        self._enroll("pve2", ClusterNodeEnrollment.Mode.SAFETY_ONLY)
+        self._activate()
+        apply_publication_scope(self.cluster)
+
+        self.assertEqual([row.vmid for row in published_guest_queryset()], [100])
+        self.assertEqual(sorted(row.vmid for row in safety_guest_queryset()), [100, 200])
+
+    def test_a_hidden_nodes_disk_still_counts_as_referenced(self):
+        """Volume usage reads the safety seam, so hiding never creates an orphan."""
+        hidden = self._guest_row("pve2", 200)
+        hidden.disk_references = ["shared:vm-200-disk-0"]
+        hidden.save(update_fields=["disk_references"])
+        self._enroll("pve1", ClusterNodeEnrollment.Mode.MANAGED)
+        self._enroll("pve2", ClusterNodeEnrollment.Mode.SAFETY_ONLY)
+        self._activate()
+        apply_publication_scope(self.cluster)
+
+        references = _guest_references(self.cluster, "shared", "pve1", True)
+
+        self.assertIn("shared:vm-200-disk-0", references.by_volid)
+
+    def test_target_lists_drop_nodes_the_cluster_does_not_publish(self):
+        self._enroll("pve1", ClusterNodeEnrollment.Mode.MANAGED)
+        self._enroll("pve2", ClusterNodeEnrollment.Mode.SAFETY_ONLY)
+        self._activate()
+        client = SimpleNamespace(node_names=lambda fallback="": ["pve1", "pve2", "pve3"])
+
+        self.assertEqual(published_node_names(self.cluster, client), ["pve1"])
+
+    def test_a_provider_failure_is_not_reported_as_an_empty_target_list(self):
+        """Empty-because-unreachable and empty-because-unenrolled need opposite fixes."""
+
+        def _explode(fallback=""):
+            raise ProxmoxAPIError("unreachable")
+
+        with self.assertRaises(ProxmoxAPIError):
+            published_node_names(self.cluster, SimpleNamespace(node_names=_explode))
+
+    def test_a_write_naming_an_unpublished_node_is_refused(self):
+        self._enroll("pve1", ClusterNodeEnrollment.Mode.MANAGED)
+        self._enroll("pve2", ClusterNodeEnrollment.Mode.SAFETY_ONLY)
+        self._activate()
+
+        refuse_unpublished_target(self.cluster, "pve1")
+        with self.assertRaises(UnpublishedTargetError):
+            refuse_unpublished_target(self.cluster, "pve2", what="migration target")
+
+    def test_a_legacy_cluster_refuses_nothing(self):
+        refuse_unpublished_target(self.cluster, "any-node-at-all")
 
     def test_activation_filters_immediately(self):
         """Activation bumps the version before committing the generation.
