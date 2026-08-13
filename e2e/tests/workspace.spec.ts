@@ -39,10 +39,12 @@ test("a standalone host is a sibling of clusters, not nested under one", async (
   const hosts = page.locator('[data-tree-module="workspace-hosts"]');
   const clusters = page.locator('[data-tree-module="workspace-clusters"]');
 
-  // Qualify by kind: the object leaf and its node leaf both carry the cluster key.
-  const objectLeaf = '[data-infrastructure-kind="cluster"][data-cluster-key="standalone-e2e"]';
-  await expect(hosts.locator(objectLeaf)).toBeVisible();
-  await expect(clusters.locator(objectLeaf)).toHaveCount(0);
+  // A standalone host renders as a single node leaf -- it *is* its node, so there
+  // is no separate connection row to look for.
+  const host = '[data-cluster-key="standalone-e2e"]';
+  await expect(hosts.locator(host)).toHaveCount(1);
+  await expect(hosts.locator(host)).toHaveAttribute("data-infrastructure-kind", "node");
+  await expect(clusters.locator(host)).toHaveCount(0);
   await expect(
     clusters.locator('[data-infrastructure-kind="cluster"][data-cluster-key="e2e"]'),
   ).toBeVisible();

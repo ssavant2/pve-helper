@@ -99,6 +99,42 @@ class WorkspaceNavTests(TestCase):
         self.assertEqual([entry.cluster_key for entry in tree["clusters"]], ["hq"])
         self.assertEqual([entry.cluster_key for entry in tree["hosts"]], ["edge"])
 
+    def test_a_standalone_host_renders_as_one_leaf_pointing_at_its_node(self):
+        """A standalone host is its node. Showing the connection as a parent of the
+        node states the same object twice, and the connection's display name is
+        operator-chosen so the two lines need not even agree."""
+        _cluster("edge", role="standalone", nodes=("edge1",))
+
+        [entry] = workspace_nav()["hosts"]
+
+        self.assertTrue(entry.standalone)
+        self.assertIsNotNone(entry.primary)
+        self.assertEqual(entry.primary.node_name, "edge1")
+        self.assertEqual(
+            entry.primary.url,
+            reverse("core:node_summary", args=["edge", "edge1"]),
+        )
+
+    def test_a_cluster_never_collapses_into_a_single_leaf(self):
+        """One node does not make a corosync cluster a host."""
+        _cluster("tiny", role="corosync", nodes=("solo1",))
+
+        [entry] = workspace_nav()["clusters"]
+
+        self.assertFalse(entry.standalone)
+        self.assertIsNone(entry.primary)
+
+    def test_a_standalone_whose_node_is_not_published_has_no_leaf_target(self):
+        """Membership has not published the node yet, so there is nothing to point
+        at; the object still belongs under Hosts."""
+        cluster = _cluster("edge", role="standalone", nodes=("edge1",))
+        ClusterNodeState.objects.filter(cluster=cluster).update(present=False)
+
+        [entry] = workspace_nav()["hosts"]
+
+        self.assertTrue(entry.standalone)
+        self.assertIsNone(entry.primary)
+
     def test_a_one_node_corosync_cluster_is_still_a_cluster(self):
         """The distinction is the corosync row, not the node count."""
         _cluster("tiny", role="corosync", nodes=("solo1",))

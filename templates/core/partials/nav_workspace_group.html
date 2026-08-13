@@ -17,7 +17,23 @@
   </button>
   <div class="tree-children">
     {% for entry in entries %}
-      {% if entry.nodes %}
+      {% if entry.primary %}
+        {% comment %}
+          A standalone host is its node. Rendering the connection as a parent of the
+          node states the same object twice — and since the connection's display
+          name is operator-chosen, the two lines need not even match. One leaf,
+          pointing at the node, which is where a host's runtime and hardware live.
+        {% endcomment %}
+        <a class="tree-node tree-leaf tree-leaf-unparented {% if workspace_nav_key == entry.primary.nav_key or workspace_nav_key == entry.nav_key %}active{% endif %}"
+           href="{{ entry.primary.url }}"
+           data-infrastructure-kind="node"
+           data-cluster-key="{{ entry.cluster_key }}"
+           data-node="{{ entry.primary.node_name }}">
+          <span class="tree-icon"><i data-vicon="host" aria-hidden="true"></i></span>
+          <span class="tree-label">{{ entry.primary.node_name }}</span>
+          {% if entry.degraded %}<span class="badge failed">{{ entry.degraded }}</span>{% endif %}
+        </a>
+      {% elif entry.nodes %}
         <section class="tree-module tree-group expanded"
                  data-tree-module="workspace-object-{{ entry.cluster_key }}"
                  aria-label="{{ entry.display_name }} nodes">

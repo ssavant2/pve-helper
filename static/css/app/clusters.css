@@ -225,12 +225,20 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
 }
 
 .cluster-node-actions form {
   margin: 0;
+}
+
+/* Hide and Manage swap places on the same button depending on the node's mode, and
+   they are different widths. Without a shared minimum, Remove shifts sideways from
+   row to row and the column reads as ragged rather than as one control per node. */
+.cluster-node-actions button {
+  min-width: 84px;
+  justify-content: center;
 }
 
 /* The confirm form's fields are stacked labels: without this the caption sits on

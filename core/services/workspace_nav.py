@@ -33,7 +33,7 @@ answer enrollment exists to stop.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from django.urls import reverse
 
@@ -64,6 +64,18 @@ class WorkspaceObjectEntry:
     nav_key: str
     degraded: str
     nodes: tuple[WorkspaceNodeEntry, ...]
+    #: True for a positively observed standalone installation. The tree renders it
+    #: as a single leaf: a standalone host *is* its node, so showing the connection
+    #: and the node as parent and child states the same object twice — and the
+    #: connection's display name is operator-chosen, so the two lines need not even
+    #: agree. Identity is untouched; this is presentation only.
+    standalone: bool = False
+
+    @property
+    def primary(self) -> WorkspaceNodeEntry | None:
+        """The one node a standalone host is, when membership has published it."""
+
+        return self.nodes[0] if self.standalone and len(self.nodes) == 1 else None
 
 
 def cluster_nav_key(cluster_key: str) -> str:
@@ -148,5 +160,6 @@ def workspace_nav(clusters=None) -> dict[str, list[WorkspaceObjectEntry]]:
         # positively observed standalone role moves an object out of Clusters; the
         # unknown case stays where its routes and projections already point.
         role = membership_roles.get(cluster.pk, TopologyRole.UNKNOWN)
-        grouped["hosts" if role == TopologyRole.STANDALONE else "clusters"].append(entry)
+        standalone = role == TopologyRole.STANDALONE
+        grouped["hosts" if standalone else "clusters"].append(replace(entry, standalone=standalone))
     return grouped
