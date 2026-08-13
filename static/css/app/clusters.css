@@ -219,8 +219,10 @@
   margin-top: 4px;
 }
 
-/* Hide and Remove act on the same node and read as one decision; stacking them
-   made each row twice as tall for no gain. There is width to spare. */
+/* The action cell of both connection tables. Hide and Remove act on the same node
+   and read as one decision; stacking them made each row twice as tall for no gain.
+   Endpoints uses it too, so its Disable lands in the same column as Nodes' actions
+   rather than floating in from the left. */
 .cluster-node-actions {
   display: flex;
   flex-wrap: wrap;
@@ -233,9 +235,9 @@
   margin: 0;
 }
 
-/* Hide and Manage swap places on the same button depending on the node's mode, and
-   they are different widths. Without a shared minimum, Remove shifts sideways from
-   row to row and the column reads as ragged rather than as one control per node. */
+/* Hide/Manage and Disable/Enable each swap labels on one control depending on
+   state, and the two labels are different widths. Without a shared minimum the
+   button edge shifts from row to row and the column reads as ragged. */
 .cluster-node-actions button {
   min-width: 84px;
   justify-content: center;
