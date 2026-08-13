@@ -1028,6 +1028,24 @@ class DialogModuleInvariantTests(SimpleTestCase):
         )
 
 
+class CertificateExpiryDialogInvariantTests(SimpleTestCase):
+    """The expiry prompt must preserve the shared dialog's three-way contract."""
+
+    CERTIFICATE_MODULE = Path("static/js/app/certificates.js")
+
+    def _source(self) -> str:
+        return (Path(settings.BASE_DIR) / self.CERTIFICATE_MODULE).read_text()
+
+    def test_acknowledge_handles_the_shared_dialog_decline_outcome(self):
+        source = self._source()
+        self.assertIn('if (answer === "decline")', source)
+        self.assertNotIn('if (answer === "cancel")', source)
+        self.assertIn('dismissTaskQuestion(taskId, "acknowledged")', source)
+
+    def test_long_certificate_details_use_the_compact_vertical_grid(self):
+        self.assertIn("certificate-expiry-detail-grid", self._source())
+
+
 class DjangoAdminSurfaceInvariantTests(SimpleTestCase):
     """Django admin bypasses every validated service the app writes through. It is a
     dev/E2E convenience, and audit must be append-only wherever it is mounted."""

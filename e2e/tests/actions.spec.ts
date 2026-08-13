@@ -33,6 +33,43 @@ test("right-click opens the context menu", async ({ page }) => {
   await expect(menu).toBeVisible();
 });
 
+test("certificate expiry details wrap vertically and Acknowledge answers the task", async ({ page }) => {
+  let submittedAnswer = "";
+  await page.route("**/tasks/dismiss-question/", async (route) => {
+    submittedAnswer = route.request().postData() || "";
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+
+  await page.evaluate(() => {
+    void import("/static/js/app/certificates.js").then(({ openCertificateExpiryQuestion }) =>
+      openCertificateExpiryQuestion(
+        {
+          condition: "expiring",
+          detail: "Expires in 14 days.",
+          certificate_label: "wildcard_2026",
+          usage_label: "HTTPS certificate",
+          subject: "CN=*.hqgbg.net",
+          issuer: "CN=YE1,O=Let's Encrypt,C=US",
+          not_after: "2026-08-28T05:15:00Z",
+        },
+        "certificate:987",
+      ),
+    );
+  });
+
+  const dialog = page.locator("[data-vm-action-dialog]");
+  await expect(dialog.getByRole("heading", { name: "Certificate expiring" })).toBeVisible();
+  const detailGrid = dialog.locator(".certificate-expiry-detail-grid");
+  await expect(detailGrid.locator(":scope > div")).toHaveCount(5);
+  await expect
+    .poll(() => detailGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length))
+    .toBe(2);
+
+  await dialog.getByRole("button", { name: "Acknowledge", exact: true }).click();
+  await expect.poll(() => submittedAnswer).toContain("task_id=certificate%3A987");
+  expect(submittedAnswer).toContain("answer=acknowledged");
+});
+
 test("Tags menu offers existing tags for add and assigned tags for remove", async ({ page }) => {
   const taggedRow = guestRow(page, { clusterKey: "e2e", objectType: "vm", vmid: 100 });
   await page.route("**/vms/e2e/vm/100/tag-options/**", async (route) => {

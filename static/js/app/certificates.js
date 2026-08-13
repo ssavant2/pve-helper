@@ -11,7 +11,7 @@ const expiryBody = (payload) => {
   const heading = payload.condition === "expired" ? "This certificate has expired." : "This certificate is expiring.";
   return [
     `<p>${escapeHtml(heading)} ${escapeHtml(payload.detail || "")}</p>`,
-    '<div class="log-forwarder-status-grid">',
+    '<div class="log-forwarder-status-grid certificate-expiry-detail-grid">',
     detailRow("Certificate", payload.certificate_label || ""),
     detailRow("Used as", payload.usage_label || ""),
     detailRow("Subject", payload.subject || ""),
@@ -40,7 +40,7 @@ export const openCertificateExpiryQuestion = async (payload, taskId) => {
     loadSoftNavigation(CERTIFICATE_SETTINGS_PATH);
     return;
   }
-  if (answer === "cancel") {
+  if (answer === "decline") {
     await dismissTaskQuestion(taskId, "acknowledged");
   }
 };
