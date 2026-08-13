@@ -1,0 +1,83 @@
+{% extends "core/cluster_workspace.html" %}
+
+{% comment %}
+  The Hosts tab. Columns are membership and per-node runtime only. HA role and the
+  update rollup appear in the tab mapping and are owned by 5d1 and 5b1 — absent here
+  rather than rendered as an empty column that looks like missing data.
+{% endcomment %}
+
+{% block workspace_subtitle %}
+  {{ summary.online_nodes }} of {{ summary.node_count }} online
+  {% if cluster_degraded %}<span class="badge failed">{{ cluster_degraded }}</span>{% endif %}
+{% endblock %}
+
+{% block workspace_content %}
+  <section class="panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Hosts</h2>
+        <p class="panel-meta">Enrolled members of this connection, each linking to its own workspace.</p>
+      </div>
+    </div>
+    {% if summary.rows %}
+      <div class="cluster-table-scroll">
+        <table class="data-table compact" data-sortable-table>
+          <thead>
+            <tr>
+              <th scope="col">Node</th>
+              <th scope="col">State</th>
+              <th scope="col">Runtime</th>
+              <th scope="col">PVE version</th>
+              <th scope="col">Memory</th>
+              <th scope="col">Guests</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in summary.rows %}
+              <tr>
+                <td data-sort-value="{{ row.node.node_name }}">
+                  <a href="{% url 'core:node_summary' cluster.key row.node.node_name %}">{{ row.node.node_name }}</a>
+                </td>
+                <td>
+                  {% if row.node.online %}
+                    <span class="badge completed">online</span>
+                  {% else %}
+                    <span class="badge failed">offline</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <span class="badge{% if row.node.runtime_current %} completed{% elif row.node.runtime_status == 'failed' %} failed{% endif %}">
+                    {{ row.node.runtime_status }}
+                  </span>
+                </td>
+                {% comment %}
+                  Runtime columns are shown only for a node whose own runtime is
+                  current. A stale reading rendered as a plain value is indistinguishable
+                  from a fresh one, which is how a dead node comes to look healthy.
+                {% endcomment %}
+                <td>{% if row.node.runtime_current %}{{ row.node.runtime.pve_version|default:"-" }}{% else %}<span class="muted">-</span>{% endif %}</td>
+                <td data-sort-value="{{ row.node.runtime.memory_used_bytes|default:0 }}">
+                  {% if row.node.runtime_current and row.node.runtime.memory_total_bytes %}
+                    {{ row.node.runtime.memory_used_bytes|filesizeformat }} / {{ row.node.runtime.memory_total_bytes|filesizeformat }}
+                  {% else %}
+                    <span class="muted">-</span>
+                  {% endif %}
+                </td>
+                <td data-sort-value="{{ row.placement.total }}">
+                  <a href="{% url 'core:node_vms' cluster.key row.node.node_name %}">
+                    {{ row.placement.total }}{% if row.placement.running %} ({{ row.placement.running }} running){% endif %}
+                  </a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">
+        No enrolled nodes. Review this connection's discovered nodes in
+        <a href="{% url 'core:cluster_connection' cluster.key %}">Connection</a>.
+      </p>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -33,6 +33,7 @@ from core.services.publication_scope import publication_scope
 from core.services.workspace_nav import cluster_nav_key, node_nav_key
 from core.services.workspace_summary import cluster_summary as compose_cluster_summary
 from core.services.workspace_summary import node_summary as compose_node_summary
+from core.services.workspace_summary import workspace_guest_rows
 from core.views.cluster_scope import managed_cluster_from_path
 from core.views.common import app_login_required, navigation_context
 
@@ -65,8 +66,15 @@ NODE_TABS = (
 
 #: The tabs that have a route today. Kept as one set rather than a per-tab flag so
 #: a later phase enables its tab by adding the route and the name here together.
-ROUTED_CLUSTER_TABS = {"summary": "core:cluster_summary"}
-ROUTED_NODE_TABS = {"summary": "core:node_summary"}
+ROUTED_CLUSTER_TABS = {
+    "summary": "core:cluster_summary",
+    "hosts": "core:cluster_hosts",
+    "vms": "core:cluster_vms",
+}
+ROUTED_NODE_TABS = {
+    "summary": "core:node_summary",
+    "vms": "core:node_vms",
+}
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,37 @@ def _tabs(specs, routed, *, active: str, **kwargs) -> tuple[WorkspaceTab, ...]:
     )
 
 
+def _published_nodes(projection, cluster) -> tuple:
+    """The nodes this connection may show, in projection order.
+
+    One helper rather than the same comprehension at each tab: a tab that resolved
+    its own subset could disagree with the tree about which nodes exist, and the
+    disagreement would look like a data problem rather than a code one.
+    """
+
+    scope = publication_scope(cluster)
+    return tuple(node for node in projection.nodes if node.present and scope.publishes(node.node_name))
+
+
+def _node_names(nodes) -> tuple[str, ...]:
+    return tuple(node.node_name for node in nodes)
+
+
+def _published_node_or_404(projection, cluster, node: str):
+    """Resolve one node inside the publication boundary, or 404.
+
+    An unpublished node has no workspace page on any tab. Rendering one would be the
+    leak the boundary exists to stop: the operator hid the node, and a typed URL
+    would still show its guests. It is 404, not a refusal, because from the
+    workspace's point of view the object is not there.
+    """
+
+    match = next((row for row in _published_nodes(projection, cluster) if row.node_name == node), None)
+    if match is None:
+        raise Http404("Proxmox node not found")
+    return match
+
+
 def _projection_or_404(cluster):
     """The accepted read, or 404 for a key outside the managed scope.
 
@@ -109,8 +148,7 @@ def _projection_or_404(cluster):
 def cluster_summary(request, cluster_key: str):
     cluster = managed_cluster_from_path(cluster_key)
     projection = _projection_or_404(cluster)
-    scope = publication_scope(cluster)
-    published = tuple(node for node in projection.nodes if node.present and scope.publishes(node.node_name))
+    published = _published_nodes(projection, cluster)
     context = {
         "cluster": cluster,
         "projection": projection,
@@ -130,17 +168,7 @@ def cluster_summary(request, cluster_key: str):
 def node_summary(request, cluster_key: str, node: str):
     cluster = managed_cluster_from_path(cluster_key)
     projection = _projection_or_404(cluster)
-    scope = publication_scope(cluster)
-    # An unpublished node has no workspace page. Rendering one would be the exact
-    # leak the boundary exists to stop: the operator hid the node, and a typed URL
-    # would still show its runtime. It is 404, not a refusal page, because from the
-    # workspace's point of view the object is not there.
-    match = next(
-        (row for row in projection.nodes if row.node_name == node and row.present and scope.publishes(row.node_name)),
-        None,
-    )
-    if match is None:
-        raise Http404("Proxmox node not found")
+    match = _published_node_or_404(projection, cluster, node)
     context = {
         "cluster": cluster,
         "projection": projection,
@@ -162,3 +190,101 @@ def node_summary(request, cluster_key: str, node: str):
         ),
     }
     return render(request, "core/node_summary.html", context)
+
+
+@app_login_required
+def cluster_hosts(request, cluster_key: str):
+    """The Hosts tab: this cluster's enrolled members, membership-grained.
+
+    Composes membership and per-node runtime only. Health, version and guest counts
+    come from projections this module already owns; HA role and update rollups are
+    named in the tab mapping and belong to 5d1 and 5b1, so they are absent rather
+    than rendered empty.
+    """
+
+    cluster = managed_cluster_from_path(cluster_key)
+    projection = _projection_or_404(cluster)
+    published = _published_nodes(projection, cluster)
+    context = {
+        "cluster": cluster,
+        "projection": projection,
+        "summary": compose_cluster_summary(cluster, projection, published),
+        "cluster_degraded": cluster_degraded_label(cluster),
+        "workspace_object": projection.display_name,
+        "workspace_kind": "cluster",
+        "tabs": _tabs(CLUSTER_TABS, ROUTED_CLUSTER_TABS, active="hosts", cluster_key=cluster.key),
+        "workspace_nav_key": cluster_nav_key(cluster.key),
+        **navigation_context("hosts_clusters", page_title=("Hosts", projection.display_name)),
+    }
+    return render(request, "core/cluster_hosts.html", context)
+
+
+@app_login_required
+def cluster_vms(request, cluster_key: str):
+    """The cluster VMs tab: every published guest of this cluster."""
+
+    cluster = managed_cluster_from_path(cluster_key)
+    projection = _projection_or_404(cluster)
+    context = {
+        "cluster": cluster,
+        "projection": projection,
+        "guests": workspace_guest_rows(cluster, listed_nodes=_node_names(_published_nodes(projection, cluster))),
+        "workspace_object": projection.display_name,
+        "workspace_kind": "cluster",
+        "workspace_scope_label": projection.display_name,
+        "tabs": _tabs(CLUSTER_TABS, ROUTED_CLUSTER_TABS, active="vms", cluster_key=cluster.key),
+        "workspace_nav_key": cluster_nav_key(cluster.key),
+        **navigation_context("hosts_clusters", page_title=("VMs", projection.display_name)),
+    }
+    return render(request, "core/workspace_vms.html", context)
+
+
+@app_login_required
+def node_vms(request, cluster_key: str, node: str):
+    """The node VMs tab: published guests placed on one exact NodeRef."""
+
+    cluster = managed_cluster_from_path(cluster_key)
+    projection = _projection_or_404(cluster)
+    match = _published_node_or_404(projection, cluster, node)
+    context = {
+        "cluster": cluster,
+        "projection": projection,
+        "node": match,
+        "guests": workspace_guest_rows(cluster, node=match.node_name, listed_nodes=(match.node_name,)),
+        "workspace_object": match.node_name,
+        "workspace_kind": "node",
+        "workspace_scope_label": match.node_name,
+        "tabs": _tabs(
+            NODE_TABS,
+            ROUTED_NODE_TABS,
+            active="vms",
+            cluster_key=cluster.key,
+            node=match.node_name,
+        ),
+        "workspace_nav_key": node_nav_key(cluster.key, match.node_name),
+        **navigation_context("hosts_clusters", page_title=("VMs", match.node_name, projection.display_name)),
+    }
+    return render(request, "core/workspace_vms.html", context)
+
+
+def workspace_object_urls(cluster, node: str = "") -> dict[str, str]:
+    """Canonical workspace links for one guest's cluster and node, or blanks.
+
+    Module 3's Related Objects card links back here now that these routes exist.
+    Both values are conditional and blank rather than guessed: a retired cluster and
+    an unpublished node each have no workspace page, and a link to one would 404 from
+    a card whose whole job is to be a reliable jumping-off point.
+
+    Lives in the workspace module because it owns these routes; the guest read model
+    consumes it rather than assembling URLs from parts.
+    """
+
+    from core.services.cluster_scopes import managed_clusters
+
+    if cluster is None or not managed_clusters().filter(pk=cluster.pk).exists():
+        return {"cluster_url": "", "node_url": ""}
+    cluster_url = reverse("core:cluster_summary", kwargs={"cluster_key": cluster.key})
+    node_url = ""
+    if node and publication_scope(cluster).publishes(node):
+        node_url = reverse("core:node_summary", kwargs={"cluster_key": cluster.key, "node": node})
+    return {"cluster_url": cluster_url, "node_url": node_url}

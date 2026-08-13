@@ -179,3 +179,71 @@ def node_summary(cluster, node: ClusterNodeProjectionRead) -> NodeSummaryRead:
 
     placement = guest_placement(cluster, nodes=(node.node_name,))
     return NodeSummaryRead(node=node, placement=placement[node.node_name])
+
+
+@dataclass(frozen=True)
+class WorkspaceGuestRow:
+    """One guest as the workspace tables render it.
+
+    Carries the Module 3 link rather than the pieces to build it, so a template
+    cannot assemble a URL that disagrees with the canonical route. Module 5 does not
+    re-own guest state: every row is a link into the guest workspace.
+    """
+
+    cluster_key: str
+    object_type: str
+    vmid: int
+    name: str
+    node: str
+    status: str
+    url: str
+    #: Empty when the guest sits on a node this connection no longer lists. Linking
+    #: it would 404: the row is real, the node page is not.
+    node_url: str
+
+    @property
+    def running(self) -> bool:
+        return self.status == "running"
+
+
+def workspace_guest_rows(
+    cluster, *, node: str = "", listed_nodes: tuple[str, ...] | None = None
+) -> tuple[WorkspaceGuestRow, ...]:
+    """Published guests of one cluster, optionally narrowed to one node.
+
+    **One query, no provider call.** The workspace tables are a read of the current
+    projection; the live-inventory and guest-lock fan-outs that any *guest* page can
+    reach are deliberately not on this path, because a table that walks every node
+    to draw a status column is the render-path fan-out Module 5 exists to remove.
+
+    Ordered by identity rather than by name so two guests that share a display name
+    keep a stable, distinguishable order, and duplicate ``(object_type, vmid)``
+    across clusters stays visible as two rows rather than collapsing into one.
+    """
+
+    from django.urls import reverse
+
+    rows = published_guest_queryset().filter(cluster=cluster)
+    if node:
+        rows = rows.filter(node=node)
+    linkable = frozenset(listed_nodes) if listed_nodes is not None else None
+    return tuple(
+        WorkspaceGuestRow(
+            cluster_key=cluster.key,
+            object_type=row.object_type,
+            vmid=row.vmid,
+            name=row.name,
+            node=row.node,
+            status=row.status,
+            url=reverse(
+                "core:guest_summary",
+                kwargs={"cluster_key": cluster.key, "object_type": row.object_type, "vmid": row.vmid},
+            ),
+            node_url=(
+                reverse("core:node_summary", kwargs={"cluster_key": cluster.key, "node": row.node})
+                if row.node and (linkable is None or row.node in linkable)
+                else ""
+            ),
+        )
+        for row in rows.only("object_type", "vmid", "name", "node", "status").order_by("node", "object_type", "vmid")
+    )

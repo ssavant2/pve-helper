@@ -28,8 +28,11 @@ PUBLIC_ENROLLMENT_VIEWS = (
 #: Connections while sharing none of its private helpers -- which is the separation
 #: this package was split for in the first place.
 PUBLIC_WORKSPACE_VIEWS = (
+    "cluster_hosts",
     "cluster_summary",
+    "cluster_vms",
     "node_summary",
+    "node_vms",
 )
 
 PUBLIC_CLUSTER_VIEWS = tuple(sorted(PUBLIC_CONNECTION_VIEWS + PUBLIC_ENROLLMENT_VIEWS + PUBLIC_WORKSPACE_VIEWS))

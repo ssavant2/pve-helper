@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from core.services.current_guest_inventory import published_guest_queryset
 from core.services.guest_observation import runtime_is_observed
+from core.views.clusters.workspace import workspace_object_urls
 
 from ..common import (
     GUEST_OBJECT_TYPES,
@@ -179,6 +180,9 @@ def guest_summary(request, cluster_key: str, object_type: str, vmid: int):
             "guest_cpu_topology": _guest_cpu_topology(config, detail.object_type),
             "related_storages": related_storages,
             "related_networks": related_networks,
+            # Module 5's canonical workspace routes now exist, so the card's Cluster
+            # and Node values become links. Blank when the object has no page.
+            "related_workspace": workspace_object_urls(detail.cluster, detail.node),
             "vm_details": _guest_vm_details(detail, guest_pool),
             "guest_ha": guest_ha,
             "guest_cpu_label": _guest_cpu_label(config, detail.object_type),

@@ -105,11 +105,26 @@ test("node Summary shows its own runtime state, not the cluster's", async ({ pag
   await expect(page.getByRole("main")).toContainText("Node reference");
 });
 
-test("only Summary is an enabled tab, and the rest state the intended shape", async ({ page }) => {
+test("the built tabs are links and the unbuilt ones state the intended shape", async ({ page }) => {
   await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
 
   const tabs = page.locator(".vs-tabs");
-  await expect(tabs.getByRole("link", { name: "Summary" })).toBeVisible();
+  for (const built of ["Summary", "Hosts", "VMs"]) {
+    await expect(tabs.getByRole("link", { name: built, exact: true })).toBeVisible();
+  }
   await expect(tabs.locator("span.disabled", { hasText: "Datastores" })).toBeVisible();
   await expect(tabs.locator("span.disabled", { hasText: "Monitor" })).toBeVisible();
+});
+
+test("the tables are reachable by clicking their tabs, and link into Module 3", async ({ page }) => {
+  await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
+
+  await page.locator(".vs-tabs").getByRole("link", { name: "Hosts", exact: true }).click();
+  await expect(page.getByRole("main")).toContainText("pve1");
+  // A hidden node must not appear in the Hosts table either.
+  await expect(page.getByRole("main")).not.toContainText("pve2");
+
+  await page.locator(".vs-tabs").getByRole("link", { name: "VMs", exact: true }).click();
+  const guestLink = page.getByRole("main").locator('a[href^="/vms/e2e/"]').first();
+  await expect(guestLink).toBeVisible();
 });

@@ -8,6 +8,10 @@ asserted beyond the shell they hang in.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.core.cache import cache
 from django.db import connection
 from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -211,13 +215,17 @@ class WorkspaceRouteTests(TestCase):
         self.assertEqual(cluster_response.status_code, 200)
         self.assertEqual(node_response.status_code, 200)
 
-    def test_only_summary_is_an_enabled_tab(self):
-        response = self.client.get(reverse("core:cluster_summary", args=["hq"]))
+    def test_the_routed_tabs_are_exactly_the_ones_with_views(self):
+        """A tab is enabled by gaining a route, never by a flag. Cluster scope has
+        Summary, Hosts and VMs; the node scope has no Hosts tab at all."""
+        cluster_tabs = self.client.get(reverse("core:cluster_summary", args=["hq"])).context["tabs"]
+        node_tabs = self.client.get(reverse("core:node_summary", args=["hq", "pve1"])).context["tabs"]
 
-        enabled = [tab.key for tab in response.context["tabs"] if tab.enabled]
-        self.assertEqual(enabled, ["summary"])
-        # The shape is still stated, so the workspace does not silently shrink.
-        self.assertIn("datastores", [tab.key for tab in response.context["tabs"]])
+        self.assertEqual([tab.key for tab in cluster_tabs if tab.enabled], ["summary", "hosts", "vms"])
+        self.assertEqual([tab.key for tab in node_tabs if tab.enabled], ["summary", "vms"])
+        self.assertNotIn("hosts", [tab.key for tab in node_tabs])
+        # The unbuilt shape is still stated, so the workspace does not silently shrink.
+        self.assertIn("datastores", [tab.key for tab in cluster_tabs])
 
     def test_the_active_leaf_is_the_object_being_viewed(self):
         response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
@@ -486,3 +494,227 @@ class SummaryQueryBudgetTests(TestCase):
         twenty = self._page_queries(reverse("core:cluster_summary", args=["big"]))
 
         self.assertEqual(three, twenty, f"3 nodes cost {three}, 20 nodes cost {twenty}")
+
+
+@override_settings(APP_REQUIRE_LOGIN=False)
+class RenderPathFanOutCacheTests(TestCase):
+    """The mitigation the 5a0A ledger records as load-bearing, finally measured.
+
+    Two render-path readers are affordable only because they are cached:
+    `_fetch_live_guest_locks_uncached` at `2N + 1` calls behind a 3-second window,
+    and the live-inventory fallback at `2N` behind a 30-second one. The ledger
+    recorded a coverage gap here in as many words — "nothing now proves the caches
+    actually suppress the render-path fan-outs this ledger records as cached" — and
+    assigned it to this phase. These tests warm and re-read, and count.
+
+    They assert the *shape* (a second read costs nothing more), not a call total, so
+    a legitimate change to how many endpoints a single pass touches does not fail
+    them while a removed cache still does.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.cluster = _cluster("fanout", nodes=("pve1", "pve2"))
+
+    def _counting_client(self, calls):
+        class _Client:
+            endpoint = "https://pve1:8006"
+
+            def get(self, path, **kwargs):
+                calls.append(path)
+                if path == "nodes":
+                    return [
+                        {"node": "pve1", "status": "online"},
+                        {"node": "pve2", "status": "online"},
+                    ]
+                if path.startswith("cluster/resources"):
+                    return []
+                return []
+
+        return _Client()
+
+    def test_the_guest_lock_read_costs_nothing_on_a_second_render(self):
+        from core.services import proxmox
+
+        calls: list[str] = []
+        client = self._counting_client(calls)
+        with patch(
+            "core.services.cluster_resolver.cluster_wide_read",
+            side_effect=lambda cluster, *, operation, call: SimpleNamespace(
+                value=call(client), complete=True, client=client, answering_endpoint=None
+            ),
+        ):
+            proxmox.fetch_live_guest_locks(cluster=self.cluster)
+            warm = len(calls)
+            self.assertGreater(warm, 0, "the cold read must actually reach the provider")
+
+            proxmox.fetch_live_guest_locks(cluster=self.cluster)
+
+        self.assertEqual(
+            len(calls),
+            warm,
+            "The second render re-read the provider: the 3-second cache that makes "
+            "this 2N + 1 fan-out affordable is not suppressing it.",
+        )
+
+    def test_the_cache_is_per_cluster_not_global(self):
+        """A warm cache for one cluster must not answer for another; that would be
+        worse than the fan-out it replaces."""
+        from core.services import proxmox
+
+        other = _cluster("fanout-b", nodes=("pve1",))
+        calls: list[str] = []
+        client = self._counting_client(calls)
+        with patch(
+            "core.services.cluster_resolver.cluster_wide_read",
+            side_effect=lambda cluster, *, operation, call: SimpleNamespace(
+                value=call(client), complete=True, client=client, answering_endpoint=None
+            ),
+        ):
+            proxmox.fetch_live_guest_locks(cluster=self.cluster)
+            warm = len(calls)
+            proxmox.fetch_live_guest_locks(cluster=other)
+
+        self.assertGreater(len(calls), warm, "the second cluster was answered from the first cluster's cache")
+
+    def test_the_workspace_tables_never_reach_the_provider(self):
+        """The tables are the surface the fan-outs were reachable from. They read
+        the projection and nothing else."""
+        with (
+            patch("core.services.proxmox.ProxmoxClient.__init__", side_effect=AssertionError("provider call")),
+            patch("core.services.proxmox.ProxmoxClient.get", side_effect=AssertionError("provider call")),
+        ):
+            for url in (
+                reverse("core:cluster_hosts", args=["fanout"]),
+                reverse("core:cluster_vms", args=["fanout"]),
+                reverse("core:node_vms", args=["fanout", "pve1"]),
+            ):
+                self.assertEqual(self.client.get(url).status_code, 200, url)
+
+
+@override_settings(APP_REQUIRE_LOGIN=False)
+class WorkspaceTableTests(TestCase):
+    """5a2E+F. The two tables, and the identity collisions they must survive."""
+
+    def setUp(self):
+        self.client = Client()
+        self.hq = _cluster("hq", nodes=("pve1", "pve2"))
+        self.other = _cluster("other", nodes=("pve1",))
+
+    def _guest(self, cluster, node, vmid, *, name="", status="running", published=True):
+        return CurrentGuestInventory.objects.create(
+            cluster=cluster,
+            node=node,
+            object_type="vm",
+            vmid=vmid,
+            name=name or f"vm{vmid}",
+            status=status,
+            config={},
+            observed_at=timezone.now(),
+            published=published,
+        )
+
+    def test_duplicate_node_names_link_to_their_own_cluster(self):
+        """Both clusters have a pve1. Each Hosts table must link to its own.
+
+        Asserted against the table's own rows rather than the page body: the sidebar
+        legitimately lists every cluster's pve1, so a whole-response match would
+        pass or fail for reasons that have nothing to do with this table.
+        """
+        hq = self.client.get(reverse("core:cluster_hosts", args=["hq"]))
+        other = self.client.get(reverse("core:cluster_hosts", args=["other"]))
+
+        self.assertEqual([row.node.node_ref for row in hq.context["summary"].rows], ["nr1:hq:pve1", "nr1:hq:pve2"])
+        self.assertEqual([row.node.node_ref for row in other.context["summary"].rows], ["nr1:other:pve1"])
+        self.assertContains(hq, reverse("core:node_summary", args=["hq", "pve1"]))
+
+    def test_duplicate_type_vmid_stays_two_rows_across_clusters(self):
+        self._guest(self.hq, "pve1", 100, name="hq-100")
+        self._guest(self.other, "pve1", 100, name="other-100")
+
+        hq = self.client.get(reverse("core:cluster_vms", args=["hq"]))
+
+        self.assertEqual(len(hq.context["guests"]), 1)
+        self.assertEqual(hq.context["guests"][0].name, "hq-100")
+        self.assertContains(hq, reverse("core:guest_summary", args=["hq", "vm", 100]))
+
+    def test_the_vms_table_excludes_unpublished_guests(self):
+        self._guest(self.hq, "pve1", 100)
+        self._guest(self.hq, "pve2", 200, published=False)
+
+        response = self.client.get(reverse("core:cluster_vms", args=["hq"]))
+
+        self.assertEqual([guest.vmid for guest in response.context["guests"]], [100])
+
+    def test_the_node_vms_table_is_scoped_to_that_node(self):
+        self._guest(self.hq, "pve1", 100)
+        self._guest(self.hq, "pve2", 200)
+
+        response = self.client.get(reverse("core:node_vms", args=["hq", "pve1"]))
+
+        self.assertEqual([guest.vmid for guest in response.context["guests"]], [100])
+
+    def test_a_guest_on_an_unlisted_node_is_shown_without_a_dead_link(self):
+        """The row is real; the node page is not. Linking it would 404 from a table
+        whose job is to be a reliable jumping-off point."""
+        self._guest(self.hq, "departed", 300)
+
+        response = self.client.get(reverse("core:cluster_vms", args=["hq"]))
+
+        [row] = [guest for guest in response.context["guests"] if guest.vmid == 300]
+        self.assertEqual(row.node, "departed")
+        self.assertEqual(row.node_url, "")
+
+    def test_a_hidden_nodes_table_is_404_not_an_empty_list(self):
+        _activate(self.hq, pve1="managed", pve2="safety_only")
+
+        self.assertEqual(self.client.get(reverse("core:node_vms", args=["hq", "pve1"])).status_code, 200)
+        self.assertEqual(self.client.get(reverse("core:node_vms", args=["hq", "pve2"])).status_code, 404)
+
+    def test_the_hosts_table_lists_managed_nodes_only(self):
+        _activate(self.hq, pve1="managed", pve2="safety_only")
+
+        response = self.client.get(reverse("core:cluster_hosts", args=["hq"]))
+
+        self.assertEqual([row.node.node_name for row in response.context["summary"].rows], ["pve1"])
+
+    def test_the_guest_card_links_back_to_the_workspace(self):
+        from core.views.clusters.workspace import workspace_object_urls
+
+        urls = workspace_object_urls(self.hq, "pve1")
+
+        self.assertEqual(urls["cluster_url"], reverse("core:cluster_summary", args=["hq"]))
+        self.assertEqual(urls["node_url"], reverse("core:node_summary", args=["hq", "pve1"]))
+
+    def test_the_guest_card_does_not_link_a_hidden_node(self):
+        from core.views.clusters.workspace import workspace_object_urls
+
+        _activate(self.hq, pve1="managed", pve2="safety_only")
+
+        urls = workspace_object_urls(self.hq, "pve2")
+
+        self.assertEqual(urls["cluster_url"], reverse("core:cluster_summary", args=["hq"]))
+        self.assertEqual(urls["node_url"], "", "a hidden node has no page to link to")
+
+    def test_the_guest_card_does_not_link_a_retired_cluster(self):
+        from core.views.clusters.workspace import workspace_object_urls
+
+        _retire(self.hq)
+
+        self.assertEqual(workspace_object_urls(self.hq, "pve1"), {"cluster_url": "", "node_url": ""})
+
+    def test_the_tables_are_flat_in_guest_count(self):
+        for vmid in range(100, 140):
+            self._guest(self.hq, "pve1", vmid)
+        url = reverse("core:cluster_vms", args=["hq"])
+        self.client.get(url)
+
+        with CaptureQueriesContext(connection) as many:
+            self.client.get(url)
+        CurrentGuestInventory.objects.filter(cluster=self.hq, vmid__gte=120).delete()
+        self.client.get(url)
+        with CaptureQueriesContext(connection) as fewer:
+            self.client.get(url)
+
+        self.assertEqual(len(many), len(fewer), "the VMs table costs a query per guest")

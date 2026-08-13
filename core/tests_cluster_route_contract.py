@@ -14,8 +14,10 @@ The settled families:
   cluster-scoped datastore tabs under ``clusters/<cluster_key>/datastores/…``.
 
 Forbidden: a bare-node route (a node identified without its cluster) and any
-``hosts/`` namespace. ``Hosts`` is a visual grouping in the tree, never an
-identity or a URL.
+``hosts/`` **namespace**. ``Hosts`` is a visual grouping in the tree, never an
+identity. It may name a cluster tab -- ``clusters/<cluster_key>/hosts/`` is
+addressed through its cluster like every other tab -- but never a routing root
+and never a segment that captures an object.
 
 The pre-existing bare-node shims are the deliberate exception: they take a bare
 node *in order to refuse it*, answering 409 with the qualified candidates
@@ -45,6 +47,8 @@ naive reintroduction, not every form:
 """
 
 from __future__ import annotations
+
+import re
 
 from django.test import SimpleTestCase
 from django.urls import NoReverseMatch, resolve, reverse
@@ -121,7 +125,19 @@ class NodeRouteQualificationTests(SimpleTestCase):
         )
 
     def test_no_hosts_namespace_exists(self):
-        offenders = [pattern for pattern, _ in _routes() if pattern.startswith("hosts/") or "/hosts/" in pattern]
+        """`hosts` may name a cluster *tab*; it may never name an object.
+
+        The rule is about identity, not about the word. `clusters/<key>/hosts/` is
+        the Hosts tab of one cluster, addressed through that cluster like every
+        other tab. What stays forbidden is `hosts/` as a routing root, or a `hosts/`
+        segment that captures an object — either would make "host" a second identity
+        alongside the cluster-qualified NodeRef.
+        """
+        offenders = [
+            pattern
+            for pattern, _ in _routes()
+            if pattern.startswith("hosts/") or re.search(r"/hosts/(?=<|[^/]*/<)", pattern)
+        ]
         self.assertEqual(
             offenders,
             [],

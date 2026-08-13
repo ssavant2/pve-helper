@@ -406,6 +406,9 @@ urlpatterns = [
     # summary URL has one more segment than the route it would otherwise shadow.
     path("clusters/<str:cluster_key>/summary/", views.cluster_summary, name="cluster_summary"),
     path("clusters/<str:cluster_key>/nodes/<str:node>/summary/", views.node_summary, name="node_summary"),
+    path("clusters/<str:cluster_key>/hosts/", views.cluster_hosts, name="cluster_hosts"),
+    path("clusters/<str:cluster_key>/vms/", views.cluster_vms, name="cluster_vms"),
+    path("clusters/<str:cluster_key>/nodes/<str:node>/vms/", views.node_vms, name="node_vms"),
     path("datastores/mounts/register/", views.storage_mount_register, name="storage_mount_register"),
     # The datastore object view. Each tab has two shapes sharing one route name:
     # a shared datastore is cluster-wide and carries no node, a node-local one is
