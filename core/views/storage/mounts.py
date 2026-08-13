@@ -14,6 +14,7 @@ from core.models import (
     CurrentGuestInventory,
 )
 from core.services.filesystem import mountinfo_mounts
+from core.services.publication_scope import publication_scope, publication_scopes
 from core.services.storage_backends import backend_profile
 from core.services.storage_mounts import (
     StorageMountError,
@@ -175,19 +176,27 @@ def storage_mount_register(request):
         .order_by("cluster__display_name", "storage_id")
     )
     definitions = [row for row in definitions if backend_profile(row.storage_type).filesystem_eligible]
+    # One query for every cluster on the page rather than one per definition: this
+    # form lists the whole installation's storage, so resolving the boundary per row
+    # would be a query per datastore on a shared surface.
+    scopes = publication_scopes({row.cluster for row in definitions})
     definition_options = []
     for row in definitions:
-        scope = "Shared" if row.shared else "Node-local"
+        scope_label = "Shared" if row.shared else "Node-local"
         # Only an instance that is present, active and enabled can be the one a
         # host mount represents; anything else would fail the same server-side
-        # check the operator is trying to satisfy.
+        # check the operator is trying to satisfy. Published, too: binding a mount
+        # to a hidden node would put that node back on screen through the mount.
+        publication = scopes[row.cluster_id]
         nodes = sorted(
-            state.node for state in row.node_states.all() if state.present and state.active and state.enabled
+            state.node
+            for state in row.node_states.all()
+            if state.present and state.active and state.enabled and publication.publishes(state.node)
         )
         definition_options.append(
             {
                 "pk": row.pk,
-                "label": f"{row.cluster.display_name} \u00b7 {row.storage_id} ({row.storage_type}) \u2014 {scope}",
+                "label": f"{row.cluster.display_name} \u00b7 {row.storage_id} ({row.storage_type}) \u2014 {scope_label}",
                 "shared": bool(row.shared),
                 "derived_identity": derived_backend_identity(row),
                 "nodes": nodes,
@@ -296,7 +305,15 @@ def storage_mount_register(request):
             if not backend_identity and not backend_identity_error:
                 errors.append("Backend/export identity is required.")
             if definition is not None and not definition.shared:
-                permitted = set(definition.node_states.filter(present=True).values_list("node", flat=True))
+                # The server-side half of the filtered picker above. A submitted node
+                # that is present but unpublished is refused here rather than
+                # accepted because the form no longer offers it.
+                publication = publication_scope(definition.cluster)
+                permitted = {
+                    name
+                    for name in definition.node_states.filter(present=True).values_list("node", flat=True)
+                    if publication.publishes(name)
+                }
                 if not node or node not in permitted:
                     errors.append("Choose the node-local storage instance this mount represents.")
             elif definition is not None:

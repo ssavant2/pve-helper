@@ -20,6 +20,7 @@ from django.db import connection, models, transaction
 from django.utils import timezone
 
 from core.models import (
+    ClusterNodeState,
     ClusterStorage,
     ClusterStorageNodeState,
     ClusterStorageVolumeCoverage,
@@ -35,6 +36,7 @@ from core.services.cluster_footprint import FOOTPRINT_STORAGE_PROJECTION, stamp_
 from core.services.cluster_resolver import ClusterResolutionError, cluster_clients
 from core.services.cluster_state_identity import cluster_advisory_lock_id
 from core.services.proxmox import ProxmoxAPIError
+from core.services.publication_scope import PublicationScope, publication_scope
 from core.services.storage_backends import ContentListMode, backend_profile
 from core.services.storage_mounts import backend_identity_from_definition, mount_health, scope_conflict
 
@@ -104,7 +106,16 @@ class StorageView:
     """
 
     definition: ClusterStorage
+    #: The node states this cluster may **show**: present, and on a node enrollment
+    #: publishes. Every rendering seam reads this one, so a surface that forgets the
+    #: boundary has to name the other field to get past it.
     nodes: tuple[ClusterStorageNodeState, ...]
+    #: The node states this cluster may **read**: `nodes` plus `safety_only`. Every
+    #: capability and coverage decision below is made from these, because hiding a
+    #: node is a statement about what pve-helper manages and never a claim that its
+    #: evidence stopped existing. Using the published set here would let hiding one
+    #: member turn a perfectly covered datastore into an unknown one.
+    observed_nodes: tuple[ClusterStorageNodeState, ...]
     volume_scopes: tuple[VolumeScope, ...]
     # The host mount pve-helper reads this scope's files through, or None. Carried
     # here because deciding it is exactly what `capabilities.can_browse_files`
@@ -161,6 +172,10 @@ class _UsageScope:
     references: _GuestReferences = field(default_factory=_GuestReferences)
     candidate_reason: str = ""
     candidates: tuple[_CandidateScope, ...] = ()
+    #: Eligible members enrollment forbids reading. They cannot make a reference
+    #: appear, only an absence unprovable, so they are carried separately from
+    #: `unknown_reason` and consulted only where absence would otherwise be claimed.
+    unobserved_nodes: tuple[str, ...] = ()
 
 
 def _list(value: Any) -> list[str]:
@@ -315,6 +330,7 @@ def refresh_storage_metadata(cluster: ProxmoxCluster) -> StorageCatalogState:
 
 def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogState:
     attempted_at = timezone.now()
+    scope = publication_scope(cluster)
     try:
         clients = _clients(cluster)
         definitions = _get_with_failover(clients, "storage")
@@ -322,7 +338,14 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
         if not isinstance(definitions, list) or not isinstance(nodes, list):
             raise StorageCatalogError("Invalid storage metadata response.")
         definitions = [item for item in definitions if isinstance(item, dict) and item.get("storage")]
-        nodes = [item for item in nodes if isinstance(item, dict) and item.get("node")]
+        # N5's read boundary, applied before the first per-node call rather than to
+        # its results: an unenrolled member is one pve-helper must not contact, so
+        # its storage is never asked for and never becomes a row. `safety_only` is
+        # asked — it contributes the volume evidence that keeps absence provable —
+        # and is filtered again at the publication seam in `storage_view`.
+        nodes = [
+            item for item in nodes if isinstance(item, dict) and item.get("node") and scope.observes(str(item["node"]))
+        ]
         node_answers, errors = _node_inventory(clients, nodes, cluster_key=cluster.key)
         if errors:
             raise StorageCatalogError("Incomplete node storage inventory.")
@@ -338,6 +361,7 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
     generation = uuid.uuid4()
     observed_at = timezone.now()
     node_online = {str(row["node"]): str(row.get("status") or "").lower() in {"online", ""} for row in nodes}
+    observed_names = set(node_online)
     with transaction.atomic():
         state, _ = StorageCatalogState.objects.select_for_update().get_or_create(cluster=cluster)
         if definitions:
@@ -370,7 +394,11 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
                 },
             )
             seen_definition_ids.add(definition.pk)
-            permitted = set(definition.nodes) if definition.nodes else set(node_online)
+            # A `nodes=` restriction narrows the observed set; it never widens it.
+            # Intersecting against the observed names rather than the online ones
+            # keeps an enrolled member that is merely down — it still earns an
+            # unreachable row, which is the unknown the operator must see.
+            permitted = (set(definition.nodes) & observed_names) if definition.nodes else observed_names
             for node in sorted(permitted):
                 raw_state = by_storage_node.get((storage_id, node), {})
                 online = node_online.get(node, False)
@@ -401,10 +429,18 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
             cluster=cluster,
             unmanaged_at__isnull=True,
         ).exclude(pk__in=seen_definition_ids).update(present=False, retired_at=observed_at)
-        ClusterStorageNodeState.objects.filter(
+        unseen = ClusterStorageNodeState.objects.filter(
             cluster_storage__cluster=cluster,
             cluster_storage__unmanaged_at__isnull=True,
-        ).exclude(pk__in=seen_node_ids).update(present=False, active=False, unreachable=False)
+        ).exclude(pk__in=seen_node_ids)
+        # Two reasons a row was not seen, and they are not the same statement. A node
+        # this pass *did* ask reported the storage gone: absence with proof. A node it
+        # was not allowed to ask reported nothing at all, and recording that as proof
+        # would turn unenrolling a member into evidence that its disks were removed.
+        # The two sets are disjoint by node name, so the order of these updates is
+        # irrelevant.
+        unseen.exclude(node__in=sorted(observed_names)).update(present=False, active=False, unreachable=True)
+        unseen.filter(node__in=sorted(observed_names)).update(present=False, active=False, unreachable=False)
         state.metadata_generation = generation
         state.metadata_refreshed_at = observed_at
         state.metadata_last_attempt_at = attempted_at
@@ -448,6 +484,54 @@ def _refresh_storage_metadata_locked(cluster: ProxmoxCluster) -> StorageCatalogS
 
         apply_topology_handoff_storage_bindings(cluster, metadata_generation=generation)
     return state
+
+
+def unobserved_eligible_nodes(
+    definition: ClusterStorage,
+    *,
+    scope: PublicationScope | None = None,
+) -> tuple[str, ...]:
+    """Discovered members this storage could be mounted on that pve-helper may not read.
+
+    The one thing enrollment can take away that hiding a node cannot: a `safety_only`
+    member is still asked what it has mounted, so absence over it stays provable, but
+    an unenrolled member is never contacted at all. If the definition is eligible
+    there — cluster-wide, or named in its `nodes=` restriction — then "nothing
+    references this volume" is a claim about the nodes we asked, not about the
+    cluster, and it must be reported as the unknown it is.
+
+    Returns names, not a count. An operator deciding whether to act on an
+    unverifiable disk needs to know *which* member is unread, because that is the
+    one they can go and enroll.
+    """
+
+    if scope is None:
+        scope = publication_scope(definition.cluster)
+    if not scope.filtering:
+        return ()
+    members = ClusterNodeState.objects.filter(cluster=definition.cluster, present=True).values_list(
+        "node_name", flat=True
+    )
+    eligible = set(definition.nodes) if definition.nodes else None
+    return tuple(
+        sorted(node for node in members if not scope.observes(node) and (eligible is None or node in eligible))
+    )
+
+
+def unobserved_node_reason(nodes: tuple[str, ...]) -> str:
+    """The one sentence both the preflight and the file-action gate say about this.
+
+    Composed here so the two surfaces cannot drift into describing the same fact
+    differently, and phrased as something the operator can act on: the fix is to
+    enroll the member, which is a decision they own.
+    """
+
+    listed = ", ".join(nodes)
+    plural = "s" if len(nodes) > 1 else ""
+    return (
+        f"Node{plural} {listed} could have this storage mounted and {'are' if plural else 'is'} not "
+        "enrolled, so nothing here can prove the disk is unused."
+    )
 
 
 def _candidate_nodes(definition: ClusterStorage) -> list[str]:
@@ -867,15 +951,27 @@ def catalog_state(cluster: ProxmoxCluster) -> StorageCatalogState:
         return StorageCatalogState(cluster=cluster)
 
 
-def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
+def storage_view(
+    definition: ClusterStorage,
+    *,
+    node: str = "",
+    scope: PublicationScope | None = None,
+) -> StorageView:
     # Every relation below is read with `.all()` and narrowed in Python: that is
     # what lets a prefetched definition answer without a query. `.filter()` or
     # `.order_by()` on a related manager builds a new queryset and silently
     # bypasses the prefetch cache, which is exactly the N+1 this avoids.
     state = catalog_state(definition.cluster)
     profile = backend_profile(definition.storage_type)
-    nodes = tuple(sorted((row for row in definition.node_states.all() if row.present), key=lambda row: row.node))
-    active_nodes = [row for row in nodes if row.active and row.enabled]
+    # One query when a single view is built, none when a caller fanning out over a
+    # cluster's definitions resolves it once and passes it in.
+    if scope is None:
+        scope = publication_scope(definition.cluster)
+    observed_nodes = tuple(
+        sorted((row for row in definition.node_states.all() if row.present), key=lambda row: row.node)
+    )
+    nodes = tuple(row for row in observed_nodes if scope.publishes(row.node))
+    active_nodes = [row for row in observed_nodes if row.active and row.enabled]
     coverage_rows = tuple(definition.volume_coverages.all())
     coverage_by_node = {coverage.node: coverage for coverage in coverage_rows}
     requested_coverages: list[ClusterStorageVolumeCoverage | None]
@@ -906,7 +1002,7 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
         list_reason = f"Unsupported storage type: {definition.storage_type or 'unknown'}."
     elif definition.disabled:
         list_reason = "Storage is disabled in Proxmox."
-    elif node and not any(row.node == node and row.active and row.enabled for row in nodes):
+    elif node and not any(row.node == node and row.active and row.enabled for row in observed_nodes):
         list_reason = "The selected storage instance is not active."
     elif not active_nodes:
         list_reason = "No permitted active node."
@@ -958,6 +1054,7 @@ def storage_view(definition: ClusterStorage, *, node: str = "") -> StorageView:
     return StorageView(
         definition=definition,
         nodes=nodes,
+        observed_nodes=observed_nodes,
         volume_scopes=volume_scopes,
         mount=binding.mount if binding is not None else None,
         capabilities=StorageCapabilities(can_list, list_reason, can_browse, browse_reason, can_write, write_reason),
@@ -1004,7 +1101,15 @@ def storage_volumes(view: StorageView) -> tuple[CatalogVolume, ...]:
 
 
 def node_storage_rows(cluster: ProxmoxCluster, node: str, *, content: str = "") -> list[dict[str, Any]]:
-    """Compatibility adapter for operation forms moving off live node fan-out."""
+    """Compatibility adapter for operation forms moving off live node fan-out.
+
+    Empty for a node this cluster does not publish. The forms that read this are
+    choosing where to put a disk, and an unpublished node is not somewhere an
+    operator may be offered — the write-side refusal in `publication_scope` is the
+    enforcement, and this is the half that stops the option appearing at all.
+    """
+    if not publication_scope(cluster).publishes(node):
+        return []
     rows: list[dict[str, Any]] = []
     states = (
         ClusterStorageNodeState.objects.select_related("cluster_storage")
@@ -1171,9 +1276,15 @@ def _usage_scope(definition: ClusterStorage, node: str) -> _UsageScope:
         return _UsageScope(token=token, unknown_reason=view.coverage_reason)
 
     references = _guest_references(definition.cluster, definition.storage_id, node, definition.shared)
+    unobserved = unobserved_eligible_nodes(definition)
     candidates, candidate_reason = _cross_cluster_candidates(definition)
     if candidate_reason:
-        return _UsageScope(token=token, references=references, candidate_reason=candidate_reason)
+        return _UsageScope(
+            token=token,
+            references=references,
+            candidate_reason=candidate_reason,
+            unobserved_nodes=unobserved,
+        )
 
     # Candidate order is significant: an incomplete candidate encountered before
     # a matching one makes the whole answer UNKNOWN, so the decision walks this
@@ -1190,7 +1301,12 @@ def _usage_scope(definition: ClusterStorage, node: str) -> _UsageScope:
                 references=_guest_references(other.cluster, other.storage_id, other_node, other.shared),
             )
         )
-    return _UsageScope(token=token, references=references, candidates=tuple(scopes))
+    return _UsageScope(
+        token=token,
+        references=references,
+        candidates=tuple(scopes),
+        unobserved_nodes=unobserved,
+    )
 
 
 def _usage_decision(scope: _UsageScope, volid: str) -> UsagePreflight:
@@ -1224,6 +1340,16 @@ def _usage_decision(scope: _UsageScope, volid: str) -> UsagePreflight:
                 scope.token,
                 (f"{candidate.cluster_key}:{min(matched)}",),
             )
+    if scope.unobserved_nodes:
+        # Last, deliberately: every positive finding above is still a finding, and an
+        # unread member can only withhold evidence, never supply it. It downgrades the
+        # one answer that is a claim about the whole cluster.
+        return UsagePreflight(
+            UsageState.UNKNOWN,
+            f"{unobserved_node_reason(scope.unobserved_nodes)} Coverage is complete for every node this "
+            "connection reads.",
+            scope.token,
+        )
     return UsagePreflight(UsageState.UNREFERENCED, "Complete coverage found no references.", scope.token)
 
 

@@ -30,6 +30,7 @@ from core.models import (
 )
 from core.services.filesystem import mountinfo_mounts
 from core.services.proxmox import _fetch_live_guest_lineage_uncached
+from core.services.publication_scope import publication_scope
 from core.services.recent_tasks import recent_task_page
 from core.services.refs import (
     ClusterStorageRef,
@@ -926,6 +927,11 @@ class StorageCatalogTests(TestCase):
         `.order_by()`, and `scope_conflict` with `values_list`. Each of those
         builds a new queryset and silently bypasses the prefetch cache, so the
         page paid for the prefetch *and* for four-plus queries per definition.
+
+        N5 added one more relation of the same shape — the publication boundary —
+        and it is passed in rather than resolved per definition for exactly this
+        reason. The companion test below measures what a caller pays for
+        forgetting to.
         """
         self._metadata()
         self._volumes()
@@ -935,10 +941,29 @@ class StorageCatalogTests(TestCase):
             .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         )
         self.assertGreater(len(definitions), 1)
+        scope = publication_scope(self.cluster)
 
         with self.assertNumQueries(0):
             for definition in definitions:
-                storage_view(definition, node="pve1")
+                storage_view(definition, node="pve1", scope=scope)
+
+    def test_an_unscoped_storage_view_resolves_the_boundary_itself(self):
+        """One query, and only one — the fan-out hazard is measured, not assumed.
+
+        A single-datastore page may resolve the publication boundary inside
+        `storage_view`; a listing must not, and the number here is what it would
+        pay per definition if it did.
+        """
+        self._metadata()
+        definition = (
+            ClusterStorage.objects.filter(cluster=self.cluster, present=True)
+            .select_related("cluster__storage_catalog_state")
+            .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
+            .first()
+        )
+
+        with self.assertNumQueries(1):
+            storage_view(definition, node="pve1")
 
     def test_a_storage_view_never_reads_the_observation_table(self):
         """The expensive half is opt-in.

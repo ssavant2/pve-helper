@@ -9,6 +9,7 @@ from core.models import CurrentGuestInventory, FileInventory, ProxmoxCluster, Pr
 from core.services.classification import extract_vmid_from_image_path
 from core.services.proxmox import fetch_live_guest_status
 from core.services.refs import GuestRef
+from core.services.storage_catalog import unobserved_node_reason
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,7 @@ def file_action_risk(entry: FileInventory, *, block_running_guests: bool = True)
         )
 
     unverified = _unverified_consumers(entry)
+    unenrolled = _unenrolled_eligible_nodes(entry)
 
     referenced_objects = _referenced_objects(entry)
     running_objects = [item for item in referenced_objects if item.status == "running"]
@@ -135,13 +137,19 @@ def file_action_risk(entry: FileInventory, *, block_running_guests: bool = True)
             f"Node {_node_list(unverified)} did not report storage inventory, so a guest there may "
             "be using this file without anything here knowing."
         )
+    if unenrolled and _is_proxmox_guest_file(entry):
+        danger_reasons.append(unobserved_node_reason(unenrolled))
     if danger_reasons:
         return FileActionRisk(
             level="danger",
             reason=" ".join(danger_reasons),
             referenced_objects=referenced_objects,
             requires_extra_confirmation=True,
-            unverified_nodes=unverified,
+            # Both kinds of unread node belong here: the question the operator
+            # answers has to name every node it is answering *for*, and the
+            # difference between "did not respond" and "is not enrolled" is a
+            # difference in cause, not in what the operator is being asked.
+            unverified_nodes=tuple(dict.fromkeys((*unverified, *unenrolled))),
             acknowledgeable=True,
         )
 
@@ -291,6 +299,28 @@ def _unverified_consumers(entry: FileInventory) -> tuple[str, ...]:
         return ()
     missing = gate.get("missing_consumers") or []
     return tuple(str(node) for node in missing if node)
+
+
+def _unenrolled_eligible_nodes(entry: FileInventory) -> tuple[str, ...]:
+    """Members that could have this file's storage mounted and are not enrolled.
+
+    The scan gate above answers "was this node asked and did it fail". This answers
+    the other half: pve-helper was never allowed to ask. Both leave the same hole in
+    the evidence, both are the operator's to close, and neither may block — the node
+    they name is one *they* took out of scope, so refusing outright would strand the
+    file behind a decision they can only undo somewhere else.
+    """
+
+    from core.services.storage_catalog import unobserved_eligible_nodes
+
+    nodes: list[str] = []
+    bindings = entry.storage.cluster_bindings.select_related("cluster_storage__cluster").filter(
+        cluster_storage__cluster__retired_at__isnull=True,
+        cluster_storage__unmanaged_at__isnull=True,
+    )
+    for binding in bindings:
+        nodes.extend(unobserved_eligible_nodes(binding.cluster_storage))
+    return tuple(sorted(set(nodes)))
 
 
 def _node_list(nodes: tuple[str, ...]) -> str:

@@ -15,6 +15,7 @@ from core.models import (
 )
 from core.services.cluster_scopes import managed_clusters
 from core.services.datastore_nav import datastore_url
+from core.services.publication_scope import publication_scopes
 from core.services.storage_catalog import (
     storage_view,
 )
@@ -108,13 +109,23 @@ def _storage_catalog_rows(recycle_bin_counts: dict[int, int] | None = None) -> l
         .prefetch_related("node_states", "mount_bindings__mount", "volume_coverages")
         .order_by("cluster__display_name", "storage_id")
     )
+    # Resolved once for the whole dashboard. `storage_view` would otherwise resolve
+    # it per definition, which is a query per datastore on the busiest page there is.
+    scopes = publication_scopes({definition.cluster for definition in definitions})
     for definition in definitions:
+        publication = scopes[definition.cluster_id]
+        observed = [node_state for node_state in definition.node_states.all() if node_state.present]
         nodes = sorted(
-            (node_state for node_state in definition.node_states.all() if node_state.present),
+            (node_state for node_state in observed if publication.publishes(node_state.node)),
             key=lambda node_state: node_state.node,
         )
+        if observed and not nodes:
+            # Every node that has it mounted is hidden, so no published node holds
+            # this datastore. A card here would be the hidden node's capacity under
+            # a cluster-wide heading.
+            continue
         selected_node = next((row.node for row in nodes if row.active), nodes[0].node if nodes else "")
-        view = storage_view(definition, node=selected_node)
+        view = storage_view(definition, node=selected_node, scope=publication)
         catalog_rows.append(
             {
                 "definition": definition,

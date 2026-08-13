@@ -9,6 +9,7 @@ from core.models import (
 )
 from core.services.cluster_state_labels import cluster_degraded_context
 from core.services.datastore_nav import datastore_url, nav_datastore_key
+from core.services.publication_scope import publication_scope
 from core.services.request_metadata import client_ip
 from core.services.storage_catalog import (
     refresh_storage_catalog,
@@ -128,7 +129,14 @@ def _resolve_datastore_scope(cluster, storage: str, node: str):
         return None, node, False
     if definition.shared:
         return definition, "", bool(node)
-    present = sorted(state.node for state in definition.node_states.all() if state.present)
+    # Published, not merely present: a node-local datastore on a hidden node has no
+    # page, and a typed URL for one is 404 rather than a refusal. From this
+    # workspace's point of view the disk is not there — which is what the operator
+    # asked for when they hid the node.
+    scope = publication_scope(cluster)
+    present = sorted(
+        state.node for state in definition.node_states.all() if state.present and scope.publishes(state.node)
+    )
     if node:
         if node not in present:
             raise Http404("Storage is not present on that node.")

@@ -57,7 +57,13 @@ from core.models import ClusterStorage, ClusterStorageNodeState, ProxmoxCluster
 # below therefore rose by exactly 3, and no figure rose with node count.
 SHELL_CONTEXT_PROCESSOR_QUERIES = 11
 SHELL_FLOOR_BUDGET = 15  # cheapest observed page; an upper bound on the shell
-PAGE_QUERY_BUDGETS = {"/": 27, "/clusters/": 17, "/vms/": 15}
+# 5a4A raised `/` by 1: the dashboard's datastore cards resolve the publication
+# boundary once for every cluster they render (`publication_scopes`), so a hidden
+# node's capacity cannot reach a card. One bulk read, flat in nodes and flat in
+# datastores — the axes this file defends — and linear in nothing it does not
+# already count. Resolving it inside `storage_view` instead would have been one
+# query per datastore, which is the shape, not the number, that would fail here.
+PAGE_QUERY_BUDGETS = {"/": 28, "/clusters/": 17, "/vms/": 15}
 SHELL_QUERY_BUDGET_PER_EXTRA_CLUSTER = 4
 
 # Allowances for the surfaces Module 5 has not built yet (U0 item 4 requires

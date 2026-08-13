@@ -8,8 +8,12 @@ from django.urls import reverse
 
 from core.models import ClusterStorageNodeState
 from core.services.cluster_state_identity import cluster_cache_key
+from core.services.publication_scope import publication_scope
 
-_CACHE_NAMESPACE = "nav-datastores:v5"
+# Bumped for the enrollment filter below: a cached tree built before it would keep
+# showing a hidden node's datastores for the rest of its lifetime, which is exactly
+# the leak the filter closes.
+_CACHE_NAMESPACE = "nav-datastores:v6"
 _CACHE_SECONDS = 60
 
 
@@ -97,9 +101,18 @@ def _build(cluster):
         .filter(models.Q(present=True) | models.Q(unreachable=True))
         .order_by("node", "cluster_storage__storage_id")
     )
+    # One query for the whole tree, and the filter applies to shared instances too.
+    # A shared datastore is one cluster-wide object, but the capacity on its leaf is
+    # read from one specific instance: sourcing that from a hidden node would put
+    # that node's numbers on screen under a name that does not mention it. If no
+    # published node sees the datastore, no published node has it mounted, and it
+    # does not belong in this cluster's tree.
+    scope = publication_scope(cluster)
     nodes: dict[str, list[dict]] = {}
     shared_rows: dict[int, list] = {}
     for row in rows:
+        if not scope.publishes(row.node):
+            continue
         if row.cluster_storage.shared:
             shared_rows.setdefault(row.cluster_storage_id, []).append(row)
         else:
