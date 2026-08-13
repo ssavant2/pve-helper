@@ -6,6 +6,7 @@ from .services.cluster_scopes import has_historical_clusters, managed_clusters
 from .services.cluster_state_labels import cluster_degraded_label
 from .services.datastore_nav import datastore_nav
 from .services.recent_tasks import recent_task_page
+from .services.workspace_nav import workspace_nav
 
 
 def app_settings(request):
@@ -55,6 +56,9 @@ def app_settings(request):
         "storage_write_enabled": settings.STORAGE_WRITE_ENABLED,
         "storage_upload_max_size_mb": settings.STORAGE_UPLOAD_MAX_SIZE_MB,
         "app_nav_datastore_clusters": datastore_clusters,
+        # Lazy for the same reason as the task page: every dialog fragment inherits
+        # this context, and almost none of them render the sidebar.
+        "app_nav_workspace": SimpleLazyObject(lambda: workspace_nav(nav_clusters)),
         "app_nav_clusters": nav_clusters,
         "app_enabled_clusters": enabled_clusters,
         "app_multiple_clusters": len(nav_clusters) > 1,

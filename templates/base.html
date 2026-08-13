@@ -99,13 +99,23 @@
         </button>
         <div class="sidebar-top-divider" aria-hidden="true"></div>
         <nav class="nav-tree" aria-label="Module navigation" data-soft-nav-tree>
-          <section class="tree-module expanded" data-tree-module="clusters" aria-label="Clusters module">
-            <button class="tree-node module-node {% if active_nav == 'clusters' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="true">
+          {% comment %}
+            The infrastructure root, above VMs/CTs. The label became "Hosts &
+            Clusters" with 5a2A and not before: until the cluster and host subtrees
+            existed it would have promised a workspace that was not there.
+            Connections is a sibling leaf, never the parent — the durable spine is
+            the cluster/host identity, and a retired cluster has no live connection
+            yet must stay in the Connections archive.
+          {% endcomment %}
+          <section class="tree-module expanded" data-tree-module="hosts-clusters" aria-label="Hosts and Clusters module">
+            <button class="tree-node module-node {% if active_nav == 'hosts_clusters' or active_nav == 'clusters' %}active-module{% endif %}" type="button" data-tree-toggle aria-expanded="true">
               <span class="tree-caret" data-tree-caret>v</span>
               <span class="tree-icon"><i data-vicon="cluster" aria-hidden="true"></i></span>
-              <span class="tree-label">Clusters</span>
+              <span class="tree-label">Hosts &amp; Clusters</span>
             </button>
             <div class="tree-children">
+              {% include "core/partials/nav_workspace_group.html" with group_key="clusters" group_label="Clusters" group_icon="cluster" entries=app_nav_workspace.clusters %}
+              {% include "core/partials/nav_workspace_group.html" with group_key="hosts" group_label="Hosts" group_icon="host" entries=app_nav_workspace.hosts %}
               <a class="tree-node tree-leaf {% if active_nav == 'clusters' %}active{% endif %}" href="{% url 'core:clusters_overview' %}">
                 <span class="tree-icon"><i data-lucide="plug-zap" aria-hidden="true"></i></span>
                 <span class="tree-label">Connections</span>

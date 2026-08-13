@@ -14,6 +14,7 @@ from .connections import (
     clusters_overview,
 )
 from .enrollment import cluster_enrollment_activate, cluster_node_action, cluster_node_add
+from .workspace import cluster_summary, node_summary
 
 __all__ = [
     "cluster_add",
@@ -24,5 +25,7 @@ __all__ = [
     "cluster_enrollment_activate",
     "cluster_node_action",
     "cluster_node_add",
+    "cluster_summary",
     "clusters_overview",
+    "node_summary",
 ]

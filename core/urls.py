@@ -397,6 +397,15 @@ urlpatterns = [
         views.cluster_node_action,
         name="cluster_node_action",
     ),
+    # Canonical Hosts & Clusters workspace routes (5a2A). Cluster tabs are
+    # `/clusters/<key>/<tab>/` and node tabs `/clusters/<key>/nodes/<node>/<tab>/`
+    # for clustered and standalone nodes alike — no `/hosts/` alias, no bare-node
+    # route. These sit after the exact-literal siblings above (`connection/`,
+    # `nodes/add/`, `nodes/activate/`) so a literal always wins over the node
+    # capture, which is why a node genuinely named `add` still resolves: its
+    # summary URL has one more segment than the route it would otherwise shadow.
+    path("clusters/<str:cluster_key>/summary/", views.cluster_summary, name="cluster_summary"),
+    path("clusters/<str:cluster_key>/nodes/<str:node>/summary/", views.node_summary, name="node_summary"),
     path("datastores/mounts/register/", views.storage_mount_register, name="storage_mount_register"),
     # The datastore object view. Each tab has two shapes sharing one route name:
     # a shared datastore is cluster-wide and carries no node, a node-local one is

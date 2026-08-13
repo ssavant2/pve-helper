@@ -62,7 +62,7 @@ export async function openGuestFromTree(page: Page, ref: GuestObjectRef): Promis
 }
 
 export async function openConnectionFromTree(page: Page, clusterKey: string): Promise<Response> {
-  await openTreeLeaf(page, "clusters", "Connections");
+  await openTreeLeaf(page, "hosts-clusters", "Connections");
   const row = page.getByRole("main").locator("tbody tr").filter({
     has: page.locator(
       `td:nth-child(2)[data-sort-value="${attributeValue(clusterKey)}"]`,
@@ -138,10 +138,10 @@ export async function openInfrastructureObjectFromTree(
   page: Page,
   ref: InfrastructureObjectRef,
 ): Promise<Response> {
-  // 5a2B will render these stable identities on its object links. Keeping the
-  // helper here makes every later object-tab spec click the tree from day one.
+  // 5a2B renders these stable identities on its object links, so every later
+  // object-tab spec clicks the tree rather than typing a URL.
   await page.goto("/", { waitUntil: "load" });
-  const module = await moduleTree(page, "clusters");
+  const module = await moduleTree(page, "hosts-clusters");
   const selector =
     ref.kind === "cluster"
       ? `[data-infrastructure-kind="cluster"][data-cluster-key="${attributeValue(ref.clusterKey)}"]`

@@ -107,6 +107,36 @@ def publication_scope(cluster) -> PublicationScope:
     )
 
 
+def publication_scopes(clusters) -> dict[int, PublicationScope]:
+    """Resolve many clusters' policies in **one** query, keyed by cluster id.
+
+    The sidebar tree renders on every HTML response and must be flat in both node
+    and cluster count. Calling :func:`publication_scope` in a loop there is a query
+    per cluster on a shared surface — the quadratic-at-real-scale shape the shell
+    query budget exists to catch. Same rule, same owner, one round trip.
+    """
+
+    by_cluster = {cluster.pk: (set(), set()) for cluster in clusters}
+    rows = ClusterNodeEnrollment.objects.filter(cluster_id__in=list(by_cluster)).values_list(
+        "cluster_id", "node_name", "mode"
+    )
+    for cluster_id, node_name, mode in rows:
+        managed, safety = by_cluster[cluster_id]
+        safety.add(node_name)
+        if mode == ClusterNodeEnrollment.Mode.MANAGED:
+            managed.add(node_name)
+    return {
+        cluster.pk: PublicationScope(
+            cluster_id=cluster.pk,
+            contract_version=cluster.enrollment_contract_version,
+            generation=cluster.enrollment_generation,
+            managed_nodes=frozenset(by_cluster[cluster.pk][0]),
+            safety_nodes=frozenset(by_cluster[cluster.pk][1]),
+        )
+        for cluster in clusters
+    }
+
+
 def published_node_names(cluster, client, *, fallback: str = "") -> list[str]:
     """This cluster's live node list, restricted to what it may publish.
 

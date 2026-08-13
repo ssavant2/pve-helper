@@ -275,6 +275,92 @@ def _create_retired_cluster(*, key: str = "retired-e2e", display_name: str = "Re
     )
 
 
+def _create_topology_projection(clusters: dict[str, object], now) -> None:
+    """Materialize the membership projection the workspace tree reads.
+
+    The fixtures always described a topology; until 5a2A nothing rendered it, so it
+    lived only in the `details` JSON. The Hosts & Clusters tree reads
+    `ClusterMembershipState` and `ClusterNodeState`, so a browser test that clicks
+    from the sidebar to a node needs the real rows.
+
+    `standalone-e2e` therefore lands in the Hosts group and `e2e` in Clusters, which
+    is the split the tree exists to make visible. `e2e` also activates the
+    enrollment contract with `pve2` as `safety_only`, so the representative fixture
+    carries a hidden node — a leaf that must never appear and a URL that must 404.
+    """
+    from core.models import (
+        ClusterMembershipState,
+        ClusterNodeEnrollment,
+        ClusterNodeState,
+        ClusterProjectionCoverage,
+    )
+
+    for fixture in CLUSTER_FIXTURES:
+        cluster = clusters[fixture.key]
+        generation = 1
+        ClusterMembershipState.objects.update_or_create(
+            cluster=cluster,
+            defaults={
+                "membership_generation": generation,
+                "member_count": len(fixture.nodes),
+                "quorate": bool(fixture.quorate),
+                "observed_from": fixture.nodes[0].name if fixture.nodes else "",
+                "topology_role": fixture.role,
+            },
+        )
+        ClusterProjectionCoverage.objects.update_or_create(
+            cluster=cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP,
+            node_name=None,
+            defaults={
+                "generation": generation,
+                "based_on_generation": None,
+                "complete": fixture.membership == "fresh",
+                "attempted_at": now,
+                "observed_at": now,
+                "error_code": "",
+            },
+        )
+        for index, node in enumerate(fixture.nodes, start=1):
+            ClusterNodeState.objects.update_or_create(
+                cluster=cluster,
+                node_name=node.name,
+                defaults={
+                    "nodeid": index,
+                    "present": True,
+                    "online": node.online,
+                    "membership_generation": generation,
+                },
+            )
+
+    # One activated connection with a hidden node, so the representative fixture
+    # exercises the publication boundary rather than only the legacy path.
+    enrolled = clusters["e2e"]
+    for node in fixture_for("e2e").nodes:
+        ClusterNodeEnrollment.objects.update_or_create(
+            cluster=enrolled,
+            node_name=node.name,
+            defaults={
+                "mode": (
+                    ClusterNodeEnrollment.Mode.SAFETY_ONLY
+                    if node.name == "pve2"
+                    else ClusterNodeEnrollment.Mode.MANAGED
+                ),
+                "enrolled_at": now,
+            },
+        )
+    enrolled.enrollment_contract_version = 1
+    enrolled.enrollment_generation = 1
+    enrolled.enrollment_activated_at = now
+    enrolled.save(
+        update_fields=[
+            "enrollment_contract_version",
+            "enrollment_generation",
+            "enrollment_activated_at",
+        ]
+    )
+
+
 def _create_guests(clusters: dict[str, object], scan, now) -> None:
     from core.models import CurrentGuestInventory, CurrentGuestInventoryState
 
@@ -617,6 +703,7 @@ def seed_database(*, scenario: ScenarioName = "representative", reset: bool = Tr
         }
         clusters["unused-e2e"] = _create_connection_fixture()
         scan = ScanRun.objects.create(status=ScanRun.Status.COMPLETED, progress_message="representative e2e seed")
+        _create_topology_projection(clusters, now)
         _create_guests(clusters, scan, now)
         _create_storage(clusters, now)
         _create_audit_history(clusters["e2e"], retired, clusters["transition-e2e"], now)

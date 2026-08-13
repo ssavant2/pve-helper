@@ -49,9 +49,15 @@ from core.models import ClusterStorage, ClusterStorageNodeState, ProxmoxCluster
 #
 # Raise these only with a recorded reason; a silent increase is the regression this
 # file exists to catch.
-SHELL_CONTEXT_PROCESSOR_QUERIES = 8
-SHELL_FLOOR_BUDGET = 12  # cheapest observed page; an upper bound on the shell
-PAGE_QUERY_BUDGETS = {"/": 24, "/clusters/": 14, "/vms/": 12}
+# 5a2A+B spent 3 of the 4 queries allowed for the navigation tree, measured on
+# `/vms/` per the protocol below: 1 membership-state bulk read (Clusters vs Hosts
+# grouping), 1 enrollment bulk read (the publication filter) and 1 node-state bulk
+# read. The planned 4th — the managed-cluster list — was already paid by
+# `app_nav_clusters`, so the tree reuses it instead of re-reading it. Every figure
+# below therefore rose by exactly 3, and no figure rose with node count.
+SHELL_CONTEXT_PROCESSOR_QUERIES = 11
+SHELL_FLOOR_BUDGET = 15  # cheapest observed page; an upper bound on the shell
+PAGE_QUERY_BUDGETS = {"/": 27, "/clusters/": 17, "/vms/": 15}
 SHELL_QUERY_BUDGET_PER_EXTRA_CLUSTER = 4
 
 # Allowances for the surfaces Module 5 has not built yet (U0 item 4 requires
@@ -65,13 +71,15 @@ SHELL_QUERY_BUDGET_PER_EXTRA_CLUSTER = 4
 # subtract that page's pre-phase total. Not "delta over the floor" -- the floor
 # contains `/vms/`'s own reads and would drift the gate.
 MODULE5_QUERY_ALLOWANCES = {
-    # 1 clusters + 1 membership rows + 1 node states + 1 guest counts, all bulk.
+    # SPENT by 5a2A+B: 3 of 4, measured on `/vms/` (12 -> 15). 1 membership state +
+    # 1 enrollment + 1 node state, all bulk; the cluster list was already read by
+    # the shell. Guest counts are 5a2E/F and will be costed against their own row.
     # Paid on every page, so this is the row to defend hardest.
     "navigation tree (5a2B)": (4, "/vms/"),
     # tree cost + 1 cluster row + 1 coverage/generation + 1 guest aggregate.
-    "cluster Summary (5a2C)": (6, "/clusters/<key>/"),
+    "cluster Summary (5a2C)": (6, "/clusters/<key>/summary/"),
     # tree cost + 1 node row + 1 coverage + 1 guest-by-node aggregate.
-    "node Summary (5a2D)": (6, "/clusters/<key>/nodes/<node>/"),
+    "node Summary (5a2D)": (6, "/clusters/<key>/nodes/<node>/summary/"),
     # 1 managed cluster + 1 membership state + 1 node-state bulk read +
     # 1 all-domain coverage bulk read, no provider I/O.
     "first diagnostics read (5a1F)": (4, "service-level, no page"),

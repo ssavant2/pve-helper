@@ -1,0 +1,52 @@
+{% extends "core/cluster_workspace.html" %}
+
+{% comment %}
+  The Summary *tab* exists as of 5a2A; its cards are 5a2C. This body states the
+  object's identity and publication scope and nothing more — deliberately, because
+  a placeholder card that guesses at a field is the live-fallback mistake in
+  another shape.
+{% endcomment %}
+
+{% block workspace_subtitle %}
+  <span class="badge{% if projection.membership_current %} completed{% endif %}">
+    {{ projection.membership_status|default:"unknown" }}
+  </span>
+  {% if projection.topology_role_readable %}
+    <span class="badge infrastructure">{{ projection.topology_role }}</span>
+  {% endif %}
+  {% if cluster_degraded %}<span class="badge failed">{{ cluster_degraded }}</span>{% endif %}
+  {{ published_nodes|length }} node{{ published_nodes|length|pluralize }}
+{% endblock %}
+
+{% block workspace_content %}
+  <section class="panel">
+    <h2>Nodes</h2>
+    <p class="panel-meta">Enrolled members of this connection. Discovery and enrollment live in Connection.</p>
+    {% if published_nodes %}
+      <table class="compact-table">
+        <thead>
+          <tr><th scope="col">Node</th><th scope="col">State</th></tr>
+        </thead>
+        <tbody>
+          {% for node in published_nodes %}
+            <tr>
+              <td><a href="{% url 'core:node_summary' cluster.key node.node_name %}">{{ node.node_name }}</a></td>
+              <td>
+                {% if node.online %}
+                  <span class="badge completed">online</span>
+                {% else %}
+                  <span class="badge failed">offline</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">
+        No enrolled nodes. Review this connection's discovered nodes in
+        <a href="{% url 'core:cluster_connection' cluster.key %}">Connection</a>.
+      </p>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -3,7 +3,7 @@ from django.urls import resolve, reverse
 
 from core import views
 from core.views import clusters
-from core.views.clusters import connections, enrollment
+from core.views.clusters import connections, enrollment, workspace
 
 PUBLIC_CONNECTION_VIEWS = (
     "cluster_add",
@@ -23,7 +23,16 @@ PUBLIC_ENROLLMENT_VIEWS = (
     "cluster_node_add",
 )
 
-PUBLIC_CLUSTER_VIEWS = tuple(sorted(PUBLIC_CONNECTION_VIEWS + PUBLIC_ENROLLMENT_VIEWS))
+#: The Hosts & Clusters workspace shell (5a2A). A third implementation module, the
+#: same rule: URL-facing callables only. It deliberately shares the facade with
+#: Connections while sharing none of its private helpers -- which is the separation
+#: this package was split for in the first place.
+PUBLIC_WORKSPACE_VIEWS = (
+    "cluster_summary",
+    "node_summary",
+)
+
+PUBLIC_CLUSTER_VIEWS = tuple(sorted(PUBLIC_CONNECTION_VIEWS + PUBLIC_ENROLLMENT_VIEWS + PUBLIC_WORKSPACE_VIEWS))
 
 
 class ClusterViewPackageInvariantTests(SimpleTestCase):
@@ -34,7 +43,11 @@ class ClusterViewPackageInvariantTests(SimpleTestCase):
         self.assertFalse(hasattr(clusters, "_sign"))
 
     def test_root_view_facade_preserves_callback_identity(self):
-        for module, names in ((connections, PUBLIC_CONNECTION_VIEWS), (enrollment, PUBLIC_ENROLLMENT_VIEWS)):
+        for module, names in (
+            (connections, PUBLIC_CONNECTION_VIEWS),
+            (enrollment, PUBLIC_ENROLLMENT_VIEWS),
+            (workspace, PUBLIC_WORKSPACE_VIEWS),
+        ):
             for name in names:
                 implementation = getattr(module, name)
                 self.assertIs(getattr(clusters, name), implementation)

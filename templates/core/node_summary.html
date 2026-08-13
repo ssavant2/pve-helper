@@ -1,0 +1,30 @@
+{% extends "core/cluster_workspace.html" %}
+
+{% comment %}
+  The Node Summary *tab*; its runtime cards are 5a2D. Note what is absent: this
+  page never borrows the cluster's freshness to describe a node. The node carries
+  its own runtime status, so one failed sibling stays isolated.
+{% endcomment %}
+
+{% block workspace_subtitle %}
+  {% if node.online %}
+    <span class="badge completed">online</span>
+  {% else %}
+    <span class="badge failed">offline</span>
+  {% endif %}
+  <span class="badge{% if node.runtime_current %} completed{% endif %}">{{ node.runtime_status }}</span>
+  in <a href="{% url 'core:cluster_summary' cluster.key %}">{{ projection.display_name }}</a>
+{% endblock %}
+
+{% block workspace_content %}
+  <section class="panel">
+    <h2>Identity</h2>
+    <dl class="detail-grid">
+      <dt>Node reference</dt><dd>{{ node.node_ref }}</dd>
+      <dt>Corosync node id</dt><dd>{{ node.nodeid|default:"-" }}</dd>
+      <dt>Ring address</dt><dd>{{ node.reported_ring_address|default:"-" }}</dd>
+      <dt>First discovered</dt><dd>{{ node.first_discovered_at|default:"-" }}</dd>
+      <dt>Last discovered</dt><dd>{{ node.last_discovered_at|default:"-" }}</dd>
+    </dl>
+  </section>
+{% endblock %}

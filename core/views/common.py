@@ -163,7 +163,8 @@ NAV_PAGE_TITLES = {
     "orphans": "Orphan Finder",
     "vms": "Virtual Machines",
     "vms_overview": "VM Overview",
-    "clusters": "Clusters",
+    "clusters": "Connections",
+    "hosts_clusters": "Hosts & Clusters",
     "tags": "Tags",
     "scheduled_tasks": "Scheduled Tasks",
     "audit": "Audit Log",
@@ -448,7 +449,8 @@ def _audit_module_key_for(action: str, object_type: str, details) -> str:
 def _audit_module_label(module_key: str) -> str:
     return {
         "auth": "Auth",
-        "clusters": "Clusters",
+        "clusters": "Connections",
+        "hosts_clusters": "Hosts & Clusters",
         "network": "Network",
         "storage": "Storage",
         "system": "System",
