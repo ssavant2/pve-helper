@@ -1926,6 +1926,10 @@ def _run_scan(scan: ScanRun) -> None:
         observations=guest_observations,
         attempted_endpoints=endpoints,
         successful_endpoints=successful_endpoint_objects,
+        # Node coverage, not endpoint coverage: pass 2 above reads nodes that have no
+        # endpoint row, and their failures never touch `successful_endpoint_objects`.
+        attempted_nodes=cluster_attempts,
+        covered_nodes=cluster_coverage,
         errors=endpoint_errors,
         observed_at=inventory_at,
     )

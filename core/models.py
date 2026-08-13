@@ -1299,6 +1299,12 @@ class CurrentGuestInventoryState(TimestampedModel):
     unreachable = models.BooleanField(default=False)
     endpoints_attempted = models.JSONField(default=list, blank=True)
     endpoints_succeeded = models.JSONField(default=list, blank=True)
+    # The node names this cluster was completely read from during the pass that
+    # produced this row. Endpoint coverage is not node coverage: the scan's pass-2
+    # gap fill reads nodes that have no endpoint row of their own, so a node can be
+    # attempted and fail without any endpoint failing. Retirement is decided against
+    # this set, never against `complete` alone.
+    covered_nodes = models.JSONField(default=list, blank=True)
     errors = models.JSONField(default=dict, blank=True)
     # Linked-clone lineage for this cluster as {str(child_vmid): parent_vmid},
     # refreshed by the periodic worker. Passive request rendering reads this

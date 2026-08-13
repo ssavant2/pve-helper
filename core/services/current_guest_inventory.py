@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -73,6 +73,31 @@ def _delete_missing(queryset, observed: set[tuple[str, int]]) -> None:
         queryset.delete()
 
 
+def _retire_absent_on_covered_nodes(
+    cluster_rows,
+    *,
+    observed: set[tuple[str, int]],
+    covered_nodes: set[str],
+    complete: bool,
+) -> None:
+    """Retire only rows sitting on a node this pass completely read.
+
+    Absence requires coverage of the node the row is on, not of the cluster. A node
+    that was never read — because its gap-fill inventory failed, or because the
+    membership listing that would have named it failed — proves nothing about its
+    guests, and retiring them is false absence.
+
+    A row with no node cannot be placed against coverage at all. It is retirable only
+    under complete coverage, where the whole cluster answered and the guest is
+    genuinely absent from every node of it.
+    """
+
+    placed = Q(node__in=sorted(covered_nodes))
+    if complete:
+        placed |= Q(node="")
+    _delete_missing(cluster_rows.filter(placed), observed)
+
+
 def _update_state(
     *,
     cluster,
@@ -80,6 +105,7 @@ def _update_state(
     complete: bool,
     attempted: list[str],
     succeeded: list[str],
+    covered_nodes: Iterable[str],
     errors: dict,
     source_scan: ScanRun | None,
     unreachable: bool = False,
@@ -96,6 +122,7 @@ def _update_state(
     state.unreachable = unreachable
     state.endpoints_attempted = attempted
     state.endpoints_succeeded = succeeded
+    state.covered_nodes = sorted(covered_nodes)
     state.errors = errors
     state.save()
     # A reconciled inventory-state row is current-projection footprint: the
@@ -111,9 +138,19 @@ def reconcile_scan_guest_inventory(
     observations: Iterable[ScanGuestObservation],
     attempted_endpoints: Iterable[ProxmoxEndpoint],
     successful_endpoints: Iterable[ProxmoxEndpoint],
+    attempted_nodes: Mapping[int, Iterable[str]],
+    covered_nodes: Mapping[int, Iterable[str]],
     errors: dict,
     observed_at=None,
 ) -> CurrentGuestInventoryState:
+    """Reconcile the guest projection from one installation-wide scan.
+
+    ``attempted_nodes``/``covered_nodes`` are the scan's per-cluster **node** coverage,
+    keyed by cluster id. They are required rather than derived: an endpoint answers for
+    one node, but the scan's gap-fill pass reads nodes that have no endpoint at all, so
+    the endpoint lists alone cannot tell which nodes were actually read.
+    """
+
     observed_at = observed_at or timezone.now()
     observations = [
         item for item in observations if item.guest.object_type in GUEST_TYPES and item.guest.vmid is not None
@@ -132,27 +169,22 @@ def reconcile_scan_guest_inventory(
         cluster_succeeded = [ep for ep in succeeded if ep.cluster_id == cluster_id]
         cluster_obs = [item for item in observations if item.endpoint.cluster_id == cluster_id]
         cluster = cluster_attempted[0].cluster
-        complete = bool(cluster_attempted) and (
-            {ep.pk for ep in cluster_attempted} == {ep.pk for ep in cluster_succeeded}
-        )
+        cluster_attempted_nodes = set(attempted_nodes.get(cluster_id) or ())
+        cluster_covered_nodes = set(covered_nodes.get(cluster_id) or ())
+        # Completeness is node-grained. Endpoint success is not the same question: a
+        # gap-filled node fails without any endpoint failing, and the old endpoint
+        # rollup called that pass complete and retired the unread node's guests.
+        complete = bool(cluster_attempted_nodes) and cluster_attempted_nodes == cluster_covered_nodes
 
-        observed_by_endpoint: dict[int, set[tuple[str, int]]] = {ep.pk: set() for ep in cluster_succeeded}
-        all_observed: set[tuple[str, int]] = set()
-        for item in cluster_obs:
-            key = (item.guest.object_type, int(item.guest.vmid))
-            all_observed.add(key)
-            if item.endpoint.pk in observed_by_endpoint:
-                observed_by_endpoint[item.endpoint.pk].add(key)
+        all_observed: set[tuple[str, int]] = {(item.guest.object_type, int(item.guest.vmid)) for item in cluster_obs}
 
         cluster_rows = CurrentGuestInventory.objects.filter(cluster=cluster)
-        if complete:
-            _delete_missing(cluster_rows, all_observed)
-        else:
-            for endpoint in cluster_succeeded:
-                _delete_missing(
-                    cluster_rows.filter(source_endpoint=endpoint),
-                    observed_by_endpoint.get(endpoint.pk, set()),
-                )
+        _retire_absent_on_covered_nodes(
+            cluster_rows,
+            observed=all_observed,
+            covered_nodes=cluster_covered_nodes,
+            complete=complete,
+        )
 
         for item in cluster_obs:
             guest = item.guest
@@ -180,9 +212,11 @@ def reconcile_scan_guest_inventory(
                 cluster=cluster,
                 refreshed_at=observed_at,
                 complete=complete,
-                unreachable=bool(cluster_attempted) and not cluster_succeeded,
+                # Nothing was read at all: guests are unknown, not absent.
+                unreachable=bool(cluster_attempted_nodes) and not cluster_covered_nodes,
                 attempted=[ep.name for ep in cluster_attempted],
                 succeeded=[ep.name for ep in cluster_succeeded],
+                covered_nodes=cluster_covered_nodes,
                 errors=errors,
                 source_scan=scan,
             )
@@ -301,6 +335,10 @@ def reconcile_live_guest_inventory(
         unreachable=bool(inventory.attempted_endpoints) and not inventory.successful_endpoints,
         attempted=list(inventory.attempted_endpoints),
         succeeded=list(inventory.successful_endpoints),
+        # `cluster/resources` is cluster-grained authority, so this path never
+        # measures per-node coverage. It carries the scan's last measurement
+        # forward rather than inventing or erasing one.
+        covered_nodes=list(prior.covered_nodes or ()) if prior else (),
         errors={"live_inventory": list(inventory.errors)} if inventory.errors else {},
         source_scan=prior.source_scan if prior else None,
     )

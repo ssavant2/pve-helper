@@ -81,10 +81,13 @@ class CurrentGuestInventoryTests(TestCase):
             observations=observations,
             attempted_endpoints=[self.pve1, self.pve2],
             successful_endpoints=[self.pve1, self.pve2],
+            attempted_nodes={self.cluster.pk: {"pve1", "pve2"}},
+            covered_nodes={self.cluster.pk: {"pve1", "pve2"}},
             errors={},
         )
 
         self.assertTrue(state.complete)
+        self.assertEqual(state.covered_nodes, ["pve1", "pve2"])
         self.assertEqual(
             set(CurrentGuestInventory.objects.values_list("object_type", "vmid")), {("vm", 100), ("ct", 200)}
         )
@@ -118,7 +121,7 @@ class CurrentGuestInventoryTests(TestCase):
         guest.refresh_from_db()
         self.assertEqual(guest.name, "configured-name")
 
-    def test_partial_scan_only_retires_membership_from_successful_endpoints(self):
+    def test_partial_scan_only_retires_membership_on_covered_nodes(self):
         self.current_guest(endpoint=self.pve1, object_type="vm", vmid=101, name="gone-from-pve1")
         preserved = self.current_guest(endpoint=self.pve2, object_type="vm", vmid=202, name="preserved")
 
@@ -132,6 +135,8 @@ class CurrentGuestInventoryTests(TestCase):
             ],
             attempted_endpoints=[self.pve1, self.pve2],
             successful_endpoints=[self.pve1],
+            attempted_nodes={self.cluster.pk: {"pve1", "pve2"}},
+            covered_nodes={self.cluster.pk: {"pve1"}},
             errors={"pve2": "unavailable"},
         )
 
@@ -139,6 +144,67 @@ class CurrentGuestInventoryTests(TestCase):
         self.assertFalse(CurrentGuestInventory.objects.filter(vmid=101).exists())
         self.assertTrue(CurrentGuestInventory.objects.filter(pk=preserved.pk).exists())
         self.assertTrue(CurrentGuestInventory.objects.filter(vmid=100).exists())
+
+    def test_failed_gap_fill_node_does_not_retire_its_guests(self):
+        """The bug 5a1I-a exists to fix, in the shape that actually occurs.
+
+        `pve2` has no endpoint row: the scan reads it through the cluster's reachable
+        member and attributes its guests to that member endpoint. When that gap-fill
+        read fails, every endpoint still succeeded, so the old endpoint-grained
+        rollup called the pass complete and deleted a guest on a node it never read.
+        """
+        stranded = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=303, name="on-pve2")
+        stranded.node = "pve2"
+        stranded.save(update_fields=["node"])
+
+        state = reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[
+                ScanGuestObservation(
+                    self.pve1,
+                    self.scan_guest(node="pve1", object_type="vm", vmid=100, name="seen"),
+                )
+            ],
+            # Only pve1 has an endpoint, and it answered. pve2 was attempted through
+            # the gap-fill pass and failed.
+            attempted_endpoints=[self.pve1],
+            successful_endpoints=[self.pve1],
+            attempted_nodes={self.cluster.pk: {"pve1", "pve2"}},
+            covered_nodes={self.cluster.pk: {"pve1"}},
+            errors={"pve2": ["gap fill failed"]},
+        )
+
+        self.assertFalse(state.complete)
+        self.assertFalse(state.unreachable)
+        self.assertEqual(state.covered_nodes, ["pve1"])
+        self.assertTrue(CurrentGuestInventory.objects.filter(pk=stranded.pk).exists())
+
+    def test_unplaced_row_is_retired_only_under_complete_coverage(self):
+        unplaced = self.current_guest(endpoint=self.pve1, object_type="vm", vmid=404, name="no-node")
+        unplaced.node = ""
+        unplaced.save(update_fields=["node"])
+
+        reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[],
+            attempted_endpoints=[self.pve1],
+            successful_endpoints=[self.pve1],
+            attempted_nodes={self.cluster.pk: {"pve1", "pve2"}},
+            covered_nodes={self.cluster.pk: {"pve1"}},
+            errors={"pve2": ["gap fill failed"]},
+        )
+        self.assertTrue(CurrentGuestInventory.objects.filter(pk=unplaced.pk).exists())
+
+        reconcile_scan_guest_inventory(
+            scan=self.scan,
+            observations=[],
+            attempted_endpoints=[self.pve1],
+            successful_endpoints=[self.pve1],
+            attempted_nodes={self.cluster.pk: {"pve1", "pve2"}},
+            covered_nodes={self.cluster.pk: {"pve1", "pve2"}},
+            errors={},
+        )
+        self.assertFalse(CurrentGuestInventory.objects.filter(pk=unplaced.pk).exists())
 
     def test_partial_live_refresh_adds_and_updates_but_never_deletes_unseen_guests(self):
         preserved = self.current_guest(endpoint=self.pve2, object_type="vm", vmid=202, name="preserved")
@@ -457,6 +523,9 @@ class DuplicateVmidAcrossClustersTests(TestCase):
             disk_references=[],
         )
 
+    def _both_nodes(self):
+        return {self.hq.pk: {"pve3"}, self.b.pk: {"pve201"}}
+
     def test_both_clusters_keep_their_own_vm500(self):
         reconcile_scan_guest_inventory(
             scan=self.scan,
@@ -466,6 +535,8 @@ class DuplicateVmidAcrossClustersTests(TestCase):
             ],
             attempted_endpoints=[self.hq_ep, self.b_ep],
             successful_endpoints=[self.hq_ep, self.b_ep],
+            attempted_nodes=self._both_nodes(),
+            covered_nodes=self._both_nodes(),
             errors={},
         )
 
@@ -486,6 +557,8 @@ class DuplicateVmidAcrossClustersTests(TestCase):
             ],
             attempted_endpoints=[self.hq_ep, self.b_ep],
             successful_endpoints=[self.hq_ep, self.b_ep],
+            attempted_nodes=self._both_nodes(),
+            covered_nodes=self._both_nodes(),
             errors={},
         )
 
@@ -494,6 +567,8 @@ class DuplicateVmidAcrossClustersTests(TestCase):
             observations=[],  # HQ's vm:500 is gone
             attempted_endpoints=[self.hq_ep],
             successful_endpoints=[self.hq_ep],
+            attempted_nodes={self.hq.pk: {"pve3"}},
+            covered_nodes={self.hq.pk: {"pve3"}},
             errors={},
         )
 
@@ -507,6 +582,8 @@ class DuplicateVmidAcrossClustersTests(TestCase):
             observations=[ScanGuestObservation(endpoint=self.hq_ep, guest=self._guest("pve3", "hq-500"))],
             attempted_endpoints=[self.hq_ep],
             successful_endpoints=[self.hq_ep],
+            attempted_nodes={self.hq.pk: {"pve3"}},
+            covered_nodes={self.hq.pk: {"pve3"}},
             errors={},
         )
 
@@ -516,6 +593,8 @@ class DuplicateVmidAcrossClustersTests(TestCase):
             observations=[],
             attempted_endpoints=[self.hq_ep],
             successful_endpoints=[],
+            attempted_nodes={self.hq.pk: {"pve3"}},
+            covered_nodes={self.hq.pk: set()},
             errors={"pve3": ["down"]},
         )
 
