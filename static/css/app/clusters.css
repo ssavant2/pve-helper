@@ -219,6 +219,15 @@
   margin-top: 4px;
 }
 
+/* The review panel's only action. Right-aligned across the full panel width it
+   read as an empty band under the table; left-aligned it sits under the column it
+   acts on, and the padding matches the panel's own so it is not flush to the edge. */
+.cluster-review-actions {
+  justify-content: flex-start;
+  margin-top: 0;
+  padding: 10px 12px;
+}
+
 .cluster-candidate-summary {
   display: flex;
   align-items: center;

@@ -65,6 +65,11 @@ _TOKEN_MAX_AGE_SECONDS = 1800
 STATE_MANAGED = "managed"
 STATE_SAFETY_ONLY = "safety_only"
 STATE_DISCOVERED = "discovered"
+#: Discovered, unenrolled, but pve-helper already has a transport to it. Worth its
+#: own state because "not added" reads as "nothing is known about this node", while
+#: the truth is narrower and more actionable: the connection works, only the
+#: publication decision is missing.
+STATE_DISCOVERED_WITH_ENDPOINT = "discovered_with_endpoint"
 STATE_ENROLLED_ABSENT = "enrolled_absent"
 STATE_ENROLLED_UNDISCOVERED = "enrolled_undiscovered"
 
@@ -72,6 +77,7 @@ STATE_LABELS = {
     STATE_MANAGED: "Managed",
     STATE_SAFETY_ONLY: "Safety only",
     STATE_DISCOVERED: "Discovered, not added",
+    STATE_DISCOVERED_WITH_ENDPOINT: "Discovered, endpoint ready",
     STATE_ENROLLED_ABSENT: "Enrolled, no longer present",
     STATE_ENROLLED_UNDISCOVERED: "Enrolled, not yet discovered",
 }
@@ -119,6 +125,23 @@ def _candidate_url_suggestion(ring_address: str) -> str:
     return f"https://{host}:8006"
 
 
+def _endpoints_by_node(cluster) -> dict[str, ProxmoxEndpoint]:
+    """This cluster's endpoints keyed by the node each one answers as.
+
+    A scan stores the answering node in `details["node"]`, which is the only proof of
+    which member a URL actually reaches — the endpoint's own name is operator-chosen
+    and a VIP or alias may not be a node name at all. An endpoint that has never
+    answered contributes nothing rather than being guessed at from its name.
+    """
+
+    by_node: dict[str, ProxmoxEndpoint] = {}
+    for endpoint in ProxmoxEndpoint.objects.filter(cluster=cluster).order_by("name"):
+        node_name = str((endpoint.details or {}).get("node") or "")
+        if node_name:
+            by_node.setdefault(node_name, endpoint)
+    return by_node
+
+
 def node_enrollment_rows(cluster) -> list[dict]:
     """Compose the Nodes panel from one projection read plus the enrollment rows.
 
@@ -135,13 +158,21 @@ def node_enrollment_rows(cluster) -> list[dict]:
         discovered = {node.node_name: node for node in projection.nodes}
 
     enrollments = enrollments_by_node(cluster)
+    # Endpoints are a separate axis from enrollment: one is a transport, the other a
+    # publication decision, and adding an endpoint deliberately never enrols. The
+    # panel still has to *show* both, or a node with a working, recently scanned
+    # endpoint is indistinguishable from one only ever seen through its neighbours.
+    # Resolved from the endpoint rows rather than from `onboarded_via_endpoint`,
+    # which exists only where an enrollment does.
+    endpoints_by_node = _endpoints_by_node(cluster)
 
     rows = []
     for node_name in sorted(set(discovered) | set(enrollments)):
         node = discovered.get(node_name)
         enrollment = enrollments.get(node_name)
+        endpoint = endpoints_by_node.get(node_name)
         if enrollment is None:
-            state = STATE_DISCOVERED
+            state = STATE_DISCOVERED_WITH_ENDPOINT if endpoint else STATE_DISCOVERED
         elif node is None:
             state = STATE_ENROLLED_UNDISCOVERED
         elif not node.present:
@@ -163,7 +194,7 @@ def node_enrollment_rows(cluster) -> list[dict]:
                 "reported_ring_address": node.reported_ring_address if node else "",
                 "last_discovered_at": node.last_discovered_at if node else None,
                 "first_discovered_at": node.first_discovered_at if node else None,
-                "endpoint": (enrollment.onboarded_via_endpoint if enrollment else None),
+                "endpoint": (enrollment.onboarded_via_endpoint if enrollment else None) or endpoint,
             }
         )
     return rows

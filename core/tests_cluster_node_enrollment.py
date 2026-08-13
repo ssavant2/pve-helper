@@ -498,3 +498,54 @@ class OnboardingEnrollmentContractTests(TestCase):
         self.assertEqual(cluster.enrollment_contract_version, 0)
         self.assertEqual(cluster.enrollment_generation, 0)
         self.assertFalse(ClusterNodeEnrollment.objects.filter(cluster=cluster).exists())
+
+
+class NodePanelEndpointVisibilityTests(TestCase):
+    """A node with a working transport must not read as one nothing is known about.
+
+    Endpoints and enrollment are separate axes on purpose — adding an endpoint never
+    enrols — but the panel still has to show both, or `pve1` (verified endpoint,
+    scanned minutes ago) is indistinguishable from `pve2` (seen only through its
+    neighbours).
+    """
+
+    def setUp(self):
+        self.cluster = _cluster()
+        _publish_membership(self.cluster, "pve1", "pve2")
+
+    def _endpoint(self, name, node=None, **details):
+        return ProxmoxEndpoint.objects.create(
+            name=name,
+            url=f"https://{name}:8006",
+            cluster=self.cluster,
+            details={"node": node, **details} if node else dict(details),
+        )
+
+    def _row(self, node_name):
+        return next(row for row in node_enrollment_rows(self.cluster) if row["node_name"] == node_name)
+
+    def test_an_unenrolled_node_with_an_endpoint_says_so(self):
+        self._endpoint("pve1-transport", node="pve1")
+
+        self.assertEqual(self._row("pve1")["state"], "discovered_with_endpoint")
+        self.assertEqual(self._row("pve1")["endpoint"].name, "pve1-transport")
+
+    def test_a_node_seen_only_through_its_neighbours_stays_plain_discovered(self):
+        self._endpoint("pve1-transport", node="pve1")
+
+        self.assertEqual(self._row("pve2")["state"], "discovered")
+        self.assertIsNone(self._row("pve2")["endpoint"])
+
+    def test_an_endpoint_that_never_answered_proves_nothing(self):
+        """The endpoint name is operator-chosen and a VIP may be no node at all, so
+        only a stored answering node counts."""
+        self._endpoint("pve1", node=None)
+
+        self.assertEqual(self._row("pve1")["state"], "discovered")
+        self.assertIsNone(self._row("pve1")["endpoint"])
+
+    def test_enrollment_still_wins_over_the_endpoint_hint(self):
+        self._endpoint("pve1-transport", node="pve1")
+        enroll_node(self.cluster, node_name="pve1", mode="managed")
+
+        self.assertEqual(self._row("pve1")["state"], "managed")
