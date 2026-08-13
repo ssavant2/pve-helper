@@ -703,10 +703,14 @@ disk references keep populating `referenced_volids` and a live disk on shared
 storage can never be classified as an orphan — while nothing about the node
 reaches a page, API response, count or target list.
 
-**Do not use "not enrolled" to hide a node.** An eligible member that pve-helper
-is forbidden to read lowers absence confidence on every storage it could have
-mounted, which turns orphan classification and the Recycle Bin conservative for
-the storages the installation actually uses. Reserve it for a node pve-helper
+**Do not use "not enrolled" to hide a node.** An eligible member pve-helper is
+forbidden to read lowers absence confidence on every storage it could have
+mounted: the usage preflight behind file actions returns `unknown` rather than
+`unreferenced` there, so a move, trash or delete on one of those datastores
+raises a confirmation naming the node instead of proceeding silently. The
+confirmation is always answerable and never a refusal — the node it names is one
+the operator took out of scope, and refusing outright would strand the file
+behind a decision this app cannot reach. Reserve it for a node pve-helper
 genuinely must not contact.
 
 ### New connections

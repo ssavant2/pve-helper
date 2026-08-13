@@ -177,11 +177,15 @@ state you have put it in:
   discovery evidence.
 
 **Prefer *Safety only* over leaving a node unenrolled.** Both hide the node
-equally well, but only *Safety only* leaves pve-helper knowing what that node's
-guests have on shared storage. A node the app is forbidden to read is a node
-whose disks it cannot account for, which is the wrong starting point for any
-judgement about a shared datastore. Reserve *Not enrolled* for a member
-pve-helper genuinely must not contact.
+equally well, and the difference is what pve-helper can still prove afterwards. A
+*Safety only* node is read, so its guests' disks keep counting as evidence and a
+shared datastore stays fully accounted for. An unenrolled node is not read at
+all, so for every datastore that node could have mounted, "nothing is using this
+file" stops being a statement about the cluster: file actions on those datastores
+ask you to confirm before they proceed, and the question names the node. That is
+not a punishment — it is the honest consequence of a member
+nobody is allowed to ask. Reserve *Not enrolled* for a node pve-helper genuinely
+must not contact, and expect the extra question when you use it.
 
 The actions on each row are **Add node** for a discovered member you want to
 start using, **Hide** and **Manage** to move an enrolled node between the two
