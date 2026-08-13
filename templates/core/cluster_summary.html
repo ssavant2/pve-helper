@@ -1,42 +1,144 @@
 {% extends "core/cluster_workspace.html" %}
 
-{% comment %}
-  The Summary *tab* exists as of 5a2A; its cards are 5a2C. This body states the
-  object's identity and publication scope and nothing more — deliberately, because
-  a placeholder card that guesses at a field is the live-fallback mistake in
-  another shape.
-{% endcomment %}
-
 {% block workspace_subtitle %}
-  <span class="badge{% if projection.membership_current %} completed{% endif %}">
-    {{ projection.membership_status|default:"unknown" }}
+  <span class="badge{% if projection.membership_current %} completed{% elif projection.membership_status == 'missing' %} failed{% endif %}">
+    membership {{ projection.membership_status }}
   </span>
   {% if projection.topology_role_readable %}
     <span class="badge infrastructure">{{ projection.topology_role }}</span>
   {% endif %}
+  {% if projection.transition_pending %}
+    <span class="badge failed">transition pending{% if projection.pending_role_is_readable %} &rarr; {{ projection.pending_topology_role }}{% endif %}</span>
+  {% endif %}
   {% if cluster_degraded %}<span class="badge failed">{{ cluster_degraded }}</span>{% endif %}
-  {{ published_nodes|length }} node{{ published_nodes|length|pluralize }}
 {% endblock %}
 
 {% block workspace_content %}
+  <div class="cluster-detail-grid">
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Membership</h2>
+          <p class="panel-meta">Generation {{ projection.membership_generation }}{% if projection.observed_from %}, observed from {{ projection.observed_from }}{% endif %}</p>
+        </div>
+      </div>
+      <dl class="cluster-detail-list">
+        <dt>Nodes online</dt>
+        <dd>{{ summary.online_nodes }} of {{ summary.node_count }}</dd>
+        <dt>Quorum</dt>
+        <dd>
+          {% if projection.topology_role_readable and projection.topology_role == "standalone" %}
+            <span class="muted">not applicable</span>
+          {% elif projection.quorate %}
+            <span class="badge completed">quorate</span>
+          {% else %}
+            <span class="badge failed">not quorate</span>
+          {% endif %}
+        </dd>
+        <dt>Coverage</dt>
+        <dd>
+          {% if projection.membership_coverage %}
+            {% if projection.membership_coverage.complete %}complete{% else %}incomplete{% endif %},
+            {% if projection.membership_coverage.fresh %}fresh{% else %}stale{% endif %}
+            {% if projection.membership_coverage.error_code %}
+              <span class="badge failed">{{ projection.membership_coverage.error_code }}</span>
+            {% endif %}
+          {% else %}
+            <span class="muted">never published</span>
+          {% endif %}
+        </dd>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><h2>Capacity</h2></div>
+      {% comment %}
+        The coverage line is not decoration. These are sums over the nodes whose own
+        runtime is current, so stating the ratio is what keeps a two-of-three total
+        from reading as a whole-cluster figure.
+      {% endcomment %}
+      {% if summary.capacity.complete %}
+        <p class="panel-meta">All {{ summary.capacity.total }} node{{ summary.capacity.total|pluralize }} reporting.</p>
+      {% else %}
+        <p class="panel-meta">
+          <span class="badge failed">partial</span>
+          {{ summary.capacity.contributing }} of {{ summary.capacity.total }} node{{ summary.capacity.total|pluralize }} reporting;
+          totals exclude {{ summary.capacity.missing }}.
+        </p>
+      {% endif %}
+      {% if summary.capacity.contributing %}
+        <dl class="cluster-detail-list">
+          <dt>CPU cores</dt><dd>{{ summary.capacity.cpu_cores }}</dd>
+          <dt>Memory</dt>
+          <dd>{{ summary.capacity.memory_used_bytes|filesizeformat }} of {{ summary.capacity.memory_total_bytes|filesizeformat }}</dd>
+          <dt>Root filesystem</dt>
+          <dd>{{ summary.capacity.rootfs_used_bytes|filesizeformat }} of {{ summary.capacity.rootfs_total_bytes|filesizeformat }}</dd>
+        </dl>
+      {% else %}
+        <p class="empty-state">No node reported current runtime, so there is nothing to total.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Guests</h2>
+          <p class="panel-meta">Enrolled nodes only; guests on hidden nodes are not counted here.</p>
+        </div>
+      </div>
+      <dl class="cluster-detail-list">
+        <dt>Total</dt><dd>{{ summary.guests_total }}</dd>
+        <dt>Running</dt><dd>{{ summary.guests_running }}</dd>
+      </dl>
+      {% if summary.guests_off_listed_nodes %}
+        <p class="panel-meta">
+          <span class="badge failed">unplaced</span>
+          {{ summary.guests_off_listed_nodes }} guest{{ summary.guests_off_listed_nodes|pluralize }} sit on a node this
+          connection no longer lists. They are excluded from the totals above.
+        </p>
+      {% endif %}
+    </section>
+  </div>
+
   <section class="panel">
-    <h2>Nodes</h2>
-    <p class="panel-meta">Enrolled members of this connection. Discovery and enrollment live in Connection.</p>
-    {% if published_nodes %}
+    <div class="panel-heading">
+      <div>
+        <h2>Nodes</h2>
+        <p class="panel-meta">Enrolled members of this connection. Discovery and enrollment live in Connection.</p>
+      </div>
+    </div>
+    {% if summary.rows %}
       <table class="compact-table">
         <thead>
-          <tr><th scope="col">Node</th><th scope="col">State</th></tr>
+          <tr>
+            <th scope="col">Node</th>
+            <th scope="col">State</th>
+            <th scope="col">Runtime</th>
+            <th scope="col">Guests</th>
+          </tr>
         </thead>
         <tbody>
-          {% for node in published_nodes %}
+          {% for row in summary.rows %}
             <tr>
-              <td><a href="{% url 'core:node_summary' cluster.key node.node_name %}">{{ node.node_name }}</a></td>
+              <td><a href="{% url 'core:node_summary' cluster.key row.node.node_name %}">{{ row.node.node_name }}</a></td>
               <td>
-                {% if node.online %}
+                {% if row.node.online %}
                   <span class="badge completed">online</span>
                 {% else %}
                   <span class="badge failed">offline</span>
                 {% endif %}
+              </td>
+              {% comment %}
+                Each node shows its own runtime status. A sibling's failure never
+                changes this cell.
+              {% endcomment %}
+              <td>
+                <span class="badge{% if row.node.runtime_current %} completed{% elif row.node.runtime_status == 'failed' %} failed{% endif %}">
+                  {{ row.node.runtime_status }}
+                </span>
+              </td>
+              <td>
+                {{ row.placement.total }}{% if row.placement.running %} ({{ row.placement.running }} running){% endif %}
               </td>
             </tr>
           {% endfor %}

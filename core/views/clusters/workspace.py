@@ -28,8 +28,11 @@ from core.services.cluster_projection_read import (
     ClusterProjectionNotFound,
     read_cluster_projection,
 )
+from core.services.cluster_state_labels import cluster_degraded_label
 from core.services.publication_scope import publication_scope
 from core.services.workspace_nav import cluster_nav_key, node_nav_key
+from core.services.workspace_summary import cluster_summary as compose_cluster_summary
+from core.services.workspace_summary import node_summary as compose_node_summary
 from core.views.cluster_scope import managed_cluster_from_path
 from core.views.common import app_login_required, navigation_context
 
@@ -111,6 +114,8 @@ def cluster_summary(request, cluster_key: str):
     context = {
         "cluster": cluster,
         "projection": projection,
+        "summary": compose_cluster_summary(cluster, projection, published),
+        "cluster_degraded": cluster_degraded_label(cluster),
         "workspace_object": projection.display_name,
         "workspace_kind": "cluster",
         "published_nodes": published,
@@ -140,6 +145,7 @@ def node_summary(request, cluster_key: str, node: str):
         "cluster": cluster,
         "projection": projection,
         "node": match,
+        "summary": compose_node_summary(cluster, match),
         "workspace_object": match.node_name,
         "workspace_kind": "node",
         "tabs": _tabs(

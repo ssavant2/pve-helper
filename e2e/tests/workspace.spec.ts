@@ -72,6 +72,39 @@ test("a retired cluster is reachable through Connections but never the tree", as
   await expect(page.getByRole("main")).toContainText("Retired E2E cluster");
 });
 
+test("member nodes render nested under their cluster, not as a flat list", async ({ page }) => {
+  await page.goto("/", { waitUntil: "load" });
+
+  const cluster = page.locator('[data-infrastructure-kind="cluster"][data-cluster-key="e2e"]');
+  const node = page.locator('[data-infrastructure-kind="node"][data-cluster-key="e2e"][data-node="pve1"]');
+
+  await expect(cluster).toBeVisible();
+  await expect(node).toBeVisible();
+  // The node sits inside its own tree-children under the cluster, so it is indented
+  // past the cluster row rather than sharing its left edge.
+  const clusterBox = await cluster.boundingBox();
+  const nodeBox = await node.boundingBox();
+  expect(clusterBox).not.toBeNull();
+  expect(nodeBox).not.toBeNull();
+  expect(nodeBox!.x).toBeGreaterThan(clusterBox!.x);
+});
+
+test("cluster Summary states its capacity coverage rather than a bare total", async ({ page }) => {
+  await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
+
+  const capacity = page.getByRole("main").locator(".panel", { hasText: "Capacity" }).first();
+  await expect(capacity).toContainText(/reporting/);
+});
+
+test("node Summary shows its own runtime state, not the cluster's", async ({ page }) => {
+  // `pve1` is current; the page must speak for that node alone.
+  await openInfrastructureObjectFromTree(page, { kind: "node", clusterKey: "e2e", node: "pve1" });
+
+  await expect(page.getByRole("heading", { name: "pve1", level: 1 })).toBeVisible();
+  await expect(page.getByRole("main")).toContainText("Guests");
+  await expect(page.getByRole("main")).toContainText("Node reference");
+});
+
 test("only Summary is an enabled tab, and the rest state the intended shape", async ({ page }) => {
   await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
 

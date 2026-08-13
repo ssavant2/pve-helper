@@ -1,9 +1,9 @@
 {% extends "core/cluster_workspace.html" %}
 
 {% comment %}
-  The Node Summary *tab*; its runtime cards are 5a2D. Note what is absent: this
-  page never borrows the cluster's freshness to describe a node. The node carries
-  its own runtime status, so one failed sibling stays isolated.
+  Note what this page never reads: the cluster's membership freshness. The node
+  carries its own `runtime_status`, so one failed sibling stays isolated and this
+  page keeps telling the truth about the node in front of the operator.
 {% endcomment %}
 
 {% block workspace_subtitle %}
@@ -12,16 +12,115 @@
   {% else %}
     <span class="badge failed">offline</span>
   {% endif %}
-  <span class="badge{% if node.runtime_current %} completed{% endif %}">{{ node.runtime_status }}</span>
+  <span class="badge{% if node.runtime_current %} completed{% elif node.runtime_status == 'failed' %} failed{% endif %}">
+    runtime {{ node.runtime_status }}
+  </span>
   in <a href="{% url 'core:cluster_summary' cluster.key %}">{{ projection.display_name }}</a>
 {% endblock %}
 
 {% block workspace_content %}
+  {% if not node.runtime_current %}
+    <p class="panel-meta">
+      <span class="badge failed">{{ node.runtime_status }}</span>
+      The figures below are this node's last known runtime, not a current reading.
+      {% if node.runtime_coverage and node.runtime_coverage.error_code %}
+        Last attempt reported <strong>{{ node.runtime_coverage.error_code }}</strong>.
+      {% endif %}
+    </p>
+  {% endif %}
+
+  <div class="cluster-detail-grid">
+    <section class="panel">
+      <div class="panel-heading"><h2>Utilisation</h2></div>
+      {% if node.runtime_coverage %}
+        <p class="panel-meta">
+          Runtime generation {{ node.runtime_generation }}, observed {{ node.runtime_coverage.observed_at|default:"never" }}
+        </p>
+      {% else %}
+        <p class="panel-meta">This node's runtime has never been published.</p>
+      {% endif %}
+      <dl class="cluster-detail-list">
+        <dt>CPU</dt>
+        <dd>
+          {% if node.runtime.cpu_usage != None %}
+            {{ node.runtime.cpu_usage|floatformat:2 }}
+            {% if node.runtime.cpu_wait != None %}<span class="muted">(iowait {{ node.runtime.cpu_wait|floatformat:2 }})</span>{% endif %}
+          {% else %}-{% endif %}
+        </dd>
+        <dt>Load average</dt>
+        <dd>
+          {% if node.runtime.load_average_1m != None %}
+            {{ node.runtime.load_average_1m|floatformat:2 }} /
+            {{ node.runtime.load_average_5m|default_if_none:"-"|floatformat:2 }} /
+            {{ node.runtime.load_average_15m|default_if_none:"-"|floatformat:2 }}
+          {% else %}-{% endif %}
+        </dd>
+        <dt>Memory</dt>
+        <dd>
+          {% if node.runtime.memory_total_bytes %}
+            {{ node.runtime.memory_used_bytes|filesizeformat }} of {{ node.runtime.memory_total_bytes|filesizeformat }}
+          {% else %}-{% endif %}
+        </dd>
+        <dt>Swap</dt>
+        <dd>
+          {% if node.runtime.swap_total_bytes %}
+            {{ node.runtime.swap_used_bytes|filesizeformat }} of {{ node.runtime.swap_total_bytes|filesizeformat }}
+          {% else %}-{% endif %}
+        </dd>
+        <dt>Root filesystem</dt>
+        <dd>
+          {% if node.runtime.rootfs_total_bytes %}
+            {{ node.runtime.rootfs_used_bytes|filesizeformat }} of {{ node.runtime.rootfs_total_bytes|filesizeformat }}
+          {% else %}-{% endif %}
+        </dd>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><h2>Hardware and software</h2></div>
+      <dl class="cluster-detail-list">
+        <dt>CPU model</dt><dd>{{ node.runtime.cpu_model|default:"-" }}</dd>
+        <dt>Sockets / cores</dt>
+        <dd>
+          {% if node.runtime.cpu_cores %}
+            {{ node.runtime.cpu_sockets|default_if_none:"-" }} / {{ node.runtime.cpu_cores }}
+          {% else %}-{% endif %}
+        </dd>
+        <dt>PVE version</dt><dd>{{ node.runtime.pve_version|default:"-" }}</dd>
+        <dt>Kernel</dt><dd>{{ node.runtime.current_kernel_release|default:node.runtime.kernel_version|default:"-" }}</dd>
+        <dt>Boot mode</dt>
+        <dd>
+          {{ node.runtime.boot_mode|default:"-" }}
+          {% if node.runtime.secure_boot_enabled != None %}
+            <span class="badge{% if node.runtime.secure_boot_enabled %} completed{% endif %}">
+              secure boot {% if node.runtime.secure_boot_enabled %}on{% else %}off{% endif %}
+            </span>
+          {% endif %}
+        </dd>
+        <dt>Uptime</dt>
+        <dd>{% if node.runtime.uptime_seconds %}{{ node.runtime.uptime_seconds }}s{% else %}-{% endif %}</dd>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Guests</h2>
+          <p class="panel-meta">Placed on this node, from the published projection.</p>
+        </div>
+      </div>
+      <dl class="cluster-detail-list">
+        <dt>Total</dt><dd>{{ summary.placement.total }}</dd>
+        <dt>Running</dt><dd>{{ summary.placement.running }}</dd>
+      </dl>
+    </section>
+  </div>
+
   <section class="panel">
-    <h2>Identity</h2>
-    <dl class="detail-grid">
+    <div class="panel-heading"><h2>Identity</h2></div>
+    <dl class="cluster-detail-list">
       <dt>Node reference</dt><dd>{{ node.node_ref }}</dd>
-      <dt>Corosync node id</dt><dd>{{ node.nodeid|default:"-" }}</dd>
+      <dt>Corosync node id</dt><dd>{{ node.nodeid|default_if_none:"-" }}</dd>
       <dt>Ring address</dt><dd>{{ node.reported_ring_address|default:"-" }}</dd>
       <dt>First discovered</dt><dd>{{ node.first_discovered_at|default:"-" }}</dd>
       <dt>Last discovered</dt><dd>{{ node.last_discovered_at|default:"-" }}</dd>
