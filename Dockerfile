@@ -1,4 +1,4 @@
-FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS base
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS base
 
 ARG RELEASE_VERSION=DEV
 
@@ -44,7 +44,7 @@ USER app
 
 RUN APP_SECRET_KEY=build-time-placeholder DEBUG=true python manage.py collectstatic --noinput
 
-FROM busybox:1.38@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d AS runtime-source
+FROM busybox:1.38@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616 AS runtime-source
 
 WORKDIR /src
 COPY console_app console_app
