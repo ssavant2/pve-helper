@@ -219,6 +219,62 @@
   margin-top: 4px;
 }
 
+/* Hide and Remove act on the same node and read as one decision; stacking them
+   made each row twice as tall for no gain. There is width to spare. */
+.cluster-node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.cluster-node-actions form {
+  margin: 0;
+}
+
+/* The confirm form's fields are stacked labels: without this the caption sits on
+   the same line as its input, which reads as a prefix rather than a label. */
+.cluster-confirm-form .cluster-field-wide {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cluster-confirm-form .cluster-field-wide input {
+  width: 100%;
+}
+
+/* A workspace object that parents nodes: its collapse toggle sits beside the link
+   rather than replacing it, so the cluster stays one click from its Summary. */
+.tree-parent-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tree-parent-row > .tree-parent-link {
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-caret-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* Keeps an object with no members aligned with the ones that have a caret. */
+.tree-leaf-unparented {
+  padding-left: 18px;
+}
+
 /* The review panel's only action. Right-aligned across the full panel width it
    read as an empty band under the table; left-aligned it sits under the column it
    acts on, and the padding matches the panel's own so it is not flush to the edge. */

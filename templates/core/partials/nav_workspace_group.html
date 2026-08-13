@@ -1,12 +1,13 @@
 {% comment %}
-  One Hosts & Clusters group (Clusters or Hosts). Each object is a link that also
-  parents its nodes: the member nodes sit in their own `tree-children`, so they are
-  indented under their cluster with the same guide line the storage tree uses,
-  rather than reading as one flat list of siblings.
+  One Hosts & Clusters group (Clusters or Hosts). Each object parents its member
+  nodes in its own `tree-children`, so they are indented under their cluster with
+  the same guide line the storage tree uses rather than reading as one flat list.
 
-  The object row stays a link rather than becoming a `tree-subhead` toggle, because
-  a cluster is a destination as well as a parent — making it a pure expander would
-  put its Summary one extra click away.
+  An object with nodes gets its own collapse toggle, and the toggle is a separate
+  control beside the link rather than replacing it: a cluster is a destination as
+  well as a parent, and turning the row into a pure expander would put its Summary
+  one extra click away. Each nested section carries its own `data-tree-module`, so
+  the shell remembers per-cluster collapse state exactly as it does per module.
 {% endcomment %}
 <section class="tree-module expanded" data-tree-module="workspace-{{ group_key }}" aria-label="{{ group_label }} group">
   <button class="tree-node module-node" type="button" data-tree-toggle aria-expanded="true">
@@ -16,27 +17,47 @@
   </button>
   <div class="tree-children">
     {% for entry in entries %}
-      <a class="tree-node tree-leaf {% if workspace_nav_key == entry.nav_key %}active{% endif %}"
-         href="{{ entry.url }}"
-         data-infrastructure-kind="cluster"
-         data-cluster-key="{{ entry.cluster_key }}">
-        <span class="tree-icon"><i data-vicon="{{ group_icon }}" aria-hidden="true"></i></span>
-        <span class="tree-label">{{ entry.display_name }}</span>
-        {% if entry.degraded %}<span class="badge failed">{{ entry.degraded }}</span>{% endif %}
-      </a>
       {% if entry.nodes %}
-        <div class="tree-children" aria-label="{{ entry.display_name }} nodes">
-          {% for node in entry.nodes %}
-            <a class="tree-node tree-leaf {% if workspace_nav_key == node.nav_key %}active{% endif %}"
-               href="{{ node.url }}"
-               data-infrastructure-kind="node"
-               data-cluster-key="{{ entry.cluster_key }}"
-               data-node="{{ node.node_name }}">
-              <span class="tree-icon"><i data-vicon="host" aria-hidden="true"></i></span>
-              <span class="tree-label">{{ node.node_name }}</span>
+        <section class="tree-module tree-group expanded"
+                 data-tree-module="workspace-object-{{ entry.cluster_key }}"
+                 aria-label="{{ entry.display_name }} nodes">
+          <div class="tree-parent-row">
+            <button class="tree-caret-button" type="button" data-tree-toggle aria-expanded="true">
+              <span class="tree-caret" data-tree-caret>v</span>
+            </button>
+            <a class="tree-node tree-leaf tree-parent-link {% if workspace_nav_key == entry.nav_key %}active{% endif %}"
+               href="{{ entry.url }}"
+               data-infrastructure-kind="cluster"
+               data-cluster-key="{{ entry.cluster_key }}">
+              <span class="tree-icon"><i data-vicon="{{ group_icon }}" aria-hidden="true"></i></span>
+              <span class="tree-label">{{ entry.display_name }}</span>
+              {% if entry.degraded %}<span class="badge failed">{{ entry.degraded }}</span>{% endif %}
             </a>
-          {% endfor %}
-        </div>
+          </div>
+          <div class="tree-children">
+            {% for node in entry.nodes %}
+              <a class="tree-node tree-leaf {% if workspace_nav_key == node.nav_key %}active{% endif %}"
+                 href="{{ node.url }}"
+                 data-infrastructure-kind="node"
+                 data-cluster-key="{{ entry.cluster_key }}"
+                 data-node="{{ node.node_name }}">
+                <span class="tree-icon"><i data-vicon="host" aria-hidden="true"></i></span>
+                <span class="tree-label">{{ node.node_name }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        </section>
+      {% else %}
+        {% comment %}No members to expand, so no toggle — an empty expander promises
+        children that are not there.{% endcomment %}
+        <a class="tree-node tree-leaf tree-leaf-unparented {% if workspace_nav_key == entry.nav_key %}active{% endif %}"
+           href="{{ entry.url }}"
+           data-infrastructure-kind="cluster"
+           data-cluster-key="{{ entry.cluster_key }}">
+          <span class="tree-icon"><i data-vicon="{{ group_icon }}" aria-hidden="true"></i></span>
+          <span class="tree-label">{{ entry.display_name }}</span>
+          {% if entry.degraded %}<span class="badge failed">{{ entry.degraded }}</span>{% endif %}
+        </a>
       {% endif %}
     {% empty %}
       <span class="tree-node tree-leaf muted">None</span>

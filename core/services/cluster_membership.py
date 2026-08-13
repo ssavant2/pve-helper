@@ -164,7 +164,12 @@ def normalize_cluster_status(payload: object) -> NormalizedMembership:
             raise InvalidMembershipPayload("Membership node names must be unique valid NodeRefs.")
         names.add(node_name)
         ring_address = _required_str(row, "ip") if "ip" in row else ""
-        nodeid = _required_int(row, "nodeid", minimum=1)
+        # A standalone node reports `nodeid: 0` -- corosync is what assigns one, and
+        # there is no corosync. Requiring >= 1 here rejected the real standalone
+        # payload as `invalid_payload`, so a standalone host never published
+        # membership at all and could not be told apart from an unreadable cluster.
+        # The corosync branch below still requires a real nodeid.
+        nodeid = _required_int(row, "nodeid", minimum=0)
         online = _binary_int(row, "online")
         local = _optional_binary_int(row, "local")
         if local:
@@ -185,6 +190,10 @@ def normalize_cluster_status(payload: object) -> NormalizedMembership:
             raise InvalidMembershipPayload("A standalone response must contain exactly one node.")
         quorate = False
     else:
+        # Inside a corosync cluster every member has a corosync-assigned nodeid, so
+        # a zero here is a malformed answer rather than the standalone shape.
+        if any(node.nodeid == 0 for node in nodes):
+            raise InvalidMembershipPayload("A clustered node must carry a corosync nodeid.")
         cluster_row = cluster_rows[0]
         reported_nodes = _required_int(cluster_row, "nodes", minimum=1)
         if reported_nodes != len(nodes):

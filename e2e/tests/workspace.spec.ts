@@ -89,6 +89,24 @@ test("member nodes render nested under their cluster, not as a flat list", async
   expect(nodeBox!.x).toBeGreaterThan(clusterBox!.x);
 });
 
+test("a cluster with members can be collapsed without losing its own link", async ({ page }) => {
+  await page.goto("/", { waitUntil: "load" });
+
+  const section = page.locator('[data-tree-module="workspace-object-e2e"]');
+  const node = section.locator('[data-node="pve1"]');
+  const link = section.locator('[data-infrastructure-kind="cluster"]');
+
+  await expect(node).toBeVisible();
+  await expect(link).toBeVisible();
+
+  await section.locator("[data-tree-toggle]").click();
+
+  await expect(node).toBeHidden();
+  // The cluster itself stays reachable: the toggle is beside the link, not instead
+  // of it.
+  await expect(link).toBeVisible();
+});
+
 test("cluster Summary states its capacity coverage rather than a bare total", async ({ page }) => {
   await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
 

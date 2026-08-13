@@ -641,3 +641,39 @@ class MembershipConcurrencyTests(TransactionTestCase):
         self.assertFalse(ClusterMembershipState.objects.filter(cluster=cluster).exists())
         self.assertFalse(ClusterNodeState.objects.filter(cluster=cluster).exists())
         self.assertFalse(ClusterProjectionCoverage.objects.filter(cluster=cluster).exists())
+
+
+class StandaloneNodeidTests(SimpleTestCase):
+    """A standalone host reports `nodeid: 0`; a corosync member never does.
+
+    The adapter required `nodeid >= 1` on every node row, which rejected the real
+    standalone payload outright. The failure was invisible in the obvious place —
+    it looked like an unreadable cluster, not like a parser that could not read the
+    shape it claimed to distinguish.
+    """
+
+    def test_a_standalone_payload_with_nodeid_zero_is_accepted(self):
+        normalized = normalize_cluster_status(STANDALONE_CLUSTER_STATUS)
+
+        self.assertFalse(normalized.has_cluster_row)
+        self.assertEqual(normalized.observed_from, "pve301")
+        self.assertEqual(normalized.nodes[0].nodeid, 0)
+
+    def test_a_clustered_member_may_not_report_nodeid_zero(self):
+        """Inside corosync a zero is a malformed answer, not the standalone shape."""
+        payload = [
+            {"type": "cluster", "id": "cluster", "name": "c", "nodes": 1, "quorate": 1, "version": 1},
+            {
+                "id": "node/pve1",
+                "ip": "10.0.0.1",
+                "level": "",
+                "local": 1,
+                "name": "pve1",
+                "nodeid": 0,
+                "online": 1,
+                "type": "node",
+            },
+        ]
+
+        with self.assertRaises(InvalidMembershipPayload):
+            normalize_cluster_status(payload)

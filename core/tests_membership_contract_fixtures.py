@@ -40,8 +40,16 @@ from core.services.cluster_topology_role import (
 
 #: `GET cluster/status` from a genuinely standalone PVE 9.2 host. One row, and it
 #: is a **node** row: there is no cluster row at all, which is the whole signal.
-#: Note that the node row still carries `local` and `nodeid` — the endpoint→node
-#: identity proof works on a standalone host too, which was not guaranteed.
+#: Note that the node row still carries `local` — the endpoint→node identity proof
+#: works on a standalone host too, which was not guaranteed.
+#:
+#: **`nodeid` is 0, and that is the real value.** Corosync assigns nodeids; a host
+#: with no corosync has none. This fixture carried `1` until 2026-08-13 — a
+#: plausible value nobody had checked against a host — and the adapter validated
+#: `nodeid >= 1` to match it. The consequence was that every genuinely standalone
+#: connection failed membership with `invalid_payload`, published no topology, and
+#: appeared in the workspace tree as an unreadable cluster rather than a host.
+#: Re-captured from the live `pve301` on 2026-08-13.
 STANDALONE_CLUSTER_STATUS = [
     {
         "id": "node/pve301",
@@ -49,7 +57,7 @@ STANDALONE_CLUSTER_STATUS = [
         "level": "",
         "local": 1,
         "name": "pve301",
-        "nodeid": 1,
+        "nodeid": 0,
         "online": 1,
         "type": "node",
     },
