@@ -30,6 +30,7 @@ from core.services.cluster_projection_read import (
 )
 from core.services.cluster_state_labels import cluster_degraded_label
 from core.services.publication_scope import publication_scope
+from core.services.workspace_datastores import datastore_panel
 from core.services.workspace_nav import cluster_nav_key, node_nav_key
 from core.services.workspace_summary import cluster_summary as compose_cluster_summary
 from core.services.workspace_summary import node_summary as compose_node_summary
@@ -69,10 +70,12 @@ ROUTED_CLUSTER_TABS = {
     "summary": "core:cluster_summary",
     "hosts": "core:cluster_hosts",
     "vms": "core:cluster_vms",
+    "datastores": "core:cluster_datastores",
 }
 ROUTED_NODE_TABS = {
     "summary": "core:node_summary",
     "vms": "core:node_vms",
+    "datastores": "core:node_datastores",
 }
 
 
@@ -278,6 +281,73 @@ def node_vms(request, cluster_key: str, node: str):
         **navigation_context("hosts_clusters", page_title=("VMs", match.node_name, projection.display_name)),
     }
     return render(request, "core/workspace_vms.html", context)
+
+
+@app_login_required
+def cluster_datastores(request, cluster_key: str):
+    """The Datastores tab: this cluster's published datastores and their reachability.
+
+    Composition only — the catalog is refreshed by its own worker lane and by the
+    Refresh button on a datastore's own page, never by rendering this list.
+    """
+
+    cluster = managed_cluster_from_path(cluster_key)
+    projection = _projection_or_404(cluster)
+    scope = publication_scope(cluster)
+    context = {
+        "cluster": cluster,
+        "projection": projection,
+        "panel": datastore_panel(cluster, scope=scope, members=_member_names(projection)),
+        "cluster_degraded": cluster_degraded_label(cluster),
+        "workspace_object": projection.display_name,
+        "workspace_kind": "cluster",
+        "tabs": _tabs(CLUSTER_TABS, ROUTED_CLUSTER_TABS, active="datastores", cluster_key=cluster.key),
+        "workspace_nav_key": cluster_nav_key(cluster.key),
+        **navigation_context("hosts_clusters", page_title=("Datastores", projection.display_name)),
+    }
+    return render(request, "core/cluster_datastores.html", context)
+
+
+@app_login_required
+def node_datastores(request, cluster_key: str, node: str):
+    """The same composition, locked to what one published node sees."""
+
+    cluster = managed_cluster_from_path(cluster_key)
+    projection = _projection_or_404(cluster)
+    match = _published_node_or_404(projection, cluster, node)
+    scope = publication_scope(cluster)
+    context = {
+        "cluster": cluster,
+        "projection": projection,
+        "node": match,
+        "panel": datastore_panel(
+            cluster,
+            node=match.node_name,
+            scope=scope,
+            members=_member_names(projection),
+        ),
+        "workspace_object": match.node_name,
+        "workspace_kind": "node",
+        "tabs": _tabs(
+            NODE_TABS,
+            ROUTED_NODE_TABS,
+            active="datastores",
+            cluster_key=cluster.key,
+            node=match.node_name,
+        ),
+        "workspace_nav_key": node_nav_key(cluster.key, match.node_name),
+        **navigation_context(
+            "hosts_clusters",
+            page_title=("Datastores", match.node_name, projection.display_name),
+        ),
+    }
+    return render(request, "core/node_datastores.html", context)
+
+
+def _member_names(projection) -> tuple[str, ...]:
+    """Discovered members, from the read the shell already paid for."""
+
+    return tuple(node.node_name for node in projection.nodes if node.present)
 
 
 def workspace_object_urls(cluster, node: str = "") -> dict[str, str]:

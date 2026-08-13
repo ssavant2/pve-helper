@@ -1,0 +1,101 @@
+{% comment %}
+  The Datastores tab body, shared by the cluster and node scopes (5a4A).
+
+  Two rules this markup holds, both of which are easy to lose in a later edit:
+
+  * The incomplete-metadata notice *qualifies* the table; it never replaces it.
+    A cluster-wide flag emptying a per-node table is how one node's silence turns
+    into "this cluster has no datastores".
+  * A node that did not answer renders as Unknown, never as a blank cell and never
+    as Absent. Absent means a node answered and does not have it, and the two are
+    opposite instructions to whoever is reading.
+{% endcomment %}
+
+{% if not panel.metadata_complete %}
+  <div class="notice notice-warning" role="status">
+    The last storage metadata pass did not complete, so rows below may be older than
+    the current state. Each row says whether it is current.
+  </div>
+{% endif %}
+
+{% if panel.rows %}
+  <div class="cluster-table-scroll">
+    <table class="data-table compact" data-sortable-table>
+      <thead>
+        <tr>
+          <th scope="col">Datastore</th>
+          <th scope="col">Type</th>
+          <th scope="col">Scope</th>
+          <th scope="col">State</th>
+          <th scope="col">Capacity</th>
+          <th scope="col">Nodes</th>
+          <th scope="col">Content</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in panel.rows %}
+          <tr>
+            <td data-sort-value="{{ row.storage_id }}">
+              <a href="{{ row.url }}">{{ row.storage_id }}</a>
+              {% if not row.current %}<span class="badge" title="Not part of the latest complete metadata generation">not current</span>{% endif %}
+            </td>
+            <td>{{ row.definition.storage_type }}</td>
+            <td>
+              {% if row.shared %}
+                Shared
+              {% else %}
+                {{ row.scope_node }}
+              {% endif %}
+              {% if row.restricted_to %}
+                <span class="muted" title="Proxmox restricts this definition to these nodes">
+                  (nodes={{ row.restricted_to|join:"," }})
+                </span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.state == "attached" %}
+                <span class="badge completed">attached</span>
+              {% elif row.state == "inactive" %}
+                <span class="badge">inactive</span>
+              {% elif row.state == "absent" %}
+                <span class="badge failed">absent</span>
+              {% else %}
+                <span class="badge failed" title="No node answered for this instance, so its state is unproven">unknown</span>
+              {% endif %}
+            </td>
+            <td data-sort-value="{{ row.instance.used_bytes|default:0 }}">
+              {% if row.instance and row.instance.total_bytes %}
+                {{ row.instance.used_bytes|filesizeformat }} / {{ row.instance.total_bytes|filesizeformat }}
+                {% if row.instance.used_pct is not None %}<span class="muted">({{ row.instance.used_pct }}%)</span>{% endif %}
+              {% else %}
+                <span class="muted">-</span>
+              {% endif %}
+            </td>
+            <td data-sort-value="{{ row.attached_nodes|length }}">
+              {% for node in row.nodes %}
+                <span class="{% if node.state != 'attached' %}muted{% endif %}"
+                      title="{{ node.node }}: {{ node.state }}{% if not node.current %}, not current{% endif %}">
+                  {{ node.node }}{% if not forloop.last %},{% endif %}
+                </span>
+              {% endfor %}
+            </td>
+            <td>{{ row.content|join:", "|default:"-" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <p class="empty-state">
+    No datastores are published for this scope. If the catalog has never refreshed,
+    a datastore's own page carries the Refresh action.
+  </p>
+{% endif %}
+
+{% if panel.unread_nodes %}
+  <p class="panel-meta">
+    Not shown: datastores seen only by {{ panel.unread_nodes|join:", " }}, which this
+    connection does not read. Enroll a node in
+    <a href="{% url 'core:cluster_connection' cluster.key %}">Connection</a> to include it.
+  </p>
+{% endif %}

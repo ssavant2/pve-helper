@@ -33,10 +33,13 @@ class MulticlusterRouteInventoryTests(SimpleTestCase):
         self.assertEqual(sum(route.startswith("vms/<str:cluster_key>/") for route in routes), 40)
         self.assertEqual(sum(route.startswith("vms/<str:object_type>") for route in routes), 37)
         # The datastore object view: its entry point, ten read tabs and the
-        # content-update route in both scope shapes, plus the cluster-wide refresh.
-        self.assertEqual(sum(route.startswith("clusters/<str:cluster_key>/datastores/") for route in routes), 13)
+        # content-update route in both scope shapes, plus the cluster-wide refresh --
+        # and, since 5a4A, the workspace Datastores *tab*, which lists them. The tab
+        # is the one route here that ends at `datastores/`; every other requires a
+        # `<storage>` segment, which is what keeps them from shadowing each other.
+        self.assertEqual(sum(route.startswith("clusters/<str:cluster_key>/datastores/") for route in routes), 14)
         self.assertEqual(
-            sum(route.startswith("clusters/<str:cluster_key>/nodes/<str:node>/datastores/") for route in routes), 12
+            sum(route.startswith("clusters/<str:cluster_key>/nodes/<str:node>/datastores/") for route in routes), 13
         )
         self.assertEqual(sum(route.startswith("storage-api/<str:node>/<str:storage>/") for route in routes), 8)
 

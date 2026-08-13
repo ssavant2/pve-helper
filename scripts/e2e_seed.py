@@ -514,6 +514,7 @@ def _create_storage(clusters: dict[str, object], now) -> None:
         storage_type="nfs",
         shared=True,
         present=True,
+        content=["images", "iso"],
         config={"server": "nas.e2e.local", "export": "/mnt/tank/vm"},
         observed_metadata_generation=catalog_states["e2e"].metadata_generation,
     )
@@ -523,6 +524,7 @@ def _create_storage(clusters: dict[str, object], now) -> None:
         storage_type="dir",
         shared=False,
         present=True,
+        content=["images", "rootdir", "vztmpl"],
         config={"path": "/var/lib/vz"},
         observed_metadata_generation=catalog_states["e2e"].metadata_generation,
     )
@@ -532,6 +534,7 @@ def _create_storage(clusters: dict[str, object], now) -> None:
         storage_type="pbs",
         shared=True,
         present=True,
+        content=["backup"],
         config={"server": "pbs.e2e.invalid", "datastore": "backups"},
         observed_metadata_generation=catalog_states["e2e"].metadata_generation,
     )
@@ -548,12 +551,22 @@ def _create_storage(clusters: dict[str, object], now) -> None:
         last_successful_inventory_scan=now,
         last_gate_status="ok",
     )
+    # Stamped with the catalog's own generation, because that is what currency is:
+    # the workspace Datastores tab compares these two values and an unstamped row
+    # renders as "not current" -- a fixture that makes every row look degraded is a
+    # fixture that hides a real degradation.
+    generation = catalog_states["e2e"].metadata_generation
     ClusterStorageNodeState.objects.create(
         cluster_storage=shared,
         node="pve1",
         present=True,
         active=True,
         enabled=True,
+        total_bytes=2 * 1024**4,
+        used_bytes=760 * 1024**3,
+        available_bytes=2 * 1024**4 - 760 * 1024**3,
+        observed_metadata_generation=generation,
+        last_seen_at=now,
     )
     ClusterStorageNodeState.objects.create(
         cluster_storage=local,
@@ -561,7 +574,15 @@ def _create_storage(clusters: dict[str, object], now) -> None:
         present=True,
         active=True,
         enabled=True,
+        total_bytes=100 * 1024**3,
+        used_bytes=41 * 1024**3,
+        available_bytes=59 * 1024**3,
+        observed_metadata_generation=generation,
+        last_seen_at=now,
     )
+    # Left unstamped on purpose: a node that never answered has no generation to
+    # carry, so this is the degraded row the tab must render as unknown rather than
+    # as absent or as a blank.
     ClusterStorageNodeState.objects.create(
         cluster_storage=api_only,
         node="pve1",

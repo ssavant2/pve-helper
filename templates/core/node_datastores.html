@@ -1,0 +1,23 @@
+{% extends "core/cluster_workspace.html" %}
+
+{% comment %}
+  The node Datastores tab (5a4A). Same composition as the cluster scope, narrowed to
+  what this one node reports — including a shared datastore, which appears here as
+  this node's instance of it rather than as the cluster-wide object.
+{% endcomment %}
+
+{% block workspace_subtitle %}
+  {{ panel.rows|length }} datastore{{ panel.rows|length|pluralize }} on {{ node.node_name }}
+{% endblock %}
+
+{% block workspace_content %}
+  <section class="panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Datastores</h2>
+        <p class="panel-meta">What {{ node.node_name }} reports about each datastore it can see.</p>
+      </div>
+    </div>
+    {% include "core/partials/datastore_panel.html" %}
+  </section>
+{% endblock %}

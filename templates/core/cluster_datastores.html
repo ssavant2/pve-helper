@@ -1,0 +1,24 @@
+{% extends "core/cluster_workspace.html" %}
+
+{% comment %}
+  The cluster Datastores tab (5a4A). A shared datastore is one cluster-wide row; a
+  node-local one is a row per node, because the same storage id on two nodes is two
+  different disks and one capacity figure cannot speak for both.
+{% endcomment %}
+
+{% block workspace_subtitle %}
+  {{ panel.shared_rows|length }} shared, {{ panel.local_rows|length }} node-local
+  {% if cluster_degraded %}<span class="badge failed">{{ cluster_degraded }}</span>{% endif %}
+{% endblock %}
+
+{% block workspace_content %}
+  <section class="panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Datastores</h2>
+        <p class="panel-meta">Published by this connection, with what each enrolled node reports.</p>
+      </div>
+    </div>
+    {% include "core/partials/datastore_panel.html" %}
+  </section>
+{% endblock %}

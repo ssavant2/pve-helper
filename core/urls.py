@@ -409,6 +409,16 @@ urlpatterns = [
     path("clusters/<str:cluster_key>/hosts/", views.cluster_hosts, name="cluster_hosts"),
     path("clusters/<str:cluster_key>/vms/", views.cluster_vms, name="cluster_vms"),
     path("clusters/<str:cluster_key>/nodes/<str:node>/vms/", views.node_vms, name="node_vms"),
+    # The Datastores tab lists datastores; `datastore_routes` below addresses one.
+    # They cannot collide: a tab URL ends at `datastores/` and the object routes
+    # require a non-empty `<storage>` segment after it. Declared here so the list
+    # is matched before the object patterns are even considered.
+    path("clusters/<str:cluster_key>/datastores/", views.cluster_datastores, name="cluster_datastores"),
+    path(
+        "clusters/<str:cluster_key>/nodes/<str:node>/datastores/",
+        views.node_datastores,
+        name="node_datastores",
+    ),
     path("datastores/mounts/register/", views.storage_mount_register, name="storage_mount_register"),
     # The datastore object view. Each tab has two shapes sharing one route name:
     # a shared datastore is cluster-wide and carries no node, a node-local one is

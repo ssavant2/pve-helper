@@ -253,15 +253,15 @@ class WorkspaceRouteTests(TestCase):
 
     def test_the_routed_tabs_are_exactly_the_ones_with_views(self):
         """A tab is enabled by gaining a route, never by a flag. Cluster scope has
-        Summary, Hosts and VMs; the node scope has no Hosts tab at all."""
+        Summary, Hosts, VMs and Datastores; the node scope has no Hosts tab at all."""
         cluster_tabs = self.client.get(reverse("core:cluster_summary", args=["hq"])).context["tabs"]
         node_tabs = self.client.get(reverse("core:node_summary", args=["hq", "pve1"])).context["tabs"]
 
-        self.assertEqual([tab.key for tab in cluster_tabs if tab.enabled], ["summary", "hosts", "vms"])
-        self.assertEqual([tab.key for tab in node_tabs if tab.enabled], ["summary", "vms"])
+        self.assertEqual([tab.key for tab in cluster_tabs if tab.enabled], ["summary", "hosts", "vms", "datastores"])
+        self.assertEqual([tab.key for tab in node_tabs if tab.enabled], ["summary", "vms", "datastores"])
         self.assertNotIn("hosts", [tab.key for tab in node_tabs])
         # The unbuilt shape is still stated, so the workspace does not silently shrink.
-        self.assertIn("datastores", [tab.key for tab in cluster_tabs])
+        self.assertIn("networks", [tab.key for tab in cluster_tabs])
 
     def test_the_active_leaf_is_the_object_being_viewed(self):
         response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))

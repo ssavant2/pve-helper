@@ -167,11 +167,11 @@ test("the built tabs are links and the unbuilt ones state the intended shape", a
   await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
 
   const tabs = page.locator(".vs-tabs");
-  for (const built of ["Summary", "Hosts", "VMs"]) {
+  for (const built of ["Summary", "Hosts", "VMs", "Datastores"]) {
     await expect(tabs.getByRole("link", { name: built, exact: true })).toBeVisible();
   }
-  await expect(tabs.locator("span.disabled", { hasText: "Datastores" })).toBeVisible();
   await expect(tabs.locator("span.disabled", { hasText: "Monitor" })).toBeVisible();
+  await expect(tabs.locator("span.disabled", { hasText: "Networks" })).toBeVisible();
 });
 
 test("the tables are reachable by clicking their tabs, and link into Module 3", async ({ page }) => {
@@ -197,6 +197,36 @@ test("the tables are reachable by clicking their tabs, and link into Module 3", 
     .toBe(true);
   const guestLink = page.getByRole("main").locator('a[href^="/vms/e2e/"]').first();
   await expect(guestLink).toBeVisible();
+});
+
+test("the Datastores tab renders every reachability state without a provider call", async ({ page }) => {
+  await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
+  await page.locator(".vs-tabs").getByRole("link", { name: "Datastores", exact: true }).click();
+
+  const main = page.getByRole("main");
+  // Shared and node-local rows, each linking to the datastore's own page.
+  await expect(main.getByRole("link", { name: "e2e-nfs", exact: true })).toBeVisible();
+  await expect(main.getByRole("link", { name: "e2e-dir", exact: true })).toBeVisible();
+  // The unreachable instance is unknown, never absent and never a blank cell.
+  const unknownRow = main.locator("tr", { hasText: "e2e-pbs" });
+  await expect(unknownRow.locator(".badge", { hasText: "unknown" })).toBeVisible();
+  await expect(unknownRow).toContainText("not current");
+  // ...and the healthy ones are neither.
+  await expect(main.locator("tr", { hasText: "e2e-nfs" })).not.toContainText("not current");
+
+  await main.getByRole("link", { name: "e2e-nfs", exact: true }).click();
+  await expect(page).toHaveURL(/\/clusters\/e2e\/datastores\/e2e-nfs\/summary\/$/);
+});
+
+test("the node Datastores tab is scoped to that node", async ({ page }) => {
+  await openInfrastructureObjectFromTree(page, { kind: "node", clusterKey: "e2e", node: "pve1" });
+  await page.locator(".vs-tabs").getByRole("link", { name: "Datastores", exact: true }).click();
+
+  await expect(page).toHaveURL(/\/clusters\/e2e\/nodes\/pve1\/datastores\/$/);
+  await expect(page.getByRole("main").getByRole("link", { name: "e2e-dir", exact: true })).toHaveAttribute(
+    "href",
+    "/clusters/e2e/nodes/pve1/datastores/e2e-dir/summary/",
+  );
 });
 
 test("the node VMs tab reuses Overview and stays locked to that node", async ({ page }) => {

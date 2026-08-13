@@ -28,9 +28,11 @@ PUBLIC_ENROLLMENT_VIEWS = (
 #: Connections while sharing none of its private helpers -- which is the separation
 #: this package was split for in the first place.
 PUBLIC_WORKSPACE_VIEWS = (
+    "cluster_datastores",
     "cluster_hosts",
     "cluster_summary",
     "cluster_vms",
+    "node_datastores",
     "node_summary",
     "node_vms",
 )
