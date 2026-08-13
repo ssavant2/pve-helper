@@ -73,7 +73,7 @@
   <section class="panel panel-spaced">
     <div class="panel-heading cluster-section-heading"><h2>Endpoints</h2></div>
     <table class="data-table compact"><thead><tr><th>Name</th><th>URL</th><th>State</th><th>Last successful scan</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
-      {% for endpoint in endpoints %}<tr><td>{{ endpoint.name }}</td><td><code>{{ endpoint.normalized_url }}</code></td><td>{% if endpoint.enabled %}<span class="badge completed">Enabled</span>{% else %}<span class="badge muted-badge">Disabled</span>{% endif %}</td><td>{{ endpoint.last_successful_scan|default:"-" }}</td><td class="cluster-node-actions"><form method="post" action="{% url 'core:cluster_endpoint_action' cluster.key endpoint.id %}">{% csrf_token %}<input type="hidden" name="action" value="{% if endpoint.enabled %}disable{% else %}enable{% endif %}"><button class="secondary-action" type="submit">{% if endpoint.enabled %}Disable{% else %}Enable{% endif %}</button></form></td></tr>{% empty %}<tr><td colspan="5" class="empty-state">No endpoint is registered.</td></tr>{% endfor %}
+      {% for endpoint in endpoints %}<tr><td>{{ endpoint.name }}</td><td><code>{{ endpoint.normalized_url }}</code></td><td>{% if endpoint.enabled %}<span class="badge completed">Enabled</span>{% else %}<span class="badge muted-badge">Disabled</span>{% endif %}</td><td>{{ endpoint.last_successful_scan|default:"-" }}</td><td class="cluster-node-actions"><div class="cluster-action-row"><form method="post" action="{% url 'core:cluster_endpoint_action' cluster.key endpoint.id %}">{% csrf_token %}<input type="hidden" name="action" value="{% if endpoint.enabled %}disable{% else %}enable{% endif %}"><button class="secondary-action" type="submit">{% if endpoint.enabled %}Disable{% else %}Enable{% endif %}</button></form></div></td></tr>{% empty %}<tr><td colspan="5" class="empty-state">No endpoint is registered.</td></tr>{% endfor %}
     </tbody></table>
   </section>
 
@@ -117,12 +117,14 @@
         <td>{% if row.present %}{% if row.online %}<span class="badge completed">Online</span>{% else %}<span class="badge warning">Offline</span>{% endif %}{% else %}<span class="badge muted-badge">Not in current membership</span>{% endif %}</td>
         <td>{{ row.last_discovered_at|default:"-" }}</td>
         <td class="cluster-node-actions">
+          <div class="cluster-action-row">
           {% if not row.enrolled %}
             <a class="secondary-action" href="{% url 'core:cluster_node_add' cluster.key %}?node={{ row.node_name|urlencode }}">Add node</a>
           {% else %}
             <form method="post" action="{% url 'core:cluster_node_action' cluster.key row.node_name %}">{% csrf_token %}<input type="hidden" name="action" value="{% if row.mode == 'managed' %}hide{% else %}manage{% endif %}"><button class="secondary-action" type="submit">{% if row.mode == 'managed' %}Hide{% else %}Manage{% endif %}</button></form>
             <form method="post" action="{% url 'core:cluster_node_action' cluster.key row.node_name %}">{% csrf_token %}<input type="hidden" name="action" value="remove"><button class="secondary-action danger" type="submit">Remove</button></form>
           {% endif %}
+          </div>
         </td>
       </tr>{% empty %}<tr><td colspan="6" class="empty-state">No node has been discovered yet. Membership is published by the periodic host projection refresh.</td></tr>{% endfor %}
     </tbody></table>

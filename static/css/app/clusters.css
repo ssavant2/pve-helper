@@ -222,8 +222,13 @@
 /* The action cell of both connection tables. Hide and Remove act on the same node
    and read as one decision; stacking them made each row twice as tall for no gain.
    Endpoints uses it too, so its Disable lands in the same column as Nodes' actions
-   rather than floating in from the left. */
-.cluster-node-actions {
+   rather than floating in from the left.
+   
+   The cell itself stays a table cell. Making a `<td>` a flex container takes it out
+   of the row's height calculation, which left one row half a pixel taller than its
+   siblings — enough that its border landed on a different subpixel offset and the
+   rules rendered visibly uneven. The flex row is an inner wrapper instead. */
+.cluster-node-actions > .cluster-action-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -233,6 +238,10 @@
 
 .cluster-node-actions form {
   margin: 0;
+}
+
+.cluster-node-actions {
+  text-align: right;
 }
 
 /* Hide/Manage and Disable/Enable each swap labels on one control depending on
