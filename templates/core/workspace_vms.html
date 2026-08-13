@@ -1,70 +1,9 @@
 {% extends "core/cluster_workspace.html" %}
 
-{% comment %}
-  The VMs tab, shared by the cluster and node scopes — the two differ only in which
-  guests they were given, so one template renders both rather than two drifting
-  copies.
-
-  Module 5 does not re-own guest state: every row links into the Module 3 guest
-  workspace, and nothing here reads a provider. The live-inventory and guest-lock
-  fan-outs any guest *page* can reach are deliberately off this path; a table that
-  walked every node to draw a status column would be the render-path fan-out this
-  module exists to remove.
-{% endcomment %}
-
 {% block workspace_subtitle %}
   {{ guests|length }} guest{{ guests|length|pluralize }} on {{ workspace_scope_label }}
 {% endblock %}
 
 {% block workspace_content %}
-  <section class="panel">
-    <div class="panel-heading">
-      <div>
-        <h2>VMs and containers</h2>
-        <p class="panel-meta">
-          Placement from the published projection. Guests on nodes this connection does not publish are not listed.
-        </p>
-      </div>
-    </div>
-    {% if guests %}
-      <div class="cluster-table-scroll">
-        <table class="data-table compact" data-sortable-table>
-          <thead>
-            <tr>
-              <th scope="col">VMID</th>
-              <th scope="col">Name</th>
-              <th scope="col">Type</th>
-              <th scope="col">Node</th>
-              <th scope="col">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for guest in guests %}
-              <tr>
-                <td data-sort-value="{{ guest.vmid }}"><a href="{{ guest.url }}">{{ guest.vmid }}</a></td>
-                <td><a href="{{ guest.url }}">{{ guest.name|default:"-" }}</a></td>
-                <td>{{ guest.object_type|upper }}</td>
-                <td data-sort-value="{{ guest.node }}">
-                  {% if guest.node_url %}
-                    <a href="{{ guest.node_url }}">{{ guest.node }}</a>
-                  {% else %}
-                    {{ guest.node|default:"-" }}
-                  {% endif %}
-                </td>
-                <td>
-                  {% if guest.running %}
-                    <span class="badge completed">{{ guest.status }}</span>
-                  {% else %}
-                    <span class="badge">{{ guest.status|default:"-" }}</span>
-                  {% endif %}
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      <p class="empty-state">No guest is placed here.</p>
-    {% endif %}
-  </section>
+  {% include "core/partials/vms_overview_panel.html" %}
 {% endblock %}

@@ -195,8 +195,10 @@ def _apply_workspace_lineage(rows: list[SimpleNamespace]) -> list[SimpleNamespac
     return ordered
 
 
-def _vms_workspace_context(active_nav: str) -> dict:
-    rows, live_available, scan_at = _guest_rows()
+def _vms_workspace_context(active_nav: str, *, current_guests=None, show_cluster_filter: bool = True) -> dict:
+    """Build the shared overview/list presentation, optionally for one scope."""
+
+    rows, live_available, scan_at = _guest_rows(current_guests=current_guests)
     cluster_choices = list(managed_clusters().filter(enabled=True).order_by("display_name", "key"))
     clusters = {row.cluster_key: row.cluster for row in rows if row.cluster is not None and row.cluster_key}
     catalogs = {cluster_key: load_tag_catalog(cluster=cluster) for cluster_key, cluster in clusters.items()}
@@ -230,6 +232,7 @@ def _vms_workspace_context(active_nav: str) -> dict:
         "active_vmid": None,
         "available_user_tags": available_user_tags,
         "cluster_choices": cluster_choices,
+        "vm_overview_show_cluster_filter": show_cluster_filter,
     }
 
 

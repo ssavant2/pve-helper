@@ -33,7 +33,6 @@ from core.services.publication_scope import publication_scope
 from core.services.workspace_nav import cluster_nav_key, node_nav_key
 from core.services.workspace_summary import cluster_summary as compose_cluster_summary
 from core.services.workspace_summary import node_summary as compose_node_summary
-from core.services.workspace_summary import workspace_guest_rows
 from core.views.cluster_scope import managed_cluster_from_path
 from core.views.common import app_login_required, navigation_context
 
@@ -109,10 +108,6 @@ def _published_nodes(projection, cluster) -> tuple:
 
     scope = publication_scope(cluster)
     return tuple(node for node in projection.nodes if node.present and scope.publishes(node.node_name))
-
-
-def _node_names(nodes) -> tuple[str, ...]:
-    return tuple(node.node_name for node in nodes)
 
 
 def _published_node_or_404(projection, cluster, node: str):
@@ -221,14 +216,22 @@ def cluster_hosts(request, cluster_key: str):
 
 @app_login_required
 def cluster_vms(request, cluster_key: str):
-    """The cluster VMs tab: every published guest of this cluster."""
+    """The shared VM Overview, locked to one cluster's published guests."""
 
     cluster = managed_cluster_from_path(cluster_key)
     projection = _projection_or_404(cluster)
+    from core.services.current_guest_inventory import published_guest_queryset
+    from core.views.guests.read_model_support import _vms_workspace_context
+
+    overview = _vms_workspace_context(
+        "vms_overview",
+        current_guests=published_guest_queryset().filter(cluster=cluster).select_related("cluster"),
+        show_cluster_filter=False,
+    )
     context = {
+        **overview,
         "cluster": cluster,
         "projection": projection,
-        "guests": workspace_guest_rows(cluster, listed_nodes=_node_names(_published_nodes(projection, cluster))),
         "workspace_object": projection.display_name,
         "workspace_kind": "cluster",
         "workspace_scope_label": projection.display_name,
@@ -241,16 +244,26 @@ def cluster_vms(request, cluster_key: str):
 
 @app_login_required
 def node_vms(request, cluster_key: str, node: str):
-    """The node VMs tab: published guests placed on one exact NodeRef."""
+    """The shared VM Overview, locked to one exact published NodeRef."""
 
     cluster = managed_cluster_from_path(cluster_key)
     projection = _projection_or_404(cluster)
     match = _published_node_or_404(projection, cluster, node)
+    from core.services.current_guest_inventory import published_guest_queryset
+    from core.views.guests.read_model_support import _vms_workspace_context
+
+    overview = _vms_workspace_context(
+        "vms_overview",
+        current_guests=(
+            published_guest_queryset().filter(cluster=cluster, node=match.node_name).select_related("cluster")
+        ),
+        show_cluster_filter=False,
+    )
     context = {
+        **overview,
         "cluster": cluster,
         "projection": projection,
         "node": match,
-        "guests": workspace_guest_rows(cluster, node=match.node_name, listed_nodes=(match.node_name,)),
         "workspace_object": match.node_name,
         "workspace_kind": "node",
         "workspace_scope_label": match.node_name,

@@ -8,7 +8,8 @@
 {% endcomment %}
 
 {% block content %}
-  <section class="vs-object-header">
+  <div class="cluster-workspace-page">
+    <section class="vs-object-header">
     <div class="vs-title-row">
       <div class="vs-title">
         <span class="vs-title-icon">
@@ -32,7 +33,8 @@
         {% endif %}
       {% endfor %}
     </nav>
-  </section>
+    </section>
 
-  {% block workspace_content %}{% endblock %}
+    {% block workspace_content %}{% endblock %}
+  </div>
 {% endblock %}

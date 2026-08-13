@@ -675,6 +675,16 @@ class WorkspaceTableTests(TestCase):
         self.assertEqual(hq.context["guests"][0].name, "hq-100")
         self.assertContains(hq, reverse("core:guest_summary", args=["hq", "vm", 100]))
 
+    def test_cluster_vms_reuses_the_rich_overview_without_an_unscoped_filter(self):
+        self._guest(self.hq, "pve1", 100, name="hq-100")
+
+        response = self.client.get(reverse("core:cluster_vms", args=["hq"]))
+
+        self.assertContains(response, 'data-column="provisioned"')
+        self.assertContains(response, 'data-column="guest-os"')
+        self.assertContains(response, "data-vm-overview-row")
+        self.assertNotContains(response, 'data-cluster-filter=""')
+
     def test_the_vms_table_excludes_unpublished_guests(self):
         self._guest(self.hq, "pve1", 100)
         self._guest(self.hq, "pve2", 200, published=False)
@@ -700,7 +710,7 @@ class WorkspaceTableTests(TestCase):
 
         [row] = [guest for guest in response.context["guests"] if guest.vmid == 300]
         self.assertEqual(row.node, "departed")
-        self.assertEqual(row.node_url, "")
+        self.assertNotContains(response, reverse("core:node_summary", args=["hq", "departed"]))
 
     def test_a_hidden_nodes_table_is_404_not_an_empty_list(self):
         _activate(self.hq, pve1="managed", pve2="safety_only")

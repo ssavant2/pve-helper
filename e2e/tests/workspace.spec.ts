@@ -114,6 +114,12 @@ test("cluster Summary states its capacity coverage rather than a bare total", as
 
   const capacity = page.getByRole("main").locator(".panel", { hasText: "Capacity" }).first();
   await expect(capacity).toContainText(/reporting/);
+
+  const cards = await page.locator(".cluster-detail-grid").boundingBox();
+  const nodes = await page.locator(".cluster-summary-nodes").boundingBox();
+  expect(cards).not.toBeNull();
+  expect(nodes).not.toBeNull();
+  expect(nodes!.y - (cards!.y + cards!.height)).toBeGreaterThanOrEqual(12);
 });
 
 test("node Summary shows its own runtime state, not the cluster's", async ({ page }) => {
@@ -145,6 +151,32 @@ test("the tables are reachable by clicking their tabs, and link into Module 3", 
   await expect(page.getByRole("main")).not.toContainText("pve2");
 
   await page.locator(".vs-tabs").getByRole("link", { name: "VMs", exact: true }).click();
+  await expect(page.locator(".vm-overview-page")).toBeVisible();
+  await expect(page.getByPlaceholder("Quick Filter")).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Provisioned Space", exact: true })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Guest OS", exact: true })).toBeVisible();
+  await expect(page.locator(".vm-overview-page .cluster-filter")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-vm-overview-row]")
+        .evaluateAll((rows) => rows.every((row) => (row as HTMLElement).dataset.guestCluster === "e2e")),
+    )
+    .toBe(true);
   const guestLink = page.getByRole("main").locator('a[href^="/vms/e2e/"]').first();
   await expect(guestLink).toBeVisible();
+});
+
+test("the node VMs tab reuses Overview and stays locked to that node", async ({ page }) => {
+  await openInfrastructureObjectFromTree(page, { kind: "node", clusterKey: "e2e", node: "pve1" });
+  await page.locator(".vs-tabs").getByRole("link", { name: "VMs", exact: true }).click();
+
+  await expect(page.locator(".vm-overview-page")).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-vm-overview-row]")
+        .evaluateAll((rows) => rows.length > 0 && rows.every((row) => row.querySelector('[data-column="node"]')?.textContent?.trim() === "pve1")),
+    )
+    .toBe(true);
 });
