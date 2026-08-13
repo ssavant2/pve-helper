@@ -21,6 +21,7 @@ from core.services.classification import extract_disk_references
 from core.services.cluster_footprint import FOOTPRINT_GUEST_PROJECTION, stamp_operational_footprint
 from core.services.proxmox import ProxmoxAPIError, ProxmoxGuestSummary, VerifiedGuestInventory
 from core.services.public_errors import public_exception_message
+from core.services.publication_scope import publication_scope
 from core.services.tags import join_tags
 
 GUEST_TYPES = (ProxmoxInventory.ObjectType.VM, ProxmoxInventory.ObjectType.CT)
@@ -186,6 +187,10 @@ def reconcile_scan_guest_inventory(
             complete=complete,
         )
 
+        # Resolved once per cluster per pass. Every guest of this cluster is written
+        # through it, published or not: an unenrolled node's row is kept as safety
+        # evidence and marked, never dropped.
+        scope = publication_scope(cluster)
         for item in cluster_obs:
             guest = item.guest
             CurrentGuestInventory.objects.update_or_create(
@@ -193,6 +198,8 @@ def reconcile_scan_guest_inventory(
                 object_type=guest.object_type,
                 vmid=int(guest.vmid),
                 defaults={
+                    "published": scope.publishes(guest.node),
+                    "based_on_enrollment_generation": scope.generation,
                     "source_endpoint": item.endpoint,
                     "source_scan": scan,
                     "node": guest.node,
@@ -287,6 +294,11 @@ def reconcile_live_guest_inventory(
     if inventory.complete:
         _delete_missing(cluster_rows, observed)
 
+    # The publication filter has to live here too, not only on the scan path. This
+    # reconcile runs every minute off one cluster/resources read and rewrites every
+    # guest of the cluster, so a filter applied to the scan alone would be undone
+    # within a cadence.
+    scope = publication_scope(cluster)
     for guest in inventory.guests:
         existing = cluster_rows.filter(object_type=guest.object_type, vmid=guest.vmid).first()
         endpoint = _endpoint_for_live_guest(guest, endpoints)
@@ -301,6 +313,8 @@ def reconcile_live_guest_inventory(
             object_type=guest.object_type,
             vmid=guest.vmid,
             defaults={
+                "published": scope.publishes(guest.node),
+                "based_on_enrollment_generation": scope.generation,
                 "source_endpoint": endpoint or (existing.source_endpoint if existing else None),
                 "source_scan": existing.source_scan if existing else None,
                 "node": guest.node,

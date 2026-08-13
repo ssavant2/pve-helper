@@ -26,6 +26,7 @@ from core.models import (
 )
 from core.services.cluster_lifecycle_lock import acquire_operable_cluster
 from core.services.public_errors import PublicMessageError
+from core.services.publication_scope import apply_publication_scope
 
 ENROLLMENT_RETIREMENT_DETAIL_LIMIT = 100
 
@@ -146,11 +147,19 @@ def _summarize(noun: str, items: list[str]) -> str:
     return f"{len(items)} {noun}(s) targeting this node: {listed}"
 
 
-def _advance_generation(locked_cluster) -> int:
-    """Advance the enrollment clock once, under the caller's already-locked row."""
+def _commit_generation(locked_cluster) -> int:
+    """Advance the enrollment clock once and re-stamp publication under it.
+
+    The two belong together. An enrollment change that advanced the clock without
+    re-evaluating publication would leave a just-hidden node's guests on screen until
+    some reconcile happened to run — indefinitely, if the cluster is unreachable. Both
+    happen here, under the caller's already-locked row, so no writer can do one and
+    forget the other.
+    """
 
     locked_cluster.enrollment_generation += 1
     locked_cluster.save(update_fields=["enrollment_generation", "updated_at"])
+    apply_publication_scope(locked_cluster)
     return locked_cluster.enrollment_generation
 
 
@@ -201,7 +210,7 @@ def enroll_node(
         onboarded_via_endpoint=endpoint,
     )
     enrollment.save()
-    return EnrollmentWrite(enrollment=enrollment, changed=True, generation=_advance_generation(locked))
+    return EnrollmentWrite(enrollment=enrollment, changed=True, generation=_commit_generation(locked))
 
 
 @transaction.atomic
@@ -237,7 +246,7 @@ def change_enrollment_mode(cluster, *, node_name: str, mode: str, actor=None, re
     return EnrollmentWrite(
         enrollment=enrollment,
         changed=True,
-        generation=_advance_generation(locked),
+        generation=_commit_generation(locked),
         previous_mode=previous_mode,
     )
 
@@ -299,7 +308,10 @@ def activate_cluster_enrollment(cluster, *, selections: dict[str, str], actor=No
             enrollment.save(update_fields=["mode", "mode_changed_at", "mode_changed_by", "updated_at"])
         enrolled.append((node_name, mode))
 
-    generation = _advance_generation(locked)
+    # The version bump precedes the generation commit, because the commit re-stamps
+    # publication and must see the activated contract. Committing first would stamp
+    # the whole cluster as published under legacy rules and only filter it at the next
+    # enrollment change — activation would appear to do nothing.
     locked.enrollment_contract_version = 1
     locked.enrollment_activated_at = timezone.now()
     locked.enrollment_activated_by = actor
@@ -311,6 +323,7 @@ def activate_cluster_enrollment(cluster, *, selections: dict[str, str], actor=No
             "updated_at",
         ]
     )
+    generation = _commit_generation(locked)
     return ActivationResult(enrolled=tuple(enrolled), generation=generation, contract_version=1)
 
 
@@ -344,6 +357,6 @@ def remove_enrollment(cluster, *, node_name: str) -> EnrollmentWrite:
     return EnrollmentWrite(
         enrollment=enrollment,
         changed=True,
-        generation=_advance_generation(locked),
+        generation=_commit_generation(locked),
         previous_mode=previous_mode,
     )

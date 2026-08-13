@@ -499,10 +499,22 @@ class EnrollmentWriterInvariantTests(SimpleTestCase):
     #: generation clock they would advance is about to cease to exist.
     LIFECYCLE_FINALIZERS = frozenset({"core/services/cluster_deletion.py", "core/services/cluster_retirement.py"})
 
+    #: The publication filter resolves the enrolled sets for one cluster and advances
+    #: no clock. It sits *below* the writer — the writer calls it, not the reverse —
+    #: so it cannot route through `enrollments_by_node` without an import cycle, and
+    #: it is the consumer this ratchet exists to keep honest rather than a bypass of
+    #: it. Read-only is enforced by this entry naming it, plus the writer test below.
+    PUBLICATION_READER = "core/services/publication_scope.py"
+
     def test_only_the_enrollment_service_reaches_the_enrollment_model(self):
         root = Path(settings.BASE_DIR)
         offenders = []
-        allowed = {self.OWNER, "core/models.py", "core/admin.py"} | self.LIFECYCLE_FINALIZERS
+        allowed = {
+            self.OWNER,
+            "core/models.py",
+            "core/admin.py",
+            self.PUBLICATION_READER,
+        } | self.LIFECYCLE_FINALIZERS
         for path in sorted((root / "core").rglob("*.py")):
             relative = path.relative_to(root).as_posix()
             if path.name.startswith("tests") or relative in allowed:
@@ -524,6 +536,34 @@ class EnrollmentWriterInvariantTests(SimpleTestCase):
             [],
             "Enrollment rows are read and written through "
             f"{self.OWNER} so the generation clock advances exactly once: {', '.join(offenders)}",
+        )
+
+    def test_the_publication_reader_only_reads(self):
+        """The one allowlisted non-owner must stay a reader.
+
+        It is allowlisted because it resolves the enrolled sets, not because it may
+        edit them. Without this the entry above would be a hole rather than an
+        exception: a write added there would advance no generation and every stored
+        publication mark would be stamped against a scope that no longer exists.
+        """
+
+        source = (Path(settings.BASE_DIR) / self.PUBLICATION_READER).read_text()
+        tree = ast.parse(source)
+        writes = sorted(
+            {
+                node.func.attr
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr
+                in {"create", "get_or_create", "update_or_create", "bulk_create", "delete", "save", "update"}
+                and "ClusterNodeEnrollment" in ast.dump(node)
+            }
+        )
+        self.assertEqual(
+            writes,
+            [],
+            f"{self.PUBLICATION_READER} may resolve enrollments but never write them: {', '.join(writes)}",
         )
 
 

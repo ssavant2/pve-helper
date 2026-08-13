@@ -1242,6 +1242,14 @@ class CurrentGuestInventory(TimestampedModel):
     observed_at = models.DateTimeField(db_index=True)
     runtime_observed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     config_observed_at = models.DateTimeField(null=True, blank=True)
+    # Whether this row may be shown as ordinary inventory. False means the operator
+    # has not enrolled the node it sits on as `managed`. The row is deliberately kept
+    # rather than deleted: the storage risk gate and volume-usage classification read
+    # this table as safety evidence, and a hidden node's live disk must still block a
+    # destructive file action. `core.services.publication_scope` is the only writer of
+    # this pair; read seams in `current_guest_inventory` are the only readers.
+    published = models.BooleanField(default=True)
+    based_on_enrollment_generation = models.PositiveBigIntegerField(default=0)
 
     class Meta:
         ordering = ["node", "object_type", "vmid"]
