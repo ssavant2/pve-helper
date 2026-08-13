@@ -38,23 +38,56 @@ fix-forward deployments run from the production directory:
 
 ```bash
 docker compose pull
-docker compose up -d --wait db
-docker compose stop nginx web console worker worker-bulk
-docker compose run --rm --no-deps web python manage.py migrate --noinput
 docker compose up -d --remove-orphans --wait
 ```
 
-The sequence pulls `latest`, starts/waits for Postgres, stops application
-services, runs migrations with the newly pulled image and recreates the complete
-stack. Pulling `latest` alone never updates an already-running container.
+Pulling `latest` alone never updates an already-running container, which is why
+the `up` is not optional.
 
-The migrate step is not optional and the health checks now say so. `web` and
-`console` report healthy through `/healthz/ready`, which fails while the image
-carries migrations the database has not applied, and nginx waits for both. A
-skipped or interrupted migration therefore makes `up --wait` fail with
-`pending_count` in the readiness body, instead of bringing the stack up green
-and returning 500 on every page. Applying the migrations makes the containers
-recover on their own; they do not need to be restarted afterwards.
+**Migrations are applied automatically.** The compose file defines a one-shot
+`migrate` service that runs `manage.py migrate --noinput`, and `web`, `console`,
+`worker` and `worker-bulk` all wait on it via
+`depends_on: condition: service_completed_successfully`. A failed migration fails
+the `up` instead of bringing the stack up green, so there is no longer a manual
+step to forget.
+
+This replaced a stop/migrate/start sequence. That sequence existed because four
+services boot from the same image and would otherwise race the schema; the job
+plus the dependency condition removes the race without keeping the failure mode
+it was avoiding — six healthy containers serving a stale schema, where every page
+500s and nothing points at the missing step. That is how the v0.1.1 → v0.1.2
+upgrade failed.
+
+Two properties of the job are load-bearing rather than incidental:
+
+* **It runs as `DB_USER`, never as the admin role.** PostgreSQL grants privileges
+  to a table's *owner*, so a migration applied with `DB_ADMIN_*` credentials
+  creates tables the runtime role cannot read. The app then starts healthy and
+  500s only once some page happens to touch one of them. If you ever run
+  `migrate` by hand, do it without those variables set.
+* **It shares the application's environment block**, because `migrate` runs
+  Django's system checks and needs whatever settings those read. A hand-picked
+  subset drifts the moment a check reads a new variable.
+
+`/healthz/ready` still reports `pending_count` and still fails while the image
+carries unapplied migrations. It is now a second line of defence rather than the
+only thing standing between a pull and a stale schema.
+
+**Still manual, by design:** the one-way cutovers below
+(`complete_trust_cutover`, `complete_credential_cutover`). They are management
+commands rather than migrations, and an upgrade from a pre-multicluster release
+still needs them.
+
+To confirm no table ended up owned by the admin role — the failure mode above,
+which is silent until a page hits it:
+
+```bash
+docker compose exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "
+select tablename from pg_tables where schemaname='"'"'public'"'"'
+and not has_table_privilege('"'"'pve_helper_app'"'"', schemaname||'"'"'.'"'"'||tablename, '"'"'SELECT'"'"');"'
+```
+
+Empty output is the expected result.
 
 ### Platform version requirements
 

@@ -1,5 +1,68 @@
 name: pve-helper
 
+x-app-environment: &app-environment
+  APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
+  DEBUG: ${DEBUG:-false}
+  APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-true}
+  APP_BASE_URL: ${APP_BASE_URL:?Set APP_BASE_URL in .env}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS in .env}
+  CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?Set CSRF_TRUSTED_ORIGINS in .env}
+  USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-true}
+  SECURE_PROXY_SSL_HEADER: ${SECURE_PROXY_SSL_HEADER:-true}
+  DB_NAME: ${DB_NAME:-pve_helper}
+  DB_USER: ${DB_USER:-pve_helper}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+  DB_HOST: db
+  DB_PORT: "5432"
+  OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-https://auth.example.com/application/o/pve-helper/}
+  OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+  OIDC_REQUIRED_GROUP: ${OIDC_REQUIRED_GROUP:-pve-helper-admins}
+  OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
+  OIDC_OP_AUTHORIZATION_ENDPOINT: ${OIDC_OP_AUTHORIZATION_ENDPOINT:-}
+  OIDC_OP_TOKEN_ENDPOINT: ${OIDC_OP_TOKEN_ENDPOINT:-}
+  OIDC_OP_USER_ENDPOINT: ${OIDC_OP_USER_ENDPOINT:-}
+  OIDC_OP_JWKS_ENDPOINT: ${OIDC_OP_JWKS_ENDPOINT:-}
+  OIDC_OP_END_SESSION_ENDPOINT: ${OIDC_OP_END_SESSION_ENDPOINT:-}
+  # Optional legacy first-cluster bootstrap. New installs add clusters in the UI.
+  PVE_ENDPOINTS: ${PVE_ENDPOINTS:-}
+  PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
+  PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
+  # The operator-configured base bundle. Authorities added in the UI are
+  # appended to a copy of it; it is never rewritten in place. Empty means
+  # the container's own system trust store is the base.
+  PVE_HELPER_BASE_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
+  REQUESTS_CA_BUNDLE: /certificate-state/ca-bundle.pem
+  PVE_HELPER_CERTIFICATE_STATE_DIR: /certificate-state
+  APP_FORCE_HTTP: ${APP_FORCE_HTTP:-false}
+  PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
+  PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
+  # Seals write-only cluster API tokens entered through the onboarding UI.
+  PVE_HELPER_ENCRYPTION_KEYS: ${PVE_HELPER_ENCRYPTION_KEYS:?Set PVE_HELPER_ENCRYPTION_KEYS in .env}
+  PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID: ${PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID:?Set PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID in .env}
+  SCHEDULED_ACTION_TIMEOUT_SECONDS: ${SCHEDULED_ACTION_TIMEOUT_SECONDS:-1800}
+  BACKUP_TASK_TIMEOUT_SECONDS: ${BACKUP_TASK_TIMEOUT_SECONDS:-21600}
+  SCHEDULED_ACTION_POLL_INTERVAL_SECONDS: ${SCHEDULED_ACTION_POLL_INTERVAL_SECONDS:-5}
+  CONSOLE_SESSION_RETENTION_HOURS: ${CONSOLE_SESSION_RETENTION_HOURS:-24}
+  STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-true}
+  STORAGE_METADATA_REFRESH_INTERVAL_MINUTES: ${STORAGE_METADATA_REFRESH_INTERVAL_MINUTES:-1}
+  STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES: ${STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES:-5}
+  STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
+  FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:?Set FILE_UPLOAD_TEMP_DIR in .env}
+  STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
+  STORAGE_IMAGE_INFO_TIMEOUT_SECONDS: ${STORAGE_IMAGE_INFO_TIMEOUT_SECONDS:-15}
+  STORAGE_INFLATE_TIMEOUT_SECONDS: ${STORAGE_INFLATE_TIMEOUT_SECONDS:-14400}
+  STORAGE_INFLATE_WORKER_PRESERVES_OWNER: ${STORAGE_INFLATE_WORKER_PRESERVES_OWNER:-true}
+  SCAN_TASK_TIMEOUT_SECONDS: ${SCAN_TASK_TIMEOUT_SECONDS:-21600}
+  STORAGE_DOWNLOAD_ACCEL_ENABLED: ${STORAGE_DOWNLOAD_ACCEL_ENABLED:-true}
+  STORAGE_DOWNLOAD_ACCEL_PREFIX: ${STORAGE_DOWNLOAD_ACCEL_PREFIX:-/_pve_helper_download}
+  GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+  GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-86400}
+  Q_CLUSTER_WORKERS: ${Q_CLUSTER_WORKERS:-1}
+  Q_CLUSTER_TIMEOUT: ${Q_CLUSTER_TIMEOUT:-1800}
+  Q_CLUSTER_RETRY: ${Q_CLUSTER_RETRY:-2100}
+  TZ: ${TZ:-Europe/Stockholm}
+
 services:
   db:
     image: ghcr.io/ssavant2/pve-helper-db:${PVE_HELPER_VERSION:-latest}
@@ -90,6 +153,41 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Schema is applied exactly once per `up`, before anything serves a request.
+  #
+  # A one-shot job rather than an image entrypoint: four services boot from this
+  # image and would race the schema, which is why migration was a manual runbook
+  # step. `service_completed_successfully` removes the race without keeping the
+  # trap it was avoiding -- six healthy containers serving a stale schema, where
+  # every page 500s and nothing points at the missing step. That is exactly how the
+  # v0.1.1 -> v0.1.2 upgrade failed on 2026-07-19.
+  #
+  # It runs as DB_USER and never as the admin role. PostgreSQL grants privileges to
+  # a table's *owner*, so a migration applied with admin credentials creates tables
+  # the runtime role cannot read, and the app 500s only once some page touches one.
+  #
+  # Data backfills inside migrations run here, which is intended. The one-way
+  # cutovers (`complete_trust_cutover`, `complete_credential_cutover`) are separate
+  # management commands and are deliberately still manual.
+  migrate:
+    image: ghcr.io/ssavant2/pve-helper:${PVE_HELPER_VERSION:-latest}
+    pull_policy: missing
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *app-environment
+    volumes:
+      - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
+      - certificate_state:/certificate-state
+      - storage_accel_state:/storage-accel-state:ro
+      - type: bind
+        source: ${PVE_HELPER_STORAGE_ROOT:?Set PVE_HELPER_STORAGE_ROOT in .env}
+        target: /storages
+        bind:
+          propagation: rslave
+    command: ["python", "manage.py", "migrate", "--noinput"]
+
   web:
     image: ghcr.io/ssavant2/pve-helper:${PVE_HELPER_VERSION:-latest}
     pull_policy: missing
@@ -97,68 +195,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
-      DEBUG: ${DEBUG:-false}
-      APP_REQUIRE_LOGIN: ${APP_REQUIRE_LOGIN:-true}
-      APP_BASE_URL: ${APP_BASE_URL:?Set APP_BASE_URL in .env}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS in .env}
-      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?Set CSRF_TRUSTED_ORIGINS in .env}
-      USE_X_FORWARDED_HOST: ${USE_X_FORWARDED_HOST:-true}
-      SECURE_PROXY_SSL_HEADER: ${SECURE_PROXY_SSL_HEADER:-true}
-      DB_NAME: ${DB_NAME:-pve_helper}
-      DB_USER: ${DB_USER:-pve_helper}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
-      DB_HOST: db
-      DB_PORT: "5432"
-      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-https://auth.example.com/application/o/pve-helper/}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      OIDC_REQUIRED_GROUP: ${OIDC_REQUIRED_GROUP:-pve-helper-admins}
-      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
-      OIDC_OP_AUTHORIZATION_ENDPOINT: ${OIDC_OP_AUTHORIZATION_ENDPOINT:-}
-      OIDC_OP_TOKEN_ENDPOINT: ${OIDC_OP_TOKEN_ENDPOINT:-}
-      OIDC_OP_USER_ENDPOINT: ${OIDC_OP_USER_ENDPOINT:-}
-      OIDC_OP_JWKS_ENDPOINT: ${OIDC_OP_JWKS_ENDPOINT:-}
-      OIDC_OP_END_SESSION_ENDPOINT: ${OIDC_OP_END_SESSION_ENDPOINT:-}
-      # Optional legacy first-cluster bootstrap. New installs add clusters in the UI.
-      PVE_ENDPOINTS: ${PVE_ENDPOINTS:-}
-      PVE_VERIFY_TLS: ${PVE_VERIFY_TLS:-true}
-      PVE_CA_BUNDLE: ${PVE_CA_BUNDLE:-}
-      # The operator-configured base bundle. Authorities added in the UI are
-      # appended to a copy of it; it is never rewritten in place. Empty means
-      # the container's own system trust store is the base.
-      PVE_HELPER_BASE_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
-      REQUESTS_CA_BUNDLE: /certificate-state/ca-bundle.pem
-      PVE_HELPER_CERTIFICATE_STATE_DIR: /certificate-state
-      APP_FORCE_HTTP: ${APP_FORCE_HTTP:-false}
-      PVE_API_TOKEN_ID: ${PVE_API_TOKEN_ID:-}
-      PVE_API_TOKEN_SECRET: ${PVE_API_TOKEN_SECRET:-}
-      # Seals write-only cluster API tokens entered through the onboarding UI.
-      PVE_HELPER_ENCRYPTION_KEYS: ${PVE_HELPER_ENCRYPTION_KEYS:?Set PVE_HELPER_ENCRYPTION_KEYS in .env}
-      PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID: ${PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID:?Set PVE_HELPER_ENCRYPTION_ACTIVE_KEY_ID in .env}
-      SCHEDULED_ACTION_TIMEOUT_SECONDS: ${SCHEDULED_ACTION_TIMEOUT_SECONDS:-1800}
-      BACKUP_TASK_TIMEOUT_SECONDS: ${BACKUP_TASK_TIMEOUT_SECONDS:-21600}
-      SCHEDULED_ACTION_POLL_INTERVAL_SECONDS: ${SCHEDULED_ACTION_POLL_INTERVAL_SECONDS:-5}
-      CONSOLE_SESSION_RETENTION_HOURS: ${CONSOLE_SESSION_RETENTION_HOURS:-24}
-      STORAGE_WRITE_ENABLED: ${STORAGE_WRITE_ENABLED:-true}
-      STORAGE_METADATA_REFRESH_INTERVAL_MINUTES: ${STORAGE_METADATA_REFRESH_INTERVAL_MINUTES:-1}
-      STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES: ${STORAGE_VOLUME_REFRESH_INTERVAL_MINUTES:-5}
-      STORAGE_UPLOAD_MAX_SIZE_MB: ${STORAGE_UPLOAD_MAX_SIZE_MB:-0}
-      FILE_UPLOAD_TEMP_DIR: ${FILE_UPLOAD_TEMP_DIR:?Set FILE_UPLOAD_TEMP_DIR in .env}
-      STORAGE_IMAGE_INFO_ENABLED: ${STORAGE_IMAGE_INFO_ENABLED:-true}
-      STORAGE_IMAGE_INFO_TIMEOUT_SECONDS: ${STORAGE_IMAGE_INFO_TIMEOUT_SECONDS:-15}
-      STORAGE_INFLATE_TIMEOUT_SECONDS: ${STORAGE_INFLATE_TIMEOUT_SECONDS:-14400}
-      STORAGE_INFLATE_WORKER_PRESERVES_OWNER: ${STORAGE_INFLATE_WORKER_PRESERVES_OWNER:-true}
-      SCAN_TASK_TIMEOUT_SECONDS: ${SCAN_TASK_TIMEOUT_SECONDS:-21600}
-      STORAGE_DOWNLOAD_ACCEL_ENABLED: ${STORAGE_DOWNLOAD_ACCEL_ENABLED:-true}
-      STORAGE_DOWNLOAD_ACCEL_PREFIX: ${STORAGE_DOWNLOAD_ACCEL_PREFIX:-/_pve_helper_download}
-      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
-      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-86400}
-      Q_CLUSTER_WORKERS: ${Q_CLUSTER_WORKERS:-1}
-      Q_CLUSTER_TIMEOUT: ${Q_CLUSTER_TIMEOUT:-1800}
-      Q_CLUSTER_RETRY: ${Q_CLUSTER_RETRY:-2100}
-      TZ: ${TZ:-Europe/Stockholm}
+      migrate:
+        condition: service_completed_successfully
+    environment: *app-environment
     volumes:
       - ./certs/ca-bundle.pem:/etc/ssl/pve-helper-ca-bundle.pem:ro
       - certificate_state:/certificate-state
@@ -198,6 +237,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: ["uvicorn", "console_app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]
     environment:
       APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
@@ -258,6 +299,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
       DEBUG: ${DEBUG:-false}
