@@ -5,7 +5,7 @@ privilege-separated API token. This page is the provider-side half: what to
 create on the Proxmox host, and what the app checks before it will store
 anything.
 
-The pve-helper side is **Clusters → Connections → Add host/cluster** in the
+The pve-helper side is **Hosts & Clusters → Connections → Add host/cluster** in the
 running app. Nothing here goes into `.env`: the wizard stores transport trust and
 an encrypted, write-only credential per connection. (An older single-cluster
 deployment may still carry `PVE_API_TOKEN_ID`/`PVE_API_TOKEN_SECRET` in its

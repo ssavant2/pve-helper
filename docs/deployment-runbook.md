@@ -179,7 +179,7 @@ cgroup counters of the running container.
    ```
 
 7. Open `http://dockerhost:21080` directly or configure an external reverse proxy for
-   `https://pve-helper.example.com`. Choose **Clusters → Connections → Add
+   `https://pve-helper.example.com`. Choose **Hosts & Clusters → Connections → Add
    cluster** and complete the verified onboarding flow. No cluster record or
    credential is saved until transport, permissions and CA identity pass.
 
@@ -616,7 +616,7 @@ CA or the calls fail with `SSLError` (visible as a 500 right after the OIDC redi
 
 `REQUESTS_CA_BUNDLE` covers the OIDC path (which uses `requests`). Proxmox trust
 is separate and cluster-owned: approve public trust or paste that cluster's CA
-PEM in **Clusters → Connections**. `PVE_CA_BUNDLE` remains only for the legacy
+PEM in **Hosts & Clusters → Connections**. `PVE_CA_BUNDLE` remains only for the legacy
 single-cluster bootstrap/rollback path.
 
 The `certs/` directory is gitignored — CA material is environment-specific and must not be
@@ -654,7 +654,7 @@ inventory, storage visibility, and orphan classification. Older `HelperPower`
 grants on `/vms` can be removed once the dedicated user and token have
 `Administrator` on `/`.
 
-The token is entered in **Clusters → Connections → Add host/cluster** in the
+The token is entered in **Hosts & Clusters → Connections → Add host/cluster** in the
 running app, not in the environment. Paste the internal CA PEM in that
 connection's trust step; do not put a new cluster's CA in the legacy global
 `PVE_CA_BUNDLE`. The legacy `PVE_ENDPOINTS`, `PVE_VERIFY_TLS`,
@@ -680,6 +680,96 @@ wait for a submitted Proxmox task before marking it timed out.
 backup and restore jobs; the default is six hours.
 Scheduled task run-history retention is configured in **PVE-helper Settings →
 Scheduled Tasks** and defaults to 90 days.
+
+## Node enrollment
+
+Discovery is not permission. A Proxmox connection may report every member of its
+cluster, but pve-helper publishes a node's guests, storage instances, counts,
+search results, tags and operation targets only after an operator has enrolled
+that node. Enrollment is a pve-helper decision recorded in pve-helper's database;
+it never writes anything to Proxmox.
+
+Each discovered node is in one of three states:
+
+| Mode | Read for safety evidence | Published to operational surfaces |
+|---|---|---|
+| `managed` | yes | yes |
+| `safety_only` | yes | **no** |
+| not enrolled | no | no |
+
+`safety_only` is the state to use for a node whose guests must not appear in this
+installation. pve-helper still reads its guest configuration, so those guests'
+disk references keep populating `referenced_volids` and a live disk on shared
+storage can never be classified as an orphan — while nothing about the node
+reaches a page, API response, count or target list.
+
+**Do not use "not enrolled" to hide a node.** An eligible member that pve-helper
+is forbidden to read lowers absence confidence on every storage it could have
+mounted, which turns orphan classification and the Recycle Bin conservative for
+the storages the installation actually uses. Reserve it for a node pve-helper
+genuinely must not contact.
+
+### New connections
+
+A connection added through **Hosts & Clusters → Connections → Add host/cluster** starts
+under the enrollment contract already (`enrollment_contract_version = 1`). The
+node the submitted endpoint proved itself to be is enrolled `managed`; every other
+discovered member appears as a not-enrolled discovery row awaiting a decision.
+Nothing further is required at deployment time.
+
+### Upgrading an installation that predates enrollment
+
+Connections created before enrollment shipped stay at
+`enrollment_contract_version = 0` and keep publishing every node they discover —
+deliberately, so the upgrade changes no behaviour until it has been reviewed. Such
+a connection shows an **Enrollment review required** panel on its Connections page
+listing every discovered member with a per-node choice of *Managed*, *Safety only*
+or *Do not enroll*. Reviewing and confirming the set activates the contract for
+that connection.
+
+Two properties of activation matter for a deployment plan:
+
+- **It is per connection.** Activating one leaves the others on legacy
+  publication; there is no global switch and no management command.
+- **It is irreversible.** The version is monotonic and never cleared. Rolling the
+  application back to a binary that ignores enrollment is therefore visible in one
+  query rather than silently restoring cluster-wide publication — but rolling
+  forward again does not restore a legacy connection, so review the set before
+  confirming rather than after.
+
+To see where each connection stands without opening the UI:
+
+```bash
+docker compose exec -T web python manage.py shell -c \
+  'from core.models import ClusterNodeEnrollment
+from core.services.cluster_scopes import managed_clusters
+for c in managed_clusters().order_by("key"):
+    modes = dict(ClusterNodeEnrollment.objects.filter(cluster=c).values_list("node_name", "mode"))
+    print(c.key, "contract", c.enrollment_contract_version, modes)'
+```
+
+A connection printing `contract 0` still publishes everything it discovers. The
+query is deliberately scoped to `managed_clusters()`: a retired connection may
+also read `contract 0` and there is nothing to activate on it.
+
+### Changing a node afterwards
+
+The **Nodes** panel on a connection's page carries the ongoing actions —
+*Add node* (verified against a candidate URL for that specific node), *Hide*
+(`managed` → `safety_only`), *Manage* (`safety_only` → `managed`) and *Remove*
+(stop reading it entirely). Each previews its exact consequence and is confirmed
+against a signed impact summary, so a change cannot be replayed against a
+different node or connection.
+
+A hide or remove is refused while durable work would be silently retargeted: an
+enabled scheduled action against a guest currently placed on that node, or a live
+console session on it. The refusal names the blocking objects. Removing an
+endpoint is a separate decision and never implies unenrolling the node it reached;
+unenrolling a node never disables an endpoint.
+
+Every enrollment change is recorded in Audit as `cluster.node.enrolled`,
+`cluster.node.mode_changed` or `cluster.node.removed`, carrying the previous and
+new mode, the operator's reason and the enrollment generation that published it.
 
 ## Storage consumer safety
 

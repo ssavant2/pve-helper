@@ -65,7 +65,8 @@ The sidebar is the primary navigation. Its working areas are:
 
 | Area | Use it for |
 | --- | --- |
-| **Clusters → Connections** | Add verified clusters/endpoints and manage per-cluster credentials and enabled state. |
+| **Hosts & Clusters** | The infrastructure tree. **Clusters** holds each corosync cluster and its enrolled nodes, **Hosts** holds standalone Proxmox hosts, and each object has its own Summary and tabs. |
+| **Hosts & Clusters → Connections** | Add verified clusters/endpoints, manage per-cluster credentials and enabled state, decide which discovered nodes pve-helper reads and publishes, and reach the retired archive. |
 | **VMs/CTs** | Guest inventory, power, console, configuration, migration, backup/restore, and related operations. |
 | **Storage** | The Proxmox storage catalog per cluster — one page per datastore, with its nodes, volumes, guests, and (where pve-helper has a mount) its files, scans and file operations. |
 | **Tags** | Create and color tags, inspect membership, assign or remove tags, and rename or delete them across guests. |
@@ -73,9 +74,11 @@ The sidebar is the primary navigation. Its working areas are:
 | **Audit** | Authentication and administration history, filters, search, export, and a shortcut to log forwarding. |
 | **PVE-helper Settings** | Application-specific integration settings, including log forwarding and host-mounted storage access. |
 
-**Network** remains reserved for a later module. Cluster **Connections** is the
-configuration surface; the broader host/cluster operations workspace arrives in
-a later module.
+**Network** remains reserved for a later module. **Connections** is the
+configuration surface and a sibling of the tree, not its parent: a retired
+connection keeps its archive entry there while the operational tree shows only
+current, enrolled objects. The host/cluster workspace is currently read-only —
+Summary views and inventory tables; per-object actions arrive in later phases.
 
 The top bar provides global search, theme selection, VM/CT ID visibility, and
 IPv4/IPv6 display preferences. Preferences are browser-local. The task bar at
@@ -95,10 +98,12 @@ as one pve-helper cluster. A cluster has one permanent lowercase key and one or
 more replaceable API endpoints. The key is durable identity used in URLs, tasks
 and Audit; it cannot be renamed. The display name can be changed.
 
-To add a standalone host or a cluster, open **Clusters → Connections →
+To add a standalone host or a cluster, open **Hosts & Clusters → Connections →
 Add host/cluster**. A multi-node cluster is registered through one of its nodes;
-its remaining nodes are added afterwards, one at a time, as extra endpoints of
-the same connection. The steps are:
+the connection then discovers the rest, and you decide which of them pve-helper
+may read and publish — see *Which nodes pve-helper reads and publishes* below.
+Adding a second node as an extra **endpoint** is a separate, optional choice
+about transport redundancy. The steps are:
 
 1. Enter its display name, permanent key and first HTTPS Proxmox endpoint.
 2. Review the certificate shown before entering credentials. Choose public trust
@@ -130,7 +135,10 @@ as a separate provider-side action.
 
 Add another node of the same Proxmox cluster with **Add endpoint**. Certificate,
 credential and pinned CA identity are verified before it joins failover. A
-disabled endpoint is re-verified before it can be enabled again.
+disabled endpoint is re-verified before it can be enabled again. An endpoint is a
+way *in* to the cluster, not a licence to inventory the node behind it: one
+healthy endpoint can answer for every member, and whether a member's guests and
+storage are published is decided by enrollment instead.
 
 Disabling a cluster blocks new refreshes, schedules, consoles and writes while
 retaining its last-known inventory, schedules and Audit history. It is refused
@@ -147,6 +155,51 @@ If a file-tree datastore should also be browsable, mount it beneath the deployme
 `/storages` host root and use **PVE-helper Settings → Storage access** to bind that
 existing directory to the correct cluster storage and, for node-local storage,
 node. Registration does not create or edit a Proxmox storage definition.
+
+### Which nodes pve-helper reads and publishes
+
+Finding a node is not the same as being allowed to use it. The Proxmox API tells
+pve-helper every member of the cluster, but a node's guests, storage instances,
+counts, search results, tags and operation targets appear in the app only after
+you enroll that node. Enrollment is a pve-helper decision stored in pve-helper —
+changing it never touches Proxmox.
+
+The **Nodes** panel on a connection's page lists every discovered member and the
+state you have put it in:
+
+- **Managed** — read and published. The normal state; the node and its guests
+  behave exactly as before.
+- **Safety only** — read, but hidden. The node's guests are still read and kept as
+  evidence, while nothing about them appears on any page, API response, count,
+  search result or target list, and the node itself is absent from the Hosts &
+  Clusters tree. Use this for a node whose guests should not show up here.
+- **Not enrolled** — not read at all. The node appears only on this page, as
+  discovery evidence.
+
+**Prefer *Safety only* over leaving a node unenrolled.** Both hide the node
+equally well, but only *Safety only* leaves pve-helper knowing what that node's
+guests have on shared storage. A node the app is forbidden to read is a node
+whose disks it cannot account for, which is the wrong starting point for any
+judgement about a shared datastore. Reserve *Not enrolled* for a member
+pve-helper genuinely must not contact.
+
+The actions on each row are **Add node** for a discovered member you want to
+start using, **Hide** and **Manage** to move an enrolled node between the two
+states, and **Remove** to stop reading it entirely. Each one shows you what will
+change before it takes effect, and each is recorded in Audit with the old and new
+state and your reason.
+
+A change is refused while it would silently retarget durable work — an enabled
+scheduled action on a guest currently running on that node, or a live console
+session on it. The message names what is in the way. Endpoints and enrollment are
+separate: removing an endpoint does not unenroll the node it reached, and
+unenrolling a node does not disable an endpoint.
+
+Connections created before this feature existed keep publishing every node they
+discover until you review them once. Such a connection shows an **Enrollment
+review required** panel listing each member with the three choices above.
+Confirming that set switches the connection over, and it cannot be switched back
+— so decide the set on the review screen rather than afterwards.
 
 ### Retiring or deleting a connection
 
