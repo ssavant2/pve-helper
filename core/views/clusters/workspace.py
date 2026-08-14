@@ -428,9 +428,7 @@ def node_networks(request, cluster_key: str, node: str):
         "cluster": cluster,
         "projection": projection,
         "node": match,
-        "panel": _network_panel_or_404(
-            cluster, node=match.node_name, scope=scope, members=_member_names(projection)
-        ),
+        "panel": _network_panel_or_404(cluster, node=match.node_name, scope=scope, members=_member_names(projection)),
         "workspace_object": match.node_name,
         "workspace_kind": "node",
         "tabs": _tabs(
