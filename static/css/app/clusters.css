@@ -2,17 +2,58 @@
   overflow: auto;
 }
 
-/* Networks tab: one table per layer inside a node's panel. The heading is a
-   label for the table under it, not a second panel heading -- it stays lighter
-   than the node's own <h2> so the node remains the unit the eye finds first. */
+/* Networks tab: each layer is its own bordered box inside the node's panel.
+
+   A bare heading above a table did not work: `.data-table th` already carries a
+   shaded header bar, so a shaded label directly above it read as a second header
+   row rather than as the name of the box. The border is what makes a layer an
+   object -- everything inside it belongs to one table, and nothing outside it
+   can be mistaken for a row. */
+.network-section {
+  margin: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
 .network-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
-  padding: 10px 12px 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-alt);
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.network-section-count {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* The table's own outer border would double the box's. */
+.network-section .data-table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Interface and State mean the same thing in every section, so they are pinned
+   to one width. Three tables auto-sizing independently put "State" at three
+   different x positions inside one panel, which was most of what made the
+   stacked layers read as noise rather than as a grid. */
+.network-section .data-table th:first-child,
+.network-section .data-table td:first-child {
+  width: 200px;
+}
+
+.network-section .data-table th:nth-child(2),
+.network-section .data-table td:nth-child(2) {
+  width: 170px;
 }
 
 /* Unconfigured physical ports: names on one line instead of a table of dashes. */
@@ -22,16 +63,8 @@
   align-items: baseline;
   gap: 6px;
   margin: 0;
-  padding: 10px 12px;
+  padding: 8px 10px;
   font-size: 13px;
-}
-
-.network-port-strip .network-section-label {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
 
 .network-port-strip .network-port {

@@ -48,14 +48,17 @@
     {% endif %}
 
     {% for section in group.sections %}
+      <section class="network-section">
+        <h3 class="network-section-heading">
+          {{ section.title }}
+          <span class="network-section-count">{{ section.interfaces|length }}</span>
+        </h3>
       {% if section.collapsible %}
         <p class="network-port-strip">
-          <span class="network-section-label">{{ section.title }}</span>
           {% for row in section.interfaces %}<span class="network-port">{{ row.iface }}</span>{% endfor %}
-          <span class="muted">all active, none configured on the host</span>
+          <span class="muted">all active</span>
         </p>
       {% else %}
-        <h3 class="network-section-heading">{{ section.title }}</h3>
         <div class="cluster-table-scroll">
           <table class="data-table compact" data-sortable-table>
             <thead>
@@ -147,6 +150,7 @@
           </table>
         </div>
       {% endif %}
+      </section>
     {% empty %}
       {% if group.known %}
         <p class="empty-state">
