@@ -1,15 +1,25 @@
 {% comment %}
   The Networks tab body, shared by the cluster and node scopes (5a4B-ii).
 
-  Two rules this markup holds:
+  Three rules this markup holds:
 
-  * **One table per node, never one merged table.** A bridge name is not a cluster
+  * **One panel per node, never one merged table.** A bridge name is not a cluster
     object: `vmbr0` on pve1 and `vmbr0` on pve2 are different devices with possibly
     different ports, and one row for both would show one node's ports under the
     other's name.
   * **An empty list is never rendered as "no network".** A node whose state is not
     current says why instead of showing an empty table, because "nobody read this
     node" and "this node has no bridges" are opposite instructions.
+  * **One table per layer, with that layer's columns.** The layers disagree about
+    which columns carry meaning: a physical port has no address, ports, VLAN or
+    comment, and a vnet's VLAN lives in SDN rather than on this endpoint. A shared
+    nine-column table answered every question for every row and so rendered mostly
+    `-` — and worse, printed a truthful-looking `no` under VLAN for seven vnets
+    that are each tagged. A column a section cannot answer is absent from it.
+
+  Sections are separate tables rather than separator rows inside one, so that
+  sorting a column stays inside its layer instead of scattering the grouping on
+  the first click.
 {% endcomment %}
 
 {% for group in panel.groups %}
@@ -37,73 +47,114 @@
       </div>
     {% endif %}
 
-    {% if group.interfaces %}
-      <div class="cluster-table-scroll">
-        <table class="data-table compact" data-sortable-table>
-          <thead>
-            <tr>
-              <th scope="col">Interface</th>
-              <th scope="col">Type</th>
-              <th scope="col">Attachable</th>
-              <th scope="col">State</th>
-              <th scope="col">Address</th>
-              <th scope="col">Gateway</th>
-              <th scope="col">Ports / slaves</th>
-              <th scope="col">VLAN</th>
-              <th scope="col">Comment</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in group.interfaces %}
+    {% for section in group.sections %}
+      {% if section.collapsible %}
+        <p class="network-port-strip">
+          <span class="network-section-label">{{ section.title }}</span>
+          {% for row in section.interfaces %}<span class="network-port">{{ row.iface }}</span>{% endfor %}
+          <span class="muted">all active, none configured on the host</span>
+        </p>
+      {% else %}
+        <h3 class="network-section-heading">{{ section.title }}</h3>
+        <div class="cluster-table-scroll">
+          <table class="data-table compact" data-sortable-table>
+            <thead>
               <tr>
-                <td data-sort-value="{{ row.iface }}">
-                  {{ row.iface }}
-                  {% if not row.current %}<span class="badge" title="Not part of the latest complete read">not current</span>{% endif %}
-                </td>
-                <td>{{ row.interface_type|default:"-" }}</td>
-                <td data-sort-value="{{ row.attachable|yesno:"1,0" }}">
-                  {% if row.attachable and row.present %}
-                    <span class="badge completed">yes</span>
-                  {% else %}
-                    <span class="muted">no</span>
-                  {% endif %}
-                </td>
-                <td>
-                  {% if row.unreachable %}
-                    <span class="badge failed" title="The node did not answer, so this row is unproven">unknown</span>
-                  {% elif row.active %}
-                    <span class="badge completed">active</span>
-                  {% elif row.active is None %}
-                    <span class="muted">-</span>
-                  {% else %}
-                    <span class="badge">inactive</span>
-                  {% endif %}
-                  {% if row.autostart %}<span class="muted" title="Starts with the node">autostart</span>{% endif %}
-                </td>
-                <td>{{ row.cidr|default:row.address|default:"-" }}{% if row.method %} <span class="muted">({{ row.method }})</span>{% endif %}</td>
-                <td>{{ row.gateway|default:"-" }}</td>
-                <td>{{ row.bridge_ports|default:row.bond_slaves|default:"-" }}{% if row.bond_mode %} <span class="muted">({{ row.bond_mode }})</span>{% endif %}</td>
-                <td>
-                  {% if row.bridge_vlan_aware %}
-                    aware{% if row.bridge_vids %} <span class="muted">{{ row.bridge_vids }}</span>{% endif %}
-                  {% elif row.bridge_vlan_aware is None %}
-                    <span class="muted">-</span>
-                  {% else %}
-                    <span class="muted">no</span>
-                  {% endif %}
-                </td>
-                <td>{{ row.comments|default:"-" }}</td>
+                <th scope="col">Interface</th>
+                <th scope="col">State</th>
+                {% if section.key == "vnet" %}
+                  <th scope="col">Attachable</th>
+                  <th scope="col">Address</th>
+                  <th scope="col">Gateway</th>
+                  <th scope="col">Comment</th>
+                {% elif section.key == "bridge" %}
+                  <th scope="col">Attachable</th>
+                  <th scope="col">Ports</th>
+                  <th scope="col">VLAN</th>
+                  <th scope="col">Address</th>
+                  <th scope="col">Comment</th>
+                {% elif section.key == "bond" %}
+                  <th scope="col">Mode</th>
+                  <th scope="col">Slaves</th>
+                  <th scope="col">Address</th>
+                  <th scope="col">Comment</th>
+                {% elif section.key == "port" %}
+                  <th scope="col">Address</th>
+                  <th scope="col">Comment</th>
+                {% else %}
+                  <th scope="col">Attachable</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">Address</th>
+                  <th scope="col">Gateway</th>
+                  <th scope="col">Ports / slaves</th>
+                  <th scope="col">VLAN</th>
+                  <th scope="col">Comment</th>
+                {% endif %}
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% elif group.known %}
-      <p class="empty-state">
-        {{ group.node }} answered, and reports no network interfaces at all. That is
-        unusual for a running node; check the node's own network configuration.
-      </p>
-    {% endif %}
+            </thead>
+            <tbody>
+              {% for row in section.interfaces %}
+                <tr>
+                  {% if section.key == "vnet" %}
+                    {% include "core/partials/network_iface_cells.html" with show_attachable=1 %}
+                    <td>{{ row.cidr|default:row.address|default:"-" }}{% if row.method %} <span class="muted">({{ row.method }})</span>{% endif %}</td>
+                    <td>{{ row.gateway|default:"-" }}</td>
+                    <td>{{ row.comments|default:"-" }}</td>
+                  {% elif section.key == "bridge" %}
+                    {% include "core/partials/network_iface_cells.html" with show_attachable=1 %}
+                    <td>{{ row.bridge_ports|default:"-" }}</td>
+                    <td>
+                      {% if row.bridge_vlan_aware %}
+                        aware{% if row.bridge_vids %} <span class="muted">{{ row.bridge_vids }}</span>{% endif %}
+                      {% elif row.bridge_vlan_aware is None %}
+                        <span class="muted">-</span>
+                      {% else %}
+                        <span class="muted">no</span>
+                      {% endif %}
+                    </td>
+                    <td>{{ row.cidr|default:row.address|default:"-" }}{% if row.method %} <span class="muted">({{ row.method }})</span>{% endif %}</td>
+                    <td>{{ row.comments|default:"-" }}</td>
+                  {% elif section.key == "bond" %}
+                    {% include "core/partials/network_iface_cells.html" %}
+                    <td>{{ row.bond_mode|default:"-" }}</td>
+                    <td>{{ row.bond_slaves|default:"-" }}</td>
+                    <td>{{ row.cidr|default:row.address|default:"-" }}{% if row.method %} <span class="muted">({{ row.method }})</span>{% endif %}</td>
+                    <td>{{ row.comments|default:"-" }}</td>
+                  {% elif section.key == "port" %}
+                    {% include "core/partials/network_iface_cells.html" %}
+                    <td>{{ row.cidr|default:row.address|default:"-" }}{% if row.method %} <span class="muted">({{ row.method }})</span>{% endif %}</td>
+                    <td>{{ row.comments|default:"-" }}</td>
+                  {% else %}
+                    {% include "core/partials/network_iface_cells.html" with show_attachable=1 %}
+                    <td>{{ row.interface_type|default:"-" }}</td>
+                    <td>{{ row.cidr|default:row.address|default:"-" }}{% if row.method %} <span class="muted">({{ row.method }})</span>{% endif %}</td>
+                    <td>{{ row.gateway|default:"-" }}</td>
+                    <td>{{ row.bridge_ports|default:row.bond_slaves|default:"-" }}{% if row.bond_mode %} <span class="muted">({{ row.bond_mode }})</span>{% endif %}</td>
+                    <td>
+                      {% if row.bridge_vlan_aware %}
+                        aware{% if row.bridge_vids %} <span class="muted">{{ row.bridge_vids }}</span>{% endif %}
+                      {% elif row.bridge_vlan_aware is None %}
+                        <span class="muted">-</span>
+                      {% else %}
+                        <span class="muted">no</span>
+                      {% endif %}
+                    </td>
+                    <td>{{ row.comments|default:"-" }}</td>
+                  {% endif %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    {% empty %}
+      {% if group.known %}
+        <p class="empty-state">
+          {{ group.node }} answered, and reports no network interfaces at all. That is
+          unusual for a running node; check the node's own network configuration.
+        </p>
+      {% endif %}
+    {% endfor %}
   </section>
 {% empty %}
   <section class="panel panel-spaced">

@@ -2,6 +2,47 @@
   overflow: auto;
 }
 
+/* Networks tab: one table per layer inside a node's panel. The heading is a
+   label for the table under it, not a second panel heading -- it stays lighter
+   than the node's own <h2> so the node remains the unit the eye finds first. */
+.network-section-heading {
+  margin: 0;
+  padding: 10px 12px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* Unconfigured physical ports: names on one line instead of a table of dashes. */
+.network-port-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.network-port-strip .network-section-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.network-port-strip .network-port {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--surface-alt);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 .cluster-list-heading,
 .cluster-section-heading {
   gap: 10px;

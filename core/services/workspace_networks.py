@@ -24,6 +24,13 @@ keeps its last known interfaces and marks them unknown; rendering nothing would 
 the node *stopped reporting* under a complete read is a different case and no longer
 reaches this module at all — it is deleted at the source, because coverage already
 separates "gone" from "never swept" and Proxmox keeps no such history either.
+
+**Within a node the order is the network stack, not the alphabet.** One node here
+carries fifteen interfaces across four layers, and sorting them by name interleaves
+`nic2` between `iot90` and `server10` — physical ports, bonds, bridges and SDN vnets
+in one undifferentiated list. `sections` reads downward instead: what a guest
+attaches to first, the plumbing that carries it last. The layers also disagree about
+which columns mean anything, which is the rendering half of the same fact.
 """
 
 from __future__ import annotations
@@ -38,6 +45,69 @@ from core.services.cluster_projection_read import (
 )
 from core.services.node_networks import node_network_reason
 from core.services.publication_scope import PublicationScope, publication_scope
+
+#: Section order is the read order: a guest attaches to a vnet or a bridge, which
+#: stands on a bond, which stands on physical ports.
+_SECTION_TITLES = (
+    ("vnet", "SDN vnets"),
+    ("bridge", "Bridges"),
+    ("bond", "Bonds"),
+    ("port", "Physical ports"),
+    ("other", "Other interfaces"),
+)
+
+#: Proxmox's own ``type`` values. A type not named here falls to ``other`` and
+#: renders with the full column set rather than disappearing: an interface we
+#: cannot classify is one we cannot describe well, not one that does not exist.
+_SECTION_BY_TYPE = {
+    "vnet": "vnet",
+    "bridge": "bridge",
+    "ovsbridge": "bridge",
+    "bond": "bond",
+    "ovsbond": "bond",
+    "eth": "port",
+}
+
+
+def _unremarkable(row: NodeInterfaceRead) -> bool:
+    """Nothing about this row is worth a table cell."""
+
+    # `present` alone covers unreachability: 5a4B-i only ever writes `unreachable`
+    # together with `present=False`, and after tombstoning was removed that is the
+    # single way a row can be absent. Testing both would be testing one twice.
+    return bool(
+        row.active
+        and row.present
+        and row.current
+        and not row.attachable
+        and not row.address
+        and not row.cidr
+        and not row.gateway
+        and not row.comments
+    )
+
+
+@dataclass(frozen=True)
+class NetworkSection:
+    """One layer of one node's stack."""
+
+    key: str
+    title: str
+    interfaces: tuple[NodeInterfaceRead, ...]
+
+    @property
+    def collapsible(self) -> bool:
+        """Physical ports with nothing to say are a name strip, not a table.
+
+        Four `nic` rows fill thirty-six cells of which twenty-four are `-`, because
+        an unconfigured port has no address, no ports, no VLAN and no comment. The
+        table becomes the right shape again the moment one of them carries an
+        address, is down, or is unproven — an unplugged NIC must not read like a
+        live one — so the strip is offered only when *every* row in the section has
+        nothing to report.
+        """
+
+        return self.key == "port" and all(_unremarkable(row) for row in self.interfaces)
 
 
 @dataclass(frozen=True)
@@ -60,6 +130,24 @@ class NetworkNodeGroup:
     @property
     def attachable(self) -> tuple[NodeInterfaceRead, ...]:
         return tuple(row for row in self.interfaces if row.attachable and row.present)
+
+    @property
+    def sections(self) -> tuple[NetworkSection, ...]:
+        """The node's interfaces by layer, in stack order, empty layers omitted.
+
+        Alphabetical order inside each section is inherited from the read rather
+        than reasserted here, so the two orderings cannot drift apart.
+        """
+
+        buckets: dict[str, list[NodeInterfaceRead]] = {}
+        for row in self.interfaces:
+            key = _SECTION_BY_TYPE.get(row.interface_type.lower(), "other")
+            buckets.setdefault(key, []).append(row)
+        return tuple(
+            NetworkSection(key=key, title=title, interfaces=tuple(buckets[key]))
+            for key, title in _SECTION_TITLES
+            if key in buckets
+        )
 
 
 @dataclass(frozen=True)

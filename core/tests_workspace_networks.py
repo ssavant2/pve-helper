@@ -1,12 +1,14 @@
 """The workspace Networks tab (phase 5a4B-ii).
 
 The tab composes an already-published projection, so what it can break is not the
-sweep — it is what the composition *claims*. Three claims, each with a test:
+sweep — it is what the composition *claims*. Four claims, each with a test:
 
 * the grain is (node, interface) and never collapses across nodes, because `vmbr0`
   on two nodes is two devices that share a name;
 * a node whose state is not current says why, rather than rendering an empty table
   that reads as "this node has no network";
+* every interface reaches exactly one section, an unclassified type included, and
+  a section shows only columns its layer can actually answer;
 * the publication boundary, asserted here as a leak test rather than re-derived.
 
 The query test at the end is the one that would catch the regression this phase
@@ -189,6 +191,81 @@ class WorkspaceNetworkTabTests(TestCase):
         self.assertIn("vmbr8", [row.iface for row in group.interfaces])
         self.assertEqual([row.iface for row in group.attachable], ["vmbr0"])
 
+    # ------------------------------------------------------------------ layering
+
+    def test_the_sections_read_down_the_stack_and_omit_the_layers_the_node_lacks(self):
+        """Alphabetical order interleaves `nic2` between `iot90` and `server10`.
+        The sections are the layers instead: attach targets first, plumbing last."""
+        self._interface("pve1", "server10", interface_type="vnet")
+        self._interface("pve1", "nic0", interface_type="eth", attachable=False)
+
+        group = next(item for item in self._panel().groups if item.node == "pve1")
+
+        self.assertEqual(
+            [(section.key, [row.iface for row in section.interfaces]) for section in group.sections],
+            [("vnet", ["server10"]), ("bridge", ["vmbr0"]), ("bond", ["bond0"]), ("port", ["nic0"])],
+        )
+        # pve2 has one bridge and nothing else: four empty headings would be worse
+        # than the single table this replaces.
+        other = next(item for item in self._panel().groups if item.node == "pve2")
+        self.assertEqual([section.key for section in other.sections], ["bridge"])
+
+    def test_a_type_this_module_does_not_know_is_shown_rather_than_dropped(self):
+        """An unclassified interface is one we describe poorly, not one that is
+        absent -- it lands in `other`, which renders the full column set."""
+        self._interface("pve1", "vlan99", interface_type="OVSIntPort", attachable=False)
+
+        group = next(item for item in self._panel().groups if item.node == "pve1")
+        section = next(item for item in group.sections if item.key == "other")
+
+        self.assertEqual([row.iface for row in section.interfaces], ["vlan99"])
+        self.assertEqual(sum(len(item.interfaces) for item in group.sections), len(group.interfaces))
+
+    def test_an_ovs_bridge_and_bond_sit_with_their_linux_equivalents(self):
+        self._interface("pve1", "ovsbr0", interface_type="OVSBridge")
+        self._interface("pve1", "ovsbond0", interface_type="OVSBond", attachable=False)
+
+        group = next(item for item in self._panel().groups if item.node == "pve1")
+        sections = {section.key: [row.iface for row in section.interfaces] for section in group.sections}
+
+        self.assertEqual(sections["bridge"], ["ovsbr0", "vmbr0"])
+        self.assertEqual(sections["bond"], ["bond0", "ovsbond0"])
+
+    def test_bare_physical_ports_collapse_to_a_strip_and_nothing_else_ever_does(self):
+        self._interface("pve1", "nic0", interface_type="eth", attachable=False)
+
+        group = next(item for item in self._panel().groups if item.node == "pve1")
+
+        self.assertEqual([section.key for section in group.sections if section.collapsible], ["port"])
+
+    def test_a_port_with_something_to_say_keeps_its_table(self):
+        """The strip says "all active, none configured". Each of these makes that
+        sentence false, and a down port must not look like a live one.
+
+        A second, ordinary port sits alongside throughout, because that is the case
+        that separates "every row is unremarkable" from "some row is": with one row
+        in the section the two rules agree and neither is being tested."""
+        self._interface("pve1", "nic1", interface_type="eth", attachable=False)
+        cases = (
+            {"active": False},
+            {"cidr": "10.0.0.9/24"},
+            {"address": "10.0.0.9"},
+            {"gateway": "10.0.0.1"},
+            {"comments": "uplink to the top-of-rack"},
+            {"present": False, "unreachable": True},
+            {"observed_generation": 4},
+            {"attachable": True},
+        )
+        for case in cases:
+            with self.subTest(**case):
+                ClusterNodeInterface.objects.filter(node_name="pve1", iface="nic0").delete()
+                self._interface("pve1", "nic0", **{"interface_type": "eth", "attachable": False, **case})
+
+                group = next(item for item in self._panel().groups if item.node == "pve1")
+                section = next(item for item in group.sections if item.key == "port")
+
+                self.assertFalse(section.collapsible)
+
     def test_a_row_from_an_older_generation_renders_as_not_current(self):
         self._interface("pve1", "vmbr0", observed_generation=4)
 
@@ -245,6 +322,47 @@ class WorkspaceNetworkTabTests(TestCase):
                 self.assertTrue(tabs["networks"].enabled)
                 self.assertTrue(tabs[active].active)
                 self.assertContains(response, "vmbr0")
+
+    def test_a_vnet_never_renders_a_vlan_column_it_cannot_answer(self):
+        """`bridge_vlan_aware` is False on every vnet, and the shared table printed
+        that as a plain `no` under VLAN -- for vnets that are each tagged, with the
+        tag living in SDN rather than on this endpoint. The column is absent from
+        the section instead of being filled with a confident wrong answer."""
+        self._interface("pve1", "server10", interface_type="vnet", bridge_vlan_aware=False)
+
+        response = self.client.get(reverse("core:node_networks", args=["hq", "pve1"]))
+        body = response.content.decode()
+        vnet_table = body.split("SDN vnets", 1)[1].split("</table>", 1)[0]
+
+        self.assertIn("server10", vnet_table)
+        self.assertNotIn("VLAN", vnet_table)
+        # The bridge section, where the flag is the node's own answer, still has it.
+        self.assertIn("VLAN", body.split("Bridges", 1)[1].split("</table>", 1)[0])
+
+    def test_bare_ports_render_as_a_strip_and_a_configured_one_renders_as_a_table(self):
+        self._interface("pve1", "nic0", interface_type="eth", attachable=False)
+
+        strip = self.client.get(reverse("core:node_networks", args=["hq", "pve1"])).content.decode()
+        self.assertIn('class="network-port-strip"', strip)
+        self.assertIn(">nic0<", strip)
+
+        self._interface("pve1", "nic0", interface_type="eth", attachable=False, cidr="10.0.0.9/24")
+
+        table = self.client.get(reverse("core:node_networks", args=["hq", "pve1"])).content.decode()
+        self.assertNotIn('class="network-port-strip"', table)
+        self.assertIn("10.0.0.9/24", table)
+
+    def test_the_node_scope_gets_the_same_sections_as_the_cluster_scope(self):
+        """One partial, both scopes -- the node page is not a second layout that
+        can drift into showing the old undifferentiated table."""
+        self._interface("pve1", "server10", interface_type="vnet")
+
+        cluster = self.client.get(reverse("core:cluster_networks", args=["hq"])).content.decode()
+        node = self.client.get(reverse("core:node_networks", args=["hq", "pve1"])).content.decode()
+
+        for heading in ("SDN vnets", "Bridges", "Bonds"):
+            self.assertIn(heading, cluster)
+            self.assertIn(heading, node)
 
     def test_each_node_panel_uses_the_shared_gui_spacing(self):
         response = self.client.get(reverse("core:cluster_networks", args=["hq"]))

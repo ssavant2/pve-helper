@@ -203,8 +203,8 @@ class NodeNetworkRead:
     node_name: str
     status: NodeNetworkReadStatus
     coverage: NodeNetworkCoverageRead | None
-    #: Every row this connection holds for the node, tombstones included, so a
-    #: surface can show what disappeared. `attachable_bridges` is the decision.
+    #: Every row this connection holds for the node, including rows a failed pass
+    #: left marked unknown. `attachable_bridges` is the decision.
     interfaces: tuple[NodeInterfaceRead, ...]
 
     @property
