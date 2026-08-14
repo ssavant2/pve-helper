@@ -14,27 +14,47 @@ The fixture is the shape that produced both, taken from the 2026-08-13 live prob
 one zone spanning every node, one zone restricted to a subset, one realized vnet
 carrying an address and one without. `pve3` is the node the restricted zone excludes.
 
-These tests pin the *verdict*, not the merge that used to compute it — the merge is
-gone, and reintroducing it is what the source guard at the end is for.
+Since 5a4B-ii the seam reads the published projection rather than the provider, so
+the fixture is now expressed as **rows** — which is where the live answer lands, and
+therefore where the zone restriction has to survive. The publisher's own fidelity to
+`?type=any_bridge` is `tests_cluster_node_networks.py`; what is pinned here is that
+the seam does not re-derive, re-merge or re-widen what it was handed.
+
+Everything below also pins the property the live version could not have: an answer
+that says whether it is an answer. `[]` from an unreachable node used to render as
+"no bridges", which is a proven-absent claim built from silence.
 """
 
 from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.conf import settings
-from django.test import SimpleTestCase, TestCase
+from django.contrib.auth import get_user_model
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
-from core.models import ProxmoxCluster
+from core.models import (
+    ClusterNodeEnrollment,
+    ClusterNodeInterface,
+    ClusterProjectionCoverage,
+    ProxmoxCluster,
+)
 from core.services.guest_create import create_options
-from core.services.node_networks import node_attachable_bridges
+from core.services.node_networks import (
+    _REFUSAL_REASONS,
+    attachable_bridges,
+    attachable_bridges_by_node,
+)
 from core.services.proxmox import ProxmoxAPIError
 
 #: `?type=any_bridge` per node, as live pve1/pve3 answered it. A vnet row is typed
 #: `vnet` and carries `active` as a *string*; a bridge row carries it as an integer.
+#: This is what 5a4B-i's publisher writes rows from, and the rows below mirror it.
 ANY_BRIDGE = {
     "pve1": [
         {"iface": "vmbr0", "type": "bridge", "active": 1},
@@ -80,9 +100,16 @@ SDN_VNETS = [
     {"vnet": "wan100", "zone": "External"},
 ]
 
+GENERATION = 7
+
 
 class RecordingClient:
-    """Answers the probe's paths and records every one it was asked for."""
+    """Answers the paths a create-options render still needs, and records them.
+
+    Kept after the migration precisely so the bridge paths can be asserted *absent*:
+    a client that cannot answer them would prove nothing about whether they are
+    still being asked.
+    """
 
     def __init__(self, *, fail: bool = False, payload=None):
         self.paths: list[str] = []
@@ -113,69 +140,275 @@ class RecordingClient:
         raise ProxmoxAPIError(path)
 
 
-class NodeAttachableBridgeTests(SimpleTestCase):
-    def test_it_returns_exactly_what_the_node_can_attach_to(self):
-        self.assertEqual(
-            node_attachable_bridges(RecordingClient(), "pve1"),
-            ["dmz50", "server10", "vmbr0", "vmbr1", "wan100"],
+class ProjectionFixture:
+    """Publishes the live fixture as projection rows, the way 5a4B-i would have."""
+
+    def publish(self, cluster, node: str, *, generation: int = GENERATION, complete: bool = True, error: str = ""):
+        now = timezone.now()
+        ClusterProjectionCoverage.objects.update_or_create(
+            cluster=cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_NETWORK,
+            node_name=node,
+            defaults={
+                "generation": generation,
+                "based_on_generation": 3,
+                "complete": complete,
+                "attempted_at": now,
+                "observed_at": now,
+                "error_code": error,
+            },
         )
+        for row in ANY_BRIDGE.get(node, ()):
+            ClusterNodeInterface.objects.update_or_create(
+                cluster=cluster,
+                node_name=node,
+                iface=row["iface"],
+                defaults={
+                    "interface_type": row["type"],
+                    "attachable": True,
+                    "present": True,
+                    "unreachable": False,
+                    "observed_generation": generation,
+                    "last_seen_at": now,
+                },
+            )
+        # Interfaces the plain listing knows and `any_bridge` does not: they exist,
+        # they are published, and they are not attachable. A seam that filtered on
+        # type instead of the published flag would offer `bond0`.
+        for row in PLAIN_NETWORK.get(node, ()):
+            if any(row["iface"] == entry["iface"] for entry in ANY_BRIDGE.get(node, ())):
+                continue
+            ClusterNodeInterface.objects.update_or_create(
+                cluster=cluster,
+                node_name=node,
+                iface=row["iface"],
+                defaults={
+                    "interface_type": row["type"],
+                    "attachable": False,
+                    "present": True,
+                    "unreachable": False,
+                    "observed_generation": generation,
+                    "last_seen_at": now,
+                },
+            )
+
+
+class NodeAttachableBridgeTests(TestCase):
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="hq", display_name="HQ", enabled=True)
+        self.fixture = ProjectionFixture()
+        self.fixture.publish(self.cluster, "pve1")
+        self.fixture.publish(self.cluster, "pve3")
+
+    def test_it_returns_exactly_what_the_node_can_attach_to(self):
+        answer = attachable_bridges(self.cluster, "pve1")
+
+        self.assertTrue(answer.known)
+        self.assertEqual(list(answer.bridges), ["dmz50", "server10", "vmbr0", "vmbr1", "wan100"])
+        self.assertEqual(answer.reason, "")
 
     def test_a_realized_vnet_without_an_address_is_included(self):
         """The under-report. `dmz50` is attachable and absent from the plain listing,
         so any answer derived from that listing rejects a legitimate target."""
-        self.assertIn("dmz50", node_attachable_bridges(RecordingClient(), "pve1"))
+        self.assertIn("dmz50", attachable_bridges(self.cluster, "pve1"))
         self.assertNotIn("dmz50", {row["iface"] for row in PLAIN_NETWORK["pve1"]})
 
     def test_a_vnet_whose_zone_excludes_the_node_is_not_offered(self):
         """The over-report. `wan100` lives in a zone scoped to pve1/pve2; offering it
         on pve3 puts the guest on a bridge that does not exist there."""
-        self.assertNotIn("wan100", node_attachable_bridges(RecordingClient(), "pve3"))
+        self.assertNotIn("wan100", attachable_bridges(self.cluster, "pve3"))
         self.assertIn("wan100", {entry["vnet"] for entry in SDN_VNETS})
+        self.assertIn("wan100", attachable_bridges(self.cluster, "pve1"))
 
-    def test_it_asks_one_endpoint_and_never_the_cluster_vnet_list(self):
-        client = RecordingClient()
+    def test_attachability_is_the_published_flag_and_not_the_interface_type(self):
+        """`bond0` is a published, present interface a NIC cannot attach to."""
+        self.assertTrue(
+            ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", iface="bond0").exists()
+        )
+        self.assertNotIn("bond0", attachable_bridges(self.cluster, "pve1"))
 
-        node_attachable_bridges(client, "pve1")
+    def test_a_node_the_sweep_has_never_reached_is_unknown_rather_than_empty(self):
+        answer = attachable_bridges(self.cluster, "pve2")
 
-        self.assertEqual(client.paths, ["nodes/pve1/network?type=any_bridge"])
+        self.assertFalse(answer.known)
+        self.assertEqual(answer.bridges, ())
+        self.assertEqual(answer.reason, "its network has not been read yet")
 
-    def test_the_node_name_is_quoted(self):
-        client = RecordingClient(fail=True)
+    def test_a_failed_pass_reports_the_publishers_own_reason(self):
+        self.fixture.publish(self.cluster, "pve1", complete=False, error="provider_timeout")
 
-        node_attachable_bridges(client, "pve/1")
+        answer = attachable_bridges(self.cluster, "pve1")
 
-        self.assertEqual(client.paths, ["nodes/pve%2F1/network?type=any_bridge"])
+        self.assertFalse(answer.known)
+        self.assertEqual(answer.bridges, ())
+        self.assertEqual(answer.reason, "the node timed out")
 
-    def test_a_node_that_cannot_answer_yields_nothing_rather_than_raising(self):
-        self.assertEqual(node_attachable_bridges(RecordingClient(fail=True), "pve1"), [])
+    def test_a_failed_pass_withholds_the_bridges_it_still_holds_rows_for(self):
+        """Incomplete coverage is not a weaker version of current — it is unknown.
 
-    def test_an_unexpected_payload_yields_nothing(self):
-        self.assertEqual(node_attachable_bridges(RecordingClient(payload={"iface": "vmbr0"}), "pve1"), [])
+        The rows are still there and still match the last complete generation; what
+        is gone is the guarantee that they describe the node now."""
+        self.fixture.publish(self.cluster, "pve1", complete=False, error="endpoints_exhausted")
 
-    def test_rows_without_a_name_are_dropped_rather_than_stringified(self):
-        payload = [{"iface": "vmbr0", "type": "bridge"}, {"type": "bridge"}, {"iface": "", "type": "bridge"}, "junk"]
+        self.assertEqual(
+            ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", attachable=True).count(),
+            5,
+        )
+        self.assertEqual(attachable_bridges(self.cluster, "pve1").bridges, ())
 
-        self.assertEqual(node_attachable_bridges(RecordingClient(payload=payload), "pve1"), ["vmbr0"])
+    def test_a_reason_the_map_has_never_heard_of_still_says_something(self):
+        self.fixture.publish(self.cluster, "pve1", complete=False, error="a_code_from_the_future")
 
-    def test_an_empty_node_costs_no_call(self):
-        client = RecordingClient()
+        self.assertEqual(attachable_bridges(self.cluster, "pve1").reason, "its network could not be read")
 
-        self.assertEqual(node_attachable_bridges(client, ""), [])
-        self.assertEqual(client.paths, [])
+    def test_a_tombstoned_interface_is_not_offered(self):
+        ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", iface="wan100").update(
+            present=False, unreachable=False
+        )
+
+        self.assertNotIn("wan100", attachable_bridges(self.cluster, "pve1"))
+
+    def test_an_unreachable_row_is_not_offered_even_if_it_still_looks_present(self):
+        """The read does not inherit the publisher's belt-and-braces.
+
+        `_mark_unreachable` clears `present` and `attachable` as well as setting
+        `unreachable`, so three separate fields would each have to be honoured for
+        this row to be withheld. The read owns its own predicate: a row that says
+        the node did not answer is unknown whatever else it says."""
+        ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", iface="wan100").update(
+            present=True, attachable=True, unreachable=True
+        )
+
+        self.assertNotIn("wan100", attachable_bridges(self.cluster, "pve1"))
+
+    def test_an_unreachable_row_as_the_publisher_actually_writes_it_is_not_offered(self):
+        ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", iface="wan100").update(
+            present=False, attachable=False, unreachable=True
+        )
+
+        self.assertNotIn("wan100", attachable_bridges(self.cluster, "pve1"))
+
+    def test_a_row_left_behind_by_an_older_generation_is_not_offered(self):
+        """Currency is generation equality. A row the last complete pass did not
+        touch is a leftover, and offering it is offering a bridge that was there
+        two sweeps ago."""
+        ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", iface="vmbr1").update(
+            observed_generation=GENERATION - 1
+        )
+
+        self.assertNotIn("vmbr1", attachable_bridges(self.cluster, "pve1"))
+        self.assertIn("vmbr0", attachable_bridges(self.cluster, "pve1"))
+
+    def test_a_hidden_node_reads_as_unknown_before_the_next_sweep_notices(self):
+        """The publisher only learns a node was hidden on its next pass. Until then
+        its rows sit at a matching generation, and reading them would be the
+        enrollment boundary leaking on a delay."""
+        for node, mode in (
+            ("pve1", ClusterNodeEnrollment.Mode.SAFETY_ONLY),
+            ("pve3", ClusterNodeEnrollment.Mode.MANAGED),
+        ):
+            ClusterNodeEnrollment.objects.create(
+                cluster=self.cluster, node_name=node, mode=mode, enrolled_at=timezone.now()
+            )
+        self.cluster.enrollment_contract_version = 1
+        self.cluster.save(update_fields=["enrollment_contract_version"])
+
+        answer = attachable_bridges(self.cluster, "pve1")
+
+        self.assertFalse(answer.known)
+        self.assertEqual(answer.bridges, ())
+        self.assertEqual(answer.reason, _REFUSAL_REASONS["node_not_published"])
+        self.assertTrue(attachable_bridges(self.cluster, "pve3").known)
+
+    def test_a_retired_cluster_refuses_every_node_rather_than_raising(self):
+        self.cluster.retired_at = timezone.now()
+        self.cluster.enabled = False
+        self.cluster.retirement_mode = ProxmoxCluster.RetirementMode.VERIFIED
+        self.cluster.save(update_fields=["retired_at", "enabled", "retirement_mode"])
+
+        answers = attachable_bridges_by_node(self.cluster, ["pve1", "pve3"])
+
+        self.assertEqual(sorted(answers), ["pve1", "pve3"])
+        self.assertFalse(any(answer.known for answer in answers.values()))
+
+    def test_an_empty_node_costs_no_query_and_answers_unknown(self):
+        with self.assertNumQueries(0):
+            answer = attachable_bridges(self.cluster, "")
+
+        self.assertFalse(answer.known)
+        self.assertEqual(answer.bridges, ())
+
+    def test_the_bulk_read_is_flat_in_node_count(self):
+        with self.assertNumQueries(4):
+            attachable_bridges_by_node(self.cluster, ["pve1"])
+        with self.assertNumQueries(4):
+            attachable_bridges_by_node(self.cluster, ["pve1", "pve2", "pve3", "pve4", "pve5"])
+
+    def test_the_bulk_read_answers_for_every_requested_node(self):
+        answers = attachable_bridges_by_node(self.cluster, ["pve3", "pve1", "pve3", ""])
+
+        self.assertEqual(sorted(answers), ["pve1", "pve3"])
+        self.assertEqual(list(answers["pve3"].bridges), ["dmz50", "server10", "vmbr0"])
+
+
+class NodeNetworkReasonCoverageTests(SimpleTestCase):
+    """Every code the publisher can write has a sentence the seam can say.
+
+    The reason map is spelled out in the read path rather than imported from the
+    publisher, which buys a real risk: a publisher that grows a code the map has
+    never heard of, silently degrading every surface to the generic fallback. This
+    is what stops that being discovered on screen.
+    """
+
+    def test_every_publishable_error_code_is_mapped(self):
+        from core.services import cluster_node_networks as publisher
+
+        codes = {
+            value for name, value in vars(publisher).items() if name.startswith("ERROR_") and isinstance(value, str)
+        }
+
+        self.assertTrue(codes)
+        self.assertEqual(sorted(codes - set(_REFUSAL_REASONS)), [])
 
 
 class CreateFormBridgeTests(TestCase):
     def setUp(self):
         self.cluster = ProxmoxCluster.objects.create(key="hq", display_name="HQ", enabled=True)
+        ProjectionFixture().publish(self.cluster, "pve1")
+        ProjectionFixture().publish(self.cluster, "pve3")
+
+    def _options(self, node: str, client=None):
+        client = client or RecordingClient()
+        with patch("core.services.guest_create._first_client", return_value=client):
+            return create_options("vm", node, cluster=self.cluster), client
 
     def test_the_create_form_offers_only_what_the_selected_node_has(self):
-        client = RecordingClient()
-        with patch("core.services.guest_create._first_client", return_value=client):
-            options = create_options("vm", "pve3", cluster=self.cluster)
+        options, client = self._options("pve3")
 
         self.assertEqual(options["bridges"], ["dmz50", "server10", "vmbr0"])
         self.assertNotIn("wan100", options["bridges"])
         self.assertNotIn("cluster/sdn/vnets", client.paths)
+
+    def test_the_create_form_makes_no_network_call_at_all(self):
+        _options, client = self._options("pve3")
+
+        self.assertEqual([path for path in client.paths if "/network" in path], [])
+
+    def test_the_form_says_whether_the_empty_list_is_an_answer(self):
+        options, _client = self._options("pve3")
+        self.assertTrue(options["bridges_known"])
+        self.assertEqual(options["bridges_reason"], "")
+
+        ClusterProjectionCoverage.objects.filter(
+            cluster=self.cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_NETWORK,
+            node_name="pve3",
+        ).update(complete=False, error_code="provider_unauthorized")
+
+        options, _client = self._options("pve3")
+        self.assertEqual(options["bridges"], [])
+        self.assertFalse(options["bridges_known"])
+        self.assertEqual(options["bridges_reason"], "the connection's token was refused")
 
 
 class MigrateDialogBridgeContractTests(TestCase):
@@ -196,6 +429,114 @@ class MigrateDialogBridgeContractTests(TestCase):
         self.assertNotIn('"sdn_vnets"', source)
 
 
+@override_settings(APP_REQUIRE_LOGIN=False)
+class MigrateDialogTargetGatingTests(TestCase):
+    """The phase's headline behaviour, at the surface that makes the decision.
+
+    A target whose network pve-helper cannot describe is *disabled with a reason*,
+    not offered with an empty bridge list. The empty list is what the browser reads
+    as "every one of this guest's bridges is missing from the target" — a warning
+    about the node, produced by pve-helper's own blindness.
+    """
+
+    def setUp(self):
+        self.cluster = ProxmoxCluster.objects.create(key="hq", display_name="HQ", enabled=True)
+        fixture = ProjectionFixture()
+        fixture.publish(self.cluster, "pve1")
+        fixture.publish(self.cluster, "pve3")
+        self.detail = SimpleNamespace(
+            cluster=self.cluster,
+            node="pve1",
+            vmid=500,
+            object_type="vm",
+            status="running",
+            config={"net0": "virtio=AA:BB,bridge=vmbr0"},
+        )
+        user = get_user_model().objects.create_user(username="mig", password="mig-pw")
+        self.client = Client()
+        self.client.force_login(user)
+
+    class DialogClient:
+        """Answers only what the dialog still asks the provider for."""
+
+        def get(self, path, *, timeout=None):
+            if path == "nodes":
+                return [
+                    {"node": "pve1", "status": "online"},
+                    {"node": "pve2", "status": "online"},
+                    {"node": "pve3", "status": "online"},
+                ]
+            if path.endswith("/migrate"):
+                return {"allowed_nodes": ["pve2", "pve3"], "not_allowed_nodes": {}}
+            raise ProxmoxAPIError(path)
+
+    def _payload(self):
+        with (
+            patch("core.views.guests.dialogs._require_guest", return_value=self.detail),
+            patch("core.views.common.cluster_scoped_clients", return_value=[self.DialogClient()]),
+        ):
+            response = self.client.get(reverse("core:guest_migrate_options", args=["hq", "vm", 500]))
+        self.assertEqual(response.status_code, 200)
+        return {entry["node"]: entry for entry in response.json()["nodes"]}, response.json()
+
+    def test_a_node_with_no_network_coverage_is_not_a_selectable_target(self):
+        """pve2 is online and Proxmox itself allows it. What pve-helper does not
+        have is any statement about its network."""
+        nodes, payload = self._payload()
+
+        self.assertFalse(nodes["pve2"]["allowed"])
+        self.assertIn("network state unknown", nodes["pve2"]["reason"])
+        self.assertIn("its network has not been read yet", nodes["pve2"]["reason"])
+        self.assertEqual(payload["bridges_by_node"]["pve2"], [])
+
+    def test_a_node_with_current_coverage_stays_selectable(self):
+        nodes, payload = self._payload()
+
+        self.assertTrue(nodes["pve3"]["allowed"])
+        self.assertEqual(nodes["pve3"]["reason"], "")
+        self.assertEqual(payload["bridges_by_node"]["pve3"], ["dmz50", "server10", "vmbr0"])
+
+    def test_an_already_blocked_target_keeps_the_reason_it_was_blocked_for(self):
+        """Proxmox's own refusal is the more actionable one and must not be
+        overwritten by a second sentence about the projection."""
+        ClusterProjectionCoverage.objects.filter(
+            cluster=self.cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_NETWORK,
+            node_name="pve3",
+        ).update(complete=False, error_code="provider_timeout")
+
+        with patch.object(
+            self.DialogClient,
+            "get",
+            lambda _self, path, timeout=None: (
+                [{"node": "pve1", "status": "online"}, {"node": "pve3", "status": "online"}]
+                if path == "nodes"
+                else {"allowed_nodes": [], "not_allowed_nodes": {"pve3": {"unavailable_storages": ["fast-nvme"]}}}
+                if path.endswith("/migrate")
+                else (_ for _ in ()).throw(ProxmoxAPIError(path))
+            ),
+        ):
+            nodes, _payload = self._payload()
+
+        self.assertFalse(nodes["pve3"]["allowed"])
+        self.assertIn("fast-nvme", nodes["pve3"]["reason"])
+        self.assertNotIn("network state unknown", nodes["pve3"]["reason"])
+
+    def test_the_dialog_makes_one_projection_read_for_every_candidate(self):
+        with (
+            patch("core.views.guests.dialogs._require_guest", return_value=self.detail),
+            patch("core.views.common.cluster_scoped_clients", return_value=[self.DialogClient()]),
+            patch(
+                "core.views.guests._core.attachable_bridges_by_node",
+                wraps=attachable_bridges_by_node,
+            ) as reader,
+        ):
+            self.client.get(reverse("core:guest_migrate_options", args=["hq", "vm", 500]))
+
+        reader.assert_called_once()
+        self.assertEqual(sorted(reader.call_args[0][1]), ["pve1", "pve2", "pve3"])
+
+
 class BridgeReaderSourceGuardTests(SimpleTestCase):
     """One reader, one verdict.
 
@@ -208,7 +549,7 @@ class BridgeReaderSourceGuardTests(SimpleTestCase):
         for path in sorted((root / "core").rglob("*.py")):
             if "migrations" in path.parts or path.name.startswith("tests"):
                 continue
-            if path.name == "node_networks.py":
+            if path.name in {"node_networks.py", "cluster_node_networks.py"}:
                 continue
             yield path.relative_to(root), path.read_text()
 
@@ -219,8 +560,8 @@ class BridgeReaderSourceGuardTests(SimpleTestCase):
             offenders,
             [],
             "A cluster-wide SDN vnet list carries no node opinion. Attachability is "
-            "`core.services.node_networks.node_attachable_bridges`, which asks the "
-            f"provider per node; 5a4C owns the SDN domain itself: {', '.join(offenders)}",
+            "`core.services.node_networks.attachable_bridges`, which reads the "
+            f"projection; 5a4C owns the SDN domain itself: {', '.join(offenders)}",
         )
 
     def test_the_browser_does_not_re_add_the_vnet_list(self):

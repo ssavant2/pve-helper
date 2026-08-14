@@ -713,6 +713,12 @@ class HostProjectionConsumerInvariantTests(SimpleTestCase):
                     domains.add("membership")
                 if re.search(r"(?:^|/)nodes/(?:\{\}|[^/]+)/status(?:$|\?)", shape):
                     domains.add("node_runtime")
+                # 5a4B-ii removed the last one of these from a view. It was the
+                # migrate dialog's per-candidate bridge read, one call per target
+                # node on every open, and it is exactly the shape that grows back
+                # unnoticed: the seam it now calls returns a list either way.
+                if re.search(r"(?:^|/)nodes/(?:\{\}|[^/]+)/network(?:$|\?|/)", shape):
+                    domains.add("node_network")
         return domains
 
     def test_views_and_advisories_do_not_read_host_state_from_the_provider(self):
@@ -755,6 +761,18 @@ class HostProjectionConsumerInvariantTests(SimpleTestCase):
         self.assertEqual(self._host_provider_domains(node_state), {"node_runtime"})
         self.assertEqual(self._host_provider_domains(concatenated_node_state), {"node_runtime"})
         self.assertEqual(self._host_provider_domains(guest_state), set())
+
+    def test_provider_detector_recognises_the_node_network_read(self):
+        plain = ast.parse('client.get(f"nodes/{node}/network")')
+        filtered = ast.parse('client.get(f"nodes/{node}/network?type=any_bridge")')
+        one_interface = ast.parse('client.get(f"nodes/{node}/network/vmbr0")')
+        # A cluster-scoped SDN read is 5a4C's domain and is not this one.
+        sdn = ast.parse('client.get("cluster/sdn/vnets")')
+
+        self.assertEqual(self._host_provider_domains(plain), {"node_network"})
+        self.assertEqual(self._host_provider_domains(filtered), {"node_network"})
+        self.assertEqual(self._host_provider_domains(one_interface), {"node_network"})
+        self.assertEqual(self._host_provider_domains(sdn), set())
 
     def test_views_and_advisories_do_not_bypass_the_projection_read_owner(self):
         root = Path(settings.BASE_DIR)

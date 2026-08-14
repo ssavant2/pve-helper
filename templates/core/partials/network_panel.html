@@ -1,0 +1,125 @@
+{% comment %}
+  The Networks tab body, shared by the cluster and node scopes (5a4B-ii).
+
+  Two rules this markup holds:
+
+  * **One table per node, never one merged table.** A bridge name is not a cluster
+    object: `vmbr0` on pve1 and `vmbr0` on pve2 are different devices with possibly
+    different ports, and one row for both would show one node's ports under the
+    other's name.
+  * **An empty list is never rendered as "no network".** A node whose state is not
+    current says why instead of showing an empty table, because "nobody read this
+    node" and "this node has no bridges" are opposite instructions.
+{% endcomment %}
+
+{% for group in panel.groups %}
+  <section class="panel">
+    <div class="panel-heading">
+      <div>
+        <h2>{{ group.node }}</h2>
+        <p class="panel-meta">
+          {% if group.known %}
+            {{ group.attachable|length }} attachable, {{ group.interfaces|length }} interface{{ group.interfaces|length|pluralize }} in generation {{ group.generation }}
+            {% if group.observed_at %}<span class="muted">· read {{ group.observed_at|timesince }} ago</span>{% endif %}
+          {% else %}
+            Network state unknown
+          {% endif %}
+        </p>
+      </div>
+    </div>
+
+    {% if not group.known %}
+      <div class="notice notice-warning" role="status">
+        pve-helper cannot say what {{ group.node }}'s network looks like: {{ group.reason }}.
+        {% if group.interfaces %}
+          The interfaces below are what the last successful read published, and are shown as not current.
+        {% endif %}
+      </div>
+    {% endif %}
+
+    {% if group.interfaces %}
+      <div class="cluster-table-scroll">
+        <table class="data-table compact" data-sortable-table>
+          <thead>
+            <tr>
+              <th scope="col">Interface</th>
+              <th scope="col">Type</th>
+              <th scope="col">Attachable</th>
+              <th scope="col">State</th>
+              <th scope="col">Address</th>
+              <th scope="col">Gateway</th>
+              <th scope="col">Ports / slaves</th>
+              <th scope="col">VLAN</th>
+              <th scope="col">Comment</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in group.interfaces %}
+              <tr>
+                <td data-sort-value="{{ row.iface }}">
+                  {{ row.iface }}
+                  {% if not row.current %}<span class="badge" title="Not part of the latest complete read">not current</span>{% endif %}
+                </td>
+                <td>{{ row.interface_type|default:"-" }}</td>
+                <td data-sort-value="{{ row.attachable|yesno:"1,0" }}">
+                  {% if row.attachable and row.present %}
+                    <span class="badge completed">yes</span>
+                  {% else %}
+                    <span class="muted">no</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.unreachable %}
+                    <span class="badge failed" title="The node did not answer, so this row is unproven">unknown</span>
+                  {% elif not row.present %}
+                    <span class="badge failed" title="A complete read proved this interface is gone">gone</span>
+                  {% elif row.active %}
+                    <span class="badge completed">active</span>
+                  {% elif row.active is None %}
+                    <span class="muted">-</span>
+                  {% else %}
+                    <span class="badge">inactive</span>
+                  {% endif %}
+                  {% if row.autostart %}<span class="muted" title="Starts with the node">autostart</span>{% endif %}
+                </td>
+                <td>{{ row.cidr|default:row.address|default:"-" }}{% if row.method %} <span class="muted">({{ row.method }})</span>{% endif %}</td>
+                <td>{{ row.gateway|default:"-" }}</td>
+                <td>{{ row.bridge_ports|default:row.bond_slaves|default:"-" }}{% if row.bond_mode %} <span class="muted">({{ row.bond_mode }})</span>{% endif %}</td>
+                <td>
+                  {% if row.bridge_vlan_aware %}
+                    aware{% if row.bridge_vids %} <span class="muted">{{ row.bridge_vids }}</span>{% endif %}
+                  {% elif row.bridge_vlan_aware is None %}
+                    <span class="muted">-</span>
+                  {% else %}
+                    <span class="muted">no</span>
+                  {% endif %}
+                </td>
+                <td>{{ row.comments|default:"-" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% elif group.known %}
+      <p class="empty-state">
+        {{ group.node }} answered, and reports no network interfaces at all. That is
+        unusual for a running node; check the node's own network configuration.
+      </p>
+    {% endif %}
+  </section>
+{% empty %}
+  <section class="panel">
+    <p class="empty-state">
+      No node in this scope publishes a network. A node appears here once this
+      connection is enrolled to publish it and the projection has swept it.
+    </p>
+  </section>
+{% endfor %}
+
+{% if panel.unread_nodes %}
+  <p class="panel-meta">
+    Not shown: {{ panel.unread_nodes|join:", " }}, which this connection does not read.
+    Enroll a node in
+    <a href="{% url 'core:cluster_connection' cluster.key %}">Connection</a> to include it.
+  </p>
+{% endif %}

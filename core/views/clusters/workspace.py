@@ -32,6 +32,7 @@ from core.services.cluster_state_labels import cluster_degraded_label
 from core.services.publication_scope import publication_scope
 from core.services.workspace_datastores import datastore_panel
 from core.services.workspace_nav import cluster_nav_key, node_nav_key
+from core.services.workspace_networks import network_panel
 from core.services.workspace_summary import cluster_summary as compose_cluster_summary
 from core.services.workspace_summary import node_summary as compose_node_summary
 from core.views.cluster_scope import managed_cluster_from_path
@@ -71,11 +72,13 @@ ROUTED_CLUSTER_TABS = {
     "hosts": "core:cluster_hosts",
     "vms": "core:cluster_vms",
     "datastores": "core:cluster_datastores",
+    "networks": "core:cluster_networks",
 }
 ROUTED_NODE_TABS = {
     "summary": "core:node_summary",
     "vms": "core:node_vms",
     "datastores": "core:node_datastores",
+    "networks": "core:node_networks",
 }
 
 
@@ -371,3 +374,76 @@ def workspace_object_urls(cluster, node: str = "") -> dict[str, str]:
     if node and publication_scope(cluster).publishes(node):
         node_url = reverse("core:node_summary", kwargs={"cluster_key": cluster.key, "node": node})
     return {"cluster_url": cluster_url, "node_url": node_url}
+
+
+def _network_panel_or_404(cluster, **kwargs):
+    """The Networks composition, or 404 for a cluster retired mid-request.
+
+    Same reasoning as `_projection_or_404`, one read later: the panel resolves the
+    managed cluster again, and a retirement landing between the two turns a rendered
+    tab into a page about an object that no longer exists.
+    """
+
+    try:
+        return network_panel(cluster, **kwargs)
+    except ClusterProjectionNotFound as exc:
+        raise Http404("Proxmox cluster not found") from exc
+
+
+@app_login_required
+def cluster_networks(request, cluster_key: str):
+    """The Networks tab: what each published node reports about its interfaces.
+
+    Grouped by node and never merged: `vmbr0` on two nodes is two devices sharing a
+    name. Composition only — the projection is refreshed by its own worker lane, and
+    rendering this page issues no provider call at any node count.
+    """
+
+    cluster = managed_cluster_from_path(cluster_key)
+    projection = _projection_or_404(cluster)
+    scope = publication_scope(cluster)
+    context = {
+        "cluster": cluster,
+        "projection": projection,
+        "panel": _network_panel_or_404(cluster, scope=scope, members=_member_names(projection)),
+        "cluster_degraded": cluster_degraded_label(cluster),
+        "workspace_object": projection.display_name,
+        "workspace_kind": "cluster",
+        "tabs": _tabs(CLUSTER_TABS, ROUTED_CLUSTER_TABS, active="networks", cluster_key=cluster.key),
+        "workspace_nav_key": cluster_nav_key(cluster.key),
+        **navigation_context("hosts_clusters", page_title=("Networks", projection.display_name)),
+    }
+    return render(request, "core/cluster_networks.html", context)
+
+
+@app_login_required
+def node_networks(request, cluster_key: str, node: str):
+    """The same composition, locked to one published node."""
+
+    cluster = managed_cluster_from_path(cluster_key)
+    projection = _projection_or_404(cluster)
+    match = _published_node_or_404(projection, cluster, node)
+    scope = publication_scope(cluster)
+    context = {
+        "cluster": cluster,
+        "projection": projection,
+        "node": match,
+        "panel": _network_panel_or_404(
+            cluster, node=match.node_name, scope=scope, members=_member_names(projection)
+        ),
+        "workspace_object": match.node_name,
+        "workspace_kind": "node",
+        "tabs": _tabs(
+            NODE_TABS,
+            ROUTED_NODE_TABS,
+            active="networks",
+            cluster_key=cluster.key,
+            node=match.node_name,
+        ),
+        "workspace_nav_key": node_nav_key(cluster.key, match.node_name),
+        **navigation_context(
+            "hosts_clusters",
+            page_title=("Networks", match.node_name, projection.display_name),
+        ),
+    }
+    return render(request, "core/node_networks.html", context)

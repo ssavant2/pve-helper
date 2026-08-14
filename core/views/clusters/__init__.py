@@ -17,9 +17,11 @@ from .enrollment import cluster_enrollment_activate, cluster_node_action, cluste
 from .workspace import (
     cluster_datastores,
     cluster_hosts,
+    cluster_networks,
     cluster_summary,
     cluster_vms,
     node_datastores,
+    node_networks,
     node_summary,
     node_vms,
 )
@@ -33,12 +35,14 @@ __all__ = [
     "cluster_endpoint_add",
     "cluster_enrollment_activate",
     "cluster_hosts",
+    "cluster_networks",
     "cluster_node_action",
     "cluster_node_add",
     "cluster_summary",
     "cluster_vms",
     "clusters_overview",
     "node_datastores",
+    "node_networks",
     "node_summary",
     "node_vms",
 ]

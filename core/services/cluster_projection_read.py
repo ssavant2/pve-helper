@@ -1,6 +1,7 @@
 """Presentation-free reads of the persisted Hosts & Clusters projection.
 
-This is the consumer boundary for membership and node runtime. It deliberately
+This is the consumer boundary for membership, node runtime and node networks. It
+deliberately
 imports no provider adapter, refresher, cache or task module: a passive read can
 describe missing or stale state, but it cannot repair it or contact Proxmox.
 
@@ -11,6 +12,7 @@ turn this service into a second guest or storage authority.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -18,9 +20,15 @@ from enum import StrEnum
 from django.conf import settings
 from django.utils import timezone
 
-from core.models import ClusterMembershipState, ClusterNodeState, ClusterProjectionCoverage
+from core.models import (
+    ClusterMembershipState,
+    ClusterNodeInterface,
+    ClusterNodeState,
+    ClusterProjectionCoverage,
+)
 from core.services.cluster_scopes import managed_clusters
 from core.services.durations import format_uptime
+from core.services.publication_scope import PublicationScope, publication_scope
 from core.services.refs import NodeRef
 
 
@@ -130,6 +138,97 @@ class ClusterProjectionRead:
     @property
     def membership_current(self) -> bool:
         return self.membership_status is MembershipReadStatus.CURRENT
+
+
+class NodeNetworkReadStatus(StrEnum):
+    """What this connection knows about one node's interfaces. 5a4B-ii.
+
+    Four states rather than a boolean, because the three not-current ones send an
+    operator to different places: `MISSING` is a node the sweep has never reached,
+    `FAILED` carries the publisher's own reason, and `NOT_PUBLISHED` is pve-helper
+    declining to look. Only `CURRENT` may be read as a complete answer.
+    """
+
+    MISSING = "missing"
+    CURRENT = "current"
+    FAILED = "failed"
+    NOT_PUBLISHED = "not_published"
+
+
+@dataclass(frozen=True)
+class NodeNetworkCoverageRead:
+    """This domain's coverage, deliberately **not** `ProjectionCoverageRead`.
+
+    That shape carries `fresh`, and this domain has no age rule at all (5a4A
+    decision 2): currency is generation equality plus `complete`. Reusing it would
+    mean publishing a freshness verdict computed from a threshold this domain does
+    not have — a field that reads as evidence and is not.
+    """
+
+    generation: int
+    complete: bool
+    attempted_at: datetime | None
+    observed_at: datetime | None
+    error_code: str
+
+
+@dataclass(frozen=True)
+class NodeInterfaceRead:
+    iface: str
+    interface_type: str
+    #: Published by the provider's own `any_bridge` answer, never re-derived here.
+    attachable: bool
+    active: bool | None
+    autostart: bool | None
+    method: str
+    address: str
+    cidr: str
+    gateway: str
+    bridge_ports: str
+    bridge_vids: str
+    bridge_vlan_aware: bool | None
+    bond_mode: str
+    bond_slaves: str
+    comments: str
+    present: bool
+    unreachable: bool
+    #: The row belongs to the generation coverage last completed. A row that does
+    #: not is a leftover from an earlier pass, not a current statement.
+    current: bool
+    last_seen_at: datetime | None
+
+
+@dataclass(frozen=True)
+class NodeNetworkRead:
+    node_name: str
+    status: NodeNetworkReadStatus
+    coverage: NodeNetworkCoverageRead | None
+    #: Every row this connection holds for the node, tombstones included, so a
+    #: surface can show what disappeared. `attachable_bridges` is the decision.
+    interfaces: tuple[NodeInterfaceRead, ...]
+
+    @property
+    def known(self) -> bool:
+        return self.status is NodeNetworkReadStatus.CURRENT
+
+    @property
+    def attachable_bridges(self) -> tuple[str, ...]:
+        """Interfaces a guest NIC may attach to, or nothing when unknown.
+
+        Empty on every non-current status, and a caller must not read that as
+        "this node has no bridges" — the two are opposite instructions. `known`
+        is what separates them, which is why this never returns a bare list.
+        """
+
+        if not self.known:
+            return ()
+        return tuple(
+            sorted(
+                row.iface
+                for row in self.interfaces
+                if row.attachable and row.present and not row.unreachable and row.current
+            )
+        )
 
 
 class ClusterProjectionNotFound(LookupError):
@@ -260,6 +359,130 @@ def _runtime_metrics(row: ClusterNodeState) -> NodeRuntimeMetrics:
         current_kernel_release=row.current_kernel_release,
         boot_mode=row.boot_mode,
         secure_boot_enabled=row.secure_boot_enabled,
+    )
+
+
+def _node_network_read(
+    node_name: str,
+    coverage: ClusterProjectionCoverage | None,
+    rows: list[ClusterNodeInterface],
+    *,
+    published: bool,
+) -> NodeNetworkRead:
+    if not published:
+        # Checked before the rows, and it overrides them. The publisher only learns
+        # a node was hidden on its next pass, so until then the last published rows
+        # are still sitting there at a matching generation and would read as current
+        # — which is the enrollment boundary leaking on a delay.
+        return NodeNetworkRead(node_name, NodeNetworkReadStatus.NOT_PUBLISHED, _network_coverage_read(coverage), ())
+    if coverage is None:
+        status = NodeNetworkReadStatus.MISSING
+    elif not coverage.complete:
+        status = NodeNetworkReadStatus.FAILED
+    else:
+        status = NodeNetworkReadStatus.CURRENT
+    generation = coverage.generation if coverage else 0
+    interfaces = tuple(
+        NodeInterfaceRead(
+            iface=row.iface,
+            interface_type=row.interface_type,
+            attachable=row.attachable,
+            active=row.active,
+            autostart=row.autostart,
+            method=row.method,
+            address=row.address,
+            cidr=row.cidr,
+            gateway=row.gateway,
+            bridge_ports=row.bridge_ports,
+            bridge_vids=row.bridge_vids,
+            bridge_vlan_aware=row.bridge_vlan_aware,
+            bond_mode=row.bond_mode,
+            bond_slaves=row.bond_slaves,
+            comments=row.comments,
+            present=row.present,
+            unreachable=row.unreachable,
+            # Equality with the coverage generation, never age. A pass that did not
+            # complete leaves coverage's last authoritative generation in place, so
+            # the rows it did touch still compare correctly against it.
+            current=bool(generation and row.observed_generation == generation),
+            last_seen_at=row.last_seen_at,
+        )
+        for row in rows
+    )
+    return NodeNetworkRead(node_name, status, _network_coverage_read(coverage), interfaces)
+
+
+def _network_coverage_read(coverage: ClusterProjectionCoverage | None) -> NodeNetworkCoverageRead | None:
+    if coverage is None:
+        return None
+    return NodeNetworkCoverageRead(
+        generation=coverage.generation,
+        complete=coverage.complete,
+        attempted_at=coverage.attempted_at,
+        observed_at=coverage.observed_at,
+        error_code=coverage.error_code,
+    )
+
+
+def read_node_networks(
+    cluster_key: str,
+    nodes: Sequence[str],
+    *,
+    scope: PublicationScope | None = None,
+) -> tuple[NodeNetworkRead, ...]:
+    """One read per requested node, in four bulk queries and no provider call.
+
+    `nodes` is required rather than defaulted to "everything this cluster has rows
+    for": a caller always knows which nodes it is asking about, and an implicit
+    all-rows read would quietly include names that departed the cluster months ago.
+    A requested node with no rows and no coverage comes back `MISSING`, which is the
+    honest answer and the one a never-swept cluster needs.
+
+    `scope` is the publication boundary, resolved here unless a caller that already
+    holds one for *this cluster* passes it in — a page that renders several panels
+    would otherwise resolve the same boundary once per panel. It is never optional
+    in effect: omitting it costs a query, not the check.
+
+    Returned in the requested order, deduplicated. Nothing here scales with node
+    count in queries.
+    """
+
+    try:
+        cluster = managed_clusters().get(key=cluster_key)  # query 1
+    except managed_clusters().model.DoesNotExist as exc:
+        raise ClusterProjectionNotFound(cluster_key) from exc
+
+    wanted: list[str] = []
+    for name in nodes:
+        if name and name not in wanted:
+            wanted.append(name)
+    if not wanted:
+        return ()
+
+    if scope is None:
+        scope = publication_scope(cluster)  # query 2
+    coverages = {
+        row.node_name: row
+        for row in ClusterProjectionCoverage.objects.filter(  # query 3
+            cluster_id=cluster.pk,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_NETWORK,
+            node_name__in=wanted,
+        )
+    }
+    rows_by_node: dict[str, list[ClusterNodeInterface]] = {name: [] for name in wanted}
+    for row in ClusterNodeInterface.objects.filter(  # query 4
+        cluster_id=cluster.pk, node_name__in=wanted
+    ).order_by("node_name", "iface"):
+        rows_by_node[row.node_name].append(row)
+
+    return tuple(
+        _node_network_read(
+            name,
+            coverages.get(name),
+            rows_by_node[name],
+            published=scope.publishes(name),
+        )
+        for name in wanted
     )
 
 

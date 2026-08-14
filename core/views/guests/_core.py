@@ -10,7 +10,7 @@ from core.services.current_guest_inventory import (
     delete_current_guest,
     update_current_guest_config,
 )
-from core.services.node_networks import node_attachable_bridges
+from core.services.node_networks import attachable_bridges_by_node
 from core.services.public_errors import public_exception_message
 from core.services.publication_scope import (
     UnpublishedTargetError,
@@ -384,14 +384,16 @@ def _guest_nic_bridges(detail: SimpleNamespace) -> list[dict]:
     return nics
 
 
-def _node_available_bridges(client, node: str) -> list[str]:
-    """Bridges a NIC can attach to on ``node``. Proxmox has no per-host port-group
-    concept, so a NIC's bridge name must exist on the target node or the guest
-    lands without a network there.
+def _node_bridges_by_node(cluster, nodes: list[str]) -> dict:
+    """Bridges a NIC can attach to, per node, in one read for the whole dialog.
+
+    Proxmox has no per-host port-group concept, so a NIC's bridge name must exist on
+    the target node or the guest lands without a network there.
 
     Delegates to `core.services.node_networks`, which documents why this cannot be
-    computed from the plain interface listing plus a cluster vnet list."""
-    return node_attachable_bridges(client, node)
+    computed from the plain interface listing plus a cluster vnet list, and why each
+    answer says whether it is an answer at all."""
+    return attachable_bridges_by_node(cluster, nodes)
 
 
 def _migrate_not_allowed_reason(reason: object) -> str:

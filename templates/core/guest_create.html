@@ -99,6 +99,7 @@
             <option value="">None</option>
             {% for b in options.bridges %}<option value="{{ b }}" {% if form_values.bridge == b %}selected{% endif %}>{{ b }}</option>{% endfor %}
           </select>
+          {% include "core/partials/bridge_picker_notice.html" %}
         </div>
         <div class="form-field">
           <label for="c-vlan">VLAN tag <span class="muted">(optional)</span></label>

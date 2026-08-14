@@ -167,11 +167,11 @@ test("the built tabs are links and the unbuilt ones state the intended shape", a
   await openInfrastructureObjectFromTree(page, { kind: "cluster", clusterKey: "e2e" });
 
   const tabs = page.locator(".vs-tabs");
-  for (const built of ["Summary", "Hosts", "VMs", "Datastores"]) {
+  for (const built of ["Summary", "Hosts", "VMs", "Datastores", "Networks"]) {
     await expect(tabs.getByRole("link", { name: built, exact: true })).toBeVisible();
   }
   await expect(tabs.locator("span.disabled", { hasText: "Monitor" })).toBeVisible();
-  await expect(tabs.locator("span.disabled", { hasText: "Networks" })).toBeVisible();
+  await expect(tabs.locator("span.disabled", { hasText: "Updates" })).toBeVisible();
 });
 
 test("the tables are reachable by clicking their tabs, and link into Module 3", async ({ page }) => {

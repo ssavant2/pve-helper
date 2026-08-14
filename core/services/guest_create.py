@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
-from core.services.node_networks import node_attachable_bridges
+from core.services.node_networks import attachable_bridges
 from core.services.proxmox import ProxmoxAPIError
 from core.services.publication_scope import published_node_names
 from core.services.storage_catalog import node_storage_rows, storage_volume_rows
@@ -58,13 +58,16 @@ def _content_volids(cluster, node: str, storages: list[str], content: str) -> li
     return sorted(volids)
 
 
-def _bridges(client, node: str) -> list[str]:
+def _bridges(cluster, node: str):
     """Attachable targets on ``node``, from the one reader that knows.
 
     This used to append every cluster SDN vnet with no node or zone test, so the
-    form offered vnets that do not exist on the selected node.
+    form offered vnets that do not exist on the selected node. Since 5a4B-ii it is
+    a projection read, and it carries whether the list means anything: a form that
+    renders an unknown node's empty list as a bridge picker is asking the operator
+    to choose from a list pve-helper never saw.
     """
-    return node_attachable_bridges(client, node)
+    return attachable_bridges(cluster, node)
 
 
 def create_options(object_type: str, node: str | None = None, *, cluster) -> dict[str, Any]:
@@ -82,6 +85,7 @@ def create_options(object_type: str, node: str | None = None, *, cluster) -> dic
         nextid = ""
 
     storages = _storages(cluster, node)
+    bridges = _bridges(cluster, node)
     is_vm = object_type == "vm"
     disk_storages = _storages_for(storages, "images" if is_vm else "rootdir")
     options = {
@@ -90,7 +94,12 @@ def create_options(object_type: str, node: str | None = None, *, cluster) -> dic
         "node": node,
         "nextid": nextid,
         "disk_storages": disk_storages,
-        "bridges": _bridges(client, node),
+        "bridges": list(bridges.bridges),
+        # Carried beside the list, never folded into it: an empty list plus
+        # `bridges_known` false is "nobody asked the node", and every surface that
+        # renders the picker has to be able to say so.
+        "bridges_known": bridges.known,
+        "bridges_reason": bridges.reason,
     }
     if is_vm:
         options["ostypes"] = VM_OSTYPES

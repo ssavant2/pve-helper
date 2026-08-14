@@ -1,0 +1,14 @@
+{% extends "core/cluster_workspace.html" %}
+
+{% comment %}
+  The node Networks tab (5a4B-ii). The same composition as the cluster scope, locked
+  to one node's own interfaces.
+{% endcomment %}
+
+{% block workspace_subtitle %}
+  {{ panel.interface_count }} interface{{ panel.interface_count|pluralize }} on {{ node.node_name }}
+{% endblock %}
+
+{% block workspace_content %}
+  {% include "core/partials/network_panel.html" %}
+{% endblock %}

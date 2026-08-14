@@ -41,6 +41,8 @@ from core.checks import production_startup_errors
 from core.models import (
     AuditEvent,
     ClusterMembershipState,
+    ClusterNodeInterface,
+    ClusterProjectionCoverage,
     ClusterStorage,
     ClusterStorageMount,
     ClusterStorageNodeState,
@@ -3883,6 +3885,44 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         guest.cluster = self.cluster
         guest.cluster_key = self.cluster.key
         return guest
+
+    def _publish_node_bridges(self, *bridges: str, node: str = "pve1", generation: int = 2) -> None:
+        """Publish the node-network projection the bridge pickers now read (5a4B-ii).
+
+        These forms used to reach the provider once per render; the fixture that
+        used to answer that call is gone, so a form with no published projection
+        genuinely has no bridges to offer -- which is the state
+        `bridges_known` exists to describe.
+        """
+
+        now = timezone.now()
+        ClusterProjectionCoverage.objects.update_or_create(
+            cluster=self.cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_NETWORK,
+            node_name=node,
+            defaults={
+                "generation": generation,
+                "based_on_generation": 1,
+                "complete": True,
+                "attempted_at": now,
+                "observed_at": now,
+                "error_code": "",
+            },
+        )
+        for iface in bridges:
+            ClusterNodeInterface.objects.update_or_create(
+                cluster=self.cluster,
+                node_name=node,
+                iface=iface,
+                defaults={
+                    "interface_type": "bridge",
+                    "attachable": True,
+                    "present": True,
+                    "unreachable": False,
+                    "observed_generation": generation,
+                    "last_seen_at": now,
+                },
+            )
 
     def _seed_volume_catalog(self, storage_id: str, rows: list[dict], *, node: str = "pve1") -> None:
         metadata_generation = uuid.uuid4()
@@ -8908,8 +8948,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                         {"storage": "nfs-vm", "content": "images,iso"},
                         {"storage": "local", "content": "iso"},
                     ]
-                if path == "nodes/pve1/network?type=any_bridge":
-                    return [{"type": "bridge", "iface": "vmbr0"}]
                 if path == "nodes/pve1/storage/local/content?content=iso":
                     return [{"volid": "local:iso/ubuntu.iso"}]
                 if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
@@ -8918,6 +8956,7 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
 
         fake_client = self._patch_provider_client(FakeClient())
         self._seed_volume_catalog("nfs-vm", [])
+        self._publish_node_bridges("vmbr0", "vmbr1")
         live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
         CurrentGuestInventory.objects.filter(object_type="vm", vmid=500).update(
             config=fake_client.guest_config(node="pve1", object_type="vm", vmid=500),
@@ -8938,6 +8977,56 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
         self.assertContains(response, "data-hotplug-editor")
         self.assertContains(response, "scsi0")
         self.assertContains(response, "vmbr0")
+        self.assertContains(response, "vmbr1")
+        self.assertNotContains(response, "No bridges can be offered")
+
+    def test_guest_hardware_edit_keeps_a_bridge_the_projection_cannot_confirm(self):
+        """The form must not silently rewrite a NIC it cannot describe.
+
+        With no published network for the node, the picker has nothing to offer. If
+        the guest's configured bridge simply vanished from the list, saving the form
+        would move the NIC to whatever option happened to be first -- a permanent,
+        cluster-wide config edit produced by pve-helper not having swept a node."""
+        user = get_user_model().objects.create_user(username="operator", password="unused")
+        self.client.force_login(user)
+
+        class FakeClient:
+            def node_names(self, *, fallback=""):
+                return ["pve1"]
+
+            def guest_current(self, *, node, object_type, vmid):
+                return {"status": "stopped"}
+
+            def guest_config(self, *, node, object_type, vmid):
+                return {"name": "Lab VM", "net0": "virtio=BC:24:11:22:33:44,bridge=vmbr0"}
+
+            def get(self, path, *, timeout=None):
+                if path == "cluster/nextid":
+                    return 501
+                if path == "nodes/pve1/storage":
+                    return []
+                raise ProxmoxAPIError(path)
+
+        fake_client = self._patch_provider_client(FakeClient())
+        live_guest = self._live_guest(object_type="vm", vmid=500, name="Lab VM", node="pve1", status="stopped")
+        CurrentGuestInventory.objects.filter(object_type="vm", vmid=500).update(
+            config=fake_client.guest_config(node="pve1", object_type="vm", vmid=500),
+            config_complete=True,
+            config_observed_at=timezone.now(),
+        )
+        with (
+            patch("core.views.common.fetch_live_guest_inventory", return_value=[live_guest]),
+            patch("core.views.common.cluster_scoped_clients", return_value=[fake_client]),
+        ):
+            response = self.client.get(reverse("core:guest_hardware_edit", args=[self.cluster.key, "vm", 500]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "vmbr0")
+        self.assertContains(response, "not published for this node")
+        # And it says why the picker is empty rather than presenting the empty list
+        # as the node's answer.
+        self.assertContains(response, "No bridges can be offered")
+        self.assertContains(response, "its network has not been read yet")
 
     def test_guest_create_vm_lists_windows_server_2025_as_win11_family(self):
         user = get_user_model().objects.create_user(username="operator", password="unused")
@@ -8952,8 +9041,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return 500
                 if path == "nodes/pve1/storage":
                     return [{"storage": "nfs-vm", "content": "images,iso"}]
-                if path == "nodes/pve1/network?type=any_bridge":
-                    return [{"type": "bridge", "iface": "vmbr0"}]
                 if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
                     return []
                 raise ProxmoxAPIError(path)
@@ -9150,8 +9237,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return 602
                 if path == "nodes/pve1/storage":
                     return [{"storage": "nfs-ct", "content": "rootdir,vztmpl"}]
-                if path == "nodes/pve1/network?type=any_bridge":
-                    return [{"type": "bridge", "iface": "vmbr0"}]
                 if path == "nodes/pve1/storage/nfs-ct/content?content=vztmpl":
                     return []
                 raise ProxmoxAPIError(path)
@@ -9306,8 +9391,6 @@ class ViewSmokeTests(HermeticProxmoxMixin, TestCase):
                     return 500
                 if path == "nodes/pve1/storage":
                     return [{"storage": "nfs-vm", "content": "images,iso"}]
-                if path == "nodes/pve1/network?type=any_bridge":
-                    return [{"type": "bridge", "iface": "vmbr0"}]
                 if path == "nodes/pve1/storage/nfs-vm/content?content=iso":
                     return []
                 raise ProxmoxAPIError(path)

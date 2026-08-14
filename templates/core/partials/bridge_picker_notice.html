@@ -1,0 +1,15 @@
+{% comment %}
+  Shared by every surface that renders a bridge picker (5a4B-ii).
+
+  The list comes from the node-network projection, so an empty one has two
+  completely different causes: the node genuinely has no attachable bridge, or
+  nobody has successfully read that node. `bridges_known` is the only thing that
+  separates them, and a picker that stays silent about the second is asking the
+  operator to choose from a list pve-helper never saw.
+{% endcomment %}
+{% if options.available and not options.bridges_known %}
+  <p class="notice notice-warning" role="status">
+    No bridges can be offered for {{ options.node }}: {{ options.bridges_reason }}.
+    Any bridge already configured is kept and shown as-is.
+  </p>
+{% endif %}

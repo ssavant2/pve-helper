@@ -134,6 +134,10 @@
                 <div class="hw-field"><span>Bridge / VNet</span>
                   <select name="{{ net.key }}_bridge">
                     <option value="">Not connected</option>
+                    {% if net.bridge and net.bridge not in options.bridges %}
+                      {% comment %}See the VM form: a configured bridge the projection cannot confirm stays selectable rather than being rewritten on save.{% endcomment %}
+                      <option value="{{ net.bridge }}" selected>{{ net.bridge }} (not published for this node)</option>
+                    {% endif %}
                     {% for b in options.bridges %}<option value="{{ b }}" {% if b == net.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
                   </select>
                 </div>
@@ -197,6 +201,7 @@
                   <option value="">Not connected</option>
                   {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
                 </select>
+                {% include "core/partials/bridge_picker_notice.html" %}
               </div>
               <div class="hw-field"><span>IPv4</span><input type="text" name="newnet_ip" value="dhcp" data-new-input disabled></div>
               <div class="hw-field"><span>IPv6</span><input type="text" name="newnet_ip6" placeholder="auto, dhcp, manual, or CIDR" data-new-input disabled></div>

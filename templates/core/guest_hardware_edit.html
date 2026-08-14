@@ -210,6 +210,10 @@
               <div class="hw-item-body">
                 <div class="hw-field"><span>Bridge / VNet</span>
                   <select name="nic_{{ nic.label }}_bridge">
+                    {% if nic.bridge and nic.bridge not in options.bridges %}
+                      {% comment %}Keep the configured bridge selectable even when the projection cannot confirm it. Dropping it would silently rewrite the NIC on save.{% endcomment %}
+                      <option value="{{ nic.bridge }}" selected>{{ nic.bridge }} (not published for this node)</option>
+                    {% endif %}
                     {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
                   </select>
                 </div>
@@ -496,6 +500,7 @@
                   <option value="">Select bridge&hellip;</option>
                   {% for b in options.bridges %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
                 </select>
+                {% include "core/partials/bridge_picker_notice.html" %}
               </div>
               <div class="hw-field"><span>VLAN tag</span><input type="number" name="newnic_vlan" placeholder="none" data-new-input disabled></div>
             </div>

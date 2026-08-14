@@ -185,6 +185,7 @@
             <div class="hw-item-primary"><span class="hw-current-value">{{ nic_rows|length }} adapter{{ nic_rows|length|pluralize }}</span></div>
           </div>
           <div class="hw-item-body">
+            {% include "core/partials/bridge_picker_notice.html" %}
             <div class="vmreg-nics" data-vmreg-nics>
               {% for nic in nic_rows %}
                 <div class="vmreg-nic" data-vmreg-nic>
@@ -196,6 +197,9 @@
                   <div class="hw-field"><span>Bridge</span>
                     <select name="nic{{ forloop.counter0 }}_bridge" data-vmreg-nic-bridge>
                       <option value="">None</option>
+                      {% if nic.bridge and nic.bridge not in options.bridges %}
+                        <option value="{{ nic.bridge }}" selected>{{ nic.bridge }} (not published for this node)</option>
+                      {% endif %}
                       {% for b in options.bridges %}<option value="{{ b }}" {% if b == nic.bridge %}selected{% endif %}>{{ b }}</option>{% endfor %}
                     </select>
                   </div>

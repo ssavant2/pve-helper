@@ -26,7 +26,7 @@ from ._core import (
     _guest_nic_bridges,
     _guest_snapshot_entries,
     _migrate_not_allowed_reason,
-    _node_available_bridges,
+    _node_bridges_by_node,
     _node_cpu_models,
     _node_cpu_signature,
     _ordered_snapshot_entries,
@@ -132,10 +132,11 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
             continue
         if not isinstance(raw_nodes, list):
             continue
-        # No cluster SDN read: `_node_available_bridges` already returns each node's
-        # realized vnets, zone restrictions included. A cluster-wide vnet list has no
-        # node opinion and offering it as selectable put guests on bridges that do
-        # not exist on the target.
+        # No cluster SDN read, and since 5a4B-ii no per-node network read either:
+        # `_node_bridges_by_node` reads the projection once for every candidate, and
+        # each node's realized vnets are already in it with zone restrictions
+        # honoured. A cluster-wide vnet list has no node opinion and offering it as
+        # selectable put guests on bridges that do not exist on the target.
         # Proxmox migration preconditions give the real allowed/blocked target
         # set + reasons (missing storage/bridge, passthrough, ...). Defensive:
         # if the endpoint can't answer, fall back to "all online nodes allowed".
@@ -219,7 +220,24 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
                         pass
             storages_by_node[name] = sorted(set(ids))
             storage_free_by_node[name] = free
-            bridges_by_node[name] = _node_available_bridges(client, name)
+
+        # One read for every candidate, after the node list is complete.
+        bridge_reads = _node_bridges_by_node(detail.cluster, node_names)
+        for name in node_names:
+            answer = bridge_reads.get(name)
+            bridges_by_node[name] = list(answer.bridges) if answer else []
+        for entry in nodes:
+            answer = bridge_reads.get(entry["node"])
+            if answer is not None and answer.known:
+                continue
+            # Unknown is not "no bridges". Rendering an unknown node as selectable
+            # with an empty list is how a guest lands somewhere without a network,
+            # and the JS reads that empty list as every bridge being missing — a
+            # warning about the target rather than about pve-helper's own blindness.
+            # An already-blocked target keeps the reason it was blocked for.
+            if entry["allowed"]:
+                entry["allowed"] = False
+                entry["reason"] = f"network state unknown: {answer.reason}" if answer else "network state unknown"
         break
 
     return JsonResponse(

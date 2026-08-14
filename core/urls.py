@@ -419,6 +419,12 @@ urlpatterns = [
         views.node_datastores,
         name="node_datastores",
     ),
+    path("clusters/<str:cluster_key>/networks/", views.cluster_networks, name="cluster_networks"),
+    path(
+        "clusters/<str:cluster_key>/nodes/<str:node>/networks/",
+        views.node_networks,
+        name="node_networks",
+    ),
     path("datastores/mounts/register/", views.storage_mount_register, name="storage_mount_register"),
     # The datastore object view. Each tab has two shapes sharing one route name:
     # a shared datastore is cluster-wide and carries no node, a node-local one is

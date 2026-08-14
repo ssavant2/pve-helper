@@ -1,0 +1,16 @@
+{% extends "core/cluster_workspace.html" %}
+
+{% comment %}
+  The cluster Networks tab (5a4B-ii). One section per published node: a bridge name
+  is not a cluster object, so two nodes' interfaces are never merged into one row.
+{% endcomment %}
+
+{% block workspace_subtitle %}
+  {{ panel.groups|length }} node{{ panel.groups|length|pluralize }}, {{ panel.interface_count }} interface{{ panel.interface_count|pluralize }}
+  {% if panel.unknown_nodes %}<span class="badge failed">{{ panel.unknown_nodes|length }} unknown</span>{% endif %}
+  {% if cluster_degraded %}<span class="badge failed">{{ cluster_degraded }}</span>{% endif %}
+{% endblock %}
+
+{% block workspace_content %}
+  {% include "core/partials/network_panel.html" %}
+{% endblock %}

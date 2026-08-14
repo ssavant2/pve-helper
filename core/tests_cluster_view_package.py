@@ -30,9 +30,11 @@ PUBLIC_ENROLLMENT_VIEWS = (
 PUBLIC_WORKSPACE_VIEWS = (
     "cluster_datastores",
     "cluster_hosts",
+    "cluster_networks",
     "cluster_summary",
     "cluster_vms",
     "node_datastores",
+    "node_networks",
     "node_summary",
     "node_vms",
 )
