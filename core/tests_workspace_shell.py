@@ -545,6 +545,162 @@ class SummaryCompositionTests(TestCase):
         self.assertEqual(node_summary(self.cluster, pve1).placement.total, 1)
 
 
+class ResourceMeterTests(TestCase):
+    """5a2G. Two claims a bar can make that a definition list could not.
+
+    * **Unknown is not the low end of the scale.** Every branch below exists so a
+      node that said nothing cannot be drawn as a node using nothing.
+    * **The breakdown and the total tell one story.** A node excluded from the
+      cluster roll-up shows no bars in the row that explains it.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.cluster = _cluster("hq", nodes=("pve1", "pve2", "pve3"))
+
+    _runtime = SummaryCompositionTests._runtime
+    _summary = SummaryCompositionTests._summary
+
+    def _meter(self, used, total):
+        from core.services.workspace_summary import Meter
+
+        return Meter(used=used, total=total)
+
+    def test_a_value_the_node_never_reported_has_no_percentage_at_all(self):
+        self.assertFalse(self._meter(None, 16).known)
+        self.assertIsNone(self._meter(None, 16).percent)
+
+    def test_zero_used_is_a_real_reading_and_keeps_its_bar(self):
+        """The distinction the whole dataclass exists for, asserted directly."""
+
+        meter = self._meter(0, 16)
+
+        self.assertTrue(meter.known)
+        self.assertEqual(meter.percent, 0.0)
+
+    def test_a_zero_total_is_unknown_rather_than_a_division(self):
+        self.assertFalse(self._meter(0, 0).known)
+        self.assertIsNone(self._meter(0, 0).percent)
+
+    def test_a_full_meter_is_a_hundred_percent(self):
+        self.assertEqual(self._meter(8, 16).percent, 50.0)
+        self.assertEqual(self._meter(16, 16).percent, 100.0)
+
+    def test_cpu_is_metered_against_cores_and_needs_both_halves(self):
+        from core.services.workspace_summary import node_meters
+
+        with_cores = node_meters(SimpleNamespace(cpu_usage=0.25, cpu_cores=16, **_NO_BYTES))
+        without = node_meters(SimpleNamespace(cpu_usage=0.25, cpu_cores=None, **_NO_BYTES))
+
+        self.assertEqual(with_cores.cpu.used, 4.0)
+        self.assertEqual(with_cores.cpu.percent, 25.0)
+        self.assertFalse(without.cpu.known)
+
+    def test_one_absent_metric_does_not_take_the_others_with_it(self):
+        from core.services.workspace_summary import node_meters
+
+        meters = node_meters(
+            SimpleNamespace(
+                cpu_usage=None,
+                cpu_cores=8,
+                memory_used_bytes=4,
+                memory_total_bytes=16,
+                swap_used_bytes=None,
+                swap_total_bytes=None,
+                rootfs_used_bytes=1,
+                rootfs_total_bytes=4,
+            )
+        )
+
+        self.assertFalse(meters.cpu.known)
+        self.assertFalse(meters.swap.known)
+        self.assertTrue(meters.memory.known)
+        self.assertEqual(meters.rootfs.percent, 25.0)
+
+    def test_cluster_cpu_is_core_weighted_and_not_an_average_of_fractions(self):
+        """A busy 4-core node beside an idle 64-core one is not a half-busy cluster."""
+
+        self._runtime("pve1", cpu_usage=1.0, cpu_cores=4)
+        self._runtime("pve2", cpu_usage=0.0, cpu_cores=64)
+        self._runtime("pve3", complete=False, error_code="read_failed", cpu_usage=1.0, cpu_cores=32)
+
+        capacity = self._summary().capacity
+
+        self.assertEqual(capacity.cpu_used_cores, 4.0)
+        self.assertEqual(capacity.cpu_cores, 68)
+        self.assertAlmostEqual(capacity.cpu.percent, 100.0 * 4 / 68)
+
+    def test_a_node_excluded_from_the_totals_shows_no_bars_in_its_own_row(self):
+        self._runtime("pve1", memory_total_bytes=16, memory_used_bytes=4, cpu_cores=8, cpu_usage=0.5)
+        self._runtime("pve3", complete=False, error_code="read_failed", memory_total_bytes=999, cpu_cores=99)
+
+        rows = {row.node.node_name: row for row in self._summary().rows}
+
+        self.assertIsNotNone(rows["pve1"].meters)
+        self.assertEqual(rows["pve1"].meters.memory.percent, 25.0)
+        self.assertIsNone(rows["pve3"].meters)
+
+    def test_the_node_page_keeps_its_bars_because_it_states_its_own_staleness(self):
+        """Node Summary carries a banner naming the stale runtime; the row cannot."""
+        from core.services.workspace_summary import node_summary
+
+        self._runtime("pve3", complete=False, error_code="read_failed", memory_total_bytes=16, memory_used_bytes=8)
+        projection = read_cluster_projection(self.cluster.key)
+        pve3 = next(node for node in projection.nodes if node.node_name == "pve3")
+
+        summary = node_summary(self.cluster, pve3)
+
+        self.assertFalse(summary.node.runtime_current)
+        self.assertEqual(summary.meters.memory.percent, 50.0)
+
+    def test_the_cluster_page_draws_a_track_only_for_the_node_it_counted(self):
+        self._runtime("pve1", memory_total_bytes=16, memory_used_bytes=4, cpu_cores=8, cpu_usage=0.5)
+        self._runtime("pve3", complete=False, error_code="read_failed")
+
+        response = self.client.get(reverse("core:cluster_summary", args=["hq"]))
+
+        # The roll-up's own bars, then the row that explains why one node is absent
+        # from them. The byte figure can only come from the Capacity panel: the
+        # per-node cells render a percentage and no absolute value. `filesizeformat`
+        # joins with a non-breaking space, so the literal one does not match.
+        self.assertContains(response, "meter-fill")
+        self.assertContains(response, "of 16\u00a0bytes")
+        self.assertContains(response, "of 8 cores")
+        self.assertContains(response, "Not counted while runtime is")
+
+    def test_the_node_page_names_an_absent_metric_instead_of_drawing_an_empty_bar(self):
+        """pve1 reports memory and no swap: one track, one stated absence."""
+
+        self._runtime("pve1", memory_total_bytes=16, memory_used_bytes=4)
+
+        response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
+        body = response.content.decode()
+
+        self.assertContains(response, "not reported")
+        self.assertEqual(body.count("meter-track"), 1)
+
+    def test_load_average_stays_text_because_it_has_no_ceiling(self):
+        """A queue length metered against cores would invent a maximum it lacks."""
+
+        self._runtime("pve1", load_average_1m=9.5, cpu_cores=4)
+
+        response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
+
+        self.assertContains(response, "Load average")
+        self.assertContains(response, "9.50")
+
+
+#: Byte metrics a CPU-only meter fixture has to carry and does not care about.
+_NO_BYTES = {
+    "memory_used_bytes": None,
+    "memory_total_bytes": None,
+    "swap_used_bytes": None,
+    "swap_total_bytes": None,
+    "rootfs_used_bytes": None,
+    "rootfs_total_bytes": None,
+}
+
+
 @override_settings(APP_REQUIRE_LOGIN=False)
 class UptimeLabelTests(TestCase):
     """`868338s` is the stored value and nobody reads it as ten days."""

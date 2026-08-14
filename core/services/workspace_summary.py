@@ -14,6 +14,15 @@ The same rule read from the other end is why Node Summary takes its freshness fr
 its own ``runtime_status`` and never from the cluster: one failed sibling must stay
 isolated.
 
+**A meter has three states, and "unknown" is not the low end of the scale** (5a2G).
+A node that did not report its memory and a node using none of it are the same
+number on a bar and opposite facts, so :class:`Meter` answers ``known`` before it
+answers ``percent``, and ``percent`` is ``None`` rather than ``0.0`` when the node
+said nothing. The same rule one level up is why a Cluster Summary row for a node
+whose runtime is not current carries no meters at all: that node is already
+excluded from the totals beside it, and drawing its last-known bars would make the
+breakdown disagree with the sum it is supposed to explain.
+
 Field selection is bounded by what an accepted projection owns. HA manager state,
 update rollups, subscription and EVC baselines are named in the tab mapping but
 belong to 5d1, 5b1 and 5a4 — they are absent here rather than guessed at, because a
@@ -37,6 +46,70 @@ _RUNNING = Q(status="running")
 
 
 @dataclass(frozen=True)
+class Meter:
+    """One ``used`` of ``total``, or the fact that nobody said.
+
+    Presentation-free on purpose: the unit is the caller's business, because bytes
+    want ``filesizeformat`` and cores want a percentage, and a formatter here would
+    have to guess which. What is *not* the caller's business is the unknown case —
+    ``percent`` refuses to answer rather than returning a zero a template would
+    happily draw as an empty bar.
+
+    ``percent`` is not clamped. Used never exceeds total for the fields this phase
+    meters, and if that ever stops being true the honest response is a number over
+    100 rather than a bar that quietly stops at the end of its track; the stylesheet
+    caps the drawn width so the layout survives either way.
+    """
+
+    used: float | None
+    total: float | None
+
+    @property
+    def known(self) -> bool:
+        return self.used is not None and self.total is not None and self.total > 0
+
+    @property
+    def percent(self) -> float | None:
+        if not self.known:
+            return None
+        return 100.0 * self.used / self.total
+
+
+@dataclass(frozen=True)
+class NodeMeters:
+    """The four utilisation bars one node's runtime can fill.
+
+    Every member is a :class:`Meter`, so a node reporting memory but not swap
+    produces one bar and one absence rather than one bar and a zero.
+    """
+
+    cpu: Meter
+    memory: Meter
+    swap: Meter
+    rootfs: Meter
+
+
+def node_meters(runtime) -> NodeMeters:
+    """Meters for one node's runtime metrics.
+
+    CPU is expressed as busy cores out of total cores rather than as the provider's
+    bare 0..1 fraction, so it shares the used-of-total shape with the other three and
+    aggregates by addition at the cluster level. A node that reports usage but not a
+    core count yields an unknown CPU meter: a fraction with no denominator is a
+    percentage, not a capacity, and this phase draws capacity.
+    """
+
+    cores = runtime.cpu_cores
+    usage = runtime.cpu_usage
+    return NodeMeters(
+        cpu=Meter(used=usage * cores if usage is not None and cores else None, total=cores),
+        memory=Meter(used=runtime.memory_used_bytes, total=runtime.memory_total_bytes),
+        swap=Meter(used=runtime.swap_used_bytes, total=runtime.swap_total_bytes),
+        rootfs=Meter(used=runtime.rootfs_used_bytes, total=runtime.rootfs_total_bytes),
+    )
+
+
+@dataclass(frozen=True)
 class CapacityRoll:
     """Summed runtime capacity, with the coverage that produced it.
 
@@ -48,6 +121,10 @@ class CapacityRoll:
     contributing: int
     total: int
     cpu_cores: int
+    #: Cores busy across the contributing nodes, summed as ``usage x cores`` per node
+    #: rather than averaged over the fractions. A 4-core node at 100% and a 64-core
+    #: node at 0% is 4 busy cores of 68, not 50%.
+    cpu_used_cores: float
     memory_total_bytes: int
     memory_used_bytes: int
     rootfs_total_bytes: int
@@ -60,6 +137,18 @@ class CapacityRoll:
     @property
     def missing(self) -> int:
         return max(0, self.total - self.contributing)
+
+    @property
+    def cpu(self) -> Meter:
+        return Meter(used=self.cpu_used_cores, total=self.cpu_cores)
+
+    @property
+    def memory(self) -> Meter:
+        return Meter(used=self.memory_used_bytes, total=self.memory_total_bytes)
+
+    @property
+    def rootfs(self) -> Meter:
+        return Meter(used=self.rootfs_used_bytes, total=self.rootfs_total_bytes)
 
 
 @dataclass(frozen=True)
@@ -81,6 +170,18 @@ class ClusterNodeRow:
 
     node: ClusterNodeProjectionRead
     placement: NodePlacement
+
+    @property
+    def meters(self) -> NodeMeters | None:
+        """This node's bars, or ``None`` when its own runtime is not current.
+
+        `_capacity` excludes exactly these nodes from the totals in the panel above,
+        so drawing their last-known bars here would put a figure in the breakdown
+        that the sum it explains does not contain. The row still renders — with its
+        runtime badge, which is the honest answer to what the bars would have shown.
+        """
+
+        return node_meters(self.node.runtime) if self.node.runtime_current else None
 
 
 @dataclass(frozen=True)
@@ -111,6 +212,17 @@ class ClusterSummaryRead:
 class NodeSummaryRead:
     node: ClusterNodeProjectionRead
     placement: NodePlacement
+
+    @property
+    def meters(self) -> NodeMeters:
+        """Always present, unlike the cluster row's.
+
+        This page is *about* this node and already carries a banner naming a
+        non-current runtime, so its bars are read in the presence of that statement.
+        The cluster row has no such place to say it and therefore withholds them.
+        """
+
+        return node_meters(self.node.runtime)
 
 
 def _sum_or_zero(value: int | None) -> int:
@@ -147,6 +259,11 @@ def _capacity(nodes: tuple[ClusterNodeProjectionRead, ...]) -> CapacityRoll:
         contributing=len(contributing),
         total=len(nodes),
         cpu_cores=sum(_sum_or_zero(node.runtime.cpu_cores) for node in contributing),
+        cpu_used_cores=sum(
+            node.runtime.cpu_usage * node.runtime.cpu_cores
+            for node in contributing
+            if node.runtime.cpu_usage is not None and node.runtime.cpu_cores
+        ),
         memory_total_bytes=sum(_sum_or_zero(node.runtime.memory_total_bytes) for node in contributing),
         memory_used_bytes=sum(_sum_or_zero(node.runtime.memory_used_bytes) for node in contributing),
         rootfs_total_bytes=sum(_sum_or_zero(node.runtime.rootfs_total_bytes) for node in contributing),

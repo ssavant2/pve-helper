@@ -570,6 +570,82 @@
   overflow-wrap: anywhere;
 }
 
+/*
+ * Utilisation meters (5a2G). Deliberately one colour: a threshold that turns the
+ * bar amber at 80% is a policy about when a node is in trouble, and nothing in
+ * this app has decided that. The bar shows the proportion; the operator keeps the
+ * judgement.
+ */
+.meter-set {
+  display: grid;
+  gap: 11px;
+}
+
+.meter {
+  display: grid;
+  gap: 5px;
+}
+
+.meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meter-label {
+  color: var(--muted);
+}
+
+/* Tabular figures so a column of values does not shift as the digits change. */
+.meter-value,
+.meter-mini-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-track {
+  height: 7px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-alt);
+}
+
+/*
+ * `max-width` is the guard, not a clamp in the composer: `Meter.percent` stays
+ * truthful, so a value over 100 would still be printed beside a full bar.
+ */
+.meter-fill {
+  width: var(--meter-percent, 0%);
+  max-width: 100%;
+  height: 100%;
+  background: var(--accent);
+}
+
+.meter-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meter-mini .meter-track {
+  flex: 1 1 auto;
+  min-width: 44px;
+}
+
+.meter-mini-value {
+  flex: 0 0 auto;
+  min-width: 32px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.node-utilisation-extra {
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
 .cluster-verification-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -633,19 +709,29 @@
   line-height: normal;
 }
 
+/* Node · State · Runtime · CPU · Memory · Root fs · Guests. */
 .cluster-summary-nodes-table {
-  min-width: 640px;
+  min-width: 860px;
   table-layout: fixed;
 }
 
-.cluster-summary-nodes-table col:first-child,
-.cluster-summary-nodes-table col:last-child {
-  width: 30%;
+.cluster-summary-nodes-table col:first-child {
+  width: 18%;
 }
 
 .cluster-summary-nodes-table col:nth-child(2),
 .cluster-summary-nodes-table col:nth-child(3) {
-  width: 20%;
+  width: 11%;
+}
+
+.cluster-summary-nodes-table col:nth-child(4),
+.cluster-summary-nodes-table col:nth-child(5),
+.cluster-summary-nodes-table col:nth-child(6) {
+  width: 16%;
+}
+
+.cluster-summary-nodes-table col:last-child {
+  width: 12%;
 }
 
 .cluster-detail-grid > .panel,

@@ -93,13 +93,17 @@
         </div>
       </div>
       {% if summary.capacity.contributing %}
-        <dl class="cluster-detail-list">
-          <dt>CPU cores</dt><dd>{{ summary.capacity.cpu_cores }}</dd>
-          <dt>Memory</dt>
-          <dd>{{ summary.capacity.memory_used_bytes|filesizeformat }} of {{ summary.capacity.memory_total_bytes|filesizeformat }}</dd>
-          <dt>Root filesystem</dt>
-          <dd>{{ summary.capacity.rootfs_used_bytes|filesizeformat }} of {{ summary.capacity.rootfs_total_bytes|filesizeformat }}</dd>
-        </dl>
+        {% comment %}
+          Bars rather than a definition list, because the question this panel
+          answers is "how much room is left", and `37.9 GB of 64.9 GB` makes the
+          reader do the division. The totals are unchanged — the same sums over the
+          same contributing nodes, under the same coverage line above.
+        {% endcomment %}
+        <div class="meter-set">
+          {% include "core/partials/meter.html" with meter=summary.capacity.cpu label="CPU" used_text=summary.capacity.cpu_used_cores|floatformat:1 total_text=summary.capacity.cpu_cores unit="cores" %}
+          {% include "core/partials/meter.html" with meter=summary.capacity.memory label="Memory" used_text=summary.capacity.memory_used_bytes|filesizeformat total_text=summary.capacity.memory_total_bytes|filesizeformat %}
+          {% include "core/partials/meter.html" with meter=summary.capacity.rootfs label="Root filesystem" used_text=summary.capacity.rootfs_used_bytes|filesizeformat total_text=summary.capacity.rootfs_total_bytes|filesizeformat %}
+        </div>
       {% else %}
         <p class="empty-state">No node reported current runtime, so there is nothing to total.</p>
       {% endif %}
@@ -141,13 +145,23 @@
       </div>
       {% if summary.rows %}
         <div class="cluster-table-scroll">
+          {% comment %}
+            The per-node breakdown lives in this table rather than in its own panel:
+            it is another three facts about the same rows, and the Capacity panel
+            above deliberately keeps only the roll-up. The sum answers "will it fit
+            in this cluster"; these three columns answer "where", and on an
+            unbalanced cluster only the second question has a useful answer.
+          {% endcomment %}
           <table class="data-table compact cluster-summary-nodes-table">
-            <colgroup><col><col><col><col></colgroup>
+            <colgroup><col><col><col><col><col><col><col></colgroup>
             <thead>
               <tr>
                 <th scope="col">Node</th>
                 <th scope="col">State</th>
                 <th scope="col">Runtime</th>
+                <th scope="col">CPU</th>
+                <th scope="col">Memory</th>
+                <th scope="col">Root fs</th>
                 <th scope="col">Guests</th>
               </tr>
             </thead>
@@ -171,6 +185,20 @@
                       {{ row.node.runtime_status }}
                     </span>
                   </td>
+                  {% comment %}
+                    No bars for a node whose runtime is not current. It contributes
+                    nothing to the totals above, and its last-known bars would put a
+                    figure in the breakdown that the sum does not contain. The
+                    Runtime badge one cell to the left is what those cells would
+                    otherwise have to say anyway.
+                  {% endcomment %}
+                  {% if row.meters %}
+                    <td>{% include "core/partials/meter_mini.html" with meter=row.meters.cpu %}</td>
+                    <td>{% include "core/partials/meter_mini.html" with meter=row.meters.memory %}</td>
+                    <td>{% include "core/partials/meter_mini.html" with meter=row.meters.rootfs %}</td>
+                  {% else %}
+                    <td colspan="3" class="muted">Not counted while runtime is {{ row.node.runtime_status }}.</td>
+                  {% endif %}
                   <td>
                     {{ row.placement.total }}{% if row.placement.running %} ({{ row.placement.running }} running){% endif %}
                   </td>

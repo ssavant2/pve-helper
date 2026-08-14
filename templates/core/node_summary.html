@@ -39,14 +39,20 @@
       {% else %}
         <p class="panel-meta node-runtime-observation">This node's runtime has never been published.</p>
       {% endif %}
-      <dl class="cluster-detail-list">
-        <dt>CPU</dt>
-        <dd>
-          {% if node.runtime.cpu_usage != None %}
-            {{ node.runtime.cpu_usage|floatformat:2 }}
-            {% if node.runtime.cpu_wait != None %}<span class="muted">(iowait {{ node.runtime.cpu_wait|floatformat:2 }})</span>{% endif %}
-          {% else %}-{% endif %}
-        </dd>
+      {% comment %}
+        The four capacities are bars; load average and iowait stay text below them.
+        Load is not a used-of-total — it is a queue length that legitimately exceeds
+        the core count — so drawing it against cores would invent a ceiling the
+        number does not have, and iowait is a component of CPU rather than a
+        capacity of its own.
+      {% endcomment %}
+      <div class="meter-set">
+        {% include "core/partials/meter.html" with meter=summary.meters.cpu label="CPU" used_text=summary.meters.cpu.used|floatformat:1 total_text=node.runtime.cpu_cores unit="cores" %}
+        {% include "core/partials/meter.html" with meter=summary.meters.memory label="Memory" used_text=node.runtime.memory_used_bytes|filesizeformat total_text=node.runtime.memory_total_bytes|filesizeformat %}
+        {% include "core/partials/meter.html" with meter=summary.meters.swap label="Swap" used_text=node.runtime.swap_used_bytes|filesizeformat total_text=node.runtime.swap_total_bytes|filesizeformat %}
+        {% include "core/partials/meter.html" with meter=summary.meters.rootfs label="Root filesystem" used_text=node.runtime.rootfs_used_bytes|filesizeformat total_text=node.runtime.rootfs_total_bytes|filesizeformat %}
+      </div>
+      <dl class="cluster-detail-list node-utilisation-extra">
         <dt>Load average</dt>
         <dd>
           {% if node.runtime.load_average_1m != None %}
@@ -55,23 +61,9 @@
             {{ node.runtime.load_average_15m|default_if_none:"-"|floatformat:2 }}
           {% else %}-{% endif %}
         </dd>
-        <dt>Memory</dt>
+        <dt>I/O wait</dt>
         <dd>
-          {% if node.runtime.memory_total_bytes %}
-            {{ node.runtime.memory_used_bytes|filesizeformat }} of {{ node.runtime.memory_total_bytes|filesizeformat }}
-          {% else %}-{% endif %}
-        </dd>
-        <dt>Swap</dt>
-        <dd>
-          {% if node.runtime.swap_total_bytes %}
-            {{ node.runtime.swap_used_bytes|filesizeformat }} of {{ node.runtime.swap_total_bytes|filesizeformat }}
-          {% else %}-{% endif %}
-        </dd>
-        <dt>Root filesystem</dt>
-        <dd>
-          {% if node.runtime.rootfs_total_bytes %}
-            {{ node.runtime.rootfs_used_bytes|filesizeformat }} of {{ node.runtime.rootfs_total_bytes|filesizeformat }}
-          {% else %}-{% endif %}
+          {% if node.runtime.cpu_wait != None %}{{ node.runtime.cpu_wait|floatformat:2 }}{% else %}-{% endif %}
         </dd>
       </dl>
     </section>

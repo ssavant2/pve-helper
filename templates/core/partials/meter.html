@@ -1,0 +1,29 @@
+{% comment %}
+  One utilisation bar (5a2G). Takes `meter` (a `Meter`), `label`, `used_text`,
+  `total_text` and an optional `unit`. The two numbers arrive already formatted and
+  separately, because bytes want `filesizeformat` and cores want `floatformat` and
+  the composer deliberately holds no unit — and because building one joined string
+  in the `include` tag would need the `add` filter, which returns the empty string
+  the moment its two sides are not the same kind of thing.
+
+  **An unknown meter draws no track at all.** Not an empty one: a node that did not
+  report its swap and a node using none of it are opposite facts that a 0% bar
+  spells identically, and the bar is the part an operator reads at a glance. The
+  width is a custom property in a `style` attribute, the same idiom the tag chips
+  use, which is what `style-src-attr 'unsafe-inline'` in the CSP is for.
+{% endcomment %}
+<div class="meter">
+  <div class="meter-head">
+    <span class="meter-label">{{ label }}</span>
+    {% if meter.known %}
+      <span class="meter-value">{{ used_text }} of {{ total_text }}{% if unit %} {{ unit }}{% endif %}</span>
+    {% else %}
+      <span class="meter-value muted">not reported</span>
+    {% endif %}
+  </div>
+  {% if meter.known %}
+    <div class="meter-track" role="img" aria-label="{{ label }} {{ meter.percent|floatformat:0 }} percent used">
+      <div class="meter-fill" style="--meter-percent:{{ meter.percent|floatformat:1 }}%"></div>
+    </div>
+  {% endif %}
+</div>

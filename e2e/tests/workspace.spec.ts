@@ -127,8 +127,12 @@ test("cluster Summary states its capacity coverage rather than a bare total", as
   const nodeHeaderPositions = await page
     .locator(".cluster-summary-nodes-table th")
     .evaluateAll((headers) => headers.map((header) => header.getBoundingClientRect().x));
-  expect(nodeHeaderPositions).toHaveLength(4);
-  expect(nodeHeaderPositions.slice(1).every((position, index) => position - nodeHeaderPositions[index] >= 120)).toBe(
+  // Node · State · Runtime · CPU · Memory · Root fs · Guests since 5a2G. The floor
+  // is lower than it was at four columns for the obvious reason, and still well
+  // above the point where a header wraps: the narrowest column is 11% of a table
+  // that never renders below 860px.
+  expect(nodeHeaderPositions).toHaveLength(7);
+  expect(nodeHeaderPositions.slice(1).every((position, index) => position - nodeHeaderPositions[index] >= 80)).toBe(
     true,
   );
 });
@@ -150,14 +154,18 @@ test("node Summary shows its own runtime state, not the cluster's", async ({ pag
   expect(Math.abs(identity!.width - guests!.width)).toBeLessThanOrEqual(1);
   await expect(page.locator(".cluster-workspace-page > .vs-object-header")).toHaveCSS("border-bottom-width", "0px");
 
+  // The observation line still aligns flush with the first label under it and
+  // shares its size. Since 5a2G that label is a meter's, not a `dt`'s — the
+  // utilisation figures are bars now, and the alignment rule is what the assertion
+  // is about, not which element happens to carry it.
   const runtimeLine = await page.locator(".node-runtime-observation").boundingBox();
-  const cpuLabel = await page.locator(".node-runtime-observation + .cluster-detail-list dt").first().boundingBox();
+  const cpuLabel = await page.locator(".node-runtime-observation + .meter-set .meter-label").first().boundingBox();
   expect(runtimeLine).not.toBeNull();
   expect(cpuLabel).not.toBeNull();
   expect(Math.abs(runtimeLine!.x - cpuLabel!.x)).toBeLessThanOrEqual(1);
   await expect(page.locator(".node-runtime-observation")).toHaveCSS("border-bottom-width", "0px");
   const runtimeFontSize = await page.locator(".node-runtime-observation").evaluate((element) => getComputedStyle(element).fontSize);
-  await expect(page.locator(".node-runtime-observation + .cluster-detail-list dt").first()).toHaveCSS(
+  await expect(page.locator(".node-runtime-observation + .meter-set .meter-label").first()).toHaveCSS(
     "font-size",
     runtimeFontSize,
   );

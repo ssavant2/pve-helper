@@ -1,0 +1,18 @@
+{% comment %}
+  The table-cell form of `meter.html` (5a2G): a bar and a percentage, no label —
+  the column header is the label, and repeating it in every row is noise.
+
+  Same rule as the full meter: unknown draws no track. Here that matters more, not
+  less, because a column of bars is read by scanning for the long one, and a 0%
+  track in that column is an invitation to conclude the node is idle.
+{% endcomment %}
+{% if meter.known %}
+  <div class="meter-mini">
+    <div class="meter-track" role="img" aria-label="{{ meter.percent|floatformat:0 }} percent used">
+      <div class="meter-fill" style="--meter-percent:{{ meter.percent|floatformat:1 }}%"></div>
+    </div>
+    <span class="meter-mini-value">{{ meter.percent|floatformat:0 }}%</span>
+  </div>
+{% else %}
+  <span class="muted">-</span>
+{% endif %}
