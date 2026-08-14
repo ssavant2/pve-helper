@@ -13,7 +13,7 @@
 {% endcomment %}
 
 {% for group in panel.groups %}
-  <section class="panel">
+  <section class="panel panel-spaced">
     <div class="panel-heading">
       <div>
         <h2>{{ group.node }}</h2>
@@ -108,7 +108,7 @@
     {% endif %}
   </section>
 {% empty %}
-  <section class="panel">
+  <section class="panel panel-spaced">
     <p class="empty-state">
       No node in this scope publishes a network. A node appears here once this
       connection is enrolled to publish it and the projection has swept it.

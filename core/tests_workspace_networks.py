@@ -254,6 +254,11 @@ class WorkspaceNetworkTabTests(TestCase):
                 self.assertTrue(tabs[active].active)
                 self.assertContains(response, "vmbr0")
 
+    def test_each_node_panel_uses_the_shared_gui_spacing(self):
+        response = self.client.get(reverse("core:cluster_networks", args=["hq"]))
+
+        self.assertContains(response, 'class="panel panel-spaced"', count=len(MEMBERS))
+
     def test_the_cluster_tab_names_every_node_it_could_not_read(self):
         self._coverage("pve3", complete=False, error="endpoints_exhausted")
 
