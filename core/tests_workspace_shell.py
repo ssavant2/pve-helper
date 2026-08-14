@@ -8,6 +8,7 @@ asserted beyond the shell they hang in.
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -314,6 +315,61 @@ class WorkspaceRouteTests(TestCase):
         self.assertContains(response, "Hosts &amp; Clusters")
         self.assertContains(response, reverse("core:cluster_summary", args=["hq"]))
         self.assertContains(response, reverse("core:node_summary", args=["hq", "pve1"]))
+
+
+class StickyTabTreeTests(TestCase):
+    """Switching objects in the tree keeps the tab you are standing on.
+
+    The mechanism is `nav_tags.sticky_object_url`, which guests and datastores have
+    always used; this phase's tree was the surface that bypassed it by building
+    Summary URLs directly. The tests are against rendered hrefs rather than the tag,
+    because a tag that works and a template that does not call it look identical
+    from the tag's own tests.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.hq = _cluster("hq", nodes=("pve1", "pve2"))
+        self.edge = _cluster("edge", nodes=("edge1",))
+
+    def _hrefs(self, response) -> set[str]:
+        return set(re.findall(r'href="([^"]+)"', response.content.decode()))
+
+    def test_switching_node_from_a_node_tab_stays_on_that_tab(self):
+        response = self.client.get(reverse("core:node_vms", args=["hq", "pve1"]))
+
+        self.assertIn(reverse("core:node_vms", args=["hq", "pve2"]), self._hrefs(response))
+        self.assertNotIn(reverse("core:node_summary", args=["hq", "pve2"]), self._hrefs(response))
+
+    def test_the_tab_carries_across_clusters_and_between_scopes(self):
+        response = self.client.get(reverse("core:node_vms", args=["hq", "pve1"]))
+        hrefs = self._hrefs(response)
+
+        self.assertIn(reverse("core:node_vms", args=["edge", "edge1"]), hrefs)
+        self.assertIn(reverse("core:cluster_vms", args=["hq"]), hrefs)
+
+    def test_a_tab_the_target_does_not_have_falls_back_to_summary(self):
+        """Hosts is cluster-only, so a node leaf cannot stay on it."""
+
+        response = self.client.get(reverse("core:cluster_hosts", args=["hq"]))
+        hrefs = self._hrefs(response)
+
+        self.assertIn(reverse("core:node_summary", args=["hq", "pve1"]), hrefs)
+        self.assertNotIn("/clusters/hq/nodes/pve1/hosts/", hrefs)
+
+    def test_a_page_that_is_not_an_object_tab_leaves_the_tree_on_summary(self):
+        response = self.client.get(reverse("core:dashboard"))
+        hrefs = self._hrefs(response)
+
+        self.assertIn(reverse("core:cluster_summary", args=["hq"]), hrefs)
+        self.assertIn(reverse("core:node_summary", args=["hq", "pve1"]), hrefs)
+
+    def test_a_standalone_host_leaf_is_sticky_too(self):
+        _cluster("solo", role="standalone", nodes=("solo1",))
+
+        response = self.client.get(reverse("core:node_vms", args=["hq", "pve1"]))
+
+        self.assertIn(reverse("core:node_vms", args=["solo", "solo1"]), self._hrefs(response))
 
 
 class SummaryCompositionTests(TestCase):

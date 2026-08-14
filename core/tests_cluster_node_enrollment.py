@@ -5,6 +5,8 @@ the branch is deleted. That is the phase's exit criterion — a reviewer's appro
 not, and a green suite after deleting a branch means the test is missing.
 """
 
+import socket
+import time
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -151,12 +153,72 @@ class CandidateNodeProofTests(TestCase):
 
 
 class CandidateUrlProvenanceTests(TestCase):
+    """What may fill the field, and what may not.
+
+    A confirmed name is preferred over the address because an address can never
+    match a publicly trusted certificate — an IP prefill quietly steers a `public`
+    trust profile into a rejected chain. Everything unconfirmed still falls back to
+    what the provider actually reported.
+    """
+
+    def _without_dns(self):
+        return patch("core.views.clusters.enrollment.socket.gethostbyaddr", side_effect=socket.herror(1, "no PTR"))
+
+    def _dns(self, *, ptr: str, forward: list[str]):
+        return (
+            patch("core.views.clusters.enrollment.socket.gethostbyaddr", return_value=(ptr, [], forward)),
+            patch(
+                "core.views.clusters.enrollment.socket.getaddrinfo",
+                return_value=[(0, 0, 0, "", (address, 0)) for address in forward],
+            ),
+        )
+
     def test_a_reported_ring_address_prefills_a_reviewable_candidate(self):
-        self.assertEqual(_candidate_url_suggestion("10.10.10.31"), "https://10.10.10.31:8006")
+        with self._without_dns():
+            self.assertEqual(_candidate_url_suggestion("10.10.10.31"), ("https://10.10.10.31:8006", ""))
 
     def test_no_reported_address_means_no_suggestion_and_never_a_synthesized_name(self):
-        self.assertEqual(_candidate_url_suggestion(""), "")
-        self.assertEqual(_candidate_url_suggestion("10.10.10.0/24"), "")
+        self.assertEqual(_candidate_url_suggestion(""), ("", ""))
+        self.assertEqual(_candidate_url_suggestion("10.10.10.0/24"), ("", ""))
+
+    def test_a_forward_confirmed_ptr_name_is_preferred_over_the_address(self):
+        ptr, forward = self._dns(ptr="pve202.hqgbg.net.", forward=["10.10.10.204"])
+        with ptr, forward:
+            self.assertEqual(
+                _candidate_url_suggestion("10.10.10.204"),
+                ("https://pve202.hqgbg.net:8006", "pve202.hqgbg.net"),
+            )
+
+    def test_a_ptr_name_that_does_not_resolve_back_is_discarded(self):
+        """A reverse zone is often controlled by whoever holds the address."""
+
+        ptr, forward = self._dns(ptr="attacker.example.test", forward=["203.0.113.9"])
+        with ptr, forward:
+            self.assertEqual(_candidate_url_suggestion("10.10.10.204"), ("https://10.10.10.204:8006", ""))
+
+    def test_a_hanging_resolver_costs_the_suggestion_and_not_the_page(self):
+        def never_answers(address):
+            time.sleep(30)
+            raise AssertionError("the deadline should have fired first")
+
+        started = time.monotonic()
+        with (
+            patch("core.views.clusters.enrollment.socket.gethostbyaddr", side_effect=never_answers),
+            patch("core.views.clusters.enrollment._DNS_SUGGESTION_TIMEOUT_SECONDS", 0.2),
+        ):
+            suggestion = _candidate_url_suggestion("10.10.10.204")
+
+        self.assertEqual(suggestion, ("https://10.10.10.204:8006", ""))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_reported_name_is_used_as_reported_and_never_re_resolved(self):
+        with patch("core.views.clusters.enrollment.socket.gethostbyaddr") as lookup:
+            self.assertEqual(_candidate_url_suggestion("pve202"), ("https://pve202:8006", ""))
+        lookup.assert_not_called()
+
+    def test_an_ipv6_ring_address_keeps_its_brackets_when_dns_is_silent(self):
+        with self._without_dns():
+            self.assertEqual(_candidate_url_suggestion("2001:db8::5"), ("https://[2001:db8::5]:8006", ""))
 
 
 class EnrollmentGenerationTests(TestCase):

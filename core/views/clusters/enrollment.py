@@ -12,7 +12,11 @@ candidate-node proof.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import socket
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 from django.core import signing
 from django.db import transaction
@@ -60,6 +64,9 @@ _NODE_INSPECTION_SALT = "cluster-node-inspection"
 _NODE_CANDIDATE_SALT = "cluster-node-candidate"
 _NODE_IMPACT_SALT = "cluster-node-impact"
 _TOKEN_MAX_AGE_SECONDS = 1800
+#: How long a prefill may spend in DNS. A suggestion is worth a moment, never a
+#: page that appears to hang while a resolver times out on its own schedule.
+_DNS_SUGGESTION_TIMEOUT_SECONDS = 2.0
 
 #: Row states. Derived from projection presence × enrollment row, never stored.
 STATE_MANAGED = "managed"
@@ -109,20 +116,68 @@ def _load(request, raw: str, salt: str, kind: str) -> dict:
     return payload
 
 
-def _candidate_url_suggestion(ring_address: str) -> str:
-    """A *suggestion* built only from the corosync ring address.
+def _candidate_url_suggestion(ring_address: str) -> tuple[str, str]:
+    """A *suggestion* built from the ring address, with its confirmed name if DNS has one.
 
-    Never a synthesized DNS name: the ring address is the one address the provider
-    actually reported, and even it is not proven reachable — it may be a
-    cluster-internal network with no route from here. The operator reviews and
-    edits it, and the template says where it came from.
+    Returns ``(url, resolved_name)``; the name is empty unless DNS answered, and the
+    template says which of the two the field was filled from.
+
+    Still never a *synthesized* name — no ``f"{node}.{domain}"`` assembled from a
+    node name and a sibling endpoint's suffix, which is a guess wearing a hostname's
+    clothes. A forward-confirmed PTR is the opposite: DNS is asked, and its answer is
+    only used if resolving that name returns the address we started from. An
+    unconfirmed PTR is discarded, because a reverse zone is often controlled by
+    whoever holds the address and is not evidence on its own.
+
+    Preferring the confirmed name matters beyond neatness: an IP URL can never match
+    a publicly trusted certificate, so an IP suggestion silently steers a `public`
+    trust profile into a rejected chain. The address remains the fallback — it is
+    what the provider actually reported — and neither form is proven reachable or
+    proven to be this node. That is what the inspection and the ``local=1`` check
+    after it are for.
     """
 
     ring_address = str(ring_address or "").strip()
     if not ring_address or "/" in ring_address or " " in ring_address:
+        return "", ""
+    resolved = _forward_confirmed_name(ring_address)
+    host = resolved or (f"[{ring_address}]" if ":" in ring_address else ring_address)
+    return f"https://{host}:8006", resolved
+
+
+def _forward_confirmed_name(address: str) -> str:
+    """The PTR name for `address`, but only if it resolves back to `address`.
+
+    Off-thread with a hard deadline: this runs while rendering a page, and a resolver
+    that is unreachable rather than empty answers by hanging. `gethostbyaddr` is a
+    libc call that ignores socket timeouts, so the timeout has to be imposed from
+    outside it. A slow lookup then costs the suggestion, not the page.
+    """
+
+    try:
+        parsed_address = ipaddress.ip_address(address)
+    except ValueError:
+        # Already a name — the provider reported it, and there is nothing to confirm
+        # it against that is stronger than what the provider said.
         return ""
-    host = f"[{ring_address}]" if ":" in ring_address else ring_address
-    return f"https://{host}:8006"
+
+    def lookup() -> str:
+        name = socket.gethostbyaddr(address)[0].strip().rstrip(".")
+        if not name:
+            return ""
+        family = socket.AF_INET6 if parsed_address.version == 6 else socket.AF_INET
+        confirmed = {info[4][0] for info in socket.getaddrinfo(name, None, family, socket.SOCK_STREAM)}
+        return name if address in confirmed else ""
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(lookup).result(timeout=_DNS_SUGGESTION_TIMEOUT_SECONDS)
+    except (OSError, FuturesTimeoutError, UnicodeError):
+        return ""
+    finally:
+        # `wait=True` — the `with` form's default — would block here for exactly as
+        # long as the timeout above just refused to wait, which is the whole point.
+        pool.shutdown(wait=False)
 
 
 def _endpoints_by_node(cluster) -> dict[str, ProxmoxEndpoint]:
@@ -257,8 +312,9 @@ def cluster_node_add(request, cluster_key: str):
         suggestion = ""
         for row in node_enrollment_rows(cluster):
             if row["node_name"] == node_name:
-                suggestion = _candidate_url_suggestion(row["reported_ring_address"])
+                suggestion, resolved_name = _candidate_url_suggestion(row["reported_ring_address"])
                 context["reported_ring_address"] = row["reported_ring_address"]
+                context["resolved_ring_hostname"] = resolved_name
                 break
         context["inspect_form"] = EndpointInspectForm(initial={"endpoint_url": suggestion, "endpoint_name": node_name})
         return render(request, "core/cluster_node_add.html", context)

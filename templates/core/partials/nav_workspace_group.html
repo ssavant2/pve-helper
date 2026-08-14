@@ -1,3 +1,4 @@
+{% load nav_tags %}
 {% comment %}
   One Hosts & Clusters group (Clusters or Hosts). Each object parents its member
   nodes in its own `tree-children`, so they are indented under their cluster with
@@ -25,7 +26,7 @@
           pointing at the node, which is where a host's runtime and hardware live.
         {% endcomment %}
         <a class="tree-node tree-leaf tree-leaf-unparented {% if workspace_nav_key == entry.primary.nav_key or workspace_nav_key == entry.nav_key %}active{% endif %}"
-           href="{{ entry.primary.url }}"
+           href="{% sticky_object_url entry.primary.url %}"
            data-infrastructure-kind="node"
            data-cluster-key="{{ entry.cluster_key }}"
            data-node="{{ entry.primary.node_name }}">
@@ -42,7 +43,7 @@
               <span class="tree-caret" data-tree-caret>v</span>
             </button>
             <a class="tree-node tree-leaf tree-parent-link {% if workspace_nav_key == entry.nav_key %}active{% endif %}"
-               href="{{ entry.url }}"
+               href="{% sticky_object_url entry.url %}"
                data-infrastructure-kind="cluster"
                data-cluster-key="{{ entry.cluster_key }}">
               <span class="tree-icon"><i data-vicon="{{ group_icon }}" aria-hidden="true"></i></span>
@@ -53,7 +54,7 @@
           <div class="tree-children">
             {% for node in entry.nodes %}
               <a class="tree-node tree-leaf {% if workspace_nav_key == node.nav_key %}active{% endif %}"
-                 href="{{ node.url }}"
+                 href="{% sticky_object_url node.url %}"
                  data-infrastructure-kind="node"
                  data-cluster-key="{{ entry.cluster_key }}"
                  data-node="{{ node.node_name }}">
@@ -67,7 +68,7 @@
         {% comment %}No members to expand, so no toggle — an empty expander promises
         children that are not there.{% endcomment %}
         <a class="tree-node tree-leaf tree-leaf-unparented {% if workspace_nav_key == entry.nav_key %}active{% endif %}"
-           href="{{ entry.url }}"
+           href="{% sticky_object_url entry.url %}"
            data-infrastructure-kind="cluster"
            data-cluster-key="{{ entry.cluster_key }}">
           <span class="tree-icon"><i data-vicon="{{ group_icon }}" aria-hidden="true"></i></span>

@@ -2431,6 +2431,30 @@ class StickyTabUrlTests(SimpleTestCase):
             "/vms/vm/500/summary/",
         )
 
+    def test_a_list_page_whose_last_segment_names_a_tab_is_still_not_a_tab(self):
+        """`/vms/` is the guest inventory, not somebody's VMs tab.
+
+        The segment alone matched, so every storage leaf on that page pointed at its
+        own VMs tab — a destination the operator never chose and had not come from.
+        What separates a tab from a coincidence is having a Summary sibling.
+        """
+        self.assertEqual(
+            self._sticky("/vms/", "/clusters/hq/datastores/nfs-a/summary/"),
+            "/clusters/hq/datastores/nfs-a/summary/",
+        )
+
+    def test_a_single_segment_path_carries_no_tab(self):
+        self.assertEqual(self._sticky("/", "/vms/vm/500/summary/"), "/vms/vm/500/summary/")
+        self.assertEqual(self._sticky("/orphans/", "/vms/vm/500/summary/"), "/vms/vm/500/summary/")
+
+    def test_a_deeper_page_without_a_summary_sibling_carries_no_tab(self):
+        """Depth is not the test — having a Summary beside you is."""
+
+        self.assertEqual(
+            self._sticky("/vms/overview/", "/clusters/hq/datastores/nfs-a/summary/"),
+            "/clusters/hq/datastores/nfs-a/summary/",
+        )
+
 
 class ProxmoxClientTests(SimpleTestCase):
     def _response(self, data, *, status_code=200):
