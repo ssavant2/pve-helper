@@ -1,4 +1,4 @@
-<div class="cluster-certificate">
-  <div class="cluster-certificate-heading"><i data-lucide="shield-check" aria-hidden="true"></i><strong>Presented TLS certificate</strong></div>
+<div class="cluster-certificate{% if tone %} {{ tone }}{% endif %}">
+  <div class="cluster-certificate-heading"><i data-lucide="{{ icon|default:"shield-check" }}" aria-hidden="true"></i><strong>{{ heading|default:"Presented TLS certificate" }}</strong>{% if caption %}<span class="cluster-certificate-caption">{{ caption }}</span>{% endif %}</div>
   <dl><dt>Subject</dt><dd>{{ certificate.subject }}</dd><dt>Issuer</dt><dd>{{ certificate.issuer }}</dd><dt>SHA-256</dt><dd><code>{{ certificate.sha256_fingerprint }}</code></dd></dl>
 </div>

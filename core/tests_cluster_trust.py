@@ -29,8 +29,10 @@ from core.services.cluster_trust import (
     TRUST_CA_PEM,
     TRUST_INSECURE,
     TRUST_PUBLIC,
+    InspectedCertificate,
     TransportTrustError,
     TrustProfile,
+    accepted_endpoint_certificate,
     approve_cluster_transport,
     complete_trust_cutover,
     legacy_trust_profile,
@@ -394,3 +396,62 @@ class TlsTrustFailureClassificationTests(SimpleTestCase):
             public_failure(raised, operation="test", fallback=PROVIDER_FAILURE_MESSAGE).message,
             PROVIDER_FAILURE_MESSAGE,
         )
+
+
+class AcceptedCertificateProbeTests(SimpleTestCase):
+    """The probe that turns "a sibling's certificate" into "a certificate we accept".
+
+    Offering a working endpoint's certificate as the example to follow is only
+    honest if the same trust profile has been asked about it, so the probe completes
+    a verifying handshake rather than an inspection.
+    """
+
+    url = "https://pve201.example.test:8006"
+
+    def _probe(self, profile, **patches):
+        return accepted_endpoint_certificate(self.url, profile, **patches)
+
+    def test_a_rejected_chain_yields_no_example_instead_of_raising(self):
+        """It runs while composing another failure's page; a second exception here
+        would replace a diagnosis with a stack trace."""
+
+        with patch("socket.create_connection", side_effect=ssl.SSLCertVerificationError("verify failed")):
+            certificate = self._probe(TrustProfile(mode=TRUST_PUBLIC))
+
+        self.assertEqual(certificate.sha256_fingerprint, "")
+
+    def test_an_unreachable_sibling_yields_no_example(self):
+        with patch("socket.create_connection", side_effect=OSError("no route to host")):
+            certificate = self._probe(TrustProfile(mode=TRUST_PUBLIC))
+
+        self.assertEqual(certificate.sha256_fingerprint, "")
+
+    def test_an_insecure_profile_is_no_evidence_about_any_certificate(self):
+        """It accepts every chain, so "accepted here" says nothing about what another
+        node must install."""
+
+        with patch("socket.create_connection") as connect:
+            certificate = self._probe(TrustProfile(mode=TRUST_INSECURE))
+
+        self.assertEqual(certificate.sha256_fingerprint, "")
+        connect.assert_not_called()
+
+    def test_an_accepted_chain_returns_the_certificate_it_verified(self):
+        peer = MagicMock()
+        peer.__enter__ = lambda _self: peer
+        peer.__exit__ = lambda *_args: False
+        peer.getpeercert.return_value = b"der"
+        context = MagicMock()
+        context.wrap_socket.return_value = peer
+        inspected = InspectedCertificate(subject="CN=pve201", issuer="CN=R11", sha256_fingerprint="ab01")
+
+        with (
+            patch("socket.create_connection"),
+            patch("ssl.create_default_context", return_value=context),
+            patch("core.services.cluster_trust._inspected", return_value=inspected),
+        ):
+            certificate = self._probe(TrustProfile(mode=TRUST_PUBLIC))
+
+        self.assertEqual(certificate, inspected)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)

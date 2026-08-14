@@ -3,7 +3,8 @@ from __future__ import annotations
 import base64
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.template.loader import render_to_string
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import (
     ClusterCredential,
@@ -17,13 +18,20 @@ from core.services.cluster_identity import ClusterIdentityError, ObservedCluster
 from core.services.cluster_onboarding import (
     ClusterCandidate,
     ClusterOnboardingError,
+    ClusterTrustMismatchError,
     VerifiedConnection,
+    _trust_mismatch,
     persist_new_cluster,
     verify_new_cluster,
     verify_replacement_credential,
 )
 from core.services.cluster_topology_role import TopologyRole
-from core.services.cluster_trust import TRUST_PUBLIC, InspectedCertificate, approve_cluster_transport
+from core.services.cluster_trust import (
+    TRUST_PUBLIC,
+    InspectedCertificate,
+    TrustProfile,
+    approve_cluster_transport,
+)
 from core.services.proxmox import ProxmoxAPIError, ProxmoxTlsTrustError
 from core.services.public_errors import PROVIDER_FAILURE_MESSAGE
 
@@ -267,12 +275,13 @@ class ClusterOnboardingTests(TestCase):
         client_class.assert_not_called()
 
     def test_a_rejected_certificate_chain_names_the_certificate_to_trust(self):
-        """The repair needs the issuer, so the message carries it.
+        """The repair needs the issuer, so the failure carries it as fields.
 
         "The Proxmox API request failed" sent the operator to look at the token and
         the node's cluster membership; the actual fault was that nothing here trusts
-        the CA that signed what the node serves. Naming the presented certificate is
-        the difference between a symptom and an instruction.
+        the CA that signed what the node serves. The evidence lives on the exception
+        rather than inside its sentence, because the surface lays two certificates
+        side by side and a paragraph cannot be compared.
         """
 
         class UntrustedClient(_CandidateClient):
@@ -283,18 +292,24 @@ class ClusterOnboardingTests(TestCase):
             patch("core.services.cluster_onboarding.inspect_transport", return_value=self.certificate),
             patch("core.services.cluster_onboarding.ProxmoxClient", UntrustedClient),
         ):
-            with self.assertRaises(ClusterOnboardingError) as caught:
+            with self.assertRaises(ClusterTrustMismatchError) as caught:
                 verify_new_cluster(
                     self.candidate,
                     expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
                 )
 
         message = str(caught.exception)
-        self.assertIn("TLS certificate was rejected", message)
-        self.assertIn(self.certificate.issuer, message)
-        self.assertIn(self.certificate.subject, message)
-        self.assertIn(self.certificate.sha256_fingerprint, message)
+        self.assertIn("does not trust", message)
         self.assertNotIn(PROVIDER_FAILURE_MESSAGE, message)
+        diagnosis = caught.exception.diagnosis
+        self.assertEqual(diagnosis.presented, self.certificate)
+        self.assertEqual(diagnosis.trust_mode, TRUST_PUBLIC)
+        self.assertIn("public CA store", diagnosis.trust_summary)
+        # A brand-new cluster has no sibling to compare against, and inventing an
+        # "accepted" certificate from nothing would be the guess this whole panel
+        # exists to replace.
+        self.assertIsNone(diagnosis.reference)
+        self.assertTrue(any("approve_cluster_transport" in remedy for remedy in diagnosis.remedies))
 
     def test_an_ordinary_provider_failure_stays_redacted(self):
         class BrokenClient(_CandidateClient):
@@ -468,3 +483,102 @@ class ClusterOnboardingTests(TestCase):
                     token_id=self.candidate.token_id,
                     token_secret=self.candidate.token_secret,
                 )
+
+
+class TrustDiagnosisTests(SimpleTestCase):
+    """The evidence a trust rejection hands the surface.
+
+    The message used to be a paragraph holding a subject, an issuer and a
+    fingerprint, and the one thing it never held was the certificate that *works* —
+    so the operator was told to install something acceptable without being shown
+    what this connection accepts.
+    """
+
+    presented = InspectedCertificate(
+        subject="CN=pve202.example.test,O=Proxmox Virtual Environment,OU=PVE Cluster Node",
+        issuer="O=PVE Cluster Manager CA,CN=Proxmox Virtual Environment",
+        sha256_fingerprint="dd76",
+    )
+    accepted = InspectedCertificate(
+        subject="CN=pve201.example.test",
+        issuer="C=US,O=Let's Encrypt,CN=R11",
+        sha256_fingerprint="ab01",
+    )
+    nothing = InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
+
+    def _diagnose(self, certificates, endpoints):
+        with patch(
+            "core.services.cluster_onboarding.accepted_endpoint_certificate",
+            side_effect=certificates,
+        ):
+            error = _trust_mismatch(
+                endpoint_url="https://pve202.example.test:8006",
+                endpoint_name="pve202",
+                trust_profile=TrustProfile(mode=TRUST_PUBLIC),
+                certificate=self.presented,
+                reference_endpoints=endpoints,
+            )
+        return error.diagnosis
+
+    def test_the_example_is_the_first_sibling_the_profile_actually_accepts(self):
+        """Asked, not assumed. A sibling that has drifted out of trust itself is not
+        an example to follow, so it is passed over rather than offered."""
+
+        diagnosis = self._diagnose(
+            [self.nothing, self.accepted],
+            (("pve200", "https://pve200.example.test:8006"), ("pve201", "https://pve201.example.test:8006")),
+        )
+
+        self.assertEqual(diagnosis.reference.endpoint_name, "pve201")
+        self.assertEqual(diagnosis.reference.certificate, self.accepted)
+
+    def test_the_example_is_an_issuer_to_match_not_a_certificate_to_copy(self):
+        """Only the issuer transfers between nodes; the names do not, and whether the
+        sibling's certificate happens to cover this node too is not something the
+        remedy has looked at. So it names the issuer as the thing to match and stops
+        short of claiming a copy would or would not work."""
+
+        diagnosis = self._diagnose([self.accepted], (("pve201", "https://pve201.example.test:8006"),))
+
+        remedy = next(text for text in diagnosis.remedies if "same CA" in text)
+        self.assertIn("The issuer is what has to match", remedy)
+        self.assertIn("not as a file to copy", remedy)
+        self.assertIn("pve202", remedy)
+        self.assertIn("pve201", remedy)
+
+    def test_the_endpoint_being_added_is_never_its_own_example(self):
+        """It is already registered on the re-verify path, and its certificate is the
+        rejected one — offering it back would be a comparison with itself."""
+
+        diagnosis = self._diagnose(
+            [self.accepted],
+            (("pve202", "https://pve202.example.test:8006/"), ("pve201", "https://pve201.example.test:8006")),
+        )
+
+        self.assertEqual(diagnosis.reference.endpoint_name, "pve201")
+
+    def test_no_accepted_sibling_says_so_rather_than_going_quiet(self):
+        diagnosis = self._diagnose([self.nothing], (("pve201", "https://pve201.example.test:8006"),))
+
+        self.assertIsNone(diagnosis.reference)
+        self.assertTrue(any("no working example" in remedy for remedy in diagnosis.remedies))
+
+    def test_a_connection_with_no_endpoints_makes_no_claim_about_siblings(self):
+        """Onboarding a new cluster has nothing to compare against, which is not the
+        same finding as "the siblings are untrusted too"."""
+
+        diagnosis = self._diagnose([], ())
+
+        self.assertIsNone(diagnosis.reference)
+        self.assertFalse(any("no working example" in remedy for remedy in diagnosis.remedies))
+
+    def test_the_surface_renders_both_certificates(self):
+        diagnosis = self._diagnose([self.accepted], (("pve201", "https://pve201.example.test:8006"),))
+
+        html = render_to_string("core/partials/cluster_trust_diagnosis.html", {"diagnosis": diagnosis})
+
+        self.assertIn("Rejected", html)
+        self.assertIn("Accepted today", html)
+        self.assertIn(self.presented.sha256_fingerprint, html)
+        self.assertIn(self.accepted.sha256_fingerprint, html)
+        self.assertIn("public CA store", html)

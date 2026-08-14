@@ -20,9 +20,11 @@
   {% elif step == "trust" %}
     <section class="panel cluster-wizard-panel"><div class="panel-heading"><div><h2>Approve node transport</h2><p class="panel-meta">The stored cluster credential has not been sent to this endpoint yet.</p></div></div>
       <div class="cluster-candidate-summary"><strong>{{ node_name }}</strong><code>{{ endpoint_meta.endpoint_name }}</code><span>{{ endpoint_meta.endpoint_url }}</span></div>
-      {% include "core/partials/cluster_certificate.html" with certificate=certificate %}
+      {% if not trust_diagnosis %}{% include "core/partials/cluster_certificate.html" with certificate=certificate %}{% endif %}
       <form method="post" class="cluster-confirm-form">{% csrf_token %}<input type="hidden" name="action" value="verify"><input type="hidden" name="node_name" value="{{ node_name }}">{{ trust_form.inspection }}
         {% include "core/partials/cluster_form_errors.html" with form=trust_form %}
+        {# The diagnosis is the error's evidence, so it follows the sentence that introduces it. #}
+        {% if trust_diagnosis %}{% include "core/partials/cluster_trust_diagnosis.html" with diagnosis=trust_diagnosis %}{% endif %}
         <label class="cluster-check">{{ trust_form.confirm_certificate }}<span>{{ trust_form.confirm_certificate.label }}</span></label>
         <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_node_add' cluster.key %}?node={{ node_name|urlencode }}">Start over</a><button class="secondary-action" type="submit">Verify node identity</button></div>
       </form>
@@ -38,6 +40,7 @@
       </div>
       <form method="post" class="cluster-confirm-form">{% csrf_token %}<input type="hidden" name="action" value="confirm"><input type="hidden" name="node_name" value="{{ node_name }}">{{ confirm_form.candidate }}
         {% include "core/partials/cluster_form_errors.html" with form=confirm_form %}
+        {% if trust_diagnosis %}{% include "core/partials/cluster_trust_diagnosis.html" with diagnosis=trust_diagnosis %}{% endif %}
         <label class="cluster-field-wide"><span>{{ confirm_form.mode.label }}</span>{{ confirm_form.mode }}{% for error in confirm_form.mode.errors %}<small class="form-error">{{ error }}</small>{% endfor %}<small class="field-hint">Safety only keeps reading the node for disk references so shared-storage orphan detection stays correct, while hiding it from every operational view. Neither mode filters anything yet — publication changes arrive in a later phase.</small></label>
         <label class="cluster-check">{{ confirm_form.confirm_identity }}<span>{{ confirm_form.confirm_identity.label }}</span></label>
         <div class="cluster-form-actions"><a class="secondary-action" href="{% url 'core:cluster_connection' cluster.key %}">Cancel</a><button class="secondary-action" type="submit">Add node</button></div>

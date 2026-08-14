@@ -48,6 +48,7 @@ from core.services.cluster_host_refresh import (
 )
 from core.services.cluster_onboarding import (
     ClusterOnboardingError,
+    ClusterTrustMismatchError,
     inspect_transport,
     persist_endpoint,
     verify_endpoint_for_cluster,
@@ -178,6 +179,16 @@ def _forward_confirmed_name(address: str) -> str:
         # `wait=True` — the `with` form's default — would block here for exactly as
         # long as the timeout above just refused to wait, which is the whole point.
         pool.shutdown(wait=False)
+
+
+def _trust_diagnosis(exc: Exception):
+    """The structured half of a trust rejection, or nothing for any other failure.
+
+    Every onboarding failure keeps rendering as its sentence; only this one has a
+    comparison to lay out, and only the class that carries one may claim the panel.
+    """
+
+    return exc.diagnosis if isinstance(exc, ClusterTrustMismatchError) else None
 
 
 def _endpoints_by_node(cluster) -> dict[str, ProxmoxEndpoint]:
@@ -390,6 +401,7 @@ def cluster_node_add(request, cluster_key: str):
             except ClusterOnboardingError as exc:
                 _record_enrollment_failure(request, cluster, node_name, str(exc))
                 form.add_error(None, str(exc))
+                context["trust_diagnosis"] = _trust_diagnosis(exc)
             else:
                 context.update(
                     {
@@ -419,6 +431,9 @@ def cluster_node_add(request, cluster_key: str):
             except (ClusterOnboardingError, ClusterEnrollmentError) as exc:
                 _record_enrollment_failure(request, cluster, node_name, str(exc))
                 form.add_error(None, str(exc))
+                # The final step re-verifies, so trust can be refused here too — a
+                # certificate can be replaced between the two calls.
+                context["trust_diagnosis"] = _trust_diagnosis(exc)
             else:
                 _queue_node_reconciliation(request, cluster, node_name, write)
                 return redirect("core:cluster_connection", cluster_key=cluster.key)

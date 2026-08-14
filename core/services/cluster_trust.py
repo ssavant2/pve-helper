@@ -205,9 +205,6 @@ def inspect_endpoint_certificate(url: str, *, timeout: float = 8.0) -> Inspected
     import ssl as ssl_module
     from urllib.parse import urlparse
 
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes
-
     parsed = urlparse(url if "//" in url else f"https://{url}")
     host = parsed.hostname
     port = parsed.port or 8006
@@ -225,12 +222,65 @@ def inspect_endpoint_certificate(url: str, *, timeout: float = 8.0) -> Inspected
     except (OSError, ssl_module.SSLError) as exc:
         raise TransportTrustError(f"Could not reach {host}:{port} to inspect its certificate.") from exc
 
+    return _inspected(der)
+
+
+def _inspected(der: bytes) -> InspectedCertificate:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+
     cert = x509.load_der_x509_certificate(der)
     return InspectedCertificate(
         subject=cert.subject.rfc4514_string(),
         issuer=cert.issuer.rfc4514_string(),
         sha256_fingerprint=cert.fingerprint(hashes.SHA256()).hex(),
     )
+
+
+def accepted_endpoint_certificate(url: str, profile: TrustProfile, *, timeout: float = 5.0) -> InspectedCertificate:
+    """The certificate `url` presents, but only when `profile` actually accepts it.
+
+    The point is the *only*. When one endpoint's chain is refused, the useful answer
+    is which certificate a working sibling presents — and a sibling's certificate is
+    a guess until the same trust profile has been asked about it. So this is a full
+    verifying handshake, not an inspection: `check_hostname` and `CERT_REQUIRED`
+    against the profile's own verify decision, and the peer certificate is read only
+    from a connection that survived it.
+
+    Credential-free, like `inspect_endpoint_certificate` — it stops at the handshake
+    and sends no request.
+
+    Returns an empty `InspectedCertificate` when the chain is rejected or the
+    endpoint is unreachable. The caller has nothing to show either way, and the
+    difference between "this sibling is also untrusted" and "this sibling is down"
+    would only add a second diagnosis to a page already reporting one.
+    """
+
+    import socket
+    import ssl as ssl_module
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url if "//" in url else f"https://{url}")
+    host = parsed.hostname
+    port = parsed.port or 8006
+    if not host:
+        return InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
+
+    verify = profile.build_verify()
+    if verify is False:
+        # An insecure profile accepts every chain, so no certificate it accepts is
+        # evidence about what any other endpoint needs.
+        return InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
+    context = verify if isinstance(verify, ssl_module.SSLContext) else ssl_module.create_default_context()
+    context.check_hostname = True
+    context.verify_mode = ssl_module.CERT_REQUIRED
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with context.wrap_socket(sock, server_hostname=host) as tls:
+                der = tls.getpeercert(binary_form=True)
+    except (OSError, ssl_module.SSLError):
+        return InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
+    return _inspected(der)
 
 
 def approve_cluster_transport(cluster, *, mode: str, ca_pem: str = ""):

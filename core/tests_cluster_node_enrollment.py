@@ -5,6 +5,7 @@ the branch is deleted. That is the phase's exit criterion — a reviewer's appro
 not, and a green suite after deleting a branch means the test is missing.
 """
 
+import re
 import socket
 import time
 from unittest.mock import patch
@@ -35,8 +36,15 @@ from core.services.cluster_enrollment import (
     node_change_blockers,
     remove_enrollment,
 )
-from core.services.cluster_onboarding import ClusterOnboardingError, VerifiedConnection
+from core.services.cluster_onboarding import (
+    ClusterOnboardingError,
+    ClusterTrustMismatchError,
+    TrustDiagnosis,
+    TrustReference,
+    VerifiedConnection,
+)
 from core.services.cluster_projection_read import read_cluster_projection
+from core.services.cluster_trust import InspectedCertificate
 from core.views.clusters.enrollment import (
     STATE_DISCOVERED,
     STATE_ENROLLED_ABSENT,
@@ -611,3 +619,105 @@ class NodePanelEndpointVisibilityTests(TestCase):
         enroll_node(self.cluster, node_name="pve1", mode="managed")
 
         self.assertEqual(self._row("pve1")["state"], "managed")
+
+
+class TrustDiagnosisSurfaceTests(TestCase):
+    """Add node must show *why* a chain was refused, not that something failed.
+
+    The reported failure was "The Proxmox API request failed" on a node that was
+    already a cluster member in Proxmox: the certificate was the whole story and the
+    page told none of it.
+    """
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="op", password="secret")
+        self.client.force_login(self.user)
+        self.cluster = _cluster()
+        _publish_membership(self.cluster, "pve201", "pve202")
+        self.certificate = InspectedCertificate(
+            subject="CN=pve202.example.test,OU=PVE Cluster Node",
+            issuer="O=PVE Cluster Manager CA,CN=Proxmox Virtual Environment",
+            sha256_fingerprint="dd7671fb",
+        )
+        self.diagnosis = TrustDiagnosis(
+            endpoint_name="pve202",
+            endpoint_url="https://pve202.example.test:8006",
+            trust_mode="public",
+            trust_summary="This connection trusts the public CA store only.",
+            presented=self.certificate,
+            reference=TrustReference(
+                endpoint_name="pve201",
+                endpoint_url="https://pve201.example.test:8006",
+                certificate=InspectedCertificate(
+                    subject="CN=pve201.example.test",
+                    issuer="C=US,O=Let's Encrypt,CN=R11",
+                    sha256_fingerprint="ab0199",
+                ),
+            ),
+            remedies=("Issue a certificate for pve202 from the same CA.",),
+        )
+
+    def _inspection_token(self):
+        url = reverse("core:cluster_node_add", args=[self.cluster.key])
+        with patch("core.views.clusters.enrollment.inspect_transport", return_value=self.certificate):
+            response = self.client.post(
+                url,
+                {
+                    "action": "inspect",
+                    "node_name": "pve202",
+                    "endpoint_url": "https://pve202.example.test:8006",
+                    "endpoint_name": "pve202",
+                },
+            )
+        match = re.search(r'name="inspection"[^>]*value="([^"]+)"', response.content.decode())
+        self.assertIsNotNone(match, "the inspect step did not produce a signed inspection")
+        return url, match.group(1)
+
+    def test_a_refused_chain_renders_both_certificates_and_the_repairs(self):
+        url, inspection = self._inspection_token()
+
+        with patch(
+            "core.views.clusters.enrollment.verify_endpoint_for_cluster",
+            side_effect=ClusterTrustMismatchError(
+                "pve202 presented a TLS certificate this connection does not trust.", diagnosis=self.diagnosis
+            ),
+        ):
+            response = self.client.post(
+                url,
+                {
+                    "action": "verify",
+                    "node_name": "pve202",
+                    "inspection": inspection,
+                    "confirm_certificate": "on",
+                },
+            )
+
+        self.assertContains(response, "does not trust")
+        self.assertContains(response, "public CA store only")
+        self.assertContains(response, "dd7671fb")
+        self.assertContains(response, "ab0199")
+        self.assertContains(response, "Accepted today")
+        self.assertContains(response, "same CA")
+
+    def test_an_ordinary_failure_still_renders_as_its_sentence_alone(self):
+        """Only the class carrying a comparison may claim the panel; anything else
+        would render an empty diagnosis frame around a one-line message."""
+
+        url, inspection = self._inspection_token()
+
+        with patch(
+            "core.views.clusters.enrollment.verify_endpoint_for_cluster",
+            side_effect=ClusterOnboardingError("This endpoint represents node 'pve201', not 'pve202'."),
+        ):
+            response = self.client.post(
+                url,
+                {
+                    "action": "verify",
+                    "node_name": "pve202",
+                    "inspection": inspection,
+                    "confirm_certificate": "on",
+                },
+            )
+
+        self.assertContains(response, "not &#x27;pve202&#x27;")
+        self.assertNotContains(response, "cluster-trust-diagnosis")

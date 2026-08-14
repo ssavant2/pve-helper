@@ -51,6 +51,7 @@ from core.services.cluster_trust import (
     InspectedCertificate,
     TransportTrustError,
     TrustProfile,
+    accepted_endpoint_certificate,
     approve_cluster_transport,
     inspect_endpoint_certificate,
     resolve_trust_profile,
@@ -76,6 +77,47 @@ def _reason(exc: Exception, operation: str) -> str:
 
 class ClusterOnboardingError(PublicMessageError, RuntimeError):
     """A candidate is invalid, untrusted or does not satisfy the admin contract."""
+
+
+@dataclass(frozen=True)
+class TrustReference:
+    """A sibling endpoint whose certificate this connection's trust profile accepts."""
+
+    endpoint_name: str
+    endpoint_url: str
+    certificate: InspectedCertificate
+
+
+@dataclass(frozen=True)
+class TrustDiagnosis:
+    """Why one endpoint's chain was refused, in fields rather than in a paragraph.
+
+    A rejected chain is a comparison — this certificate against the one that works —
+    and a comparison rendered as a sentence is the one shape a reader cannot compare.
+    The surface lays the two certificates out in the same `dl` the inspection step
+    already uses; the remedies are the actions, kept separate from the evidence.
+    """
+
+    endpoint_name: str
+    endpoint_url: str
+    trust_mode: str
+    trust_summary: str
+    presented: InspectedCertificate
+    reference: TrustReference | None
+    remedies: tuple[str, ...]
+
+
+class ClusterTrustMismatchError(ClusterOnboardingError):
+    """A trust rejection, carrying the evidence the operator repairs it from.
+
+    Still a `ClusterOnboardingError`, so every existing handler keeps working and
+    gets the short sentence. A surface that knows about `diagnosis` renders the rest;
+    one that does not loses only the layout, never the message.
+    """
+
+    def __init__(self, message: str, *, diagnosis: TrustDiagnosis):
+        super().__init__(message)
+        self.diagnosis = diagnosis
 
 
 @dataclass(frozen=True)
@@ -230,6 +272,7 @@ def verify_endpoint_for_cluster(
         trust_profile=trust_profile,
         credential=credential,
         expected_certificate_fingerprint=expected_certificate_fingerprint,
+        trust_reference_endpoints=_trust_reference_endpoints(cluster),
     )
     if not cluster.discovered_ca_uuid:
         raise ClusterOnboardingError(
@@ -267,6 +310,7 @@ def verify_registered_endpoint(
         trust_profile=trust_profile,
         credential=credential,
         expected_certificate_fingerprint="",
+        trust_reference_endpoints=_trust_reference_endpoints(cluster),
     )
     if not cluster.discovered_ca_uuid:
         raise ClusterOnboardingError(
@@ -611,6 +655,111 @@ def active_cluster_operation_labels(cluster: ProxmoxCluster) -> list[str]:
     return labels
 
 
+def _trust_reference_endpoints(cluster: ProxmoxCluster) -> tuple[tuple[str, str], ...]:
+    """This connection's enabled endpoints, as candidates for a working example.
+
+    Read here rather than inside the failure path so the query belongs to the caller
+    that already has the cluster, and so a trust diagnosis stays a pure function of
+    what it was handed.
+    """
+
+    return tuple(cluster.endpoints.filter(enabled=True).order_by("name").values_list("name", "url"))
+
+
+_TRUST_SUMMARIES = {
+    TRUST_PUBLIC: "This connection trusts the public CA store only.",
+    TRUST_CA_PEM: "This connection trusts its configured internal CA bundle only.",
+}
+
+
+def _first_trust_reference(
+    trust_profile: TrustProfile,
+    reference_endpoints: tuple[tuple[str, str], ...],
+    *,
+    skip_url: str,
+) -> TrustReference | None:
+    """A sibling endpoint of this connection whose chain the profile actually accepts.
+
+    Asked, not assumed: `accepted_endpoint_certificate` completes a verifying
+    handshake, so a sibling that has itself drifted out of trust is passed over
+    rather than offered as the example to follow. Credential-free and only ever
+    reached on the failure path, so the ordinary verify still makes no extra
+    connections. Capped, because the value is one working example and a large
+    connection would otherwise turn one failure into a sweep of every endpoint.
+    """
+
+    skip = normalize_endpoint_url(skip_url)
+    for endpoint_name, endpoint_url in reference_endpoints[:4]:
+        if normalize_endpoint_url(endpoint_url) == skip:
+            continue
+        certificate = accepted_endpoint_certificate(endpoint_url, trust_profile)
+        if certificate.sha256_fingerprint:
+            return TrustReference(
+                endpoint_name=endpoint_name,
+                endpoint_url=endpoint_url,
+                certificate=certificate,
+            )
+    return None
+
+
+def _trust_mismatch(
+    *,
+    endpoint_url: str,
+    endpoint_name: str,
+    trust_profile: TrustProfile,
+    certificate: InspectedCertificate,
+    reference_endpoints: tuple[tuple[str, str], ...],
+) -> ClusterTrustMismatchError:
+    """Compose the trust rejection into evidence plus actions."""
+
+    reference = _first_trust_reference(trust_profile, reference_endpoints, skip_url=endpoint_url)
+    remedies: list[str] = []
+    if reference is not None:
+        # The issuer is the load-bearing field; the names are this node's own problem.
+        # So the sibling's certificate is offered as an example of what this profile
+        # accepts, never as a file to install: it may be a per-node certificate that
+        # covers only the sibling, or a wildcard that happens to cover both, and the
+        # remedy must not assert which without having looked.
+        remedies.append(
+            f"Issue a certificate for {endpoint_name} from the same CA that signed the accepted certificate "
+            f"above, and install it on this node. The issuer is what has to match. The names are separate: "
+            f"the certificate must be valid for the hostname in this endpoint's URL, which a certificate "
+            f"issued for {endpoint_name} satisfies and a wildcard covering it also would. Treat "
+            f"{reference.endpoint_name}'s as an example of an accepted issuer, not as a file to copy."
+        )
+    elif reference_endpoints:
+        remedies.append(
+            "No other endpoint of this connection answered with a certificate this profile accepts, so there "
+            "is no working example to follow here. Compare against whatever the connection was verified with."
+        )
+    remedies.append(
+        "In Proxmox this is the node's own System → Certificates page. Every node holds its own certificate, "
+        "and the default one is issued by the cluster's internal CA — never publicly trusted, so a node left "
+        "on the default cannot satisfy a public trust profile."
+    )
+    remedies.append(
+        "Changing this connection's trust profile is the other repair, but it is connection-wide and has no "
+        "UI: 'manage.py approve_cluster_transport <key> ca_pem --ca-file <bundle>' replaces the profile for "
+        "every endpoint at once, so the bundle must accept every node's issuer, not only this one's."
+    )
+    diagnosis = TrustDiagnosis(
+        endpoint_name=endpoint_name,
+        endpoint_url=endpoint_url,
+        trust_mode=trust_profile.mode,
+        trust_summary=_TRUST_SUMMARIES.get(
+            trust_profile.mode, "This connection's trust profile does not accept this chain."
+        ),
+        presented=certificate,
+        reference=reference,
+        remedies=tuple(remedies),
+    )
+    return ClusterTrustMismatchError(
+        f"{endpoint_name} presented a TLS certificate this connection does not trust, so no credential was "
+        "sent to it. The certificates and the repairs are below.",
+        diagnosis=diagnosis,
+    )
+
+
 def _verify_connection(
     *,
     endpoint_url: str,
@@ -618,6 +767,7 @@ def _verify_connection(
     trust_profile: TrustProfile,
     credential: ProxmoxCredential,
     expected_certificate_fingerprint: str,
+    trust_reference_endpoints: tuple[tuple[str, str], ...] = (),
 ) -> VerifiedConnection:
     if not credential.token_id or not credential.token_secret:
         raise ClusterOnboardingError("Both API token ID and token secret are required.")
@@ -640,14 +790,17 @@ def _verify_connection(
         administrator_role = client.get("access/roles/Administrator")
     except ProxmoxTlsTrustError as exc:
         # The one transport failure the operator repairs rather than reports, so it
-        # is told in full: why the chain was refused, and *which* certificate has to
-        # become trusted. Naming the certificate is not a leak — it is the same
-        # material the inspection step already showed this operator, and without it
-        # they are told to trust an issuer the message declined to name.
-        raise ClusterOnboardingError(
-            f"Verified Proxmox connection failed: {_reason(exc, 'verify_connection')} "
-            f"The endpoint presented subject {certificate.subject}, issuer {certificate.issuer}, "
-            f"SHA-256 {certificate.sha256_fingerprint}."
+        # carries evidence instead of a summary: the certificate that was refused,
+        # the one a working sibling presents, and the actions that close the gap.
+        # Naming certificates is not a leak — it is the same material the inspection
+        # step already showed this operator, and without it they are told to trust an
+        # issuer the message declined to name.
+        raise _trust_mismatch(
+            endpoint_url=endpoint_url,
+            endpoint_name=endpoint_name,
+            trust_profile=trust_profile,
+            certificate=certificate,
+            reference_endpoints=trust_reference_endpoints,
         ) from exc
     except (ProxmoxAPIError, TransportTrustError) as exc:
         raise ClusterOnboardingError(

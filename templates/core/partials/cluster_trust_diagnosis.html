@@ -1,0 +1,24 @@
+{% comment %}
+  A rejected TLS chain is a comparison, so it is rendered as one: the certificate
+  this endpoint served, the certificate a sibling serves that this connection does
+  accept, and then the actions. Prose held all of it before and could not be read —
+  the two subjects, two issuers and two fingerprints ran together in one paragraph.
+
+  The reference block is deliberately an *example*, not a file to copy. Certificates
+  are bound to the names they carry, so what transfers between nodes is the issuer;
+  subject and SAN must differ, and the caption says so where it is read.
+{% endcomment %}
+<div class="cluster-trust-diagnosis">
+  <div class="cluster-trust-diagnosis-summary">
+    <i data-lucide="shield-alert" aria-hidden="true"></i>
+    <div><strong>Transport trust</strong><p>{{ diagnosis.trust_summary }} No credential was sent to <code>{{ diagnosis.endpoint_url }}</code>.</p></div>
+  </div>
+  {% include "core/partials/cluster_certificate.html" with certificate=diagnosis.presented icon="shield-x" heading="Rejected" caption=diagnosis.endpoint_name tone="rejected" %}
+  {% if diagnosis.reference %}
+    {% include "core/partials/cluster_certificate.html" with certificate=diagnosis.reference.certificate icon="shield-check" heading="Accepted today" caption=diagnosis.reference.endpoint_name %}
+  {% endif %}
+  <div class="cluster-trust-diagnosis-remedies">
+    <strong>How to repair this</strong>
+    <ul>{% for remedy in diagnosis.remedies %}<li>{{ remedy }}</li>{% endfor %}</ul>
+  </div>
+</div>

@@ -341,6 +341,69 @@
   color: var(--accent);
 }
 
+.cluster-certificate-caption {
+  color: var(--muted);
+}
+
+/* A trust rejection is two certificates and a list of repairs. The pieces reuse
+   the certificate block so the comparison is read in one layout; only the grouping
+   and the red edge are new. */
+.cluster-trust-diagnosis {
+  margin-bottom: 16px;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--line));
+  background: color-mix(in srgb, var(--red) 6%, var(--surface));
+}
+
+.cluster-trust-diagnosis .cluster-certificate:last-of-type {
+  margin-bottom: 0;
+}
+
+.cluster-certificate.rejected {
+  border-left-color: var(--red);
+}
+
+.cluster-certificate.rejected .cluster-certificate-heading svg {
+  color: var(--red);
+}
+
+.cluster-trust-diagnosis-summary {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.cluster-trust-diagnosis-summary svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  color: var(--red);
+}
+
+.cluster-trust-diagnosis-summary p {
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+
+.cluster-trust-diagnosis-remedies {
+  margin-top: 14px;
+}
+
+.cluster-trust-diagnosis-remedies ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.cluster-trust-diagnosis-remedies li {
+  margin-bottom: 7px;
+  line-height: 1.5;
+}
+
+.cluster-trust-diagnosis-remedies li:last-child {
+  margin-bottom: 0;
+}
+
 .cluster-certificate dl,
 .cluster-detail-list {
   display: grid;
