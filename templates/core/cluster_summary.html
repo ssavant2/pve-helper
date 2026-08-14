@@ -20,23 +20,29 @@
         <div>
           <h2>Membership</h2>
           <p class="panel-meta">Generation {{ projection.membership_generation }}{% if projection.observed_from %}, observed from {{ projection.observed_from }}{% endif %}</p>
+          {% comment %}
+            A scope note belongs in the heading, beside Guests' and Nodes' — the
+            heading owns the panel's single divider and the global rule aligns its
+            meta lines flush with the <h2>. A `panel-meta` left as a sibling of the
+            heading instead picks up the standalone rule's 12px inset and its own
+            second border, which is a strip that neither aligns with the data below
+            nor with the same note one panel over.
+
+            What it says: the two rows below carry different denominators. The node
+            count covers what this connection lists; quorum is corosync's answer
+            about every member. Hiding a node is a pve-helper decision that never
+            touches Proxmox, so a hidden member keeps voting, and "2 of 2, quorate"
+            side by side reads as a whole-cluster claim that neither row makes.
+          {% endcomment %}
+          {% if summary.members_not_listed %}
+            <p class="panel-meta">
+              {{ summary.members_not_listed }} of {{ projection.member_count }} cluster member{{ projection.member_count|pluralize }}
+              {{ summary.members_not_listed|pluralize:"is,are" }} hidden from this page. Quorum is the cluster's own answer
+              across all {{ projection.member_count }}, including {{ summary.members_not_listed|pluralize:"that member,those members" }}.
+            </p>
+          {% endif %}
         </div>
       </div>
-      {% comment %}
-        Said once, above the list, the way Capacity states its own coverage — the
-        two rows below otherwise carry different denominators with nothing saying
-        so. The node count covers what this connection lists; quorum is corosync's
-        answer about every member. Hiding a node is a pve-helper decision that never
-        touches Proxmox, so a hidden member keeps voting, and "2 of 2, quorate" side
-        by side reads as a whole-cluster claim that neither row actually makes.
-      {% endcomment %}
-      {% if summary.members_not_listed %}
-        <p class="panel-meta">
-          {{ summary.members_not_listed }} of {{ projection.member_count }} cluster member{{ projection.member_count|pluralize }}
-          {{ summary.members_not_listed|pluralize:"is,are" }} hidden from this page. Quorum is the cluster's own answer
-          across all {{ projection.member_count }}, including {{ summary.members_not_listed|pluralize:"that member,those members" }}.
-        </p>
-      {% endif %}
       <dl class="cluster-detail-list">
         <dt>Nodes online</dt>
         <dd>{{ summary.online_nodes }} of {{ summary.node_count }} listed</dd>
@@ -66,21 +72,26 @@
     </section>
 
     <section class="panel">
-      <div class="panel-heading"><h2>Capacity</h2></div>
-      {% comment %}
-        The coverage line is not decoration. These are sums over the nodes whose own
-        runtime is current, so stating the ratio is what keeps a two-of-three total
-        from reading as a whole-cluster figure.
-      {% endcomment %}
-      {% if summary.capacity.complete %}
-        <p class="panel-meta">All {{ summary.capacity.total }} node{{ summary.capacity.total|pluralize }} reporting.</p>
-      {% else %}
-        <p class="panel-meta">
-          <span class="badge failed">partial</span>
-          {{ summary.capacity.contributing }} of {{ summary.capacity.total }} node{{ summary.capacity.total|pluralize }} reporting;
-          totals exclude {{ summary.capacity.missing }}.
-        </p>
-      {% endif %}
+      <div class="panel-heading">
+        <div>
+          <h2>Capacity</h2>
+          {% comment %}
+            The coverage line is not decoration. These are sums over the nodes whose
+            own runtime is current, so stating the ratio is what keeps a
+            two-of-three total from reading as a whole-cluster figure. In the
+            heading, for the alignment reason spelled out in Membership above.
+          {% endcomment %}
+          {% if summary.capacity.complete %}
+            <p class="panel-meta">All {{ summary.capacity.total }} node{{ summary.capacity.total|pluralize }} reporting.</p>
+          {% else %}
+            <p class="panel-meta">
+              <span class="badge failed">partial</span>
+              {{ summary.capacity.contributing }} of {{ summary.capacity.total }} node{{ summary.capacity.total|pluralize }} reporting;
+              totals exclude {{ summary.capacity.missing }}.
+            </p>
+          {% endif %}
+        </div>
+      </div>
       {% if summary.capacity.contributing %}
         <dl class="cluster-detail-list">
           <dt>CPU cores</dt><dd>{{ summary.capacity.cpu_cores }}</dd>
