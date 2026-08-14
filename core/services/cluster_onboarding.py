@@ -56,7 +56,7 @@ from core.services.cluster_trust import (
     resolve_trust_profile,
 )
 from core.services.config import endpoint_name_from_url, normalize_endpoint_url
-from core.services.proxmox import ProxmoxAPIError, ProxmoxClient
+from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTlsTrustError
 from core.services.public_errors import PROVIDER_FAILURE_MESSAGE, PublicMessageError, public_failure
 
 _ENDPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$")
@@ -638,6 +638,17 @@ def _verify_connection(
         nodes_data = client.get("nodes")
         permissions = client.get("access/permissions")
         administrator_role = client.get("access/roles/Administrator")
+    except ProxmoxTlsTrustError as exc:
+        # The one transport failure the operator repairs rather than reports, so it
+        # is told in full: why the chain was refused, and *which* certificate has to
+        # become trusted. Naming the certificate is not a leak — it is the same
+        # material the inspection step already showed this operator, and without it
+        # they are told to trust an issuer the message declined to name.
+        raise ClusterOnboardingError(
+            f"Verified Proxmox connection failed: {_reason(exc, 'verify_connection')} "
+            f"The endpoint presented subject {certificate.subject}, issuer {certificate.issuer}, "
+            f"SHA-256 {certificate.sha256_fingerprint}."
+        ) from exc
     except (ProxmoxAPIError, TransportTrustError) as exc:
         raise ClusterOnboardingError(
             f"Verified Proxmox connection failed: {_reason(exc, 'verify_connection')}"

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+import ssl
+from unittest.mock import MagicMock, patch
 
+import httpx
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import (
@@ -34,6 +36,8 @@ from core.services.cluster_trust import (
     legacy_trust_profile,
     resolve_trust_profile,
 )
+from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTlsTrustError
+from core.services.public_errors import PROVIDER_FAILURE_MESSAGE, public_failure
 
 # A syntactically valid self-signed CA is not needed for most tests; the ssl layer
 # only parses it in build_verify, which those tests exercise separately.
@@ -331,3 +335,62 @@ class TrustProfileInjectionTests(TestCase):
         client = client_for_endpoint(endpoint)
 
         self.assertEqual(client._trust_profile, TrustProfile(mode=TRUST_CA_PEM, ca_pem="CA-X"))
+
+
+class TlsTrustFailureClassificationTests(SimpleTestCase):
+    """A rejected chain is local configuration, and says so.
+
+    The generic transport error is redacted at the boundary because it carries
+    provider diagnostics. This one carries none and is the only transport failure
+    the operator repairs, so it must survive `public_failure` intact — and name the
+    trust profile that did the rejecting, since that is what decides the repair.
+    """
+
+    def _connect_error(self) -> httpx.ConnectError:
+        verification = ssl.SSLCertVerificationError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate"
+        )
+        # httpx wraps httpcore wraps ssl, so the ssl error is never the direct cause.
+        inner = httpx.ConnectError("connection failed")
+        inner.__cause__ = verification
+        outer = httpx.ConnectError("connection failed")
+        outer.__cause__ = inner
+        return outer
+
+    def _get(self, profile: TrustProfile, exc: Exception):
+        client = ProxmoxClient("https://node.example.test:8006", trust_profile=profile)
+        failing = MagicMock()
+        failing.request.side_effect = exc
+        with patch.object(ProxmoxClient, "_http_client", return_value=failing):
+            with self.assertRaises(ProxmoxAPIError) as caught:
+                client.get("version")
+        return caught.exception
+
+    def test_a_verification_failure_becomes_a_public_trust_error(self):
+        raised = self._get(TrustProfile(mode=TRUST_PUBLIC), self._connect_error())
+
+        self.assertIsInstance(raised, ProxmoxTlsTrustError)
+        self.assertIn("public CA store", str(raised))
+        self.assertEqual(
+            public_failure(raised, operation="test", fallback=PROVIDER_FAILURE_MESSAGE).message,
+            str(raised),
+        )
+
+    def test_the_message_names_the_trust_profile_that_rejected_the_chain(self):
+        raised = self._get(TrustProfile(mode=TRUST_CA_PEM, ca_pem=FAKE_CA), self._connect_error())
+
+        self.assertIn("internal CA bundle", str(raised))
+
+    def test_a_rejected_chain_proves_nothing_was_sent(self):
+        raised = self._get(TrustProfile(mode=TRUST_PUBLIC), self._connect_error())
+
+        self.assertFalse(raised.ambiguous)
+
+    def test_an_ordinary_connect_failure_is_still_redacted(self):
+        raised = self._get(TrustProfile(mode=TRUST_PUBLIC), httpx.ConnectError("connection refused"))
+
+        self.assertNotIsInstance(raised, ProxmoxTlsTrustError)
+        self.assertEqual(
+            public_failure(raised, operation="test", fallback=PROVIDER_FAILURE_MESSAGE).message,
+            PROVIDER_FAILURE_MESSAGE,
+        )

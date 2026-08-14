@@ -24,6 +24,8 @@ from core.services.cluster_onboarding import (
 )
 from core.services.cluster_topology_role import TopologyRole
 from core.services.cluster_trust import TRUST_PUBLIC, InspectedCertificate, approve_cluster_transport
+from core.services.proxmox import ProxmoxAPIError, ProxmoxTlsTrustError
+from core.services.public_errors import PROVIDER_FAILURE_MESSAGE
 
 TEST_KEY = base64.b64encode(b"o" * 32).decode()
 
@@ -263,6 +265,55 @@ class ClusterOnboardingTests(TestCase):
                     expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
                 )
         client_class.assert_not_called()
+
+    def test_a_rejected_certificate_chain_names_the_certificate_to_trust(self):
+        """The repair needs the issuer, so the message carries it.
+
+        "The Proxmox API request failed" sent the operator to look at the token and
+        the node's cluster membership; the actual fault was that nothing here trusts
+        the CA that signed what the node serves. Naming the presented certificate is
+        the difference between a symptom and an instruction.
+        """
+
+        class UntrustedClient(_CandidateClient):
+            def get(self, path):
+                raise ProxmoxTlsTrustError("The endpoint's TLS certificate was rejected.", request_sent=False)
+
+        with (
+            patch("core.services.cluster_onboarding.inspect_transport", return_value=self.certificate),
+            patch("core.services.cluster_onboarding.ProxmoxClient", UntrustedClient),
+        ):
+            with self.assertRaises(ClusterOnboardingError) as caught:
+                verify_new_cluster(
+                    self.candidate,
+                    expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
+                )
+
+        message = str(caught.exception)
+        self.assertIn("TLS certificate was rejected", message)
+        self.assertIn(self.certificate.issuer, message)
+        self.assertIn(self.certificate.subject, message)
+        self.assertIn(self.certificate.sha256_fingerprint, message)
+        self.assertNotIn(PROVIDER_FAILURE_MESSAGE, message)
+
+    def test_an_ordinary_provider_failure_stays_redacted(self):
+        class BrokenClient(_CandidateClient):
+            def get(self, path):
+                raise ProxmoxAPIError("500 from /api2/json/version: internal detail")
+
+        with (
+            patch("core.services.cluster_onboarding.inspect_transport", return_value=self.certificate),
+            patch("core.services.cluster_onboarding.ProxmoxClient", BrokenClient),
+        ):
+            with self.assertRaises(ClusterOnboardingError) as caught:
+                verify_new_cluster(
+                    self.candidate,
+                    expected_certificate_fingerprint=self.certificate.sha256_fingerprint,
+                )
+
+        message = str(caught.exception)
+        self.assertIn(PROVIDER_FAILURE_MESSAGE, message)
+        self.assertNotIn("internal detail", message)
 
     def test_identity_discovery_fails_over_visible_cluster_nodes(self):
         class RedundantClient(_CandidateClient):

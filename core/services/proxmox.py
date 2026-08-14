@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import ssl
 import time
 from dataclasses import dataclass, replace
 from typing import Any
@@ -13,6 +14,7 @@ from django.core.cache import cache
 
 from .classification import extract_disk_references
 from .cluster_state_identity import cluster_cache_key, invalidate_cluster_cache
+from .public_errors import PublicMessageError
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +184,21 @@ class ProxmoxTransportError(ProxmoxAPIError):
         return self.request_sent
 
 
+class ProxmoxTlsTrustError(ProxmoxTransportError, PublicMessageError):
+    """The TLS chain was rejected before any request was sent.
+
+    Public where its parent is not, and deliberately so. A transport error is
+    replaced at the boundary because it carries provider diagnostics — paths,
+    upstream detail, hostnames. This one carries none: the chain was refused by
+    *our* trust profile, which is local configuration the operator owns and the
+    only transport failure they can act on. Redacting it to "the Proxmox API
+    request failed" sends them to look at tokens and privileges instead.
+
+    The single raise site below composes the whole message, which is what the
+    `PublicMessageError` marker requires of every class that claims it.
+    """
+
+
 # Failures that prove the request never reached the server. Everything else is
 # treated as ambiguous, so this set must only ever contain the provably-unsent.
 _UNSENT_TRANSPORT_ERRORS = (
@@ -189,6 +206,49 @@ _UNSENT_TRANSPORT_ERRORS = (
     httpx.ConnectTimeout,
     httpx.PoolTimeout,
 )
+
+
+def _tls_verification_failed(exc: BaseException) -> bool:
+    """Whether `exc` was caused by certificate verification, at any depth.
+
+    httpx wraps httpcore wraps ssl, so the only load-bearing fact — that the peer's
+    chain did not verify — is several links down `__cause__`/`__context__`. Matching
+    the exception type rather than the message text keeps this from breaking when
+    OpenSSL rewords a reason string.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _tls_trust_message(trust_mode: str) -> str:
+    """Operator-facing text for a rejected chain, naming the trust profile in force.
+
+    The mode is the difference between the two repairs — obtain a publicly trusted
+    certificate, or tell this connection about the CA that issued the one already
+    installed — so a message that omits it describes the symptom and withholds the
+    decision.
+    """
+
+    from core.services.cluster_trust import TRUST_CA_PEM, TRUST_PUBLIC
+
+    if trust_mode == TRUST_PUBLIC:
+        source = "this connection trusts the public CA store only"
+    elif trust_mode == TRUST_CA_PEM:
+        source = "this connection trusts its configured internal CA bundle only"
+    else:
+        source = "this connection's trust profile does not accept it"
+    return (
+        "The endpoint's TLS certificate was rejected before any request was sent: "
+        f"{source}. Install a certificate the profile accepts on this node, or change "
+        "the connection's trust profile to the CA that issued the certificate it presents."
+    )
 
 
 def _proxmox_error_detail(response) -> str:
@@ -237,10 +297,17 @@ class ProxmoxClient:
         self._trust_profile = trust_profile
 
     def _http_client(self):
-        from core.services.cluster_trust import http_client_for, legacy_trust_profile
+        from core.services.cluster_trust import http_client_for
 
-        profile = self._trust_profile if self._trust_profile is not None else legacy_trust_profile()
-        return http_client_for(profile)
+        return http_client_for(self._effective_trust_profile())
+
+    def _effective_trust_profile(self):
+        from core.services.cluster_trust import legacy_trust_profile
+
+        return self._trust_profile if self._trust_profile is not None else legacy_trust_profile()
+
+    def _trust_mode(self) -> str:
+        return str(getattr(self._effective_trust_profile(), "mode", "") or "")
 
     def health(self) -> EndpointHealth:
         try:
@@ -510,6 +577,11 @@ class ProxmoxClient:
                 status_code=exc.response.status_code,
             ) from exc
         except httpx.HTTPError as exc:
+            if _tls_verification_failed(exc):
+                # The handshake never completed, so nothing was sent — the same
+                # proof `_UNSENT_TRANSPORT_ERRORS` carries, stated directly here
+                # because the reason is the certificate rather than the socket.
+                raise ProxmoxTlsTrustError(_tls_trust_message(self._trust_mode()), request_sent=False) from exc
             raise ProxmoxTransportError(
                 f"{exc.__class__.__name__} from {path}",
                 request_sent=not isinstance(exc, _UNSENT_TRANSPORT_ERRORS),
