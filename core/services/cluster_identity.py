@@ -38,6 +38,18 @@ from core.services.public_errors import PublicMessageError, public_failure
 _CA_UUID_RE = re.compile(r"OU\s*=\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 
 
+def ca_uuid_in(distinguished_name: str) -> str:
+    """The PVE cluster CA UUID carried by a DN, or empty.
+
+    Shared with the trust diagnosis, which asks the same question of a *leaf's
+    issuer* rather than of the CA's own subject. Both DNs carry the UUID in the same
+    `OU=` component — verified live against pve202's presented certificate — and one
+    parser means the two can never disagree about which cluster a chain belongs to.
+    """
+    match = _CA_UUID_RE.search(str(distinguished_name or ""))
+    return match.group(1).lower() if match else ""
+
+
 class ClusterIdentityError(PublicMessageError, RuntimeError):
     """The cluster CA could not be discovered."""
 
@@ -76,7 +88,7 @@ def _assert_ca_uuid_is_unclaimed(cluster, observed: ObservedClusterIdentity) -> 
         )
 
 
-def _extract_root_ca(entries) -> dict:
+def extract_root_ca(entries) -> dict:
     if not isinstance(entries, list):
         raise ClusterIdentityError("certificates/info returned an unexpected response.")
     for entry in entries:
@@ -101,7 +113,7 @@ def discover_cluster_identity(client, node: str) -> ObservedClusterIdentity:
             f"{public_failure(exc, operation='cluster_identity.certificates_info').message}"
         ) from exc
 
-    root_ca = _extract_root_ca(entries)
+    root_ca = extract_root_ca(entries)
     subject = str(root_ca.get("subject") or "")
     match = _CA_UUID_RE.search(subject)
     if not match:

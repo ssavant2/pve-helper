@@ -20,7 +20,15 @@
   {% elif step == "trust" %}
     <section class="panel cluster-wizard-panel"><div class="panel-heading"><div><h2>Approve node transport</h2><p class="panel-meta">The stored cluster credential has not been sent to this endpoint yet.</p></div></div>
       <div class="cluster-candidate-summary"><strong>{{ node_name }}</strong><code>{{ endpoint_meta.endpoint_name }}</code><span>{{ endpoint_meta.endpoint_url }}</span></div>
-      {% if not trust_diagnosis %}{% include "core/partials/cluster_certificate.html" with certificate=certificate %}{% endif %}
+      {% if ca_trust_error %}<div class="cluster-form-error-summary"><p>{{ ca_trust_error }}</p></div>{% endif %}
+      {% if ca_adopted %}
+        <div class="cluster-trust-adopted">
+          <div class="cluster-certificate-heading"><i data-lucide="shield-check" aria-hidden="true"></i><strong>Cluster CA trusted</strong><span class="cluster-certificate-caption">read from {{ ca_adopted.source_endpoint }}</span></div>
+          <dl><dt>Subject</dt><dd>{{ ca_adopted.subject }}</dd><dt>CA UUID</dt><dd><code>{{ ca_adopted.ca_uuid }}</code></dd><dt>SHA-256</dt><dd><code>{{ ca_adopted.fingerprint }}</code></dd><dt>Expires</dt><dd>{{ ca_adopted.not_after }}</dd></dl>
+          <p>This connection now accepts the public CA store and this CA. Verify the node again to continue — nothing has been sent to it yet.</p>
+        </div>
+      {% endif %}
+      {% if not trust_diagnosis and not ca_adopted %}{% include "core/partials/cluster_certificate.html" with certificate=certificate %}{% endif %}
       <form method="post" class="cluster-confirm-form">{% csrf_token %}<input type="hidden" name="action" value="verify"><input type="hidden" name="node_name" value="{{ node_name }}">{{ trust_form.inspection }}
         {% include "core/partials/cluster_form_errors.html" with form=trust_form %}
         {# The diagnosis is the error's evidence, so it follows the sentence that introduces it. #}

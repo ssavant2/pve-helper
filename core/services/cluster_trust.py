@@ -34,7 +34,12 @@ from core.services.public_errors import PublicMessageError
 # Transport trust modes.
 TRUST_PUBLIC = "public"  # the system CA store (publicly trusted pveproxy cert)
 TRUST_CA_PEM = "ca_pem"  # a specific CA bundle, trusted exclusively
+TRUST_PUBLIC_PLUS_CA = "public_ca_pem"  # the system CA store *and* this cluster's CA
 TRUST_INSECURE = "insecure"  # no verification — only the credential-free inspection
+
+# The modes whose decision depends on a bundle, and which must therefore key a pool
+# by that bundle's content rather than by the mode alone.
+_BUNDLE_MODES = frozenset({TRUST_CA_PEM, TRUST_PUBLIC_PLUS_CA})
 
 
 class TransportTrustError(PublicMessageError, RuntimeError):
@@ -53,11 +58,35 @@ class TrustProfile:
     ca_pem: str = ""
 
     def cache_key(self) -> str:
-        if self.mode == TRUST_CA_PEM:
+        if self.mode in _BUNDLE_MODES:
             # The CA content, not a row id, so re-approving a changed CA yields a new
-            # pool rather than silently reusing the old chain.
-            return f"{TRUST_CA_PEM}:{hashlib.sha256(self.ca_pem.encode('utf-8')).hexdigest()}"
+            # pool rather than silently reusing the old chain — and so two clusters
+            # in the same additive mode with different CAs never share a client.
+            # Keying on the mode alone would run cluster A's traffic on cluster B's
+            # anchor, which is the defect this pool exists to prevent.
+            return f"{self.mode}:{hashlib.sha256(self.ca_pem.encode('utf-8')).hexdigest()}"
         return self.mode
+
+    def _bundle_context(self, *, with_public: bool) -> ssl.SSLContext:
+        """A fresh verifying context over this profile's bundle.
+
+        Fresh on every call, never memoized: `accepted_endpoint_certificate` mutates
+        the context it is handed, so a shared instance would leak that mutation into
+        every later connection on the same profile.
+        """
+        if not self.ca_pem.strip():
+            raise TransportTrustError("This trust profile needs a CA bundle.")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        if with_public:
+            context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+        try:
+            context.load_verify_locations(cadata=self.ca_pem)
+        except ssl.SSLError as exc:
+            raise TransportTrustError("The configured CA bundle is not valid PEM.") from exc
+        return context
 
     def build_verify(self):
         """The value handed to httpx's `verify`."""
@@ -66,18 +95,13 @@ class TrustProfile:
         if self.mode == TRUST_INSECURE:
             return False
         if self.mode == TRUST_CA_PEM:
-            if not self.ca_pem.strip():
-                raise TransportTrustError("A ca_pem trust profile needs a CA bundle.")
             # A fresh context that trusts *only* this CA — not the system store on
             # top of it — so "cluster A trusts CA X" means exactly that.
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            context.check_hostname = True
-            context.verify_mode = ssl.CERT_REQUIRED
-            try:
-                context.load_verify_locations(cadata=self.ca_pem)
-            except ssl.SSLError as exc:
-                raise TransportTrustError("The configured CA bundle is not valid PEM.") from exc
-            return context
+            return self._bundle_context(with_public=False)
+        if self.mode == TRUST_PUBLIC_PLUS_CA:
+            # Both anchors, which is what a cluster serving a public certificate on
+            # one node and its own CA on the others actually presents.
+            return self._bundle_context(with_public=True)
         raise TransportTrustError(f"Unknown transport trust mode {self.mode!r}.")
 
 
@@ -90,18 +114,12 @@ def ssl_context_for(profile: TrustProfile) -> ssl.SSLContext:
     """
     if profile.mode == TRUST_INSECURE:
         return ssl._create_unverified_context()
-    if profile.mode == TRUST_CA_PEM:
-        if not profile.ca_pem.strip():
-            raise TransportTrustError("A ca_pem trust profile needs a CA bundle.")
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        context.check_hostname = True
-        context.verify_mode = ssl.CERT_REQUIRED
-        try:
-            context.load_verify_locations(cadata=profile.ca_pem)
-        except ssl.SSLError as exc:
-            raise TransportTrustError("The configured CA bundle is not valid PEM.") from exc
-        return context
-    return ssl.create_default_context()
+    # Delegate rather than re-decide. This was a parallel implementation of the same
+    # mode table, so every new mode had to be added twice or the console silently
+    # kept a default context — a divergence that only shows up in a shell nobody
+    # opens during a release check.
+    verify = profile.build_verify()
+    return verify if isinstance(verify, ssl.SSLContext) else ssl.create_default_context()
 
 
 def legacy_trust_profile() -> TrustProfile:
@@ -143,6 +161,11 @@ def resolve_trust_profile(cluster) -> TrustProfile:
     if stored is not None:
         if stored.mode == ClusterTransportTrust.Mode.CA_PEM:
             return TrustProfile(mode=TRUST_CA_PEM, ca_pem=stored.ca_pem)
+        if stored.mode == ClusterTransportTrust.Mode.PUBLIC_PLUS_CA:
+            return TrustProfile(mode=TRUST_PUBLIC_PLUS_CA, ca_pem=stored.ca_pem)
+        # Deliberately the fall-through, not an error: an unknown stored mode is what
+        # a rolled-back build sees, and `public` loses the node while keeping the
+        # verification. Failing open here would be the other direction.
         return TrustProfile(mode=TRUST_PUBLIC)
 
     if trust_cutover_completed():
@@ -272,6 +295,10 @@ def accepted_endpoint_certificate(url: str, profile: TrustProfile, *, timeout: f
         # evidence about what any other endpoint needs.
         return InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
     context = verify if isinstance(verify, ssl_module.SSLContext) else ssl_module.create_default_context()
+    # Stated, not inherited. `inspect_endpoint_certificate` pins the same floor, and
+    # this probe decides what is offered to the operator as an accepted chain — it
+    # must not accept one over a protocol version the rest of the app would refuse.
+    context.minimum_version = ssl_module.TLSVersion.TLSv1_2
     context.check_hostname = True
     context.verify_mode = ssl_module.CERT_REQUIRED
     try:
@@ -283,27 +310,31 @@ def accepted_endpoint_certificate(url: str, profile: TrustProfile, *, timeout: f
     return _inspected(der)
 
 
-def approve_cluster_transport(cluster, *, mode: str, ca_pem: str = ""):
+def approve_cluster_transport(cluster, *, mode: str, ca_pem: str = "", details: dict | None = None):
     """Persist a cluster's transport trust and invalidate the affected pools.
 
     Establishing verified TLS is a deliberate step: `public` accepts the system CA
     store (a publicly trusted pveproxy certificate), `ca_pem` trusts exactly the
-    supplied internal CA and nothing else.
+    supplied internal CA and nothing else, and `public_ca_pem` accepts both.
     """
     from django.utils import timezone
 
     from core.models import ClusterTransportTrust
 
-    if mode == ClusterTransportTrust.Mode.CA_PEM and not (ca_pem or "").strip():
+    bundle_modes = {ClusterTransportTrust.Mode.CA_PEM, ClusterTransportTrust.Mode.PUBLIC_PLUS_CA}
+    if mode in bundle_modes and not (ca_pem or "").strip():
         raise TransportTrustError("Internal-CA trust needs a CA bundle.")
-    trust, _created = ClusterTransportTrust.objects.update_or_create(
-        cluster=cluster,
-        defaults={
-            "mode": mode,
-            "ca_pem": ca_pem if mode == ClusterTransportTrust.Mode.CA_PEM else "",
-            "approved_at": timezone.now(),
-        },
-    )
+    defaults = {
+        "mode": mode,
+        "ca_pem": ca_pem if mode in bundle_modes else "",
+        "approved_at": timezone.now(),
+    }
+    if details is not None:
+        # Only when the caller has evidence to record. Writing `{}` unconditionally
+        # would make every other caller of this shared writer erase what an earlier
+        # approval documented.
+        defaults["details"] = dict(details)
+    trust, _created = ClusterTransportTrust.objects.update_or_create(cluster=cluster, defaults=defaults)
     reset_trust_pools()
     from core.services.cluster_state_identity import invalidate_cluster_cache
 

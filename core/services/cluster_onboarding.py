@@ -38,6 +38,7 @@ from core.services.cluster_credentials import (
 from core.services.cluster_identity import (
     ClusterIdentityError,
     ObservedClusterIdentity,
+    ca_uuid_in,
     discover_cluster_identity,
     reapprove_identity,
 )
@@ -48,6 +49,7 @@ from core.services.cluster_topology_role import TopologyRole
 from core.services.cluster_trust import (
     TRUST_CA_PEM,
     TRUST_PUBLIC,
+    TRUST_PUBLIC_PLUS_CA,
     InspectedCertificate,
     TransportTrustError,
     TrustProfile,
@@ -105,6 +107,11 @@ class TrustDiagnosis:
     presented: InspectedCertificate
     reference: TrustReference | None
     remedies: tuple[str, ...]
+    #: Whether this rejection is repairable by trusting the cluster's own CA — i.e.
+    #: the rejected leaf was issued by the CA this cluster is already pinned to, and
+    #: some sibling still verifies so the CA can be fetched over a trusted channel.
+    #: The surface turns this into an action; without it the diagnosis is advice only.
+    ca_offer: bool = False
 
 
 class ClusterTrustMismatchError(ClusterOnboardingError):
@@ -273,6 +280,7 @@ def verify_endpoint_for_cluster(
         credential=credential,
         expected_certificate_fingerprint=expected_certificate_fingerprint,
         trust_reference_endpoints=_trust_reference_endpoints(cluster),
+        pinned_ca_uuid=cluster.discovered_ca_uuid,
     )
     if not cluster.discovered_ca_uuid:
         raise ClusterOnboardingError(
@@ -311,6 +319,7 @@ def verify_registered_endpoint(
         credential=credential,
         expected_certificate_fingerprint="",
         trust_reference_endpoints=_trust_reference_endpoints(cluster),
+        pinned_ca_uuid=cluster.discovered_ca_uuid,
     )
     if not cluster.discovered_ca_uuid:
         raise ClusterOnboardingError(
@@ -669,6 +678,7 @@ def _trust_reference_endpoints(cluster: ProxmoxCluster) -> tuple[tuple[str, str]
 _TRUST_SUMMARIES = {
     TRUST_PUBLIC: "This connection trusts the public CA store only.",
     TRUST_CA_PEM: "This connection trusts its configured internal CA bundle only.",
+    TRUST_PUBLIC_PLUS_CA: "This connection trusts the public CA store and this cluster's own CA.",
 }
 
 
@@ -709,11 +719,24 @@ def _trust_mismatch(
     trust_profile: TrustProfile,
     certificate: InspectedCertificate,
     reference_endpoints: tuple[tuple[str, str], ...],
+    pinned_ca_uuid: str = "",
 ) -> ClusterTrustMismatchError:
     """Compose the trust rejection into evidence plus actions."""
 
     reference = _first_trust_reference(trust_profile, reference_endpoints, skip_url=endpoint_url)
+    # The offer is this cluster's *own* CA, so it needs three things and refuses on
+    # any of them: a pinned identity to compare against (an empty pin can only be
+    # bound, and binding from a chain we just refused is TOFU), the rejected leaf
+    # actually carrying that identity, and a sibling that still verifies — because
+    # the CA is fetched over that sibling's already-verified channel and nowhere else.
+    ca_offer = bool(pinned_ca_uuid) and reference is not None and ca_uuid_in(certificate.issuer) == pinned_ca_uuid
     remedies: list[str] = []
+    if ca_offer:
+        remedies.append(
+            "This certificate was issued by this cluster's own CA — the one this connection is already "
+            "pinned to. Trusting that CA is the repair Proxmox itself uses, and the action is above. It "
+            "adds the cluster CA to this connection's public trust, for every endpoint at once."
+        )
     if reference is not None:
         # The issuer is the load-bearing field; the names are this node's own problem.
         # So the sibling's certificate is offered as an example of what this profile
@@ -737,11 +760,16 @@ def _trust_mismatch(
         "and the default one is issued by the cluster's internal CA — never publicly trusted, so a node left "
         "on the default cannot satisfy a public trust profile."
     )
-    remedies.append(
-        "Changing this connection's trust profile is the other repair, but it is connection-wide and has no "
-        "UI: 'manage.py approve_cluster_transport <key> ca_pem --ca-file <bundle>' replaces the profile for "
-        "every endpoint at once, so the bundle must accept every node's issuer, not only this one's."
-    )
+    if not ca_offer:
+        # Only true when the offer is absent. With it, this connection's trust *is*
+        # changeable from here, and saying otherwise would be the app contradicting
+        # its own button.
+        remedies.append(
+            "Changing this connection's trust profile is the other repair, but it is connection-wide and has "
+            "no UI for a foreign CA: 'manage.py approve_cluster_transport <key> ca_pem --ca-file <bundle>' "
+            "replaces the profile for every endpoint at once, so the bundle must accept every node's issuer, "
+            "not only this one's."
+        )
     diagnosis = TrustDiagnosis(
         endpoint_name=endpoint_name,
         endpoint_url=endpoint_url,
@@ -752,6 +780,7 @@ def _trust_mismatch(
         presented=certificate,
         reference=reference,
         remedies=tuple(remedies),
+        ca_offer=ca_offer,
     )
     return ClusterTrustMismatchError(
         f"{endpoint_name} presented a TLS certificate this connection does not trust, so no credential was "
@@ -768,6 +797,7 @@ def _verify_connection(
     credential: ProxmoxCredential,
     expected_certificate_fingerprint: str,
     trust_reference_endpoints: tuple[tuple[str, str], ...] = (),
+    pinned_ca_uuid: str = "",
 ) -> VerifiedConnection:
     if not credential.token_id or not credential.token_secret:
         raise ClusterOnboardingError("Both API token ID and token secret are required.")
@@ -801,6 +831,7 @@ def _verify_connection(
             trust_profile=trust_profile,
             certificate=certificate,
             reference_endpoints=trust_reference_endpoints,
+            pinned_ca_uuid=pinned_ca_uuid,
         ) from exc
     except (ProxmoxAPIError, TransportTrustError) as exc:
         raise ClusterOnboardingError(
@@ -909,7 +940,20 @@ def _assert_administrator_permissions(permissions, administrator_role) -> None:
 
 
 def _trust_profile(mode: str, ca_pem: str) -> TrustProfile:
-    return TrustProfile(mode=TRUST_CA_PEM, ca_pem=ca_pem) if mode == TRUST_CA_PEM else TrustProfile(mode=TRUST_PUBLIC)
+    """The profile for a *candidate*'s chosen trust, on the path that sends a token.
+
+    Explicit-or-raise. This used to be `else → PUBLIC`, which meant any mode the
+    onboarding form did not know about silently became the public store — a
+    fail-open downgrade in the one call that decides whether a credential leaves the
+    process. Stored modes are a different question and are handled by
+    `resolve_trust_profile`, whose fall-through to `public` is the deliberate
+    rollback path.
+    """
+    if mode == TRUST_CA_PEM:
+        return TrustProfile(mode=TRUST_CA_PEM, ca_pem=ca_pem)
+    if mode == TRUST_PUBLIC:
+        return TrustProfile(mode=TRUST_PUBLIC)
+    raise ClusterOnboardingError("Choose public CA trust or provide an internal CA bundle.")
 
 
 def _validate_endpoint_only(endpoint_url: str, endpoint_name: str) -> None:

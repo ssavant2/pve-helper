@@ -520,6 +520,11 @@ class ClusterTransportTrust(TimestampedModel):
     class Mode(models.TextChoices):
         PUBLIC = "public", "Publicly trusted"
         CA_PEM = "ca_pem", "Internal CA bundle"
+        # Additive: the public store *and* this cluster's own CA. Proxmox's own
+        # model — a cluster whose nodes are split between a publicly trusted
+        # pveproxy certificate and the default internal one is otherwise
+        # inexpressible, since CA_PEM is exclusive by design.
+        PUBLIC_PLUS_CA = "public_ca_pem", "Public CA store plus cluster CA"
 
     cluster = models.OneToOneField(
         ProxmoxCluster,
@@ -527,7 +532,8 @@ class ClusterTransportTrust(TimestampedModel):
         related_name="transport_trust",
     )
     mode = models.CharField(max_length=20, choices=Mode.choices, default=Mode.PUBLIC)
-    # The exclusively trusted CA bundle for CA_PEM mode; empty for PUBLIC.
+    # The CA bundle for both bundle-bearing modes — trusted exclusively under
+    # CA_PEM, alongside the public store under PUBLIC_PLUS_CA. Empty for PUBLIC.
     ca_pem = models.TextField(blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     details = models.JSONField(default=dict, blank=True)

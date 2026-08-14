@@ -29,6 +29,7 @@ from core.services.cluster_trust import (
     TRUST_CA_PEM,
     TRUST_INSECURE,
     TRUST_PUBLIC,
+    TRUST_PUBLIC_PLUS_CA,
     InspectedCertificate,
     TransportTrustError,
     TrustProfile,
@@ -37,6 +38,7 @@ from core.services.cluster_trust import (
     complete_trust_cutover,
     legacy_trust_profile,
     resolve_trust_profile,
+    ssl_context_for,
 )
 from core.services.proxmox import ProxmoxAPIError, ProxmoxClient, ProxmoxTlsTrustError
 from core.services.public_errors import PROVIDER_FAILURE_MESSAGE, public_failure
@@ -455,3 +457,146 @@ class AcceptedCertificateProbeTests(SimpleTestCase):
         self.assertEqual(certificate, inspected)
         self.assertTrue(context.check_hostname)
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+
+def _self_signed_ca(common_name: str = "Proxmox Virtual Environment", ou: str = "e4b043e3-0000-4000-8000-000000000000"):
+    """A real, parseable self-signed CA.
+
+    The additive mode's whole claim is about what an `SSLContext` ends up trusting,
+    and `load_verify_locations` parses. `FAKE_CA` above is deliberately not a
+    certificate, so these tests generate one instead of asserting on a mock.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+            x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, ou),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "PVE Cluster Manager CA"),
+        ]
+    )
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=365))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+class AdditiveTrustProfileTests(SimpleTestCase):
+    """`public_ca_pem`: the public store *and* this cluster's CA.
+
+    Chain acceptance cannot be asserted without a handshake harness this repo does
+    not have, so the assertions are over what the context actually loaded — which is
+    the decision the handshake would then apply.
+    """
+
+    def test_the_additive_context_carries_both_anchors(self):
+        ca_pem = _self_signed_ca()
+        profile = TrustProfile(mode=TRUST_PUBLIC_PLUS_CA, ca_pem=ca_pem)
+
+        context = profile.build_verify()
+
+        loaded = context.get_ca_certs()
+        subjects = {tuple(part for rdn in cert["subject"] for part in rdn) for cert in loaded}
+        self.assertIn(
+            ("organizationName", "PVE Cluster Manager CA"), {pair for subject in subjects for pair in subject}
+        )
+        # More than the one CA we added: the system store is still there, which is
+        # the whole difference from `ca_pem` and the reason pve201 keeps working.
+        self.assertGreater(len(loaded), 1)
+
+    def test_the_exclusive_mode_still_trusts_only_its_bundle(self):
+        profile = TrustProfile(mode=TRUST_CA_PEM, ca_pem=_self_signed_ca())
+
+        self.assertEqual(len(profile.build_verify().get_ca_certs()), 1)
+
+    def test_two_clusters_in_the_additive_mode_key_different_pools(self):
+        # Keying on the mode alone would run one cluster's traffic on the other's
+        # anchor — the exact defect the pool exists to prevent.
+        self.assertNotEqual(
+            TrustProfile(mode=TRUST_PUBLIC_PLUS_CA, ca_pem="CA-X").cache_key(),
+            TrustProfile(mode=TRUST_PUBLIC_PLUS_CA, ca_pem="CA-Y").cache_key(),
+        )
+
+    def test_the_additive_mode_never_shares_a_pool_with_the_exclusive_one(self):
+        self.assertNotEqual(
+            TrustProfile(mode=TRUST_PUBLIC_PLUS_CA, ca_pem="CA-X").cache_key(),
+            TrustProfile(mode=TRUST_CA_PEM, ca_pem="CA-X").cache_key(),
+        )
+
+    def test_the_additive_mode_needs_a_bundle(self):
+        with self.assertRaises(TransportTrustError):
+            TrustProfile(mode=TRUST_PUBLIC_PLUS_CA).build_verify()
+
+    def test_the_console_context_matches_the_http_decision(self):
+        # `ssl_context_for` was a parallel mode table; a mode added to one and not
+        # the other leaves the console silently on the default store.
+        profile = TrustProfile(mode=TRUST_PUBLIC_PLUS_CA, ca_pem=_self_signed_ca())
+
+        self.assertEqual(
+            {cert["serialNumber"] for cert in ssl_context_for(profile).get_ca_certs()},
+            {cert["serialNumber"] for cert in profile.build_verify().get_ca_certs()},
+        )
+
+    def test_each_call_builds_a_fresh_context(self):
+        # `accepted_endpoint_certificate` mutates what it is handed, so a memoized
+        # context would leak that mutation into every later connection.
+        profile = TrustProfile(mode=TRUST_PUBLIC_PLUS_CA, ca_pem=_self_signed_ca())
+
+        self.assertIsNot(profile.build_verify(), profile.build_verify())
+
+
+class StoredAdditiveTrustTests(TestCase):
+    def test_a_stored_additive_mode_resolves_with_its_bundle(self):
+        cluster = ProxmoxCluster.objects.create(key="ca-additive", display_name="CA additive")
+        ClusterTransportTrust.objects.create(
+            cluster=cluster, mode=ClusterTransportTrust.Mode.PUBLIC_PLUS_CA, ca_pem="CA-X"
+        )
+
+        profile = resolve_trust_profile(cluster)
+
+        self.assertEqual(profile.mode, TRUST_PUBLIC_PLUS_CA)
+        self.assertEqual(profile.ca_pem, "CA-X")
+
+    def test_an_unknown_stored_mode_falls_back_to_public(self):
+        # The rollback story: an older build reading a newer mode loses the internal
+        # node and keeps verifying, rather than failing open.
+        cluster = ProxmoxCluster.objects.create(key="ca-unknown", display_name="CA unknown")
+        trust = ClusterTransportTrust.objects.create(cluster=cluster, mode=ClusterTransportTrust.Mode.PUBLIC)
+        ClusterTransportTrust.objects.filter(pk=trust.pk).update(mode="mode_from_the_future")
+
+        self.assertEqual(resolve_trust_profile(cluster).mode, TRUST_PUBLIC)
+
+    def test_approval_stores_the_bundle_and_its_evidence(self):
+        cluster = ProxmoxCluster.objects.create(key="ca-store", display_name="CA store")
+
+        approve_cluster_transport(
+            cluster,
+            mode=ClusterTransportTrust.Mode.PUBLIC_PLUS_CA,
+            ca_pem="CA-X",
+            details={"ca_uuid": "e4b043e3"},
+        )
+
+        stored = ClusterTransportTrust.objects.get(cluster=cluster)
+        self.assertEqual(stored.ca_pem, "CA-X")
+        self.assertEqual(stored.details["ca_uuid"], "e4b043e3")
+
+    def test_the_additive_mode_refuses_an_empty_bundle(self):
+        cluster = ProxmoxCluster.objects.create(key="ca-empty", display_name="CA empty")
+
+        with self.assertRaises(TransportTrustError):
+            approve_cluster_transport(cluster, mode=ClusterTransportTrust.Mode.PUBLIC_PLUS_CA, ca_pem="   ")

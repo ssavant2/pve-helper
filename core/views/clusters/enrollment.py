@@ -30,8 +30,9 @@ from core.cluster_forms import (
     NodeEnrollmentChangeForm,
     NodeEnrollmentConfirmForm,
 )
-from core.models import ClusterNodeEnrollment, CurrentGuestInventory, ProxmoxEndpoint
+from core.models import ClusterNodeEnrollment, ClusterTransportTrust, CurrentGuestInventory, ProxmoxEndpoint
 from core.services.audit_events import record_audit_event
+from core.services.cluster_ca_trust import ClusterCaTrustError, adopt_cluster_ca
 from core.services.cluster_enrollment import (
     ClusterEnrollmentError,
     activate_cluster_enrollment,
@@ -46,6 +47,7 @@ from core.services.cluster_host_refresh import (
     ClusterHostRefreshQueueError,
     queue_cluster_host_refresh,
 )
+from core.services.cluster_identity import ca_uuid_in
 from core.services.cluster_onboarding import (
     ClusterOnboardingError,
     ClusterTrustMismatchError,
@@ -331,6 +333,14 @@ def cluster_node_add(request, cluster_key: str):
         return render(request, "core/cluster_node_add.html", context)
 
     action = request.POST.get("action", "")
+    if request.POST.get("trust_ca"):
+        # A submit button inside the trust step's own form, not a nested form: the
+        # diagnosis renders inside that form so the evidence follows the sentence
+        # that introduces it, and a <form> inside a <form> is not valid HTML. Its own
+        # field name rather than a second `action` value, because two `action` inputs
+        # in one submission make the dispatch depend on field order.
+        return _adopt_cluster_ca(request, cluster, node_name, context)
+
     if action == "inspect":
         form = EndpointInspectForm(request.POST)
         context["inspect_form"] = form
@@ -530,6 +540,75 @@ def _commit_node_enrollment(request, cluster, node_name: str, payload: dict, mod
             },
         )
     return write
+
+
+def _adopt_cluster_ca(request, cluster, node_name: str, context: dict):
+    """Trust this cluster's own CA, then return the operator to the trust step.
+
+    The wizard's own step, not a Connections detour: the operator is here because
+    this node was refused here, and the repair is only offered when that refusal said
+    it applies. It does not verify the node afterwards — approving transport and
+    sending a credential stay two separate confirmations, as they are at onboarding.
+    """
+    # The form stays unbound: this step approves transport, so re-validating the
+    # node-verification checkbox would report an unticked box as the reason the CA
+    # was not trusted. Its own message key instead, rendered where the form's is.
+    context.update(
+        {
+            "step": "trust",
+            "trust_form": EndpointTrustConfirmForm(initial={"inspection": request.POST.get("inspection", "")}),
+        }
+    )
+    try:
+        inspection = _load(request, request.POST.get("inspection", ""), _NODE_INSPECTION_SALT, "node-inspection")
+        if inspection["cluster_key"] != cluster.key or inspection["node_name"] != node_name:
+            raise ClusterOnboardingError("This inspection belongs to a different cluster or node.")
+    except ClusterOnboardingError as exc:
+        context["ca_trust_error"] = str(exc)
+        return render(request, "core/cluster_node_add.html", context)
+
+    context["endpoint_meta"] = inspection
+    if ca_uuid_in(inspection["certificate"]["issuer"]) != cluster.discovered_ca_uuid:
+        # Decision 8 enforced where the state changes, not only where the page is
+        # drawn. The signed inspection carries the certificate this endpoint actually
+        # presented, so the same condition the offer was rendered from is re-asked
+        # from evidence the operator cannot edit — a rendered button is not authority.
+        context["ca_trust_error"] = (
+            f"{inspection['endpoint_name']} did not present a certificate issued by this connection's pinned "
+            "Proxmox CA, so trusting that CA would not accept it. Nothing was changed."
+        )
+        return render(request, "core/cluster_node_add.html", context)
+
+    try:
+        adopted = adopt_cluster_ca(cluster)
+    except ClusterCaTrustError as exc:
+        record_audit_event(
+            request,
+            action="cluster.transport.approve",
+            object_type="cluster",
+            object_id=cluster.key,
+            cluster=cluster,
+            outcome="failed",
+            details={"cluster_key": cluster.key, "mode": ClusterTransportTrust.Mode.PUBLIC_PLUS_CA, "reason": str(exc)},
+        )
+        context["ca_trust_error"] = str(exc)
+        return render(request, "core/cluster_node_add.html", context)
+
+    record_audit_event(
+        request,
+        action="cluster.transport.approve",
+        object_type="cluster",
+        object_id=cluster.key,
+        cluster=cluster,
+        outcome="success",
+        details={
+            "cluster_key": cluster.key,
+            "mode": ClusterTransportTrust.Mode.PUBLIC_PLUS_CA,
+            **adopted.as_details(),
+        },
+    )
+    context["ca_adopted"] = adopted
+    return render(request, "core/cluster_node_add.html", context)
 
 
 def _record_enrollment_failure(request, cluster, node_name: str, message: str) -> None:

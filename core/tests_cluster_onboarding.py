@@ -21,12 +21,14 @@ from core.services.cluster_onboarding import (
     ClusterTrustMismatchError,
     VerifiedConnection,
     _trust_mismatch,
+    _trust_profile,
     persist_new_cluster,
     verify_new_cluster,
     verify_replacement_credential,
 )
 from core.services.cluster_topology_role import TopologyRole
 from core.services.cluster_trust import (
+    TRUST_CA_PEM,
     TRUST_PUBLIC,
     InspectedCertificate,
     TrustProfile,
@@ -506,7 +508,7 @@ class TrustDiagnosisTests(SimpleTestCase):
     )
     nothing = InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
 
-    def _diagnose(self, certificates, endpoints):
+    def _diagnose(self, certificates, endpoints, *, pinned_ca_uuid="", presented=None):
         with patch(
             "core.services.cluster_onboarding.accepted_endpoint_certificate",
             side_effect=certificates,
@@ -515,8 +517,9 @@ class TrustDiagnosisTests(SimpleTestCase):
                 endpoint_url="https://pve202.example.test:8006",
                 endpoint_name="pve202",
                 trust_profile=TrustProfile(mode=TRUST_PUBLIC),
-                certificate=self.presented,
+                certificate=presented if presented is not None else self.presented,
                 reference_endpoints=endpoints,
+                pinned_ca_uuid=pinned_ca_uuid,
             )
         return error.diagnosis
 
@@ -582,3 +585,108 @@ class TrustDiagnosisTests(SimpleTestCase):
         self.assertIn(self.presented.sha256_fingerprint, html)
         self.assertIn(self.accepted.sha256_fingerprint, html)
         self.assertIn("public CA store", html)
+
+
+class ClusterCaOfferTests(SimpleTestCase):
+    """When a rejection is repairable by trusting this cluster's own CA.
+
+    The offer is an assertion about identity, so it is made only when the rejected
+    leaf carries the CA this connection is already pinned to *and* a sibling still
+    verifies — the CA is fetched over that sibling and nowhere else.
+    """
+
+    pinned = "e4b043e3-0ea5-40f6-8cde-6c9812897ad0"
+    presented = InspectedCertificate(
+        subject="CN=pve202.example.test,O=Proxmox Virtual Environment,OU=PVE Cluster Node",
+        issuer=f"O=PVE Cluster Manager CA,OU={pinned},CN=Proxmox Virtual Environment",
+        sha256_fingerprint="dd76",
+    )
+    foreign = InspectedCertificate(
+        subject="CN=pve202.example.test",
+        issuer="O=PVE Cluster Manager CA,OU=99999999-9999-4999-8999-999999999999,CN=Proxmox Virtual Environment",
+        sha256_fingerprint="dd77",
+    )
+    accepted = InspectedCertificate(
+        subject="CN=pve201.example.test", issuer="C=US,O=Let's Encrypt,CN=R11", sha256_fingerprint="ab01"
+    )
+    nothing = InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
+
+    def _diagnose(self, certificates, endpoints, *, pinned_ca_uuid, presented):
+        with patch(
+            "core.services.cluster_onboarding.accepted_endpoint_certificate",
+            side_effect=certificates,
+        ):
+            error = _trust_mismatch(
+                endpoint_url="https://pve202.example.test:8006",
+                endpoint_name="pve202",
+                trust_profile=TrustProfile(mode=TRUST_PUBLIC),
+                certificate=presented,
+                reference_endpoints=endpoints,
+                pinned_ca_uuid=pinned_ca_uuid,
+            )
+        return error.diagnosis
+
+    def test_this_clusters_own_ca_is_offered(self):
+        diagnosis = self._diagnose(
+            [self.accepted],
+            (("pve201", "https://pve201.example.test:8006"),),
+            pinned_ca_uuid=self.pinned,
+            presented=self.presented,
+        )
+
+        self.assertTrue(diagnosis.ca_offer)
+        # With the offer present, the app must not also claim there is no UI for it.
+        self.assertNotIn("has no UI", " ".join(diagnosis.remedies))
+
+    def test_a_foreign_ca_is_never_offered(self):
+        """Another cluster's CA is not repaired by trusting ours, and adopting it
+        would bind this connection to an identity it was never pinned to."""
+
+        diagnosis = self._diagnose(
+            [self.accepted],
+            (("pve201", "https://pve201.example.test:8006"),),
+            pinned_ca_uuid=self.pinned,
+            presented=self.foreign,
+        )
+
+        self.assertFalse(diagnosis.ca_offer)
+
+    def test_an_unpinned_connection_is_never_offered_its_own_ca(self):
+        """Nothing to compare against. Binding an identity from the chain being
+        refused is trust-on-first-use, which is what the pin exists to prevent."""
+
+        diagnosis = self._diagnose(
+            [self.accepted],
+            (("pve201", "https://pve201.example.test:8006"),),
+            pinned_ca_uuid="",
+            presented=self.presented,
+        )
+
+        self.assertFalse(diagnosis.ca_offer)
+
+    def test_no_verifying_sibling_means_no_offer(self):
+        """There would be no verified channel to fetch the CA over, so the offer
+        would be a button that cannot keep its promise."""
+
+        diagnosis = self._diagnose(
+            [self.nothing],
+            (("pve201", "https://pve201.example.test:8006"),),
+            pinned_ca_uuid=self.pinned,
+            presented=self.presented,
+        )
+
+        self.assertFalse(diagnosis.ca_offer)
+        self.assertIn("has no UI", " ".join(diagnosis.remedies))
+
+
+class CandidateTrustProfileTests(SimpleTestCase):
+    def test_an_unknown_candidate_mode_is_refused_rather_than_downgraded(self):
+        """This is the path that decides whether a token leaves the process. It used
+        to fall through to the public store, which is a silent fail-open."""
+
+        with self.assertRaises(ClusterOnboardingError):
+            _trust_profile("public_ca_pem", "CA-X")
+
+    def test_the_two_candidate_modes_still_resolve(self):
+        self.assertEqual(_trust_profile(TRUST_PUBLIC, "").mode, TRUST_PUBLIC)
+        self.assertEqual(_trust_profile(TRUST_CA_PEM, "CA-X").ca_pem, "CA-X")

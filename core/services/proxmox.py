@@ -236,12 +236,14 @@ def _tls_trust_message(trust_mode: str) -> str:
     decision.
     """
 
-    from core.services.cluster_trust import TRUST_CA_PEM, TRUST_PUBLIC
+    from core.services.cluster_trust import TRUST_CA_PEM, TRUST_PUBLIC, TRUST_PUBLIC_PLUS_CA
 
     if trust_mode == TRUST_PUBLIC:
         source = "this connection trusts the public CA store only"
     elif trust_mode == TRUST_CA_PEM:
         source = "this connection trusts its configured internal CA bundle only"
+    elif trust_mode == TRUST_PUBLIC_PLUS_CA:
+        source = "this connection trusts the public CA store and this cluster's own CA, and this chain is neither"
     else:
         source = "this connection's trust profile does not accept it"
     return (

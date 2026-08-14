@@ -28,6 +28,7 @@ from core.models import (
     ProxmoxStorageConsumer,
     ScheduledAction,
 )
+from core.services.cluster_ca_trust import AdoptedClusterCA, ClusterCaTrustError
 from core.services.cluster_enrollment import (
     ClusterEnrollmentError,
     activate_cluster_enrollment,
@@ -721,3 +722,162 @@ class TrustDiagnosisSurfaceTests(TestCase):
 
         self.assertContains(response, "not &#x27;pve202&#x27;")
         self.assertNotContains(response, "cluster-trust-diagnosis")
+
+
+PINNED_CA_UUID = "e4b043e3-0ea5-40f6-8cde-6c9812897ad0"
+
+
+class ClusterCaAdoptionSurfaceTests(TestCase):
+    """The repair the operator can actually press, in the step that refused them.
+
+    Before 5a1K the wizard's only honest answer to an internal-CA node was a
+    paragraph pointing at a management command, so the node the Proxmox GUI added
+    without ceremony could not be added here at all.
+    """
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="op-ca", password="secret")
+        self.client.force_login(self.user)
+        self.cluster = _cluster()
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(discovered_ca_uuid=PINNED_CA_UUID)
+        self.cluster.refresh_from_db()
+        _publish_membership(self.cluster, "pve201", "pve202")
+        self.certificate = InspectedCertificate(
+            subject="CN=pve202.example.test,OU=PVE Cluster Node",
+            issuer="O=PVE Cluster Manager CA,OU=e4b043e3-0ea5-40f6-8cde-6c9812897ad0,CN=Proxmox Virtual Environment",
+            sha256_fingerprint="dd7671fb",
+        )
+
+    def _inspection_token(self):
+        url = reverse("core:cluster_node_add", args=[self.cluster.key])
+        with patch("core.views.clusters.enrollment.inspect_transport", return_value=self.certificate):
+            response = self.client.post(
+                url,
+                {
+                    "action": "inspect",
+                    "node_name": "pve202",
+                    "endpoint_url": "https://pve202.example.test:8006",
+                    "endpoint_name": "pve202",
+                },
+            )
+        match = re.search(r'name="inspection"[^>]*value="([^"]+)"', response.content.decode())
+        self.assertIsNotNone(match, "the inspect step did not produce a signed inspection")
+        return url, match.group(1)
+
+    def _offered_diagnosis(self, *, ca_offer: bool):
+        return TrustDiagnosis(
+            endpoint_name="pve202",
+            endpoint_url="https://pve202.example.test:8006",
+            trust_mode="public",
+            trust_summary="This connection trusts the public CA store only.",
+            presented=self.certificate,
+            reference=TrustReference(
+                endpoint_name="pve201",
+                endpoint_url="https://pve201.example.test:8006",
+                certificate=InspectedCertificate(
+                    subject="CN=pve201.example.test", issuer="C=US,O=Let's Encrypt", sha256_fingerprint="ab0199"
+                ),
+            ),
+            remedies=("Trusting that CA is the repair Proxmox itself uses.",),
+            ca_offer=ca_offer,
+        )
+
+    def _refused_verify(self, *, ca_offer: bool):
+        url, inspection = self._inspection_token()
+        with patch(
+            "core.views.clusters.enrollment.verify_endpoint_for_cluster",
+            side_effect=ClusterTrustMismatchError(
+                "pve202 presented a TLS certificate this connection does not trust.",
+                diagnosis=self._offered_diagnosis(ca_offer=ca_offer),
+            ),
+        ):
+            response = self.client.post(
+                url,
+                {"action": "verify", "node_name": "pve202", "inspection": inspection, "confirm_certificate": "on"},
+            )
+        return url, inspection, response
+
+    def test_the_offer_renders_as_an_action_when_the_ca_is_this_clusters(self):
+        _url, _inspection, response = self._refused_verify(ca_offer=True)
+
+        self.assertContains(response, 'name="trust_ca"')
+        self.assertContains(response, "Trust cluster CA")
+
+    def test_no_offer_renders_when_the_diagnosis_does_not_carry_one(self):
+        _url, _inspection, response = self._refused_verify(ca_offer=False)
+
+        self.assertNotContains(response, 'name="trust_ca"')
+
+    def test_pressing_it_adopts_the_ca_audits_it_and_returns_to_the_trust_step(self):
+        url, inspection, _response = self._refused_verify(ca_offer=True)
+        adopted = AdoptedClusterCA(
+            ca_uuid="e4b043e3-0ea5-40f6-8cde-6c9812897ad0",
+            subject="CN=Proxmox Virtual Environment,OU=e4b043e3-0ea5-40f6-8cde-6c9812897ad0",
+            fingerprint="AA:BB:CC",
+            not_after="2035-01-01",
+            source_endpoint="pve201",
+        )
+
+        with patch("core.views.clusters.enrollment.adopt_cluster_ca", return_value=adopted) as adopt:
+            response = self.client.post(
+                url, {"node_name": "pve202", "inspection": inspection, "trust_ca": "1", "action": "verify"}
+            )
+
+        adopt.assert_called_once()
+        self.assertContains(response, "Cluster CA trusted")
+        self.assertContains(response, "AA:BB:CC")
+        # Back on the trust step with the node still unverified: approving transport
+        # and sending a credential stay two separate confirmations.
+        self.assertContains(response, "Verify node identity")
+        event = AuditEvent.objects.filter(action="cluster.transport.approve").latest("timestamp")
+        self.assertEqual(event.outcome, "success")
+        self.assertEqual(event.details["source_endpoint"], "pve201")
+
+    def test_a_refused_adoption_is_audited_as_failed_and_says_why(self):
+        url, inspection, _response = self._refused_verify(ca_offer=True)
+
+        with patch(
+            "core.views.clusters.enrollment.adopt_cluster_ca",
+            side_effect=ClusterCaTrustError("No endpoint of connection 'clusterc' currently presents a certificate."),
+        ):
+            response = self.client.post(
+                url, {"node_name": "pve202", "inspection": inspection, "trust_ca": "1", "action": "verify"}
+            )
+
+        self.assertContains(response, "currently presents a certificate")
+        self.assertNotContains(response, "Cluster CA trusted")
+        event = AuditEvent.objects.filter(action="cluster.transport.approve").latest("timestamp")
+        self.assertEqual(event.outcome, "failed")
+
+    def test_an_inspection_for_another_node_cannot_adopt(self):
+        """The button carries the same signed inspection the step does, so it is
+        bound to one operator, one connection and one node like every other step."""
+
+        url, inspection, _response = self._refused_verify(ca_offer=True)
+
+        with patch("core.views.clusters.enrollment.adopt_cluster_ca") as adopt:
+            response = self.client.post(
+                url, {"node_name": "pve203", "inspection": inspection, "trust_ca": "1", "action": "verify"}
+            )
+
+        adopt.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_foreign_issuer_cannot_adopt_even_with_a_valid_inspection(self):
+        """The condition that renders the offer is re-asked where the state changes,
+        from the signed inspection rather than from the button being present."""
+
+        self.certificate = InspectedCertificate(
+            subject="CN=pve202.example.test",
+            issuer="O=PVE Cluster Manager CA,OU=99999999-9999-4999-8999-999999999999,CN=Proxmox Virtual Environment",
+            sha256_fingerprint="dd7777",
+        )
+        url, inspection, _response = self._refused_verify(ca_offer=True)
+
+        with patch("core.views.clusters.enrollment.adopt_cluster_ca") as adopt:
+            response = self.client.post(
+                url, {"node_name": "pve202", "inspection": inspection, "trust_ca": "1", "action": "verify"}
+            )
+
+        adopt.assert_not_called()
+        self.assertContains(response, "pinned Proxmox CA")

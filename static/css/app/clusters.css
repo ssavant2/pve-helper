@@ -386,6 +386,59 @@
   line-height: 1.5;
 }
 
+/* The offer is an action inside an error frame, so it reads as the way out rather
+   than as one more red panel: neutral surface, the button on the same row. */
+.cluster-trust-offer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.cluster-trust-offer p {
+  margin: 5px 0 0;
+  line-height: 1.5;
+}
+
+.cluster-trust-offer button {
+  flex: none;
+}
+
+.cluster-trust-adopted {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.cluster-trust-adopted dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 7px 14px;
+  margin: 10px 0 0;
+}
+
+.cluster-trust-adopted dt {
+  color: var(--muted);
+}
+
+.cluster-trust-adopted dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cluster-trust-adopted p {
+  margin: 10px 0 0;
+  line-height: 1.5;
+}
+
 .cluster-trust-diagnosis-remedies {
   margin-top: 14px;
 }
