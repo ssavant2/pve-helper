@@ -110,19 +110,26 @@
         <div>
           <h2>Guests</h2>
           <p class="panel-meta">Enrolled nodes only; guests on hidden nodes are not counted here.</p>
+          {% comment %}
+            The second half of the same statement — which guests these totals leave
+            out — so it stacks with the first in the heading rather than sitting
+            under the values as an inset strip. "Below" because the note now comes
+            before the numbers it qualifies; a reader meeting the caveat first is
+            also the better order.
+          {% endcomment %}
+          {% if summary.guests_off_listed_nodes %}
+            <p class="panel-meta">
+              <span class="badge failed">unplaced</span>
+              {{ summary.guests_off_listed_nodes }} guest{{ summary.guests_off_listed_nodes|pluralize }} sit on a node this
+              connection no longer lists. They are excluded from the totals below.
+            </p>
+          {% endif %}
         </div>
       </div>
       <dl class="cluster-detail-list">
         <dt>Total</dt><dd>{{ summary.guests_total }}</dd>
         <dt>Running</dt><dd>{{ summary.guests_running }}</dd>
       </dl>
-      {% if summary.guests_off_listed_nodes %}
-        <p class="panel-meta">
-          <span class="badge failed">unplaced</span>
-          {{ summary.guests_off_listed_nodes }} guest{{ summary.guests_off_listed_nodes|pluralize }} sit on a node this
-          connection no longer lists. They are excluded from the totals above.
-        </p>
-      {% endif %}
     </section>
 
     <section class="panel cluster-summary-nodes">
