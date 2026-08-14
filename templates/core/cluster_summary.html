@@ -22,9 +22,24 @@
           <p class="panel-meta">Generation {{ projection.membership_generation }}{% if projection.observed_from %}, observed from {{ projection.observed_from }}{% endif %}</p>
         </div>
       </div>
+      {% comment %}
+        Said once, above the list, the way Capacity states its own coverage — the
+        two rows below otherwise carry different denominators with nothing saying
+        so. The node count covers what this connection lists; quorum is corosync's
+        answer about every member. Hiding a node is a pve-helper decision that never
+        touches Proxmox, so a hidden member keeps voting, and "2 of 2, quorate" side
+        by side reads as a whole-cluster claim that neither row actually makes.
+      {% endcomment %}
+      {% if summary.members_not_listed %}
+        <p class="panel-meta">
+          {{ summary.members_not_listed }} of {{ projection.member_count }} cluster member{{ projection.member_count|pluralize }}
+          {{ summary.members_not_listed|pluralize:"is,are" }} hidden from this page. Quorum is the cluster's own answer
+          across all {{ projection.member_count }}, including {{ summary.members_not_listed|pluralize:"that member,those members" }}.
+        </p>
+      {% endif %}
       <dl class="cluster-detail-list">
         <dt>Nodes online</dt>
-        <dd>{{ summary.online_nodes }} of {{ summary.node_count }}</dd>
+        <dd>{{ summary.online_nodes }} of {{ summary.node_count }} listed</dd>
         <dt>Quorum</dt>
         <dd>
           {% if projection.topology_role_readable and projection.topology_role == "standalone" %}

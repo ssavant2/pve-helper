@@ -97,6 +97,14 @@ class ClusterSummaryRead:
     #: reconcile and the read. Counted rather than dropped: silently losing them
     #: would make the total disagree with the rows for no stated reason.
     guests_off_listed_nodes: int
+    #: Cluster members this connection does not list, because they are hidden or
+    #: unenrolled. Quorum is corosync's answer about *every* member, while the node
+    #: count beside it covers only the listed ones -- two denominators in one panel.
+    #: Enrollment is a pve-helper decision and changes nothing in Proxmox, so a
+    #: hidden node keeps voting; a page reading "2 of 2, quorate" while a third
+    #: member carries the quorum states neither fact wrongly and the pair
+    #: misleadingly. This is what lets the panel name the gap instead.
+    members_not_listed: int
 
 
 @dataclass(frozen=True)
@@ -167,6 +175,13 @@ def cluster_summary(cluster, projection: ClusterProjectionRead, nodes) -> Cluste
         guests_total=sum(entry.total for entry in on_listed.values()),
         guests_running=sum(entry.running for entry in on_listed.values()),
         guests_off_listed_nodes=sum(entry.total for name, entry in placement.items() if name not in on_listed),
+        # Only from a current membership read. A stale or never-published generation
+        # makes `member_count` a number from some earlier shape of the cluster, and
+        # subtracting today's listed nodes from it would invent a hidden member —
+        # exactly the kind of confident arithmetic over mixed-vintage inputs this
+        # panel is being fixed for. Clamped because the two sides are published by
+        # different passes and may cross.
+        members_not_listed=max(0, projection.member_count - len(nodes)) if projection.membership_current else 0,
     )
 
 

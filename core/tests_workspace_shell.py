@@ -376,6 +376,7 @@ class SummaryCompositionTests(TestCase):
     """5a2C+D. What the two Summary bodies may claim, and what they must not."""
 
     def setUp(self):
+        self.client = Client()
         self.cluster = _cluster("hq", nodes=("pve1", "pve2", "pve3"))
 
     def _runtime(self, node_name, *, generation=3, complete=True, error_code="", **metrics):
@@ -475,6 +476,46 @@ class SummaryCompositionTests(TestCase):
 
         self.assertEqual(summary.guests_total, 1)
         self.assertEqual(summary.guests_off_listed_nodes, 1)
+
+    def test_a_hidden_member_is_named_rather_than_subtracted_in_silence(self):
+        """Quorum counts a hidden node; the node total does not. Say so.
+
+        Hiding is a pve-helper decision that never reaches Proxmox, so pve2 keeps
+        voting after it stops being listed. "2 of 2, quorate" is two true rows whose
+        pairing claims something neither says.
+        """
+        _activate(self.cluster, pve1="managed", pve2="safety_only", pve3="managed")
+
+        response = self.client.get(reverse("core:cluster_summary", args=["hq"]))
+        summary = response.context["summary"]
+
+        self.assertEqual(summary.node_count, 2)
+        self.assertEqual(summary.members_not_listed, 1)
+        self.assertContains(response, "1 of 3 cluster members")
+        self.assertContains(response, "hidden from this page")
+        self.assertContains(response, "2 of 2 listed")
+
+    def test_a_fully_listed_cluster_says_nothing_extra(self):
+        _activate(self.cluster, pve1="managed", pve2="managed", pve3="managed")
+
+        response = self.client.get(reverse("core:cluster_summary", args=["hq"]))
+
+        self.assertEqual(response.context["summary"].members_not_listed, 0)
+        self.assertNotContains(response, "hidden from this page")
+
+    def test_a_stale_membership_generation_invents_no_hidden_member(self):
+        """`member_count` from an older read minus today's nodes is not a count."""
+
+        _activate(self.cluster, pve1="managed", pve2="safety_only", pve3="managed")
+        ClusterProjectionCoverage.objects.filter(
+            cluster=self.cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP,
+        ).update(generation=1)
+
+        response = self.client.get(reverse("core:cluster_summary", args=["hq"]))
+
+        self.assertFalse(response.context["projection"].membership_current)
+        self.assertEqual(response.context["summary"].members_not_listed, 0)
 
     def test_node_summary_never_borrows_cluster_freshness(self):
         """pve1 is current and pve3 failed. Each page states its own node's truth."""
