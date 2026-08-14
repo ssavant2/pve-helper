@@ -809,6 +809,7 @@ def _render_cluster_connection(
     credential = ClusterCredential.objects.filter(cluster=cluster).first()
     trust = ClusterTransportTrust.objects.filter(cluster=cluster).first()
     retirement_endpoints = enabled_endpoints(cluster)
+    endpoints = list(cluster.endpoints.order_by("name"))
     topology_state = read_cluster_projection(cluster.key)
     membership_coverage = topology_state.membership_coverage
     topology_handoff_storage_bindings = list(
@@ -826,7 +827,12 @@ def _render_cluster_connection(
                 cluster_key=cluster.key,
             ),
             "cluster": cluster,
-            "endpoints": cluster.endpoints.order_by("name"),
+            "endpoints": endpoints,
+            # The endpoint panel is collapsed under the node table, because a
+            # transport is not an inventory and reading it as one is the mistake the
+            # layout should stop making. It opens only when it is the thing to act
+            # on: no transport at all, or one that is registered and switched off.
+            "endpoints_need_attention": not endpoints or any(not endpoint.enabled for endpoint in endpoints),
             "retirement_endpoints": retirement_endpoints,
             "verified_retirement_blocker": _verified_retirement_blocker(
                 cluster,

@@ -712,3 +712,36 @@ class ClusterConnectionViewTests(TestCase):
             response.context["verified_retirement_blocker"],
             "A stored credential and transport trust are required",
         )
+
+    def test_nodes_are_rendered_above_the_endpoint_panel(self):
+        """The enrollment table is the page's inventory; endpoints are transports.
+
+        Order is the whole point of the panel, so it is asserted rather than left to
+        whoever next moves a section. Two tables of the same names, endpoints first,
+        read as one list with a redundant copy.
+        """
+        cluster = self._retirement_ready_cluster(enabled=True)
+
+        body = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key})).content.decode()
+
+        self.assertLess(body.index("<h2>Nodes</h2>"), body.index("<h2>Endpoints"))
+
+    def test_endpoint_panel_opens_only_when_a_transport_needs_attention(self):
+        cluster = self._retirement_ready_cluster(enabled=True)
+        detail_url = reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key})
+
+        # The rendered attribute, not only the flag: the panel folding away is the
+        # change, and a context value the template ignores would not deliver it.
+        response = self.client.get(detail_url)
+        self.assertFalse(response.context["endpoints_need_attention"])
+        self.assertNotContains(response, '<details class="cluster-endpoints" open>')
+
+        cluster.endpoints.update(enabled=False)
+        response = self.client.get(detail_url)
+        self.assertTrue(response.context["endpoints_need_attention"])
+        self.assertContains(response, '<details class="cluster-endpoints" open>')
+
+        cluster.endpoints.all().delete()
+        response = self.client.get(detail_url)
+        self.assertTrue(response.context["endpoints_need_attention"])
+        self.assertContains(response, '<details class="cluster-endpoints" open>')
