@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from core.models import ClusterMembershipState, ClusterNodeState, ClusterProjectionCoverage
 from core.services.cluster_scopes import managed_clusters
+from core.services.durations import format_uptime
 from core.services.refs import NodeRef
 
 
@@ -73,6 +74,17 @@ class NodeRuntimeMetrics:
     current_kernel_release: str
     boot_mode: str
     secure_boot_enabled: bool | None
+
+    @property
+    def uptime_label(self) -> str:
+        """Uptime as a duration, from the same formatter the guest pages use.
+
+        The raw second count is what the provider reports and what the projection
+        stores; nobody reads `868338s` as ten days. Rendered here rather than in the
+        template so both pages cannot drift into two spellings of one number.
+        """
+
+        return format_uptime(self.uptime_seconds)
 
 
 @dataclass(frozen=True)

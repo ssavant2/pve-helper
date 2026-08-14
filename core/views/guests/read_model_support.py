@@ -8,6 +8,7 @@ from core.services.classification import DISK_CONFIG_KEYS
 from core.services.cluster_scopes import managed_clusters
 from core.services.cluster_state_identity import cluster_cache_key
 from core.services.current_guest_inventory import published_guest_queryset
+from core.services.durations import format_uptime
 from core.services.guest_agent_info import config_agent_enabled, empty_agent_info, fetch_guest_agent_info
 from core.services.guest_observation import (
     UNOBSERVED_LABEL,
@@ -414,7 +415,7 @@ def _build_guest_row(*, object_type, vmid, name, status, node, current_obj, live
         agent_label="Running" if agent_running else _guest_agent_config_label(config, object_type),
         uptime_seconds=uptime,
         runtime_observed_at=getattr(current_obj, "runtime_observed_at", None),
-        uptime_label=_format_uptime(uptime) if uptime else "-",
+        uptime_label=format_uptime(uptime) if uptime else "-",
         cpus=cpus,
         cpu_count_label=str(cpus) if cpus else "-",
         nic_count=len(macs),
@@ -1141,7 +1142,7 @@ def _guest_vm_details(detail: SimpleNamespace, pool_label: str = "") -> list[dic
         add("Guest agent", _guest_agent_config_label(config, detail.object_type), "agent")
     uptime = current.get("uptime") if isinstance(current, dict) else None
     if uptime:
-        add("Uptime", _format_uptime(int(uptime)))
+        add("Uptime", format_uptime(int(uptime)))
     return rows
 
 
@@ -1228,22 +1229,6 @@ def _float_or_zero(value) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
-
-
-def _format_uptime(seconds: int) -> str:
-    if seconds <= 0:
-        return "-"
-    days, rem = divmod(seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    parts = []
-    if days:
-        parts.append(f"{days}d")
-    if hours:
-        parts.append(f"{hours}h")
-    if minutes and not days:
-        parts.append(f"{minutes}m")
-    return " ".join(parts) or "<1m"
 
 
 def _guest_pool_memberships(client, detail: SimpleNamespace) -> tuple[list[str], list[str]]:

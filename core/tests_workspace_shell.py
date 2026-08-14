@@ -28,6 +28,7 @@ from core.models import (
     ProxmoxCluster,
 )
 from core.services.cluster_projection_read import read_cluster_projection
+from core.services.durations import format_uptime
 from core.services.workspace_nav import cluster_nav_key, node_nav_key, workspace_nav
 
 
@@ -541,6 +542,31 @@ class SummaryCompositionTests(TestCase):
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)
+class UptimeLabelTests(TestCase):
+    """`868338s` is the stored value and nobody reads it as ten days."""
+
+    def test_a_long_uptime_reads_as_days_and_hours(self):
+        self.assertEqual(format_uptime(868338), "10d 1h")
+
+    def test_short_uptimes_keep_the_unit_that_still_says_something(self):
+        self.assertEqual(format_uptime(11_100), "3h 5m")
+        self.assertEqual(format_uptime(2_700), "45m")
+        self.assertEqual(format_uptime(30), "<1m")
+
+    def test_absent_or_zero_uptime_is_a_dash_not_a_zero(self):
+        self.assertEqual(format_uptime(None), "-")
+        self.assertEqual(format_uptime(0), "-")
+
+    def test_the_node_page_renders_the_duration_and_not_the_seconds(self):
+        cluster = _cluster("hq", nodes=("pve1",))
+        ClusterNodeState.objects.filter(cluster=cluster, node_name="pve1").update(uptime_seconds=868338)
+
+        response = Client().get(reverse("core:node_summary", args=["hq", "pve1"]))
+
+        self.assertContains(response, "10d 1h")
+        self.assertNotContains(response, "868338")
+
+
 class SummaryQueryBudgetTests(TestCase):
     """The contract allows each Summary 6 queries. Measured, not asserted in prose.
 

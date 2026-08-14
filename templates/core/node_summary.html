@@ -98,7 +98,7 @@
           {% endif %}
         </dd>
         <dt>Uptime</dt>
-        <dd>{% if node.runtime.uptime_seconds %}{{ node.runtime.uptime_seconds }}s{% else %}-{% endif %}</dd>
+        <dd>{{ node.runtime.uptime_label }}</dd>
       </dl>
     </section>
 
