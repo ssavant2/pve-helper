@@ -1,3 +1,4 @@
+{% load time_labels %}
 {% comment %}
   The Networks tab body, shared by the cluster and node scopes (5a4B-ii).
 
@@ -29,8 +30,8 @@
         <h2>{{ group.node }}</h2>
         <p class="panel-meta">
           {% if group.known %}
-            {{ group.attachable|length }} attachable, {{ group.interfaces|length }} interface{{ group.interfaces|length|pluralize }} in generation {{ group.generation }}
-            {% if group.observed_at %}<span class="muted">· read {{ group.observed_at|timesince }} ago</span>{% endif %}
+            {{ group.attachable|length }} attachable, {{ group.interfaces|length }} interface{{ group.interfaces|length|pluralize }}
+            {% if group.observed_at %}<span class="muted">· read {{ group.observed_at|age }}</span>{% endif %}
           {% else %}
             Network state unknown
           {% endif %}

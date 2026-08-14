@@ -1,4 +1,5 @@
 {% extends "core/cluster_workspace.html" %}
+{% load time_labels %}
 
 {% comment %}
   Note what this page never reads: the cluster's membership freshness. The node
@@ -32,10 +33,21 @@
   <div class="cluster-detail-grid">
     <section class="panel">
       <div class="panel-heading"><h2>Utilisation</h2></div>
-      {% if node.runtime_coverage %}
+      {% comment %}
+        Age, not generation. The generation counter is how the projection decides
+        whether a row is current, and it climbs forever — by the time it reads
+        `2843` it tells an operator nothing except that the cluster has been
+        refreshed a lot. What the operator is actually asking is how old these
+        numbers are, so the line answers that and keeps the timestamp beside it.
+        The counter stays in the projection, in tests and in logs.
+      {% endcomment %}
+      {% if node.runtime_coverage.observed_at %}
         <p class="panel-meta node-runtime-observation">
-          Runtime generation {{ node.runtime_generation }}, observed {{ node.runtime_coverage.observed_at|default:"never" }}
+          Runtime observed {{ node.runtime_coverage.observed_at|age }}
+          <span class="muted">({{ node.runtime_coverage.observed_at }})</span>
         </p>
+      {% elif node.runtime_coverage %}
+        <p class="panel-meta node-runtime-observation">This node's runtime has been attempted but never observed.</p>
       {% else %}
         <p class="panel-meta node-runtime-observation">This node's runtime has never been published.</p>
       {% endif %}

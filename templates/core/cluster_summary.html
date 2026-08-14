@@ -1,4 +1,5 @@
 {% extends "core/cluster_workspace.html" %}
+{% load time_labels %}
 
 {% block workspace_subtitle %}
   <span class="badge{% if projection.membership_current %} completed{% elif projection.membership_status == 'missing' %} failed{% endif %}">
@@ -19,7 +20,21 @@
       <div class="panel-heading">
         <div>
           <h2>Membership</h2>
-          <p class="panel-meta">Generation {{ projection.membership_generation }}{% if projection.observed_from %}, observed from {{ projection.observed_from }}{% endif %}</p>
+          {% comment %}
+            Age rather than the generation counter, for the reason spelled out on
+            Node Summary: the number only ever goes up and answers a question the
+            projection asks itself, not one the operator asks.
+          {% endcomment %}
+          <p class="panel-meta">
+            {% if projection.membership_coverage.observed_at %}
+              Observed {{ projection.membership_coverage.observed_at|age }}{% if projection.observed_from %} from {{ projection.observed_from }}{% endif %}
+              <span class="muted">({{ projection.membership_coverage.observed_at }})</span>
+            {% elif projection.observed_from %}
+              Observed from {{ projection.observed_from }}; no successful read recorded.
+            {% else %}
+              Never observed.
+            {% endif %}
+          </p>
           {% comment %}
             A scope note belongs in the heading, beside Guests' and Nodes' — the
             heading owns the panel's single divider and the global rule aligns its

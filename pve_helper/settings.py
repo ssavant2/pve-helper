@@ -231,6 +231,8 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = "en-us"
+#: 24-hour clock everywhere, including a bare `{{ value }}`. See the module.
+FORMAT_MODULE_PATH = ["pve_helper.formats"]
 TIME_ZONE = env("TZ", "Europe/Stockholm")
 USE_I18N = True
 USE_TZ = True

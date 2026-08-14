@@ -9,6 +9,7 @@ asserted beyond the shell they hang in.
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -699,6 +700,140 @@ _NO_BYTES = {
     "rootfs_used_bytes": None,
     "rootfs_total_bytes": None,
 }
+
+
+class ObservationAgeTests(TestCase):
+    """How old the numbers are, on a 24-hour clock.
+
+    Two separate claims. The Summary panels answer *when was this read* with an
+    age rather than the projection's generation counter, which only ever climbs.
+    And every timestamp this app renders is `Y-m-d H:i:s`, including one written
+    as a bare `{{ value }}` — that is the format module's job, not the template's.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.cluster = _cluster("hq", nodes=("pve1", "pve2"))
+
+    _runtime = SummaryCompositionTests._runtime
+
+    def _stamp(self, **coverage):
+        observed = ClusterProjectionCoverage.objects.get(cluster=self.cluster, **coverage).observed_at
+        return timezone.localtime(observed).strftime("%Y-%m-%d %H:%M:%S")
+
+    def test_the_node_page_states_an_age_instead_of_a_generation_counter(self):
+        self._runtime("pve1", generation=3, memory_total_bytes=16)
+
+        response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
+
+        self.assertContains(response, "Runtime observed just now")
+        self.assertNotContains(response, "Runtime generation")
+
+    def test_the_cluster_page_states_an_age_instead_of_a_generation_counter(self):
+        response = self.client.get(reverse("core:cluster_summary", args=["hq"]))
+
+        self.assertContains(response, "Observed just now from pve1")
+        self.assertNotContains(response, "Generation 3")
+
+    def test_an_older_reading_is_named_in_the_largest_unit_that_still_counts(self):
+        self._runtime("pve1", memory_total_bytes=16)
+        ClusterProjectionCoverage.objects.filter(
+            cluster=self.cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME,
+            node_name="pve1",
+        ).update(observed_at=timezone.now() - timedelta(hours=5))
+
+        response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
+
+        self.assertContains(response, "Runtime observed 5 hours ago")
+
+    def test_a_node_that_was_attempted_and_never_observed_says_so(self):
+        """Coverage without an `observed_at` is a read that has only ever failed.
+
+        `timesince` of nothing is the empty string, so the age line cannot be the
+        one that renders here.
+        """
+        self._runtime("pve1", complete=False, error_code="read_failed")
+        ClusterProjectionCoverage.objects.filter(
+            cluster=self.cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME,
+            node_name="pve1",
+        ).update(observed_at=None)
+
+        response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
+
+        self.assertContains(response, "attempted but never observed")
+        self.assertNotContains(response, "Runtime observed")
+
+    def test_the_age_phrase_covers_its_units_and_refuses_the_future(self):
+        """`timesince` would answer `0 minutes` for the first case and for the last."""
+        from core.services.durations import format_age
+
+        now = timezone.now()
+
+        self.assertEqual(format_age(now - timedelta(seconds=40), now=now), "just now")
+        self.assertEqual(format_age(now - timedelta(minutes=1), now=now), "1 minute ago")
+        self.assertEqual(format_age(now - timedelta(minutes=59), now=now), "59 minutes ago")
+        self.assertEqual(format_age(now - timedelta(hours=2), now=now), "2 hours ago")
+        self.assertEqual(format_age(now - timedelta(days=3), now=now), "3 days ago")
+        self.assertEqual(format_age(now + timedelta(minutes=5), now=now), "just now")
+        self.assertEqual(format_age(None, now=now), "")
+
+    def test_a_node_with_no_coverage_at_all_keeps_its_own_sentence(self):
+        response = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
+
+        self.assertContains(response, "never been published")
+
+    def test_both_summary_pages_print_the_observation_on_a_24_hour_clock(self):
+        """The timestamps beside the ages are bare `{{ value }}` renders."""
+
+        self._runtime("pve1", memory_total_bytes=16)
+
+        node = self.client.get(reverse("core:node_summary", args=["hq", "pve1"]))
+        cluster = self.client.get(reverse("core:cluster_summary", args=["hq"]))
+
+        self.assertContains(
+            node,
+            self._stamp(domain=ClusterProjectionCoverage.DOMAIN_NODE_RUNTIME, node_name="pve1"),
+        )
+        self.assertContains(
+            cluster,
+            self._stamp(domain=ClusterProjectionCoverage.DOMAIN_MEMBERSHIP, node_name=None),
+        )
+        for response in (node, cluster):
+            body = response.content.decode()
+            self.assertNotIn("p.m.", body)
+            self.assertNotIn("a.m.", body)
+
+    def test_the_default_datetime_format_is_the_one_the_app_writes_by_hand(self):
+        """30-odd templates say `|date:"Y-m-d H:i:s"`; the default now agrees."""
+        from django.utils.formats import get_format
+
+        self.assertEqual(get_format("DATETIME_FORMAT"), "Y-m-d H:i:s")
+        self.assertEqual(get_format("DATE_FORMAT"), "Y-m-d")
+        self.assertEqual(get_format("TIME_FORMAT"), "H:i:s")
+
+        # What the `en` locale would have rendered, so this test fails if the
+        # format module stops being reached rather than passing on a coincidence.
+        # `FORMAT_MODULE_PATH` is not one of the settings Django resets the format
+        # cache for, hence the explicit reset on both sides of the override.
+        from django.utils.formats import reset_format_cache
+
+        try:
+            with override_settings(FORMAT_MODULE_PATH=[]):
+                reset_format_cache()
+                self.assertEqual(get_format("DATETIME_FORMAT"), "N j, Y, P")
+        finally:
+            reset_format_cache()
+
+    def test_overriding_the_clock_did_not_move_the_decimal_point(self):
+        """`en-us` is why `floatformat` emits `53.9`. The format module adds only
+        date and time names, so the number formats still come from the locale."""
+        from django.template import Context, Template
+
+        rendered = Template("{{ value|floatformat:1 }}").render(Context({"value": 53.87}))
+
+        self.assertEqual(rendered, "53.9")
 
 
 @override_settings(APP_REQUIRE_LOGIN=False)
