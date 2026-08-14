@@ -178,23 +178,15 @@ class WorkspaceNetworkTabTests(TestCase):
 
         self.assertEqual(group.reason, attachable_bridges(self.cluster, "pve2").reason)
 
-    def test_a_tombstone_stays_visible_and_stays_distinguishable_from_silence(self):
-        self._interface("pve1", "vmbr9", present=False, unreachable=False)
-        self._interface("pve1", "vmbr8", present=False, unreachable=True)
+    def test_an_unreachable_row_is_shown_and_is_not_counted_as_attachable(self):
+        """The last known list survives a node that did not answer -- going blank
+        would read as "no bridges", which is the one thing it must not say. It is
+        still not offered as a target: unknown is not yes."""
+        self._interface("pve1", "vmbr8", attachable=True, present=False, unreachable=True)
 
         group = next(item for item in self._panel().groups if item.node == "pve1")
 
-        self.assertIn("vmbr9", [row.iface for row in group.interfaces])
-        self.assertEqual([row.iface for row in group.gone], ["vmbr9"])
-
-    def test_a_tombstoned_bridge_is_no_longer_counted_as_attachable(self):
-        """The heading counts what a guest could attach to today, not what it could
-        have attached to last week. A bridge that is gone is not a target."""
-        self._interface("pve1", "vmbr7", attachable=True, present=False, unreachable=False)
-
-        group = next(item for item in self._panel().groups if item.node == "pve1")
-
-        self.assertIn("vmbr7", [row.iface for row in group.interfaces])
+        self.assertIn("vmbr8", [row.iface for row in group.interfaces])
         self.assertEqual([row.iface for row in group.attachable], ["vmbr0"])
 
     def test_a_row_from_an_older_generation_renders_as_not_current(self):

@@ -505,29 +505,17 @@ def _refresh_one_node(
                     target.save(update_fields=list(INTERFACE_FIELDS))
 
             # Absence is only publishable under a complete read, which this is: both
-            # endpoints answered. An interface the node no longer reports is proven
-            # gone, so `unreachable` stays False -- that is the whole point of the
-            # two flags.
-            for iface, target in existing.items():
-                if iface in composed:
-                    continue
-                if not target.present and not target.unreachable:
-                    continue
-                target.present = False
-                target.unreachable = False
-                target.attachable = False
-                target.observed_generation = generation
-                target.based_on_enrollment_generation = scope.generation
-                target.save(
-                    update_fields=[
-                        "present",
-                        "unreachable",
-                        "attachable",
-                        "observed_generation",
-                        "based_on_enrollment_generation",
-                        "updated_at",
-                    ]
-                )
+            # endpoints answered. An interface the node no longer reports is **deleted**,
+            # not tombstoned. It kept a row once, justified as making "this bridge
+            # disappeared" distinguishable from "this node was never swept" -- but
+            # coverage already answers that, and nothing read the tombstone except a
+            # badge describing itself. Proxmox's own network view has no such history,
+            # so the row accumulated forever to tell an operator about a bridge they
+            # deleted. Deleting here is safe precisely because the read is complete;
+            # every incomplete path above keeps its rows and goes non-current instead.
+            departed = [iface for iface in existing if iface not in composed]
+            if departed:
+                ClusterNodeInterface.objects.filter(cluster=locked, node_name=node_name, iface__in=departed).delete()
 
             coverage.generation = generation
             coverage.complete = True

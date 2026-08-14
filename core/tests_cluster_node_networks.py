@@ -8,8 +8,9 @@ round found missing from the artifact:
 * a node whose second read failed publishes **nothing**, rather than publishing the
   first read's rows with `attachable=False` and a covered coverage row, which would
   be a node with proven-zero bridges;
-* `present=False, unreachable=False` (proven gone) and `unreachable=True` (unknown)
-  are different row states, and only a complete read may produce the first;
+* removal and ignorance are different outcomes: only a **complete** read may delete a
+  row the node no longer reports, while every incomplete path keeps its rows and marks
+  them `unreachable` (unknown) instead;
 * the lane has its own lock, so a slow network pass cannot skip a membership cycle;
 * `node_network` coverage rows stay out of `read_cluster_projection`.
 
@@ -185,6 +186,24 @@ class NodeNetworkPublicationTests(TestCase):
         with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=client):
             return refresh_cluster_node_networks(self.cluster), client
 
+    def test_deleting_a_departed_interface_does_not_touch_the_same_name_on_another_node(self):
+        """`vmbr0` on two nodes is two devices sharing a name -- the rule the whole
+        phase is built on, applied to the delete. A filter that forgot `node_name`
+        would remove a live bridge from every other node in the cluster, and the
+        migrate dialog would then refuse targets that are perfectly fine.
+
+        The removal is on **pve3**, the node the sweep visits last, deliberately: a
+        cross-node delete on pve1 is repaired by pve3's own turn in the same pass and
+        the damage only shows on the node already published. Order-dependent damage
+        is still damage, and the single-node seam has no second turn to hide it."""
+        self._sweep()
+        plain = {**PLAIN, "pve3": [entry for entry in PLAIN["pve3"] if entry["iface"] != "vmbr0"]}
+        any_bridge = {**ANY_BRIDGE, "pve3": [entry for entry in ANY_BRIDGE["pve3"] if entry["iface"] != "vmbr0"]}
+        self._sweep(RecordingClient(plain=plain, any_bridge=any_bridge))
+
+        self.assertNotIn("vmbr0", _ifaces(self.cluster, "pve3"))
+        self.assertIn("vmbr0", _ifaces(self.cluster, "pve1"))
+
     def test_it_publishes_both_reads_composed_into_one_row_set(self):
         result, client = self._sweep()
 
@@ -348,9 +367,11 @@ class NodeNetworkPartialFailureTests(TestCase):
 
         self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_INVALID_PAYLOAD)
 
-    def test_an_interface_removed_under_a_complete_read_is_proven_gone(self):
-        """`present=False, unreachable=False` -- the state a failed read may never
-        produce, and the only one that means the bridge was actually removed."""
+    def test_an_interface_removed_under_a_complete_read_is_deleted(self):
+        """A removed bridge leaves no row at all. It was tombstoned once; nothing
+        consumed the tombstone, Proxmox keeps no such history, and the rows only
+        accumulated. Only a *complete* read may do this -- every incomplete path
+        keeps its rows and goes non-current, which the neighbouring tests pin."""
         plain = {"pve1": [entry for entry in PLAIN["pve1"] if entry["iface"] != "vmbr1"]}
         any_bridge = {"pve1": [entry for entry in ANY_BRIDGE["pve1"] if entry["iface"] != "vmbr1"]}
         with patch(
@@ -359,10 +380,28 @@ class NodeNetworkPartialFailureTests(TestCase):
         ):
             refresh_cluster_node_networks(self.cluster)
 
-        row = _ifaces(self.cluster, "pve1")["vmbr1"]
-        self.assertFalse(row.present)
-        self.assertFalse(row.unreachable)
-        self.assertFalse(row.attachable)
+        rows = _ifaces(self.cluster, "pve1")
+        self.assertNotIn("vmbr1", rows)
+        # The node's other interfaces are untouched: this deletes the departed row,
+        # not the node's projection.
+        self.assertIn("vmbr0", rows)
+
+    def test_a_row_the_node_stopped_reporting_is_deleted_even_if_it_was_unreachable(self):
+        """An earlier failure left the row `unreachable`; a later complete read that
+        does not list it still proves it gone. Skipping those rows would strand
+        exactly the interfaces whose last news was bad."""
+        ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", iface="vmbr1").update(
+            present=False, unreachable=True, attachable=False
+        )
+        plain = {"pve1": [entry for entry in PLAIN["pve1"] if entry["iface"] != "vmbr1"]}
+        any_bridge = {"pve1": [entry for entry in ANY_BRIDGE["pve1"] if entry["iface"] != "vmbr1"]}
+        with patch(
+            "core.services.cluster_node_networks.client_for_endpoint",
+            return_value=RecordingClient(plain=plain, any_bridge=any_bridge),
+        ):
+            refresh_cluster_node_networks(self.cluster)
+
+        self.assertNotIn("vmbr1", _ifaces(self.cluster, "pve1"))
 
 
 class NodeNetworkBoundaryTests(TestCase):

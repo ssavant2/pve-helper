@@ -18,10 +18,12 @@ The cluster scope therefore groups by node; it does not deduplicate across nodes
 things, so each group carries its status and the publisher's own reason rather than
 rendering as an empty table.
 
-**Tombstones are shown, not filtered.** 5a4B-i keeps a row for an interface that
-disappeared precisely so "this bridge is gone" stays distinguishable from "this node
-was never swept". Dropping them here would discard that distinction at the last
-step.
+**An unreachable row is shown, not filtered.** When a node does not answer, 5a4B-i
+keeps its last known interfaces and marks them unknown; rendering nothing would say
+"no bridges", which is the one thing an unanswered node must never be read as. A row
+the node *stopped reporting* under a complete read is a different case and no longer
+reaches this module at all — it is deleted at the source, because coverage already
+separates "gone" from "never swept" and Proxmox keeps no such history either.
 """
 
 from __future__ import annotations
@@ -58,13 +60,6 @@ class NetworkNodeGroup:
     @property
     def attachable(self) -> tuple[NodeInterfaceRead, ...]:
         return tuple(row for row in self.interfaces if row.attachable and row.present)
-
-    @property
-    def gone(self) -> tuple[NodeInterfaceRead, ...]:
-        """Rows a complete read proved absent. `unreachable` rows are not here:
-        those are unknown, and listing them as gone would invent a fact."""
-
-        return tuple(row for row in self.interfaces if not row.present and not row.unreachable)
 
 
 @dataclass(frozen=True)

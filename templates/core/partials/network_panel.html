@@ -71,8 +71,6 @@
                 <td>
                   {% if row.unreachable %}
                     <span class="badge failed" title="The node did not answer, so this row is unproven">unknown</span>
-                  {% elif not row.present %}
-                    <span class="badge failed" title="A complete read proved this interface is gone">gone</span>
                   {% elif row.active %}
                     <span class="badge completed">active</span>
                   {% elif row.active is None %}

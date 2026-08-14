@@ -261,7 +261,11 @@ class NodeAttachableBridgeTests(TestCase):
 
         self.assertEqual(attachable_bridges(self.cluster, "pve1").reason, "its network could not be read")
 
-    def test_a_tombstoned_interface_is_not_offered(self):
+    def test_a_row_that_says_absent_without_saying_unknown_is_not_offered(self):
+        """The publisher can no longer write this pair -- a removed interface is
+        deleted outright. Constructed directly and kept anyway, because the read owns
+        its predicate: `present` is checked here, not inherited from what the writer
+        happens to do today."""
         ClusterNodeInterface.objects.filter(cluster=self.cluster, node_name="pve1", iface="wan100").update(
             present=False, unreachable=False
         )

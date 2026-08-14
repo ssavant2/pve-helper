@@ -2117,15 +2117,19 @@ class ClusterNodeInterface(TimestampedModel):
     whose zone excludes it.
 
     **Two flags, because absence and ignorance are different answers.**
-    ``present=False, unreachable=False`` means a complete read proved the interface
-    is gone. ``unreachable=True`` means the node did not answer and the row is
-    unknown -- a node taken down for patching must read as unknown, never as "no
-    bridges", because a consumer that reads the latter as proof disables a legitimate
-    migration target. This mirrors :class:`ClusterStorageNodeState`, which carries the
-    same pair for the same reason.
+    ``unreachable=True`` means the node did not answer and the row is unknown -- a
+    node taken down for patching must read as unknown, never as "no bridges", because
+    a consumer that reads the latter as proof disables a legitimate migration target.
+    This mirrors :class:`ClusterStorageNodeState`, which carries the same pair for the
+    same reason.
 
-    Rows are tombstoned, never deleted, so "this bridge disappeared" stays
-    distinguishable from "this node was never swept".
+    **A complete read that no longer reports an interface deletes the row.** It was
+    tombstoned once, to keep "this bridge disappeared" distinguishable from "this node
+    was never swept" -- but :class:`ClusterProjectionCoverage` already answers that,
+    and nothing consumed the tombstone except a badge naming itself. Proxmox's own
+    network view keeps no such history either, so the rows only accumulated. That
+    leaves ``present=False`` reachable **only** together with ``unreachable=True``;
+    the pair above is the reason the column stays.
     """
 
     cluster = models.ForeignKey(
