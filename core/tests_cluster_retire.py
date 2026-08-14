@@ -469,12 +469,41 @@ class LifecycleParticipantContractTests(TestCase):
                 else:
                     self.assertIsNone(classification.footprint_reason)
 
-        for accessor in ("membership_state", "node_states", "projection_coverage"):
+        for accessor in ("membership_state", "node_states", "node_interfaces", "projection_coverage"):
             self.assertIs(
                 CLUSTER_REVERSE_RELATIONS[accessor].footprint_policy,
                 FootprintPolicy.RECONSTRUCTIBLE,
             )
             self.assertEqual(CLUSTER_REVERSE_RELATIONS[accessor].footprint_reason, FOOTPRINT_HOST_PROJECTION)
+
+    def test_hard_deletion_tears_down_every_reconstructible_relation_the_registry_names(self):
+        """The registry classifies; `_RECONSTRUCTIBLE_RELATIONS` is what actually runs.
+
+        The two are separate hand-maintained lists, and they drifted: 5a4B-i added
+        `node_interfaces` to the registry and not to the teardown tuple, so the rows
+        survived only because the FK happens to CASCADE. The deletion Audit event
+        under-counted them, and `_assert_deletion_postconditions` -- whose entire job
+        is "no dangling relation left behind" -- could not see the model at all.
+        """
+        from core.services.cluster_deletion import _RECONSTRUCTIBLE_RELATIONS
+
+        registry = {
+            accessor
+            for accessor, classification in CLUSTER_REVERSE_RELATIONS.items()
+            if classification.footprint_policy is FootprintPolicy.RECONSTRUCTIBLE
+        }
+        teardown = {accessor for accessor, _model, _filter_field in _RECONSTRUCTIBLE_RELATIONS}
+
+        self.assertEqual(
+            sorted(registry - teardown),
+            [],
+            "Reconstructible relations the hard delete never counts, deletes or asserts on.",
+        )
+        self.assertEqual(
+            sorted(teardown - registry),
+            [],
+            "The teardown names a relation the registry does not classify as reconstructible.",
+        )
 
 
 class ProviderAuditActionIntentCoverageTests(TestCase):

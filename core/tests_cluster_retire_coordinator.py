@@ -13,6 +13,7 @@ from core.models import (
     ClusterCredential,
     ClusterMembershipState,
     ClusterNodeEnrollment,
+    ClusterNodeInterface,
     ClusterNodeState,
     ClusterProjectionCoverage,
     ClusterStorage,
@@ -36,6 +37,7 @@ from core.services.cluster_lifecycle_registry import (
     CODE_FORCE_RETIRED_UNRESOLVABLE,
     CODE_RETIRED_BEFORE_START,
 )
+from core.services.cluster_projection import retire_cluster_projection
 from core.services.cluster_retirement import (
     ERROR_CODE_RETIREMENT_ACTIVE_SCAN,
     ERROR_CODE_RETIREMENT_CONFIRMATION,
@@ -332,6 +334,41 @@ class ClusterRetirementCoordinatorTests(TestCase):
         self.assertEqual(event.details["cleanup"]["scheduled_runs_abandoned"], 1)
         self.assertEqual(event.details["cleanup"]["consoles_abandoned"], 1)
         self.assertEqual(event.details["cleanup"]["audit_operations_abandoned"], 1)
+
+    def test_retirement_rolls_back_when_a_node_interface_survives_the_projection_finalizer(self):
+        """The postcondition is the mechanism that catches a finalizer that missed a
+        relation, so it has to know about every relation -- it did not know about this
+        one, and a retired connection could have kept rows saying `vmbr0` is
+        attachable on a node in a cluster this installation no longer manages."""
+        ClusterNodeInterface.objects.create(cluster=self.cluster, node_name="pve1", iface="vmbr0")
+        confirmation = self._verified_confirmation()
+        real = retire_cluster_projection
+
+        def leave_one_interface_behind(cluster):
+            result = real(cluster)
+            ClusterNodeInterface.objects.create(cluster_id=cluster.pk, node_name="pve1", iface="vmbr0")
+            return result
+
+        with (
+            patch(
+                "core.services.cluster_retirement.retire_cluster_projection",
+                side_effect=leave_one_interface_behind,
+            ),
+            self.assertRaises(ClusterRetirementPostconditionFailed),
+        ):
+            retire_cluster(self.cluster, confirmation=confirmation, actor=self.actor)
+
+        self.cluster.refresh_from_db()
+        self.assertIsNone(self.cluster.retired_at)
+
+    def test_retirement_accounts_for_the_interfaces_it_deleted(self):
+        ClusterNodeInterface.objects.create(cluster=self.cluster, node_name="pve1", iface="vmbr0")
+
+        result = retire_cluster(self.cluster, confirmation=self._verified_confirmation(), actor=self.actor)
+
+        event = AuditEvent.objects.get(pk=result.audit_event_id)
+        self.assertEqual(event.details["cleanup"]["cluster_node_interfaces_deleted"], 1)
+        self.assertFalse(ClusterNodeInterface.objects.filter(cluster_id=self.cluster.pk).exists())
 
     def test_retirement_rolls_back_when_enrollment_owner_does_not_delete(self):
         enrollment = ClusterNodeEnrollment.objects.create(

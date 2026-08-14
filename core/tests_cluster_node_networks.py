@@ -43,9 +43,13 @@ from core.services.cluster_node_networks import (
     refresh_node_network,
 )
 from core.services.cluster_node_runtime import (
+    ERROR_ACQUISITION_DISABLED,
+    ERROR_ACQUISITION_QUARANTINED,
+    ERROR_NO_ENABLED_ENDPOINT,
     ERROR_NODE_ABSENT,
     ERROR_NODE_OFFLINE,
     ERROR_PROVIDER,
+    ERROR_TOPOLOGY_TRANSITION_PENDING,
 )
 from core.services.proxmox import ProxmoxAPIError, ProxmoxTransportError
 
@@ -472,6 +476,61 @@ class NodeNetworkBoundaryTests(TestCase):
         self.assertEqual(first.retracted, 1)
         self.assertEqual(second.retracted, 0)
 
+    def test_a_node_hidden_mid_sweep_is_not_contacted(self):
+        """The boundary is re-resolved per node, not snapshotted at the top.
+
+        A twenty-node pass is minutes long, and the enrollment change that arrives
+        during it is the operator saying "stop touching that node".
+        """
+        _enroll(
+            self.cluster,
+            {"pve1": ClusterNodeEnrollment.Mode.MANAGED, "pve3": ClusterNodeEnrollment.Mode.MANAGED},
+        )
+        client = RecordingClient()
+        original_get = client.get
+
+        def hide_pve3_after_the_first_node(path, **kwargs):
+            if path.startswith("nodes/pve1/"):
+                _enroll(
+                    self.cluster,
+                    {"pve1": ClusterNodeEnrollment.Mode.MANAGED, "pve3": ClusterNodeEnrollment.Mode.SAFETY_ONLY},
+                    generation=2,
+                )
+            return original_get(path, **kwargs)
+
+        client.get = hide_pve3_after_the_first_node
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=client):
+            refresh_cluster_node_networks(self.cluster)
+
+        self.assertFalse(any("pve3" in path for path in client.paths))
+        self.assertEqual(_coverage(self.cluster, "pve3").error_code, ERROR_NODE_NOT_PUBLISHED)
+
+    def test_a_node_hidden_before_it_departs_still_reads_as_departed(self):
+        """Idempotence keys on the coverage reason, not on rows touched.
+
+        Keying on rows left this node reporting `node_not_published` -- "pve-helper
+        chose not to publish this" -- for a node that had left the cluster.
+        """
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=RecordingClient()):
+            refresh_cluster_node_networks(self.cluster)
+        _enroll(
+            self.cluster,
+            {"pve1": ClusterNodeEnrollment.Mode.MANAGED, "pve3": ClusterNodeEnrollment.Mode.SAFETY_ONLY},
+            generation=2,
+        )
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=RecordingClient()):
+            refresh_cluster_node_networks(self.cluster)
+        self.assertEqual(_coverage(self.cluster, "pve3").error_code, ERROR_NODE_NOT_PUBLISHED)
+
+        ClusterNodeState.objects.filter(cluster=self.cluster, node_name="pve3").update(present=False)
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=RecordingClient()):
+            result = refresh_cluster_node_networks(self.cluster)
+
+        self.assertEqual(_coverage(self.cluster, "pve3").error_code, ERROR_NODE_ABSENT)
+        self.assertEqual(result.retracted, 1)
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=RecordingClient()):
+            self.assertEqual(refresh_cluster_node_networks(self.cluster).retracted, 0)
+
     def test_a_retired_cluster_is_a_zero_call_refusal(self):
         ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(
             retired_at=timezone.now(),
@@ -486,6 +545,153 @@ class NodeNetworkBoundaryTests(TestCase):
 
         self.assertFalse(result.ran)
         self.assertEqual(client.paths, [])
+
+
+class NodeNetworkClusterRefusalTests(TestCase):
+    """A cluster-grain refusal must not leave the rows reading as current.
+
+    Currency here is generation equality and nothing else -- no age rule -- so a
+    refusal that writes nothing at all leaves coverage `complete` at the last good
+    generation forever. A disabled, quarantined or endpoint-less connection still
+    renders in the workspace (`managed_clusters()` keeps all three), so "forever" is
+    not hypothetical; only retirement takes the projection away.
+    """
+
+    def setUp(self):
+        self.cluster = _cluster()
+        self.endpoint = _endpoint(self.cluster)
+        _publish_membership(self.cluster, {"pve1": True, "pve3": True})
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=RecordingClient()):
+            refresh_cluster_node_networks(self.cluster)
+        self.assertTrue(_coverage(self.cluster, "pve1").complete)
+
+    def _sweep_again(self):
+        client = RecordingClient()
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=client):
+            return refresh_cluster_node_networks(self.cluster), client
+
+    def test_a_disabled_connection_stops_its_rows_reading_as_current(self):
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(enabled=False)
+
+        result, client = self._sweep_again()
+
+        self.assertFalse(result.ran)
+        self.assertEqual(client.paths, [])
+        self.assertFalse(_coverage(self.cluster, "pve1").complete)
+        self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_ACQUISITION_DISABLED)
+
+    def test_a_quarantined_connection_stops_its_rows_reading_as_current(self):
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(ingestion_quarantined=True)
+
+        self._sweep_again()
+
+        self.assertFalse(_coverage(self.cluster, "pve1").complete)
+        self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_ACQUISITION_QUARANTINED)
+
+    def test_losing_every_enabled_endpoint_stops_the_rows_reading_as_current(self):
+        ProxmoxEndpoint.objects.filter(pk=self.endpoint.pk).update(enabled=False)
+
+        self._sweep_again()
+
+        self.assertFalse(_coverage(self.cluster, "pve1").complete)
+        self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_NO_ENABLED_ENDPOINT)
+
+    def test_a_topology_transition_stops_the_rows_reading_as_current(self):
+        ClusterMembershipState.objects.filter(cluster=self.cluster).update(
+            transition_pending=True, pending_topology_role="standalone"
+        )
+
+        self._sweep_again()
+
+        self.assertFalse(_coverage(self.cluster, "pve1").complete)
+        self.assertEqual(_coverage(self.cluster, "pve1").error_code, ERROR_TOPOLOGY_TRANSITION_PENDING)
+
+    def test_the_previous_generation_and_rows_are_left_intact(self):
+        """Demotion, not retraction: the rows keep their values and go non-current.
+
+        A refused pass is not proof that a bridge is gone, and the consumer needs the
+        difference between "stale" and "this node has no bridges".
+        """
+        before = _coverage(self.cluster, "pve1")
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(enabled=False)
+
+        self._sweep_again()
+
+        after = _coverage(self.cluster, "pve1")
+        self.assertEqual(after.generation, before.generation)
+        self.assertEqual(after.observed_at, before.observed_at)
+        row = _ifaces(self.cluster, "pve1")["vmbr0"]
+        self.assertTrue(row.present)
+        self.assertFalse(row.unreachable)
+        self.assertEqual(row.observed_generation, before.generation)
+
+    def test_a_retired_connection_writes_nothing(self):
+        """The one refusal that must stay silent: retirement deletes this projection
+        under the same lock, so a write here resurrects a row the finalizer counted."""
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(
+            retired_at=timezone.now(),
+            enabled=False,
+            retirement_mode=ProxmoxCluster.RetirementMode.VERIFIED,
+        )
+
+        self._sweep_again()
+
+        self.assertTrue(_coverage(self.cluster, "pve1").complete)
+
+    def test_the_single_node_seam_refuses_the_same_way(self):
+        ProxmoxCluster.objects.filter(pk=self.cluster.pk).update(enabled=False)
+        self.cluster.refresh_from_db()
+
+        with patch("core.services.cluster_node_networks.client_for_endpoint", return_value=RecordingClient()):
+            result = refresh_node_network(self.cluster, "pve1")
+
+        self.assertEqual(result.error_code, ERROR_ACQUISITION_DISABLED)
+        self.assertFalse(_coverage(self.cluster, "pve1").complete)
+
+
+class NodeNetworkEndpointHealthTests(TestCase):
+    """A dead relay costs one timeout per sweep, not one per node.
+
+    This domain holds the cluster lifecycle lock across two reads per node, so an
+    endpoint that will never answer is not merely slow: every wasted timeout is held
+    lock, and the membership lane and retirement queue behind it.
+    """
+
+    def setUp(self):
+        self.cluster = _cluster()
+        self.dead = _endpoint(self.cluster, "dead")
+        self.live = _endpoint(self.cluster, "live")
+        _publish_membership(self.cluster, {"pve1": True, "pve3": True})
+
+    def _sweep(self, error):
+        dead = RecordingClient(fail_on="nodes/", error=error)
+        live = RecordingClient()
+
+        def route(endpoint):
+            return dead if endpoint.name == "dead" else live
+
+        with patch("core.services.cluster_node_networks.client_for_endpoint", side_effect=route):
+            result = refresh_cluster_node_networks(self.cluster)
+        return result, dead, live
+
+    def test_an_unreachable_endpoint_is_tried_once_and_then_skipped(self):
+        result, dead, _live = self._sweep(ProxmoxTransportError("connect refused", request_sent=False))
+
+        self.assertEqual(result.published, 2)
+        self.assertEqual(len(dead.paths), 1, "a condemned endpoint must not be asked again for the next node")
+
+    def test_a_rejected_credential_condemns_the_endpoint_for_the_whole_sweep(self):
+        result, dead, _live = self._sweep(ProxmoxAPIError("unauthorized", status_code=401))
+
+        self.assertEqual(result.published, 2)
+        self.assertEqual(len(dead.paths), 1)
+
+    def test_an_ambiguous_failure_does_not_condemn_on_first_sight(self):
+        """A delivered request that timed out says nothing certain about the relay;
+        condemning it on one node would strand a cluster whose other endpoint is worse."""
+        _result, dead, _live = self._sweep(ProxmoxTransportError("read timeout"))
+
+        self.assertGreater(len(dead.paths), 1)
 
 
 class NodeNetworkLaneTests(TestCase):

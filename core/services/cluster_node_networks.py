@@ -28,6 +28,19 @@ per-cluster lock at a one-minute cadence and skips the whole cycle when the prev
 one is still running. A third domain in that lane lets a slow network read blank
 membership and node runtime -- pass-grain poisoning of exactly the kind this phase's
 per-node coverage is designed to avoid.
+
+**The lane is separate; the lanes are not fully independent, and that is accepted.**
+The single-flight lock here is this domain's own, so a slow pass can no longer make
+the host-projection task skip its cycle outright. But `cluster_lifecycle_lock` is a
+*blocking* per-cluster lock, and 5a1C established -- deliberately, to close a TOCTOU
+window -- that provider calls sit inside the transaction holding it. Two lanes now
+contend for it, so a degraded endpoint can still delay membership, node runtime,
+retirement and any operator provider operation on that cluster by up to one client
+timeout per node. The mitigations are the 15-minute cadence, the per-node (not
+per-pass) hold, and endpoint condemnation below, which bounds the worst case at one
+timeout per endpoint per sweep instead of one per endpoint per node. Removing the
+coupling means moving the provider calls out from under the lifecycle lock across
+all three domains, which is a change to 5a1C's contract and not this phase's to make.
 """
 
 from __future__ import annotations
@@ -52,7 +65,7 @@ from core.services.cluster_lifecycle_lock import cluster_lifecycle_lock
 from core.services.cluster_projection import stamp_cluster_projection_footprint
 from core.services.cluster_resolver import client_for_endpoint
 from core.services.cluster_scopes import historical_clusters
-from core.services.proxmox import ProxmoxAPIError
+from core.services.proxmox import ProxmoxAPIError, ProxmoxTransportError
 from core.services.publication_scope import publication_scope
 
 # Reused from 5a1C rather than re-implemented. The cluster-grain refusal *order* is
@@ -68,6 +81,7 @@ from core.services.cluster_node_runtime import (  # isort: skip
     ERROR_NODE_NOT_A_MEMBER,
     ERROR_NODE_OFFLINE,
     ERROR_PROVIDER,
+    ERROR_PROVIDER_UNAUTHORIZED,
     ERROR_TOPOLOGY_TRANSITION_PENDING,
     SweepEndpointHealth,
     _acquisition_refusal,
@@ -197,6 +211,15 @@ def _read_interfaces(cluster, node_name: str, endpoints, endpoint_health) -> tup
                 exc.__class__.__name__,
                 exc_info=True,
             )
+            # Condemn on the same two-way split 5a1C uses, and for a sharper reason
+            # here: this domain holds the cluster lifecycle lock across *two* reads
+            # per node, so an endpoint that is never going to answer costs
+            # `2 x E x nodes` timeouts of held lock rather than one per sweep --
+            # and every one of them delays the membership lane and retirement.
+            if code == ERROR_PROVIDER_UNAUTHORIZED or (isinstance(exc, ProxmoxTransportError) and not exc.request_sent):
+                endpoint_health.condemn(endpoint.name)
+            elif isinstance(exc, ProxmoxTransportError):
+                endpoint_health.record_ambiguous(endpoint.name, usable_count=len(usable))
             last_code = code
             continue
         endpoint_health.record_success(endpoint.name)
@@ -284,6 +307,45 @@ def _coverage_for(cluster: ProxmoxCluster, node_name: str, based_on_generation: 
     return coverage
 
 
+def _demote_coverage(cluster, node_name: str, refusal: str, *, when) -> bool:
+    """Drop `complete` when a cluster-grain refusal stops a node being attempted.
+
+    Currency in this domain is generation equality and nothing else -- no age rule,
+    by 5a4A decision 2 -- and that is only sound if every refusal is *recorded*. It
+    was not: a cluster-grain refusal returned zero-row, so a connection that was
+    disabled, quarantined, left without an enabled endpoint or moved into a topology
+    transition kept coverage saying `complete` at the last good generation, with rows
+    at that same generation. They then read as current forever, and 5a4B-ii is the
+    consumer that will offer those bridges as migration targets. Fifteen minutes of
+    staleness is the intended behaviour; indefinite is not.
+
+    Only an *existing* row is demoted. A node that never published has nothing to
+    correct, and creating coverage here would orphan a row for a name whose member
+    row may not exist -- the case `_refresh_one_node` deliberately refuses zero-row.
+
+    Retirement is the one refusal that must stay silent: it deletes this projection
+    and its coverage under the same lifecycle lock, so writing here would resurrect a
+    row after the finalizer counted it. That is why the caller filters it out rather
+    than this function tolerating it.
+    """
+    coverage = (
+        ClusterProjectionCoverage.objects.select_for_update()
+        .filter(
+            cluster=cluster,
+            domain=ClusterProjectionCoverage.DOMAIN_NODE_NETWORK,
+            node_name=node_name,
+        )
+        .first()
+    )
+    if coverage is None or (not coverage.complete and coverage.error_code == refusal):
+        return False
+    coverage.complete = False
+    coverage.attempted_at = when
+    coverage.error_code = refusal
+    coverage.save(update_fields=["complete", "attempted_at", "error_code", "updated_at"])
+    return True
+
+
 def _record_attempt(coverage, *, when, error_code: str, based_on_generation: int) -> None:
     """Record a failed attempt without retracting the previous good answer.
 
@@ -310,7 +372,8 @@ def _mark_unreachable(cluster, node_name: str, *, when) -> int:
         row.present = False
         row.unreachable = True
         row.attachable = False
-        row.last_seen_at = row.last_seen_at
+        # `last_seen_at` is deliberately untouched: it records when the provider last
+        # proved this interface, and an unreachable node proves nothing.
         row.save(update_fields=["present", "unreachable", "attachable", "updated_at"])
         touched += 1
     return touched
@@ -321,7 +384,6 @@ def _refresh_one_node(
     node_name: str,
     *,
     endpoint_health,
-    scope,
     observed_at=None,
 ) -> NodeNetworkResult:
     """Acquire and publish one node's interfaces, in its own transaction.
@@ -333,14 +395,32 @@ def _refresh_one_node(
     with transaction.atomic():
         with cluster_lifecycle_lock(cluster):
             locked = historical_clusters().select_for_update().get(pk=cluster.pk)
+            when = observed_at or timezone.now()
             gate = _cluster_gate(locked)
             if gate.refusal:
+                # Zero-call and zero-*new*-row, as 5a1C's shared order requires, but no
+                # longer zero-effect: an already-published node stops reading as current.
+                if gate.refusal != ERROR_ACQUISITION_RETIRED and _demote_coverage(
+                    locked, node_name, gate.refusal, when=when
+                ):
+                    stamp_cluster_projection_footprint(locked)
                 return NodeNetworkResult(node_name, False, gate.refusal)
 
             state = ClusterMembershipState.objects.filter(cluster=locked).first()
             membership_generation = state.membership_generation if state is not None else 0
             if state is not None and state.transition_pending:
+                if _demote_coverage(locked, node_name, ERROR_TOPOLOGY_TRANSITION_PENDING, when=when):
+                    stamp_cluster_projection_footprint(locked)
                 return NodeNetworkResult(node_name, False, ERROR_TOPOLOGY_TRANSITION_PENDING)
+
+            # The enrollment boundary is resolved *here*, under the lock, not carried in
+            # from the sweep's opening transaction. A snapshot taken at the top of a
+            # twenty-node pass is minutes old by the time it reaches the last node, and
+            # an operator who hid a node in that window would have had it contacted and
+            # published anyway -- the one thing this domain's narrowed boundary says
+            # never happens. It also makes the sweep and the single-node seam answer
+            # identically, which a passed-in snapshot did not.
+            scope = publication_scope(locked)
 
             row = ClusterNodeState.objects.filter(cluster=locked, node_name=node_name).first()
             if row is None:
@@ -348,10 +428,7 @@ def _refresh_one_node(
                 # orphan a row nothing prunes before cluster retirement.
                 return NodeNetworkResult(node_name, False, ERROR_NODE_NOT_A_MEMBER)
 
-            when = observed_at or timezone.now()
-
-            # The enrollment boundary, applied before any call. A node outside
-            # `managed` is never contacted for this domain.
+            # A node outside `managed` is never contacted for this domain.
             if not scope.publishes(node_name):
                 coverage = _coverage_for(locked, node_name, membership_generation)
                 _record_attempt(
@@ -465,13 +542,7 @@ def _refresh_one_node(
 
 def refresh_node_network(cluster: ProxmoxCluster, node_name: str, *, observed_at=None) -> NodeNetworkResult:
     """Refresh exactly one node. Adds no gate of its own; every refusal is shared."""
-    return _refresh_one_node(
-        cluster,
-        node_name,
-        endpoint_health=SweepEndpointHealth(),
-        scope=publication_scope(cluster),
-        observed_at=observed_at,
-    )
+    return _refresh_one_node(cluster, node_name, endpoint_health=SweepEndpointHealth(), observed_at=observed_at)
 
 
 def _retract_departed_nodes(cluster: ProxmoxCluster, *, observed_at) -> int:
@@ -494,17 +565,29 @@ def _retract_departed_nodes(cluster: ProxmoxCluster, *, observed_at) -> int:
                 return 0
             membership_generation = state.membership_generation if state is not None else 0
 
+            # Idempotence keys on the coverage reason, not on rows touched, exactly as
+            # `cluster_node_runtime._mark_departed_nodes` does. Keying on rows was a
+            # false mirror: a node hidden *before* it departed already has its rows
+            # flipped to unknown, so nothing is touched, so the sweep skipped it -- and
+            # its coverage kept saying `node_not_published`, which reads as "pve-helper
+            # chose not to publish this" for a node that is gone from the cluster.
+            handled = set(
+                ClusterProjectionCoverage.objects.filter(
+                    cluster=locked,
+                    domain=ClusterProjectionCoverage.DOMAIN_NODE_NETWORK,
+                    error_code=ERROR_NODE_ABSENT,
+                    complete=False,
+                ).values_list("node_name", flat=True)
+            )
             departed = list(
                 ClusterNodeState.objects.filter(cluster=locked, present=False)
                 .order_by("node_name")
                 .values_list("node_name", flat=True)
             )
             for node_name in departed:
-                touched = _mark_unreachable(locked, node_name, when=observed_at)
-                if not touched:
-                    # Idempotent: a node handled by an earlier pass has no rows left
-                    # to flip, so this counts newly departed nodes only.
+                if node_name in handled:
                     continue
+                _mark_unreachable(locked, node_name, when=observed_at)
                 coverage = _coverage_for(locked, node_name, membership_generation)
                 _record_attempt(
                     coverage,
@@ -529,19 +612,27 @@ def refresh_cluster_node_networks(cluster: ProxmoxCluster, *, observed_at=None) 
         with cluster_lifecycle_lock(cluster):
             locked = historical_clusters().select_for_update().get(pk=cluster.pk)
             gate = _cluster_gate(locked)
-            if gate.refusal:
-                return NodeNetworkSweepResult(locked.key, False, gate.refusal)
             targets = list(
                 ClusterNodeState.objects.filter(cluster=locked, present=True)
                 .order_by("node_name")
                 .values_list("node_name", flat=True)
             )
-            scope = publication_scope(locked)
+            if gate.refusal:
+                # Refused, but not silently: see `_demote_coverage`. Retirement is the
+                # exception, and is already deleting this projection under this lock.
+                if gate.refusal != ERROR_ACQUISITION_RETIRED:
+                    demoted = [
+                        _demote_coverage(locked, node_name, gate.refusal, when=observed_at or timezone.now())
+                        for node_name in targets
+                    ]
+                    if any(demoted):
+                        stamp_cluster_projection_footprint(locked)
+                return NodeNetworkSweepResult(locked.key, False, gate.refusal)
 
     when = observed_at or timezone.now()
     endpoint_health = SweepEndpointHealth()
     results = [
-        _refresh_one_node(cluster, node_name, endpoint_health=endpoint_health, scope=scope, observed_at=when)
+        _refresh_one_node(cluster, node_name, endpoint_health=endpoint_health, observed_at=when)
         for node_name in targets
     ]
     retracted = _retract_departed_nodes(cluster, observed_at=when)

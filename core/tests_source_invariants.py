@@ -477,6 +477,7 @@ HOST_STATE_PROVIDER_IO_ALLOWLIST = {
 HOST_PROJECTION_OWNER_FORBIDDEN_IMPORTS = frozenset(
     {
         "core.services.cluster_membership",
+        "core.services.cluster_node_networks",
         "core.services.cluster_node_runtime",
         "core.services.cluster_resolver",
         "core.services.proxmox",
