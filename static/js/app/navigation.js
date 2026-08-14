@@ -185,17 +185,24 @@ const initSoftNavigation = () => {
       return;
     }
 
+    // The submitter is part of the submission, not decoration. A native submit
+    // sends the pressed button's own name/value; `new FormData(form)` without it
+    // does not, so a form with two named buttons posts identically whichever one
+    // was pressed and the choice silently becomes the default branch. That is not
+    // a cosmetic loss — "Trust cluster CA" and "Register against this export
+    // anyway" are both named submits whose whole meaning is which button was
+    // pressed, and both did nothing at all until this argument was passed.
     const method = (form.getAttribute("method") || "get").toLowerCase();
     if (method === "get") {
       // A filter/search form is just a link with a query string.
       event.preventDefault();
-      action.search = new URLSearchParams(new FormData(form)).toString();
+      action.search = new URLSearchParams(new FormData(form, event.submitter)).toString();
       loadSoftNavigation(action);
       return;
     }
 
     event.preventDefault();
-    loadSoftNavigation(action, { method: "post", body: new FormData(form) });
+    loadSoftNavigation(action, { method: "post", body: new FormData(form, event.submitter) });
   });
 
   document.addEventListener("change", (event) => {

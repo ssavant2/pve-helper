@@ -738,17 +738,39 @@ def _trust_mismatch(
             "adds the cluster CA to this connection's public trust, for every endpoint at once."
         )
     if reference is not None:
-        # The issuer is the load-bearing field; the names are this node's own problem.
-        # So the sibling's certificate is offered as an example of what this profile
-        # accepts, never as a file to install: it may be a per-node certificate that
-        # covers only the sibling, or a wildcard that happens to cover both, and the
-        # remedy must not assert which without having looked.
+        # Whether the sibling's issuer is a *requirement* or merely an example depends
+        # on the profile, and stating it as a rule was wrong wherever the public store
+        # is in play: that store accepts hundreds of CAs, so a node on DigiCert and a
+        # sibling on ssl.com both verify and neither says anything about the other.
+        # Only an exclusively pinned bundle makes the issuer the field that must match.
+        #
+        # Either way the sibling's certificate is an example, never a file to install:
+        # it may be a per-node certificate that covers only the sibling, or a wildcard
+        # that happens to cover both, and the remedy must not assert which.
+        if trust_profile.mode == TRUST_CA_PEM:
+            remedy = (
+                f"Issue a certificate for {endpoint_name} from the same CA that signed the accepted "
+                f"certificate above, and install it on this node. This connection trusts that one CA and "
+                f"nothing else, so here the issuer is what has to match — treat {reference.endpoint_name}'s "
+                f"as an example of the accepted issuer, not as a file to copy."
+            )
+        else:
+            accepts = "any publicly trusted CA"
+            if trust_profile.mode == TRUST_PUBLIC_PLUS_CA:
+                accepts += " and this cluster's own CA, which this connection has adopted"
+            remedy = (
+                f"Install a certificate on {endpoint_name} that this connection can verify. It does not have "
+                f"to come from the same CA as the accepted certificate above: this connection accepts "
+                f"{accepts}, so {reference.endpoint_name}'s issuer is one example of an accepted chain and "
+                f"not a requirement — a second node bought from a different commercial CA verifies just as "
+                f"well. What failed here is that no accepted chain could be built at all, most often a "
+                f"certificate still issued by the cluster's internal CA, or one whose intermediate the "
+                f"server does not send."
+            )
         remedies.append(
-            f"Issue a certificate for {endpoint_name} from the same CA that signed the accepted certificate "
-            f"above, and install it on this node. The issuer is what has to match. The names are separate: "
-            f"the certificate must be valid for the hostname in this endpoint's URL, which a certificate "
-            f"issued for {endpoint_name} satisfies and a wildcard covering it also would. Treat "
-            f"{reference.endpoint_name}'s as an example of an accepted issuer, not as a file to copy."
+            f"{remedy} The names are separate: the certificate must also be valid for the hostname in this "
+            f"endpoint's URL, which a certificate issued for {endpoint_name} satisfies and a wildcard "
+            f"covering it also would."
         )
     elif reference_endpoints:
         remedies.append(

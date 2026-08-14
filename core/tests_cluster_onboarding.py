@@ -30,6 +30,7 @@ from core.services.cluster_topology_role import TopologyRole
 from core.services.cluster_trust import (
     TRUST_CA_PEM,
     TRUST_PUBLIC,
+    TRUST_PUBLIC_PLUS_CA,
     InspectedCertificate,
     TrustProfile,
     approve_cluster_transport,
@@ -508,7 +509,7 @@ class TrustDiagnosisTests(SimpleTestCase):
     )
     nothing = InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
 
-    def _diagnose(self, certificates, endpoints, *, pinned_ca_uuid="", presented=None):
+    def _diagnose(self, certificates, endpoints, *, pinned_ca_uuid="", presented=None, mode=TRUST_PUBLIC):
         with patch(
             "core.services.cluster_onboarding.accepted_endpoint_certificate",
             side_effect=certificates,
@@ -516,7 +517,9 @@ class TrustDiagnosisTests(SimpleTestCase):
             error = _trust_mismatch(
                 endpoint_url="https://pve202.example.test:8006",
                 endpoint_name="pve202",
-                trust_profile=TrustProfile(mode=TRUST_PUBLIC),
+                trust_profile=TrustProfile(
+                    mode=mode, ca_pem="-----BEGIN CERTIFICATE-----" if mode != TRUST_PUBLIC else ""
+                ),
                 certificate=presented if presented is not None else self.presented,
                 reference_endpoints=endpoints,
                 pinned_ca_uuid=pinned_ca_uuid,
@@ -535,19 +538,50 @@ class TrustDiagnosisTests(SimpleTestCase):
         self.assertEqual(diagnosis.reference.endpoint_name, "pve201")
         self.assertEqual(diagnosis.reference.certificate, self.accepted)
 
-    def test_the_example_is_an_issuer_to_match_not_a_certificate_to_copy(self):
-        """Only the issuer transfers between nodes; the names do not, and whether the
-        sibling's certificate happens to cover this node too is not something the
-        remedy has looked at. So it names the issuer as the thing to match and stops
-        short of claiming a copy would or would not work."""
+    def test_under_an_exclusive_bundle_the_siblings_issuer_is_the_field_to_match(self):
+        """A pinned bundle accepts that CA and nothing else, so the sibling's issuer is
+        a requirement. Its certificate still is not: the names do not transfer, and
+        whether it happens to cover this node too is not something the remedy has
+        looked at, so it stops short of claiming a copy would or would not work."""
 
-        diagnosis = self._diagnose([self.accepted], (("pve201", "https://pve201.example.test:8006"),))
+        diagnosis = self._diagnose(
+            [self.accepted],
+            (("pve201", "https://pve201.example.test:8006"),),
+            mode=TRUST_CA_PEM,
+        )
 
         remedy = next(text for text in diagnosis.remedies if "same CA" in text)
-        self.assertIn("The issuer is what has to match", remedy)
+        self.assertIn("the issuer is what has to match", remedy)
         self.assertIn("not as a file to copy", remedy)
         self.assertIn("pve202", remedy)
         self.assertIn("pve201", remedy)
+
+    def test_under_the_public_store_the_siblings_issuer_is_only_an_example(self):
+        """The public store accepts hundreds of CAs, so a node whose certificate was
+        bought from a different commercial CA than its sibling's verifies perfectly
+        well. Telling the operator to match the issuer would send them to buy the
+        wrong thing to fix a chain that is not the problem."""
+
+        diagnosis = self._diagnose([self.accepted], (("pve201", "https://pve201.example.test:8006"),))
+
+        remedy = next(text for text in diagnosis.remedies if "pve201" in text and "not a requirement" in text)
+        self.assertIn("does not have to come from the same CA", remedy)
+        self.assertIn("any publicly trusted CA", remedy)
+        self.assertNotIn("this cluster's own CA", remedy)
+
+    def test_an_adopted_cluster_ca_is_named_alongside_the_public_store(self):
+        """The additive profile accepts two things and the remedy has to say both, or
+        an operator reads 'publicly trusted' and re-buys a certificate for a node the
+        connection would already have accepted on the adopted CA."""
+
+        diagnosis = self._diagnose(
+            [self.accepted],
+            (("pve201", "https://pve201.example.test:8006"),),
+            mode=TRUST_PUBLIC_PLUS_CA,
+        )
+
+        remedy = next(text for text in diagnosis.remedies if "not a requirement" in text)
+        self.assertIn("any publicly trusted CA and this cluster's own CA", remedy)
 
     def test_the_endpoint_being_added_is_never_its_own_example(self):
         """It is already registered on the re-verify path, and its certificate is the

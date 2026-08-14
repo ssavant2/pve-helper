@@ -266,6 +266,37 @@ test("the audit search form filters without a document reload", async ({ page })
   expect(probe).toBe("alive");
 });
 
+test("the pressed submit button's own name is part of the submission", async ({ page }) => {
+  // A native submit sends the pressed button's name/value; the shell's soft
+  // navigation has to reproduce that or a form with two named submits posts the
+  // same body whichever one was pressed, and the operator's choice becomes
+  // whatever the server does by default. The two buttons this broke — "Trust
+  // cluster CA" and "Register against this export anyway" — both need a live
+  // cluster or a mounted export to reach, so the shared mechanism is tested
+  // instead of either page: a button appended to any soft-navigated POST form.
+  await page.goto("/clusters/add/", { waitUntil: "load" });
+  const bodies: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") bodies.push(request.postData() ?? "");
+  });
+
+  await page.evaluate(() => {
+    const button = document.createElement("button");
+    button.type = "submit";
+    button.name = "probe_choice";
+    button.value = "pressed";
+    // The form's own required fields are empty and irrelevant here; without this
+    // the browser blocks the submit and no submit event is ever dispatched.
+    button.formNoValidate = true;
+    button.dataset.probe = "";
+    document.querySelector("form[method='post']")?.append(button);
+  });
+  await page.locator("button[data-probe]").click();
+
+  await expect.poll(() => bodies.join("\n")).toContain("probe_choice");
+  expect(bodies.join("\n")).toContain("pressed");
+});
+
 test("the audit column headings stay visible while event rows scroll", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
   await page.goto("/audit/", { waitUntil: "load" });
