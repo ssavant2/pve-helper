@@ -268,6 +268,22 @@ def node_enrollment_rows(cluster) -> list[dict]:
     return rows
 
 
+def unattached_endpoints(endpoints, node_rows) -> list[ProxmoxEndpoint]:
+    """This cluster's endpoints that no node row accounts for.
+
+    The second row type of the merged panel, and the reason merging is safe at all.
+    The node↔endpoint pairing is partial in both directions and unstable: an endpoint
+    that has never answered belongs to no node, a VIP may answer as a different member
+    each scan, and a node reached by two URLs is shown with one of them. Every
+    endpoint those cases would have dropped lands here instead of vanishing with the
+    panel it used to have — which is exactly when transport is what the operator came
+    to look at.
+    """
+
+    claimed = {row["endpoint"].pk for row in node_rows if row["endpoint"] is not None}
+    return [endpoint for endpoint in endpoints if endpoint.pk not in claimed]
+
+
 def _impact(cluster, node_name: str, action: str) -> dict:
     """What the operator loses by hiding or removing this node, stated before the act."""
 

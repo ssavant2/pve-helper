@@ -219,58 +219,23 @@
   margin-top: 4px;
 }
 
-/* Endpoints, below Nodes and folded away. `.panel-heading` is a flex row built for
-   a heading with a wrapping `<div>`; a `<summary>` may not contain one, so the two
-   rows are placed on a grid instead of nested. Same visual result, valid content
-   model, and the meta line still starts flush under the heading rather than indented
-   behind a disclosure marker — which is why the native marker is dropped for a
-   right-aligned Show/Hide word. */
-.cluster-endpoints-summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 16px;
-  padding: 8px 12px;
-  cursor: pointer;
-  list-style: none;
+/* URL and its state on one line. Spaced from the badge rather than by making the
+   cell a flex container: a flex `<td>` leaves the row's height calculation, which is
+   the subpixel-border defect described below. */
+.cluster-node-address .badge {
+  margin-left: 8px;
 }
 
-.cluster-endpoints-summary::-webkit-details-marker {
-  display: none;
-}
-
-.cluster-endpoints-summary h2,
-.cluster-endpoints-summary .panel-meta {
-  grid-column: 1;
-}
-
-.cluster-endpoints-summary .panel-meta {
-  display: block;
-  max-width: 90ch;
-}
-
-.cluster-endpoints-summary::after {
-  content: "Show";
-  grid-column: 2;
-  grid-row: 1 / span 2;
+/* The second row type's heading, inside the same table rather than above another
+   one: these addresses answer as no node in the rows above, and a separate table is
+   what taught operators to read transports as a second inventory. */
+.cluster-address-subhead th {
+  padding-top: 14px;
   color: var(--muted);
   font-size: 12px;
-}
-
-.cluster-endpoints[open] .cluster-endpoints-summary::after {
-  content: "Hide";
-}
-
-/* The panel's border is the summary's own when it is closed: the heading rule would
-   otherwise draw a line under the last thing on the page. */
-.cluster-endpoints:not([open]) .cluster-endpoints-summary {
-  border-bottom: 0;
-}
-
-.cluster-endpoints-count {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  text-align: left;
+  white-space: normal;
 }
 
 /* The action cell of both connection tables. Hide and Remove act on the same node

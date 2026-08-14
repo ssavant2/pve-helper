@@ -91,7 +91,7 @@ from core.services.secret_encryption import (
 )
 
 from ..common import app_login_required, navigation_context
-from .enrollment import node_enrollment_rows
+from .enrollment import node_enrollment_rows, unattached_endpoints
 
 # Curated, secret-free domain errors surfaced to the operator. Catching this
 # explicit set — rather than the RuntimeError base they all share — keeps an
@@ -810,6 +810,7 @@ def _render_cluster_connection(
     trust = ClusterTransportTrust.objects.filter(cluster=cluster).first()
     retirement_endpoints = enabled_endpoints(cluster)
     endpoints = list(cluster.endpoints.order_by("name"))
+    node_rows = node_enrollment_rows(cluster)
     topology_state = read_cluster_projection(cluster.key)
     membership_coverage = topology_state.membership_coverage
     topology_handoff_storage_bindings = list(
@@ -828,11 +829,11 @@ def _render_cluster_connection(
             ),
             "cluster": cluster,
             "endpoints": endpoints,
-            # The endpoint panel is collapsed under the node table, because a
-            # transport is not an inventory and reading it as one is the mistake the
-            # layout should stop making. It opens only when it is the thing to act
-            # on: no transport at all, or one that is registered and switched off.
-            "endpoints_need_attention": not endpoints or any(not endpoint.enabled for endpoint in endpoints),
+            # One panel, two row types. A transport is not an inventory, but a second
+            # table of the same node names taught the opposite, so the address moved
+            # into the node row it was observed on and the endpoints no node accounts
+            # for keep their own rows underneath.
+            "unattached_endpoints": unattached_endpoints(endpoints, node_rows),
             "retirement_endpoints": retirement_endpoints,
             "verified_retirement_blocker": _verified_retirement_blocker(
                 cluster,
@@ -850,7 +851,7 @@ def _render_cluster_connection(
             "show_force_retire": show_force_retire,
             "topology_state": topology_state,
             "membership_coverage": membership_coverage,
-            "node_rows": node_enrollment_rows(cluster),
+            "node_rows": node_rows,
             "membership_recovery_candidate": membership_recovery_candidate,
             "membership_recovery_token": membership_recovery_token,
             "topology_handoff_storage_bindings": topology_handoff_storage_bindings,

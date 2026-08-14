@@ -12,6 +12,7 @@ from core.models import (
     AuditEvent,
     ClusterCredential,
     ClusterMembershipState,
+    ClusterNodeEnrollment,
     ClusterProjectionCoverage,
     ClusterStorage,
     ClusterStorageMount,
@@ -713,35 +714,68 @@ class ClusterConnectionViewTests(TestCase):
             "A stored credential and transport trust are required",
         )
 
-    def test_nodes_are_rendered_above_the_endpoint_panel(self):
-        """The enrollment table is the page's inventory; endpoints are transports.
+    def test_the_node_panel_is_the_only_table_and_carries_the_address(self):
+        """One panel, with the transport inside the row it was observed on.
 
-        Order is the whole point of the panel, so it is asserted rather than left to
-        whoever next moves a section. Two tables of the same names, endpoints first,
-        read as one list with a redundant copy.
+        The second table is the defect being fixed, so its absence is asserted rather
+        than left to whoever next adds a panel back.
         """
         cluster = self._retirement_ready_cluster(enabled=True)
+        endpoint = cluster.endpoints.get()
+        endpoint.details = {"node": "pve201"}
+        endpoint.save(update_fields=["details"])
+        ClusterNodeEnrollment.objects.create(
+            cluster=cluster,
+            node_name="pve201",
+            mode=ClusterNodeEnrollment.Mode.MANAGED,
+            enrolled_at=timezone.now(),
+            onboarded_via_endpoint=endpoint,
+        )
 
-        body = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key})).content.decode()
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
 
-        self.assertLess(body.index("<h2>Nodes</h2>"), body.index("<h2>Endpoints"))
+        self.assertContains(response, "<h2>Nodes</h2>")
+        self.assertNotContains(response, "<h2>Endpoints")
+        self.assertContains(response, endpoint.normalized_url)
+        self.assertEqual(response.context["unattached_endpoints"], [])
 
-    def test_endpoint_panel_opens_only_when_a_transport_needs_attention(self):
+    def test_an_address_no_node_accounts_for_keeps_its_own_row(self):
+        """The merge may not lose a transport, which is when transport matters most.
+
+        A URL that has never answered belongs to no node, and a second URL for a node
+        already listed is not the one its row shows. Both would vanish silently if the
+        merged table only walked nodes.
+        """
         cluster = self._retirement_ready_cluster(enabled=True)
-        detail_url = reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key})
+        answered = cluster.endpoints.get()
+        answered.details = {"node": "pve201"}
+        answered.save(update_fields=["details"])
+        ClusterNodeEnrollment.objects.create(
+            cluster=cluster,
+            node_name="pve201",
+            mode=ClusterNodeEnrollment.Mode.MANAGED,
+            enrolled_at=timezone.now(),
+            onboarded_via_endpoint=answered,
+        )
+        silent = ProxmoxEndpoint.objects.create(
+            cluster=cluster,
+            name="cluster-vip",
+            url="https://vip.example.test:8006",
+            enabled=True,
+        )
+        second = ProxmoxEndpoint.objects.create(
+            cluster=cluster,
+            name="pve201-alt",
+            url="https://10.0.0.9:8006",
+            enabled=True,
+            details={"node": "pve201"},
+        )
 
-        # The rendered attribute, not only the flag: the panel folding away is the
-        # change, and a context value the template ignores would not deliver it.
-        response = self.client.get(detail_url)
-        self.assertFalse(response.context["endpoints_need_attention"])
-        self.assertNotContains(response, '<details class="cluster-endpoints" open>')
+        response = self.client.get(reverse("core:cluster_connection", kwargs={"cluster_key": cluster.key}))
 
-        cluster.endpoints.update(enabled=False)
-        response = self.client.get(detail_url)
-        self.assertTrue(response.context["endpoints_need_attention"])
-        self.assertContains(response, '<details class="cluster-endpoints" open>')
-
-        cluster.endpoints.all().delete()
-        response = self.client.get(detail_url)
-        self.assertTrue(response.context["endpoints_need_attention"])
-        self.assertContains(response, '<details class="cluster-endpoints" open>')
+        self.assertEqual(
+            [endpoint.pk for endpoint in response.context["unattached_endpoints"]],
+            [silent.pk, second.pk],
+        )
+        self.assertContains(response, silent.normalized_url)
+        self.assertContains(response, second.normalized_url)
