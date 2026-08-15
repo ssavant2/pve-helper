@@ -8,5 +8,5 @@ python-dateutil>=2.9,<3.0
 PyYAML>=6.0,<7.0
 starlette>=1.6.0,<2.0
 uvicorn[standard]>=0.52.1,<1.0
-websockets>=16.1.1,<17.0
+websockets>=17.0.1,<18.0
 whitenoise>=6.7,<7.0
