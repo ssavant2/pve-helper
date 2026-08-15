@@ -287,14 +287,14 @@ def _live_config(existing: CurrentGuestInventory | None, guest: ProxmoxGuestSumm
 def _int_or_zero(value: object) -> int:
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
 def _float_or_zero(value: object) -> float:
     try:
         return float(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
 
 
@@ -699,6 +699,6 @@ def stored_guest_lineage(cluster) -> dict[int, int]:
     for child, parent in raw.items():
         try:
             lineage[int(child)] = int(parent)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return lineage

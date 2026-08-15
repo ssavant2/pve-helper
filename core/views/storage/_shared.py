@@ -483,5 +483,5 @@ def _content_category_label(category: str, path: str) -> str:
 def _int_request_param(request, name: str, default: int) -> int:
     try:
         return int(request.GET.get(name, default))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default

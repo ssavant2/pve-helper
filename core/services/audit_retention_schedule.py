@@ -89,7 +89,7 @@ def _retention_days_from_schedule_kwargs(value: object) -> int:
     elif isinstance(value, str) and value.strip():
         try:
             parsed = ast.literal_eval(value)
-        except (SyntaxError, ValueError):
+        except SyntaxError, ValueError:
             return DEFAULT_AUDIT_RETENTION_DAYS
         if not isinstance(parsed, dict):
             return DEFAULT_AUDIT_RETENTION_DAYS
@@ -99,5 +99,5 @@ def _retention_days_from_schedule_kwargs(value: object) -> int:
 
     try:
         return _validated_retention_days(int(raw_value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return DEFAULT_AUDIT_RETENTION_DAYS

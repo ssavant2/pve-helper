@@ -216,7 +216,7 @@ def guest_migrate_options(request, cluster_key: str, object_type: str, vmid: int
                     ids.append(storage_id)
                     try:
                         free[storage_id] = int(storage.get("avail"))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         pass
             storages_by_node[name] = sorted(set(ids))
             storage_free_by_node[name] = free

@@ -142,7 +142,7 @@ def _verifies_under_trust(record, config) -> tuple[bool, str]:
         return False, exc.public_message
     except ssl.SSLCertVerificationError as exc:
         return False, str(exc.verify_message or exc.reason or "certificate verification failed")
-    except (OSError, ssl.SSLError):
+    except OSError, ssl.SSLError:
         # Reachability was already proven by the inspection probe moments ago, so a
         # failure here is a trust failure in all but name. Report it as unverified
         # rather than guessing at a network cause.

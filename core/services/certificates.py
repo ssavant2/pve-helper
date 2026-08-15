@@ -238,7 +238,7 @@ def _key_matches_certificate(private_key, certificate: x509.Certificate) -> bool
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         return False
 
 

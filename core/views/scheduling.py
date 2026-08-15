@@ -318,7 +318,7 @@ def retry_recent_task(request):
             queued_task_id = retry_cluster_host_refresh(event_id)
         except ValueError:
             return JsonResponse({"ok": False, "error": "Invalid task id."}, status=400)
-        except (ClusterHostRefreshRetryError, ClusterHostRefreshAlreadyActive):
+        except ClusterHostRefreshRetryError, ClusterHostRefreshAlreadyActive:
             return JsonResponse(
                 {"ok": False, "error": "This host projection refresh is not available for retry."},
                 status=409,

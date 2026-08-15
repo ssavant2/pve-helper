@@ -30,7 +30,7 @@ def clone_guest_to_template_task(
         node = str(details.get("proxmox_task_node") or ref.node)
         new_vmid = int(details.get("new_vmid"))
         clone_upid = str(details.get("proxmox_task_upid") or "")
-    except (DurableGuestOperationError, TypeError, ValueError):
+    except DurableGuestOperationError, TypeError, ValueError:
         record_event_failure(
             event,
             PublicFailure("The queued template clone has incomplete target identity.", ERROR_CODE_INCOMPLETE),

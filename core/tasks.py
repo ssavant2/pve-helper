@@ -824,7 +824,7 @@ def _resolve_force_stop_questions(*, now) -> int:
         target_type = str(details.get("target_type") or "")
         try:
             vmid = int(details.get("vmid"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         stopped = any(
             object_type == target_type and guest_vmid == vmid and status == "stopped"
@@ -1421,7 +1421,7 @@ def _refresh_import_target_inventory(
 
     try:
         numeric_vmid = int(vmid)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         numeric_vmid = None
 
     if node and numeric_vmid is not None:
@@ -1579,10 +1579,10 @@ def record_storage_space_snapshots(retention_days: int = SPACE_SNAPSHOT_RETENTIO
 def _snapshot_int(value):
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         try:
             return int(float(value))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
 

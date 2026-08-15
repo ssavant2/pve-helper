@@ -143,7 +143,7 @@ class TlsCollector:
         while not self._stop.is_set():
             try:
                 connection, _address = self._socket.accept()
-            except (TimeoutError, OSError):
+            except TimeoutError, OSError:
                 continue
             try:
                 with self._context.wrap_socket(connection, server_side=True) as tls:
@@ -151,7 +151,7 @@ class TlsCollector:
                     data = tls.recv(65535)
                     if data:
                         self.received.append(data)
-            except (OSError, ssl.SSLError):
+            except OSError, ssl.SSLError:
                 # A probe that only reads the certificate and hangs up is the
                 # normal case here, not a failure.
                 pass

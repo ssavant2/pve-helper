@@ -31,7 +31,7 @@ def resolve_storage_mount(reference: str, *, enabled: bool | None = None) -> Sto
     except ValueError:
         try:
             mount_key = str(uuid.UUID(value))
-        except (TypeError, ValueError, AttributeError):
+        except TypeError, ValueError, AttributeError:
             mount_key = ""
     if mount_key:
         return query.get(mount_key=mount_key)

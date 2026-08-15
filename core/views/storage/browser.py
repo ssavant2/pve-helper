@@ -201,7 +201,7 @@ def _download_accel_available(storage: StorageMount) -> bool:
         if expected is None:
             return False
         current = os.stat(Path(settings.PVE_HELPER_STORAGE_CONTAINER_ROOT) / relative).st_dev
-    except (OSError, StorageMountError, ValueError):
+    except OSError, StorageMountError, ValueError:
         return False
     return current == expected
 

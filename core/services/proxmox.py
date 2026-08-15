@@ -262,7 +262,7 @@ def _proxmox_error_detail(response) -> str:
     """
     try:
         payload = response.json()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         payload = None
     parts: list[str] = []
     if isinstance(payload, dict):
@@ -622,7 +622,7 @@ class ProxmoxClient:
     def _int_or_none(self, value: Any) -> int | None:
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
 
@@ -779,7 +779,7 @@ def _fetch_live_guest_locks_uncached(*, cluster) -> dict[tuple[str, str, int], s
                     continue
                 try:
                     vmid = int(guest.get("vmid"))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
                 locks[(node, object_type, vmid)] = lock
     return locks
@@ -848,7 +848,7 @@ def _fetch_live_guest_lineage_uncached(*, cluster) -> dict[int, int]:
         try:
             child = int(item.vmid)
             parent = int(match.group(1))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if child and parent and child != parent:
             lineage[child] = parent
@@ -926,7 +926,7 @@ def _hibernated_vm_keys(stopped_vm_keys, deadline, *, cluster) -> set[tuple[str,
             for vm in vms:
                 try:
                     vmid = int(vm.get("vmid"))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
                 if vmid in stopped_by_node.get(node, set()) and vm.get("lock") == "suspended":
                     hibernated.add((node, "vm", vmid))
@@ -1038,7 +1038,7 @@ def _add_guest_summary(
         return
     try:
         vmid_int = int(vmid)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return
 
     guest_node = str(node or data.get("node") or "")
@@ -1069,12 +1069,12 @@ def _add_guest_summary(
 def _int_or_zero(value: Any) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
 def _float_or_zero(value: Any) -> float:
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0

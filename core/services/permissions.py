@@ -82,7 +82,7 @@ def _read_acl(path: str) -> tuple[list[AclEntry], bool]:
             text=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError, subprocess.TimeoutExpired:
         return [], False
 
     if result.returncode != 0:

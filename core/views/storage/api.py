@@ -152,10 +152,10 @@ def _resolve_datastore_scope(cluster, storage: str, node: str):
 def _api_num(value):
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         try:
             return int(float(value))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
 

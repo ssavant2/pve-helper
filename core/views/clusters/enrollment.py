@@ -175,7 +175,7 @@ def _forward_confirmed_name(address: str) -> str:
     pool = ThreadPoolExecutor(max_workers=1)
     try:
         return pool.submit(lookup).result(timeout=_DNS_SUGGESTION_TIMEOUT_SECONDS)
-    except (OSError, FuturesTimeoutError, UnicodeError):
+    except OSError, FuturesTimeoutError, UnicodeError:
         return ""
     finally:
         # `wait=True` — the `with` form's default — would block here for exactly as

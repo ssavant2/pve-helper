@@ -32,7 +32,7 @@ def scheduled_task_settings(request):
         try:
             days = int(str(request.POST.get("run_history_retention_days") or ""))
             config = update_run_history_retention(days=days)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             errors.append(
                 f"Run history retention must be between {MIN_RUN_HISTORY_RETENTION_DAYS} "
                 f"and {MAX_RUN_HISTORY_RETENTION_DAYS} days."

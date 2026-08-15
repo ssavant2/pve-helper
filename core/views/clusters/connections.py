@@ -695,7 +695,7 @@ def cluster_add(request):
                     "selected_storage_bindings": [available[row_id] for row_id in selected_ids],
                 }
             )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             form.add_error(None, "The signed storage mapping list is invalid.")
             return render(request, "core/cluster_add.html", context)
         except CLUSTER_OPERATION_ERRORS as exc:
@@ -750,7 +750,7 @@ def _queue_first_inventory(request, cluster) -> None:
     """
     try:
         queue_cluster_inventory_bootstrap(cluster=cluster, request=request)
-    except (ClusterInventoryBootstrapAlreadyActive, ClusterInventoryBootstrapQueueError):
+    except ClusterInventoryBootstrapAlreadyActive, ClusterInventoryBootstrapQueueError:
         logger.warning("First inventory could not be queued for cluster=%s", cluster.key, exc_info=True)
 
 

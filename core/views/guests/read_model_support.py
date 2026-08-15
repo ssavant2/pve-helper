@@ -312,7 +312,7 @@ def _guest_target_value(
     try:
         parsed_vmid = int(vmid) if vmid is not None else 0
         return GuestRef(cluster_key, object_type, parsed_vmid, node).serialize()
-    except (TypeError, ValueError, RefParseError):
+    except TypeError, ValueError, RefParseError:
         return ""
 
 
@@ -1043,7 +1043,7 @@ def _guest_ha_summary(detail: SimpleNamespace) -> dict:
         try:
             cluster_status = client.get("cluster/status", timeout=2)
             resources = client.get("cluster/ha/resources", timeout=2)
-        except (AttributeError, ProxmoxAPIError):
+        except AttributeError, ProxmoxAPIError:
             continue
 
         cluster_status = cluster_status if isinstance(cluster_status, list) else []
@@ -1227,7 +1227,7 @@ def _guest_usage(current: dict, config: dict, object_type: str, *, observed: boo
 def _float_or_zero(value) -> float:
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
 
 
@@ -1259,7 +1259,7 @@ def _pool_member_matches_guest(member: object, detail: SimpleNamespace) -> bool:
         return False
     try:
         vmid = int(member.get("vmid"))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     if vmid != detail.vmid:
         return False

@@ -83,7 +83,7 @@ def guest_identity(
 ) -> GuestIdentity:
     try:
         vmid_int = int(vmid) if vmid is not None and str(vmid) != "" else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         vmid_int = None
     object_type_text = str(object_type or "")
     if ref is None and cluster_key and vmid_int is not None:

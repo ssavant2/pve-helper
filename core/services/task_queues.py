@@ -15,7 +15,7 @@ def queued_task_ids(task_ids: set[str], *, queue_name: str = BULK_QUEUE_NAME) ->
     for payload in OrmQ.objects.filter(key=queue_name).values_list("payload", flat=True):
         try:
             package = SignedPackage.loads(payload)
-        except (BadSignature, TypeError, ValueError):
+        except BadSignature, TypeError, ValueError:
             continue
         task_id = str(package.get("id") or "") if isinstance(package, dict) else ""
         if task_id in task_ids:

@@ -361,7 +361,7 @@ def _parse_ovf_xml(data: bytes) -> OvfPackage:
 def _capacity_bytes(value: str, units: str) -> int | None:
     try:
         number = int(float(value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     multiplier = _unit_multiplier(units) or 1
     result = number * multiplier
@@ -373,7 +373,7 @@ def _capacity_bytes(value: str, units: str) -> int | None:
 def _memory_mib(value: str, units: str | None) -> int | None:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     multiplier = _unit_multiplier(units or "") or 1
     return max(16, int((number * multiplier) / 1024**2))

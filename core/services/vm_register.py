@@ -267,7 +267,7 @@ def _stage_source(storage: StorageMount, relative_path: str) -> tuple[str, str]:
 def _remove_stage(storage: StorageMount, staging_dir: str) -> None:
     try:
         remove_confined_directory(str(storage_mount_root(storage)), staging_dir)
-    except (ConfinedFilesystemError, OSError):
+    except ConfinedFilesystemError, OSError:
         pass
 
 
@@ -395,7 +395,7 @@ def _remove_staged_files(storage: StorageMount, relative_paths: list[str]) -> No
     for relative_path in relative_paths:
         try:
             remove_confined_file(root, relative_path, missing_ok=True)
-        except (ConfinedFilesystemError, OSError):
+        except ConfinedFilesystemError, OSError:
             pass
 
 

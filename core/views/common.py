@@ -384,7 +384,7 @@ OSTYPE_LABELS = {
 def _int_or_zero(value) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -1062,7 +1062,7 @@ def _recurrence_time_label(recurrence: dict) -> str:
     try:
         hour = int(recurrence.get("hour", 0))
         minute = int(recurrence.get("minute", 0))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         hour = 0
         minute = 0
     return f"{hour:02d}:{minute:02d}"

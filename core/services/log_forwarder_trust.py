@@ -225,7 +225,7 @@ def _chain_der(tls: ssl.SSLSocket) -> tuple[bytes, ...]:
     """
     try:
         return tuple(tls.get_unverified_chain() or ())
-    except (AttributeError, ValueError, ssl.SSLError):
+    except AttributeError, ValueError, ssl.SSLError:
         return ()
 
 

@@ -88,7 +88,7 @@ def _max_age_from_schedule_kwargs(value: object) -> int:
     elif isinstance(value, str) and value.strip():
         try:
             parsed = ast.literal_eval(value)
-        except (SyntaxError, ValueError):
+        except SyntaxError, ValueError:
             return DEFAULT_TRASH_MAX_AGE_DAYS
         if not isinstance(parsed, dict):
             return DEFAULT_TRASH_MAX_AGE_DAYS
@@ -98,5 +98,5 @@ def _max_age_from_schedule_kwargs(value: object) -> int:
 
     try:
         return _validated_max_age(int(raw_value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return DEFAULT_TRASH_MAX_AGE_DAYS

@@ -88,7 +88,7 @@ def validate_tag_operation_confirmation(
             salt=TAG_OPERATION_CONFIRMATION_SALT,
             max_age=TAG_OPERATION_CONFIRMATION_MAX_AGE_SECONDS,
         )
-    except (signing.BadSignature, signing.SignatureExpired):
+    except signing.BadSignature, signing.SignatureExpired:
         return None, INVALID_CONFIRMATION_ERROR
 
     if not isinstance(payload, dict) or any(

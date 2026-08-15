@@ -305,7 +305,7 @@ def accepted_endpoint_certificate(url: str, profile: TrustProfile, *, timeout: f
         with socket.create_connection((host, port), timeout=timeout) as sock:
             with context.wrap_socket(sock, server_hostname=host) as tls:
                 der = tls.getpeercert(binary_form=True)
-    except (OSError, ssl_module.SSLError):
+    except OSError, ssl_module.SSLError:
         return InspectedCertificate(subject="", issuer="", sha256_fingerprint="")
     return _inspected(der)
 
