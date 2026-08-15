@@ -38,6 +38,22 @@ updates:
         patterns:
           - "*"
 
+  # The docker ecosystem reads Dockerfiles only, so the images pinned in the
+  # compose files drifted unattended. The Playwright runner is excluded on
+  # purpose: it has to move in the same commit as @playwright/test in /e2e,
+  # which is a different ecosystem and therefore a different pull request.
+  # scripts/check_playwright_pin.py enforces that pairing.
+  - package-ecosystem: docker-compose
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      compose-images:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: mcr.microsoft.com/playwright
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
