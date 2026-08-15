@@ -52,7 +52,10 @@ updates:
         patterns:
           - "*"
     ignore:
-      - dependency-name: mcr.microsoft.com/playwright
+      # An exact dependency-name here did not take: the first compose run after
+      # it landed still opened a Playwright image bump. Match on a pattern and
+      # confirm against the next run before trusting it.
+      - dependency-name: "mcr.microsoft.com/playwright*"
 
   - package-ecosystem: github-actions
     directory: "/"
