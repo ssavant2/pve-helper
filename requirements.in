@@ -1,5 +1,5 @@
 Django>=6.1,<7.0
-django-q2>=1.7,<2.0
+django-q2>=1.11.0,<2.0
 gunicorn>=26,<27
 httpx>=0.28,<1.0
 mozilla-django-oidc>=5.0,<6.0
@@ -7,6 +7,6 @@ psycopg[binary]>=3.2,<4.0
 python-dateutil>=2.9,<3.0
 PyYAML>=6.0,<7.0
 starlette>=1.6.0,<2.0
-uvicorn[standard]>=0.52.1,<1.0
+uvicorn[standard]>=0.52.3,<1.0
 websockets>=17.0.1,<18.0
 whitenoise>=6.7,<7.0
