@@ -2,7 +2,7 @@ name: pve-helper-dev-tools
 
 services:
   py-check:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.16.4@sha256:f40bbe3987964d8780910e8b110266256a6924224594317932223fbdab67012c
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -11,7 +11,7 @@ services:
       - .:/workspace
 
   py-format-check:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.16.4@sha256:f40bbe3987964d8780910e8b110266256a6924224594317932223fbdab67012c
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -20,7 +20,7 @@ services:
       - .:/workspace
 
   py-format:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.16.4@sha256:f40bbe3987964d8780910e8b110266256a6924224594317932223fbdab67012c
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
