@@ -1,4 +1,4 @@
-Django>=6.1,<7.0
+Django>=6.1.1,<7.0
 django-q2>=1.7,<2.0
 gunicorn>=26,<27
 httpx>=0.28,<1.0
