@@ -2,7 +2,7 @@ name: pve-helper-dev-tools
 
 services:
   py-check:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.17.4@sha256:c4b7e7a87e4b07d66b569dd2e6b2ce5a25e38be91dd664dc49b9882be27acd9b
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -11,7 +11,7 @@ services:
       - .:/workspace
 
   py-format-check:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.17.4@sha256:c4b7e7a87e4b07d66b569dd2e6b2ce5a25e38be91dd664dc49b9882be27acd9b
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -20,7 +20,7 @@ services:
       - .:/workspace
 
   py-format:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.17.4@sha256:c4b7e7a87e4b07d66b569dd2e6b2ce5a25e38be91dd664dc49b9882be27acd9b
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -29,7 +29,7 @@ services:
       - .:/workspace
 
   js-check:
-    image: node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019
+    image: node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: bridge
@@ -40,7 +40,7 @@ services:
       - .:/workspace
 
   js-format:
-    image: node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019
+    image: node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: bridge
@@ -86,7 +86,7 @@ services:
     # Must track @playwright/test in e2e/package.json: the image ships only the
     # browser build its own version expects, so a lone npm bump leaves every test
     # failing on a missing executable.
-    image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+    image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d
     working_dir: /workspace/e2e
     environment:
       BASE_URL: http://e2e-web:8000
