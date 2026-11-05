@@ -44,7 +44,7 @@ USER app
 
 RUN APP_SECRET_KEY=build-time-placeholder DEBUG=true python manage.py collectstatic --noinput
 
-FROM busybox:1.38@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616 AS runtime-source
+FROM busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4 AS runtime-source
 
 WORKDIR /src
 COPY console_app console_app
