@@ -2,7 +2,7 @@ name: pve-helper-dev-tools
 
 services:
   py-check:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.17.5@sha256:3abcaeec575bf06baac8e28f2462e75d7093a7740ecf61c5f833b0a827abac10
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -11,7 +11,7 @@ services:
       - .:/workspace
 
   py-format-check:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.17.5@sha256:3abcaeec575bf06baac8e28f2462e75d7093a7740ecf61c5f833b0a827abac10
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -20,7 +20,7 @@ services:
       - .:/workspace
 
   py-format:
-    image: ghcr.io/astral-sh/ruff:0.16.2@sha256:dc94041bbe2b1a4d846b00444c0b8d7160d44b7ed72339267263e9535e678ffb
+    image: ghcr.io/astral-sh/ruff:0.17.5@sha256:3abcaeec575bf06baac8e28f2462e75d7093a7740ecf61c5f833b0a827abac10
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     working_dir: /workspace
     network_mode: none
@@ -86,7 +86,7 @@ services:
     # Must track @playwright/test in e2e/package.json: the image ships only the
     # browser build its own version expects, so a lone npm bump leaves every test
     # failing on a missing executable.
-    image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+    image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:9beb546099e11f52d62e505537914870e01a67e0e6b00ae41da4775324e73dbe
     working_dir: /workspace/e2e
     environment:
       BASE_URL: http://e2e-web:8000
